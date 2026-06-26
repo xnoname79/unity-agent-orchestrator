@@ -38,12 +38,15 @@ When needing a new API or changes to an existing API:
 
 ### Auto-sync (Real-time notification)
 The sync-bridge server runs as a shared HTTP server. Both SOURCE and TARGET connect to the same instance.
+Both sides can trigger updates AND wait for updates from the other side — the flow is **symmetric**.
 
-**TARGET workflow for real-time updates:**
-1. At the start of a session, call `watch_for_changes()` to check for any pending updates from SOURCE.
-2. After processing the returned changes, call `watch_for_changes(since="<last_timestamp>")` to block and wait for the next change.
-3. When `watch_for_changes` returns new changes, process them and loop back to step 2.
+**Workflow for BOTH roles:**
+1. At the start of a session, call `watch_for_changes()` to check for any pending updates from the other side.
+2. Process the returned changes (update code, respond to questions, etc.).
+3. When you make a change (add/update spec), the other side's `watch_for_changes` is automatically triggered.
+4. After processing, call `watch_for_changes(since="<last_timestamp>")` to block and wait for the next change from the other side.
+5. When `watch_for_changes` returns new changes, process them and loop back to step 4.
 
-**SOURCE does NOT need to do anything extra** — every call to `add_api_requirement`, `update_api_requirement`, or `reset_api_requirements` automatically triggers TARGET's `watch_for_changes`.
+Any call to `add_api_requirement`, `update_api_requirement`, or `reset_api_requirements` from either side automatically wakes up the other side's `watch_for_changes`.
 
 This is a BLOCKING requirement — do not consider an API task complete until specs are synced.
