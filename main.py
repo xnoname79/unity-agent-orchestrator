@@ -1,16 +1,27 @@
 import json
 import os
+import sys
 import sqlite3
 import asyncio
 from datetime import datetime
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import anyio
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
 
-DB_FILE = os.environ.get("DB_FILE", "sync_bridge.db")
+DB_DIR = Path.home() / ".sync_bridge_db"
+
+def _resolve_db_path():
+    if os.environ.get("DB_FILE"):
+        return os.environ["DB_FILE"]
+    name = sys.argv[1] if len(sys.argv) > 1 else "default"
+    DB_DIR.mkdir(parents=True, exist_ok=True)
+    return str(DB_DIR / f"{name}.db")
+
+DB_FILE = _resolve_db_path()
 SYNC_HOST = os.environ.get("SYNC_HOST", "0.0.0.0")
 SYNC_PORT = int(os.environ.get("SYNC_PORT", "8989"))
 

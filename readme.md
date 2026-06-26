@@ -6,7 +6,8 @@ pip install -r requirements.txt
 # The server auto-triggers FE when BE updates API specs (and vice versa).
 
 # 1. Start the sync-bridge HTTP server
-DB_FILE=/path/to/db_file.json python3 /path/to/main.py
+python3 /path/to/main.py my-project
+# DB auto-created at ~/.sync_bridge_db/my-project.db
 # Server runs at http://localhost:8989/mcp
 # Health check: curl http://localhost:8989/health
 
@@ -19,6 +20,7 @@ claude mcp add --transport http sync-bridge http://localhost:8989/mcp
 # Optional env vars:
 #   SYNC_HOST  — bind address (default: 0.0.0.0)
 #   SYNC_PORT  — port (default: 8989)
+#   DB_FILE    — override DB path (default: ~/.sync_bridge_db/<name>.db)
 
 # ─── issue-fetcher ──────────────────────────────────────────────────
 # Refer to this link to create your own github_token https://github.com/settings/tokens
