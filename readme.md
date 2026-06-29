@@ -124,6 +124,55 @@ get_pending_requirements(project="blog", tag="admin-app")  # FE-2
 
 Health check: `curl http://localhost:8989/health`
 
+### Run as a Service (systemd, auto-start on login)
+
+Instead of running `python3 main.py` manually, register a **systemd user service** so
+the server starts automatically on login and restarts itself if it crashes.
+
+Create `~/.config/systemd/user/agent-sync-bridge.service`:
+
+```ini
+[Unit]
+Description=Agent-Sync-Bridge MCP Server (streamable-http)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/thanh/my-mcp
+ExecStart=/home/thanh/my-mcp/.venv/bin/python /home/thanh/my-mcp/main.py
+Restart=on-failure
+RestartSec=3
+# Optional: override host/port
+# Environment=SYNC_HOST=0.0.0.0
+# Environment=SYNC_PORT=8989
+
+[Install]
+WantedBy=default.target
+```
+
+Enable and start it:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now agent-sync-bridge   # start now + on every login
+```
+
+> **Note:** A user service starts on **login**. To run even before logging in
+> (e.g. right after boot), enable lingering: `sudo loginctl enable-linger $USER`
+
+#### Common commands
+
+```bash
+systemctl --user status agent-sync-bridge        # check status
+systemctl --user restart agent-sync-bridge       # reload after editing main.py
+systemctl --user stop agent-sync-bridge          # stop the server
+systemctl --user start agent-sync-bridge         # start the server
+systemctl --user disable agent-sync-bridge       # remove from auto-start
+journalctl --user -u agent-sync-bridge -f        # follow logs (live)
+journalctl --user -u agent-sync-bridge -n 50     # last 50 log lines
+```
+
 ---
 
 ## issue-fetcher
