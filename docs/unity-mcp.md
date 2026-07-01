@@ -87,4 +87,6 @@ Nhóm năng lực chính (xem [tool catalog](https://coplaydev.github.io/unity-m
 4. **Critique & iterate**: Claude nhìn ảnh → chỉnh lighting/fog/bố cục → chụp lại.
 5. **Track** (unity-dev): `update_scene` status `in_progress`→`done`, cập nhật asset.
 
-Xem art-direction rules chi tiết trong `memory/unity-mcp/CLAUDE.md`.
+Art-direction playbook nằm trong skill **`unity-environment-art`**
+(`.claude/skills/unity-environment-art/SKILL.md`) — nạp theo yêu cầu khi dựng cảnh.
+Project binding + safety rules ở `memory/unity-mcp/CLAUDE.md`.
