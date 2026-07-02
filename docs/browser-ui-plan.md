@@ -97,6 +97,6 @@ Giống art-direction loop của Unity:
 
 - **Phase 1** ✅ — Setup Playwright MCP (`--browser firefox`) + `docs/browser-ui.md` +
   skill `ui-testing`. Verify loop LOOK→ACT→VERIFY trên một trang thật.
-- **Phase 2** — `ui-workflow` MCP (Python, giống unity-dev): test cases, workflows,
-  run history, export suite (SQLite).
+- **Phase 2** ✅ — `ui-workflow` MCP (Python, giống unity-dev): test cases, workflows,
+  run history, summary, export suite (SQLite). Port 8991.
 - **Phase 3** — Nâng cao: visual regression + responsive presets + network mocking + a11y audit.

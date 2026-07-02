@@ -237,6 +237,13 @@ npx playwright install firefox
 claude mcp add playwright -- npx @playwright/mcp@latest --browser firefox
 ```
 
+Paired with **ui-workflow** (test-case & run-history management):
+
+```bash
+python3 ui_workflow.py          # port 8991
+claude mcp add --transport http ui-workflow http://localhost:8991/mcp
+```
+
 See **[docs/browser-ui.md](docs/browser-ui.md)** for setup and the
 **`ui-testing`** skill for methodology. Plan: [docs/browser-ui-plan.md](docs/browser-ui-plan.md).
 

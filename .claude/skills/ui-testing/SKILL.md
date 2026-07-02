@@ -68,7 +68,12 @@ Khi dev UI (không chỉ test):
 - Hành động phá hủy (xóa data, submit thanh toán thật) → xác nhận với user trước.
 - Không commit screenshot/trace chứa thông tin nhạy cảm.
 
-## Vòng lặp với ui-workflow (Phase 2 — khi có)
+## Vòng lặp với ui-workflow
 
-- Lấy test case/workflow từ `ui-workflow` MCP → thực thi qua Playwright.
-- Ghi kết quả run (pass/fail + screenshot) về `ui-workflow` để track history/regression.
+`ui-workflow` MCP (port 8991) lưu test case, workflow tái sử dụng, và run history.
+
+- Đầu việc: `list_test_cases` / `get_test_case` để lấy steps + expected.
+- Thực thi steps qua Playwright MCP (LOOK→ACT→VERIFY).
+- Kết thúc: `record_run(status, notes, screenshots)` để lưu kết quả.
+- `get_test_summary` để xem sức khỏe toàn suite; `get_run_history` để soi regression.
+- Flow lặp lại (login, checkout) → lưu bằng `add_workflow` để tái sử dụng.
