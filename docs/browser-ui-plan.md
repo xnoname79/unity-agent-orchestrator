@@ -95,7 +95,7 @@ Giống art-direction loop của Unity:
 
 ## Lộ trình triển khai
 
-- **Phase 1** — Setup Playwright MCP (`--browser firefox`) + `docs/browser-ui.md` +
+- **Phase 1** ✅ — Setup Playwright MCP (`--browser firefox`) + `docs/browser-ui.md` +
   skill `ui-testing`. Verify loop LOOK→ACT→VERIFY trên một trang thật.
 - **Phase 2** — `ui-workflow` MCP (Python, giống unity-dev): test cases, workflows,
   run history, export suite (SQLite).
