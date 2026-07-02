@@ -1,6 +1,6 @@
 # Plan: Browser UI Dev & Testing MCP
 
-> Trạng thái: **DRAFT — đang thảo luận**. Chưa code. Dùng để chốt hướng trước khi triển khai.
+> Trạng thái: **Hướng đã chốt** (xem "Quyết định đã chốt"). Chưa code — sẵn sàng triển khai Phase 1.
 
 Mục tiêu: MCP server hỗ trợ **phát triển và test UI + function workflow trên browser thật**
 (Chrome/Firefox) — click, nhập liệu, kiểm tra kết quả, screenshot, và tự đánh giá.
@@ -75,24 +75,28 @@ Giống art-direction loop của Unity:
 - Verify cả **functional** (logic) lẫn **visual** (screenshot).
 - Screenshot cái gì và khi nào.
 
+## Quyết định đã chốt
+
+1. **Driver**: dùng **official Playwright MCP** cho điều khiển browser + tự viết
+   **ui-workflow** (Python, mỏng) cho test management. Không viết lại driver.
+2. **Trọng tâm**: **cả hai ngang nhau** — vừa phát triển UI (screenshot-driven) vừa
+   E2E test automation. Bộ tool phục vụ cả hai luồng.
+3. **Browser**: **Firefox trước**. Playwright hỗ trợ Firefox native — chạy Playwright MCP
+   với flag `--browser firefox` (cần `playwright install firefox` một lần). Chromium/WebKit
+   bổ sung sau.
+
 ## Ràng buộc & lưu ý môi trường
 
 - **Headless mặc định** trên container remote. Muốn xem UI chạy live → chạy local.
   Chế độ thực tế cho remote: headless + screenshot (model "nhìn" qua ảnh).
-- **Chromium** chạy ngay (pre-installed). **Firefox** cần `playwright install firefox`
-  hoặc trỏ `executablePath` — bổ sung sau khi Chromium ổn.
-- Port: ui-workflow sẽ chạy cổng riêng (vd 8991) — không đụng sync-bridge (8989)/unity-dev (8990).
+- **Firefox** (browser chính): `playwright install firefox` một lần, rồi chạy Playwright MCP
+  với `--browser firefox`. Chromium đã pre-installed nếu cần đối chiếu cross-browser sau.
+- Port: ui-workflow chạy cổng riêng (vd 8991) — không đụng sync-bridge (8989)/unity-dev (8990).
 
-## Các quyết định cần chốt (xem câu hỏi kèm theo)
+## Lộ trình triển khai
 
-1. **Cách tiếp cận driver**: dùng official Playwright MCP + ui-workflow mỏng [khuyến nghị],
-   hay tự viết full Playwright-Python MCP?
-2. **Trọng tâm use case**: thiên về *phát triển UI* (screenshot-driven), *E2E test automation*
-   (test case + run), hay cả hai ngang nhau?
-3. **Browser**: bắt đầu Chromium-only rồi mở rộng Firefox, hay cross-browser ngay?
-
-## Lộ trình triển khai (sau khi chốt)
-
-- **Phase 1** — Setup playwright-mcp + doc + skill `ui-testing`. Verify loop LOOK→ACT→VERIFY.
-- **Phase 2** — `ui-workflow` MCP: test cases, workflows, run history (SQLite, giống unity-dev).
-- **Phase 3** — Nâng cao: visual regression + responsive + network mocking.
+- **Phase 1** — Setup Playwright MCP (`--browser firefox`) + `docs/browser-ui.md` +
+  skill `ui-testing`. Verify loop LOOK→ACT→VERIFY trên một trang thật.
+- **Phase 2** — `ui-workflow` MCP (Python, giống unity-dev): test cases, workflows,
+  run history, export suite (SQLite).
+- **Phase 3** — Nâng cao: visual regression + responsive presets + network mocking + a11y audit.
