@@ -101,10 +101,13 @@ runs
 
 ## Lộ trình triển khai
 
-- **Phase A — Orchestrator core (no UI)**
-  - SQLite schema; session registry (spawn headless → lưu session_id).
-  - Signal store + poller; per-session lock; executor `claude -p --resume` với allowlist.
-  - Verify: phát 1 signal → inject → session chạy → log kết quả. Audit log baseline.
+- **Phase A ✅ — Orchestrator core (no UI)** — `session_orchestrator.py`
+  - SQLite schema (sessions/signals/runs); session registry.
+  - Signal store + poller; per-session lock + max-concurrent; executor `claude -p --resume`
+    với allowlist; `requires_approval` chặn auto-run; audit log.
+  - Verified (dry-run): auto signal chạy, signal nhạy cảm chờ approve, ghost session → failed,
+    same-session serialize, audit đầy đủ.
+  - Test thật (trên máy có claude CLI): bỏ `ORCH_DRY_RUN`, session_id thật.
 - **Phase B — Control API**
   - REST: list sessions, session detail + transcript, list signals, pause/resume/stop,
     approve/deny, stop-all. SSE/WebSocket cho transcript live.
