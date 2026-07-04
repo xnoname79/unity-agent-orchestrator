@@ -398,7 +398,8 @@ def build_app():
     from starlette.applications import Starlette
     from starlette.requests import Request
     from starlette.responses import JSONResponse, StreamingResponse
-    from starlette.routing import Route
+    from starlette.routing import Mount, Route
+    from starlette.staticfiles import StaticFiles
 
     async def health(request: Request):
         return JSONResponse({"status": "ok", "server": "Session-Orchestrator",
@@ -540,6 +541,12 @@ def build_app():
         Route("/api/resume-all", api_resume_all, methods=["POST"]),
         Route("/api/events", api_events),
     ]
+
+    # Dashboard (Phase C): serve static UI at "/" (must be last — catches the rest).
+    static_dir = Path(__file__).parent / "static" / "orchestrator"
+    if static_dir.exists():
+        routes.append(Mount("/", app=StaticFiles(directory=str(static_dir), html=True)))
+
     return Starlette(routes=routes, lifespan=lifespan)
 
 

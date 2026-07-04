@@ -115,9 +115,11 @@ runs
   - **SSE** `/api/events` — live stream (signal/run/session/kill_switch) cho UI.
   - Background poll loop chạy trong lifespan. Verified: REST CRUD, approve flow, pause/resume
     giữ signal chờ, kill switch chặn xử lý, SSE nhận event real-time.
-- **Phase C — Monitoring UI**
-  - Bảng sessions + status; hàng đợi signal; session detail + transcript live;
-    nút pause/kill/approve/deny + kill switch; trang audit log.
+- **Phase C ✅ — Monitoring UI** — `static/orchestrator/` (index.html + app.js), serve tại `/`
+  - Bảng sessions (status badge, tools, Pause/Resume/Stop); signal queue (Approve/Deny cho
+    signal cần duyệt); audit log (runs); nút kill switch toàn cục (STOP/RESUME ALL).
+  - Live update qua SSE `/api/events` (debounced refetch). HTML+JS thuần, không build step.
+  - Verified: dashboard serve tại `/`, app.js load, browser kết nối SSE (log `GET /api/events 200`).
 - **Phase D — Safety hardening**
   - Human-in-the-loop mode; budget/rate/concurrent caps; dry-run; retry/error handling; health.
 - **Phase E — MCP signal integration**

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session Orchestrator</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #1a1d24; --panel2: #21252e; --border: #2b303b;
+    --text: #e6e8eb; --muted: #8b93a1; --accent: #4c8dff;
+    --gray: #6b7280; --blue: #4c8dff; --amber: #f0a020; --red: #e5484d; --green: #30a46c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 20px;
+    background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .spacer { flex: 1; }
+  .pill { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .pill.live { color: var(--green); border-color: var(--green); }
+  .pill.dead { color: var(--red); border-color: var(--red); }
+  .pill.dry { color: var(--amber); border-color: var(--amber); }
+  button { font: inherit; cursor: pointer; border: 1px solid var(--border); background: var(--panel2);
+    color: var(--text); padding: 4px 10px; border-radius: 6px; }
+  button:hover { border-color: var(--accent); }
+  button.danger { border-color: var(--red); color: var(--red); }
+  button.kill { background: var(--red); color: #fff; border-color: var(--red); font-weight: 600; }
+  button.kill.on { background: var(--green); border-color: var(--green); }
+  main { padding: 20px; display: grid; gap: 20px; max-width: 1200px; margin: 0 auto; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .panel > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+    margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 9px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 500; }
+  tr:last-child td { border-bottom: none; }
+  td.msg { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  .empty { padding: 16px; color: var(--muted); font-style: italic; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+    text-transform: uppercase; letter-spacing: .03em; }
+  .b-gray { background: rgba(107,114,128,.18); color: #b3bac5; }
+  .b-blue { background: rgba(76,141,255,.18); color: #7fb0ff; }
+  .b-amber { background: rgba(240,160,32,.18); color: #f0b860; }
+  .b-red { background: rgba(229,72,77,.18); color: #f0787c; }
+  .b-green { background: rgba(48,163,108,.18); color: #4cc088; }
+  .actions { display: flex; gap: 6px; }
+  .actions button { padding: 3px 9px; font-size: 12px; }
+  .tools { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚙️ Session Orchestrator</h1>
+  <span id="dry" class="pill dry" hidden>DRY-RUN</span>
+  <div class="spacer"></div>
+  <span id="conn" class="pill dead">offline</span>
+  <button id="killBtn" class="kill">STOP ALL</button>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Sessions</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Session ID</th><th>Status</th><th>Allowed tools</th><th>Actions</th></tr></thead>
+      <tbody id="sessions"></tbody>
+    </table>
+    <div id="sessions-empty" class="empty" hidden>Chưa có session nào.</div>
+  </section>
+
+  <section class="panel">
+    <h2>Signal queue</h2>
+    <table>
+      <thead><tr><th>#</th><th>From → To</th><th>Message</th><th>Approval</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody id="signals"></tbody>
+    </table>
+    <div id="signals-empty" class="empty" hidden>Chưa có signal nào.</div>
+  </section>
+
+  <section class="panel">
+    <h2>Audit log (runs)</h2>
+    <table>
+      <thead><tr><th>#</th><th>Session</th><th>Signal</th><th>Status</th><th>Tokens</th><th>Time</th></tr></thead>
+      <tbody id="runs"></tbody>
+    </table>
+    <div id="runs-empty" class="empty" hidden>Chưa có run nào.</div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
