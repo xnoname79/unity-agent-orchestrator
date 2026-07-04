@@ -108,9 +108,13 @@ runs
   - Verified (dry-run): auto signal chạy, signal nhạy cảm chờ approve, ghost session → failed,
     same-session serialize, audit đầy đủ.
   - Test thật (trên máy có claude CLI): bỏ `ORCH_DRY_RUN`, session_id thật.
-- **Phase B — Control API**
-  - REST: list sessions, session detail + transcript, list signals, pause/resume/stop,
-    approve/deny, stop-all. SSE/WebSocket cho transcript live.
+- **Phase B ✅ — Control API** — `session_orchestrator.py serve` (Starlette, port 8992)
+  - REST: `/health`, `/api/sessions` (GET/POST register), `/api/sessions/{id}` (+`/runs`,
+    `/pause`, `/resume`, `/stop`), `/api/signals` (GET/POST), `/api/signals/{id}/approve|deny`,
+    `/api/runs`, `/api/stop-all`, `/api/resume-all`.
+  - **SSE** `/api/events` — live stream (signal/run/session/kill_switch) cho UI.
+  - Background poll loop chạy trong lifespan. Verified: REST CRUD, approve flow, pause/resume
+    giữ signal chờ, kill switch chặn xử lý, SSE nhận event real-time.
 - **Phase C — Monitoring UI**
   - Bảng sessions + status; hàng đợi signal; session detail + transcript live;
     nút pause/kill/approve/deny + kill switch; trang audit log.
