@@ -117,10 +117,20 @@ runs
   - `send_signal` MCP tool (hoặc tái dùng sync-bridge) để agent phát signal tự nhiên;
     map role → session_id.
 
-## Quyết định cần chốt
+## Quyết định đã chốt
 
-1. **Approval mode mặc định**: mọi signal cần human-approve trên UI [an toàn nhất], hay
-   auto-run với allowlist + chỉ approve khi flagged nhạy cảm?
-2. **UI**: dashboard nhẹ HTML+JS+SSE do Starlette phục vụ [khuyến nghị], hay SPA (React)?
-3. **Signal bus**: tái dùng **sync-bridge** đã có, hay tạo bảng `signals` riêng trong orchestrator?
-4. **Session driver**: headless CLI `claude -p --resume` trước [khuyến nghị], hay Agent SDK ngay?
+1. **Approval mode**: **auto-run + allowlist** — signal tự chạy nếu tool nằm trong allowlist;
+   `requires_approval` chỉ bật cho thao tác nhạy cảm (human approve trên UI).
+2. **UI**: **dashboard nhẹ HTML + JS thuần + SSE** do Starlette phục vụ. Không build step.
+3. **Signal bus**: **bảng `signals` riêng** trong orchestrator (SQLite). Độc lập với sync-bridge.
+4. **Session driver**: **headless CLI `claude -p --resume`** (`--output-format stream-json`).
+   Agent SDK cân nhắc sau nếu cần.
+
+## Cấu trúc file dự kiến
+
+```
+session_orchestrator.py      -- daemon: poller + lock/queue + executor + Control API (Starlette)
+  ~/.session_orch_db/<name>.db   -- SQLite: sessions / signals / runs
+static/orchestrator/          -- dashboard (index.html + app.js, SSE client)
+docs/session-orchestrator.md  -- setup & usage (viết ở Phase C)
+```
