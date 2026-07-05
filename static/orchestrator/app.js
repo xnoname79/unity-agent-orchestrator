@@ -5,7 +5,7 @@ const $ = (id) => document.getElementById(id);
 
 const SESSION_BADGE = { idle: "b-gray", running: "b-blue", paused: "b-amber", stopped: "b-red" };
 const SIGNAL_BADGE = { pending: "b-gray", approved: "b-blue", processing: "b-blue",
-                       done: "b-green", failed: "b-red", denied: "b-red" };
+                       done: "b-green", failed: "b-red", denied: "b-red", blocked: "b-amber" };
 const RUN_BADGE = { ok: "b-green", error: "b-red" };
 
 let killOn = false;

@@ -120,11 +120,15 @@ runs
     signal cần duyệt); audit log (runs); nút kill switch toàn cục (STOP/RESUME ALL).
   - Live update qua SSE `/api/events` (debounced refetch). HTML+JS thuần, không build step.
   - Verified: dashboard serve tại `/`, app.js load, browser kết nối SSE (log `GET /api/events 200`).
-- **Phase D — Safety hardening**
-  - Human-in-the-loop mode; budget/rate/concurrent caps; dry-run; retry/error handling; health.
-- **Phase E — MCP signal integration**
-  - `send_signal` MCP tool (hoặc tái dùng sync-bridge) để agent phát signal tự nhiên;
-    map role → session_id.
+- **Phase E ✅ — MCP signal integration** — `signal_mcp.py` (port 8993)
+  - Tool `send_signal(to_role, message, from_role, requires_approval)` + `list_agents()`.
+  - POST tới orchestrator `/api/signals`; orchestrator resolve **role → session_id**
+    (`to_role` hoặc `to_session`). Verified: agent gọi send_signal → inject đúng target.
+- **Phase D ✅ — Safety hardening**
+  - Circuit breaker chống lặp vô tận: `ORCH_MAX_RUNS_PER_SESSION`, `ORCH_SESSION_TOKEN_BUDGET`
+    → signal vượt cap = `blocked`. Retry `ORCH_MAX_RETRIES` + backoff. Dry-run per-signal
+    (`dry_run:1`). `/api/stats` + limits trong `/health`. Verified: cap chặn đúng, stats,
+    dry-run stub, retry.
 
 ## Quyết định đã chốt
 

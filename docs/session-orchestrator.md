@@ -42,7 +42,27 @@ ORCH_DRY_RUN=1 python3 session_orchestrator.py serve
 | `ORCH_DRY_RUN` | `0` | `1` = không gọi claude thật (test) |
 | `ORCH_POLL_INTERVAL` | `5` | Giây giữa các lần poll |
 | `ORCH_MAX_CONCURRENT` | `3` | Số session chạy song song tối đa |
+| `ORCH_MAX_RUNS_PER_SESSION` | `0` | Trần số run/session (0=tắt) — **chống lặp vô tận** |
+| `ORCH_SESSION_TOKEN_BUDGET` | `0` | Trần token/session (0=tắt) |
+| `ORCH_MAX_RETRIES` | `0` | Số lần retry khi executor lỗi |
 | `CLAUDE_BIN` | `claude` | Đường dẫn claude CLI |
+
+## Agent-to-agent (signal_mcp)
+
+Để agent tự phát signal cho nhau (vd Artist Director → Developer), chạy thêm
+**signal_mcp** và cho mỗi agent đăng ký nó:
+
+```bash
+python3 signal_mcp.py          # port 8993, POST tới orchestrator ORCH_URL (default :8992)
+claude mcp add --transport http signal http://localhost:8993/mcp
+```
+
+Agent gọi tool `send_signal(to_role="developer", message="...")` → orchestrator resolve
+role → inject vào session đó. `list_agents()` để xem role hợp lệ. Con người trigger 1 lần
+(qua dashboard hoặc chính tool này), phần còn lại agent tự chuyền tay nhau.
+
+> **Quan trọng**: session của con người (panel VSCode) chỉ nên **phát** signal, KHÔNG bao
+> giờ là `to_role`/target → orchestrator không inject vào panel → không interleaving.
 
 ## Quy trình dùng
 

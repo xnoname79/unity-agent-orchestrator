@@ -48,6 +48,11 @@ MAX_CONCURRENT = int(os.environ.get("ORCH_MAX_CONCURRENT", "3"))
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 ORCH_HOST = os.environ.get("ORCH_HOST", "0.0.0.0")
 ORCH_PORT = int(os.environ.get("ORCH_PORT", "8992"))
+# Phase D — safety caps (0 = tắt/không giới hạn)
+MAX_RUNS_PER_SESSION = int(os.environ.get("ORCH_MAX_RUNS_PER_SESSION", "0"))
+SESSION_TOKEN_BUDGET = int(os.environ.get("ORCH_SESSION_TOKEN_BUDGET", "0"))
+MAX_RETRIES = int(os.environ.get("ORCH_MAX_RETRIES", "0"))
+RETRY_BACKOFF = float(os.environ.get("ORCH_RETRY_BACKOFF", "2"))
 
 
 # ─── Store (SQLite) ───────────────────────────────────────────────────────────
@@ -86,7 +91,8 @@ def init_db():
             to_session TEXT NOT NULL,          -- target session_id
             message TEXT NOT NULL,
             requires_approval INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'pending',  -- pending|approved|processing|done|failed|denied
+            dry_run INTEGER NOT NULL DEFAULT 0,      -- 1 = preview, không gọi claude thật
+            status TEXT NOT NULL DEFAULT 'pending',  -- pending|approved|processing|done|failed|denied|blocked
             created_at TEXT NOT NULL,
             delivered_at TEXT NOT NULL DEFAULT ''
         );
@@ -102,6 +108,10 @@ def init_db():
             ended_at TEXT NOT NULL DEFAULT ''
         );
     """)
+    # migrate: thêm cột dry_run cho signals nếu DB cũ chưa có
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(signals)").fetchall()]
+    if "dry_run" not in cols:
+        conn.execute("ALTER TABLE signals ADD COLUMN dry_run INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -155,15 +165,33 @@ def set_session_status(session_id, status):
     conn.close()
 
 
+def get_session_by_name(name):
+    _ensure_db()
+    conn = _conn()
+    row = conn.execute("SELECT * FROM sessions WHERE name = ? ORDER BY last_active DESC LIMIT 1", (name,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def resolve_session_id(ref):
+    """ref = session_id (exact match) HOẶC role/name → trả session_id, None nếu không thấy."""
+    if not ref:
+        return None
+    if get_session(ref):
+        return ref
+    s = get_session_by_name(ref)
+    return s["id"] if s else None
+
+
 # signals
 
-def enqueue_signal(to_session, message, from_session="", requires_approval=0):
+def enqueue_signal(to_session, message, from_session="", requires_approval=0, dry_run=0):
     _ensure_db()
     conn = _conn()
     cur = conn.execute(
-        "INSERT INTO signals (from_session, to_session, message, requires_approval, status, created_at) "
-        "VALUES (?, ?, ?, ?, 'pending', ?)",
-        (from_session, to_session, message, int(requires_approval), _now()),
+        "INSERT INTO signals (from_session, to_session, message, requires_approval, dry_run, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+        (from_session, to_session, message, int(requires_approval), int(dry_run), _now()),
     )
     conn.commit()
     sid = cur.lastrowid
@@ -222,16 +250,37 @@ def list_runs(limit=50):
     return [dict(r) for r in rows]
 
 
+def session_stats(session_id):
+    """Số run + tổng token đã dùng của 1 session (để check cap/budget)."""
+    _ensure_db()
+    conn = _conn()
+    row = conn.execute(
+        "SELECT COUNT(*) c, COALESCE(SUM(tokens),0) t FROM runs WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    conn.close()
+    return {"runs": row["c"], "tokens": row["t"]}
+
+
+def cap_exceeded(session_id):
+    """Trả (True, reason) nếu session vượt cap run hoặc budget token."""
+    st = session_stats(session_id)
+    if MAX_RUNS_PER_SESSION and st["runs"] >= MAX_RUNS_PER_SESSION:
+        return True, f"đạt trần {MAX_RUNS_PER_SESSION} runs"
+    if SESSION_TOKEN_BUDGET and st["tokens"] >= SESSION_TOKEN_BUDGET:
+        return True, f"đạt budget {SESSION_TOKEN_BUDGET} tokens"
+    return False, ""
+
+
 # ─── Executor ─────────────────────────────────────────────────────────────────
 
 
-async def _run_claude(session, prompt):
+async def _run_claude(session, prompt, dry_run=False):
     """Chạy `claude -p --resume <id>` với allowlist. Trả dict kết quả.
 
-    Dry-run (ORCH_DRY_RUN=1): trả stub, không gọi claude — để test pipeline.
+    Dry-run (ORCH_DRY_RUN=1 hoặc dry_run per-signal): trả stub, không gọi claude.
     """
     session_id = session["id"]
-    if DRY_RUN:
+    if DRY_RUN or dry_run:
         return {
             "ok": True,
             "result": f"[dry-run] would inject to {session['name']}: {prompt}",
@@ -343,14 +392,30 @@ async def process_signal(signal):
             if target["status"] in ("paused", "stopped"):
                 return {"signal": signal["id"], "status": "skipped", "reason": f"session {target['status']}"}
 
+            # Circuit breaker: chặn lặp vô tận / vượt budget.
+            exceeded, reason = cap_exceeded(target["id"])
+            if exceeded:
+                set_signal_status(signal["id"], "blocked")
+                set_session_status(target["id"], "idle")
+                publish({"type": "signal", "id": signal["id"], "status": "blocked",
+                         "session": target["id"], "reason": reason})
+                return {"signal": signal["id"], "status": "blocked", "reason": reason}
+
             set_signal_status(signal["id"], "processing")
             set_session_status(target["id"], "running")
             publish({"type": "signal", "id": signal["id"], "status": "processing", "session": target["id"]})
             started = _now()
-            try:
-                res = await _run_claude(target, signal["message"])
-            except Exception as e:  # noqa: BLE001
-                res = {"ok": False, "result": f"exception: {e}", "session_id": target["id"], "tokens": 0, "raw": {}}
+            dry = bool(signal.get("dry_run"))
+            attempts = 0
+            while True:
+                try:
+                    res = await _run_claude(target, signal["message"], dry_run=dry)
+                except Exception as e:  # noqa: BLE001
+                    res = {"ok": False, "result": f"exception: {e}", "session_id": target["id"], "tokens": 0, "raw": {}}
+                if res.get("ok") or attempts >= MAX_RETRIES:
+                    break
+                attempts += 1
+                await asyncio.sleep(RETRY_BACKOFF * attempts)
             ended = _now()
 
             status = "ok" if res.get("ok") else "error"
@@ -403,7 +468,24 @@ def build_app():
 
     async def health(request: Request):
         return JSONResponse({"status": "ok", "server": "Session-Orchestrator",
-                             "dry_run": DRY_RUN, "kill_switch": _kill_switch})
+                             "dry_run": DRY_RUN, "kill_switch": _kill_switch,
+                             "limits": {"max_runs_per_session": MAX_RUNS_PER_SESSION,
+                                        "session_token_budget": SESSION_TOKEN_BUDGET,
+                                        "max_retries": MAX_RETRIES}})
+
+    async def api_stats(request: Request):
+        per = []
+        for s in list_sessions():
+            st = session_stats(s["id"])
+            exceeded, reason = cap_exceeded(s["id"])
+            per.append({"id": s["id"], "name": s["name"], **st, "blocked": exceeded, "reason": reason})
+        return JSONResponse({
+            "total_runs": sum(p["runs"] for p in per),
+            "total_tokens": sum(p["tokens"] for p in per),
+            "limits": {"max_runs_per_session": MAX_RUNS_PER_SESSION,
+                       "session_token_budget": SESSION_TOKEN_BUDGET, "max_retries": MAX_RETRIES},
+            "sessions": per,
+        })
 
     # Sessions
     async def api_sessions(request: Request):
@@ -455,12 +537,17 @@ def build_app():
 
     async def api_enqueue(request: Request):
         body = await request.json()
-        if not body.get("to_session") or not body.get("message"):
-            return JSONResponse({"error": "to_session và message bắt buộc"}, status_code=400)
-        sid = enqueue_signal(body["to_session"], body["message"], body.get("from_session", ""),
-                             int(body.get("requires_approval", 0)))
-        publish({"type": "signal", "id": sid, "status": "pending"})
-        return JSONResponse({"id": sid, "status": "pending"})
+        ref = body.get("to_session") or body.get("to_role")
+        if not ref or not body.get("message"):
+            return JSONResponse({"error": "to_session/to_role và message bắt buộc"}, status_code=400)
+        target = resolve_session_id(ref)
+        if not target:
+            return JSONResponse({"error": f"không tìm thấy session cho '{ref}'"}, status_code=404)
+        sid = enqueue_signal(target, body["message"],
+                             body.get("from_session", "") or body.get("from_role", ""),
+                             int(body.get("requires_approval", 0)), int(body.get("dry_run", 0)))
+        publish({"type": "signal", "id": sid, "status": "pending", "to_session": target})
+        return JSONResponse({"id": sid, "status": "pending", "to_session": target})
 
     async def _resolve_signal(request: Request, status: str):
         sig_id = int(request.path_params["sig_id"])
@@ -537,6 +624,7 @@ def build_app():
         Route("/api/signals/{sig_id}/approve", api_approve, methods=["POST"]),
         Route("/api/signals/{sig_id}/deny", api_deny, methods=["POST"]),
         Route("/api/runs", api_runs),
+        Route("/api/stats", api_stats),
         Route("/api/stop-all", api_stop_all, methods=["POST"]),
         Route("/api/resume-all", api_resume_all, methods=["POST"]),
         Route("/api/events", api_events),

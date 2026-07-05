@@ -261,6 +261,17 @@ python3 session_orchestrator.py serve        # dashboard + API on port 8992
 ORCH_DRY_RUN=1 python3 session_orchestrator.py serve
 ```
 
+For **agent-to-agent** signaling (agents trigger each other), also run `signal_mcp.py`:
+
+```bash
+python3 signal_mcp.py          # port 8993 → forwards to orchestrator
+claude mcp add --transport http signal http://localhost:8993/mcp
+```
+
+Agents call `send_signal(to_role="developer", message="...")`; orchestrator resolves the
+role and injects. Safety: run caps / token budget (`ORCH_MAX_RUNS_PER_SESSION`,
+`ORCH_SESSION_TOKEN_BUDGET`) act as a loop circuit-breaker.
+
 See **[docs/session-orchestrator.md](docs/session-orchestrator.md)** for setup/usage
 and **[docs/session-orchestrator-plan.md](docs/session-orchestrator-plan.md)** for design.
 
