@@ -122,6 +122,13 @@
         <div class="hint">Orchestrator chạy <code>claude -p</code> tạo session mới.</div>
         <label>Role / name</label><input id="sp-name" placeholder="artist-director">
         <label>Working dir (cwd)</label><input id="sp-cwd" placeholder="/path/to/project">
+        <label>Model</label>
+        <select id="sp-model">
+          <option value="">auto (claude tự chọn)</option>
+          <option value="opus">opus</option>
+          <option value="sonnet">sonnet</option>
+          <option value="haiku">haiku</option>
+        </select>
         <label>Allowed tools</label>
         <button type="button" class="secondary" onclick="loadTools('sp')">🔧 Load tools từ cwd</button>
         <div id="sp-tools" class="toolpicker"></div>
@@ -136,6 +143,13 @@
         <label>Session ID</label><input id="rg-id" placeholder="abc123-...">
         <label>Role / name</label><input id="rg-name" placeholder="developer">
         <label>Working dir (cwd)</label><input id="rg-cwd" placeholder="/path/to/project">
+        <label>Model</label>
+        <select id="rg-model">
+          <option value="">auto (claude tự chọn)</option>
+          <option value="opus">opus</option>
+          <option value="sonnet">sonnet</option>
+          <option value="haiku">haiku</option>
+        </select>
         <label>Allowed tools</label>
         <button type="button" class="secondary" onclick="loadTools('rg')">🔧 Load tools từ cwd</button>
         <div id="rg-tools" class="toolpicker"></div>
@@ -161,7 +175,7 @@
   <section class="panel">
     <h2>Sessions</h2>
     <table>
-      <thead><tr><th>Name</th><th>Session ID</th><th>Status</th><th>Allowed tools</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Name</th><th>Session ID</th><th>Status</th><th>Model</th><th>Allowed tools</th><th>Actions</th></tr></thead>
       <tbody id="sessions"></tbody>
     </table>
     <div id="sessions-empty" class="empty" hidden>Chưa có session nào.</div>

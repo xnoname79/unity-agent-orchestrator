@@ -76,7 +76,10 @@ Dùng sau khi xong một subtask lớn để giữ transcript gọn.
 Mở `http://localhost:8992/` — panel **Manage agents** làm được mọi thứ:
 
 - **🚀 Spawn agent** — orchestrator chạy `claude -p` tạo session mới (nhập role, cwd,
-  chọn allowed tools, init prompt). Session_id tự sinh & register.
+  **chọn model**, chọn allowed tools, init prompt). Session_id tự sinh & register.
+- **Model** — dropdown chọn model thực thi cho session: `auto` (để claude tự chọn) hoặc
+  alias `opus` / `sonnet` / `haiku` (CLI tự map sang bản mới nhất). Áp dụng cho mọi lượt
+  của session đó, kể cả `/compact`. Có thể nhập model id cụ thể qua API nếu cần.
 - **🔧 Load tools từ cwd** — bấm để lấy **checklist** tools khả dụng (built-in + tools của
   các MCP server đã đăng ký cho project đó) → tick chọn, không cần gõ. Mỗi MCP server có
   thêm wildcard `mcp__<server>__*` (allow toàn bộ tool của server).
@@ -132,12 +135,12 @@ Bản thân lần nén là một lượt gọi model (tốn ít token, tính và
 
 1. **Spawn hoặc register session target**:
    ```bash
-   # orchestrator tự spawn
+   # orchestrator tự spawn (model tùy chọn: "" = auto, hoặc opus/sonnet/haiku)
    curl -X POST http://localhost:8992/api/sessions/spawn -H 'Content-Type: application/json' \
-     -d '{"name":"be-worker","cwd":"/path/repo","allowed_tools":["Read","Grep"]}'
+     -d '{"name":"be-worker","cwd":"/path/repo","model":"sonnet","allowed_tools":["Read","Grep"]}'
    # hoặc register session_id có sẵn
    curl -X POST http://localhost:8992/api/sessions -H 'Content-Type: application/json' \
-     -d '{"id":"<session_id>","name":"be-worker","cwd":"/path/repo","allowed_tools":["Read","Grep"]}'
+     -d '{"id":"<session_id>","name":"be-worker","cwd":"/path/repo","model":"opus","allowed_tools":["Read","Grep"]}'
    ```
 2. **Phát signal** (agent hoặc tay), resolve theo `to_role` hoặc `to_session`:
    ```bash

@@ -68,10 +68,12 @@ function renderSessions(list) {
       : `<button class="danger" onclick="act('/api/sessions/${id}/stop')">Stop</button>`;
     const compact = `<button onclick="compactSession('${id}','${esc(s.name)}')">🗜 Compact</button>`;
     const unreg = `<button class="danger" onclick="if(confirm('Gỡ session ${esc(s.name)}?'))act('/api/sessions/${id}/unregister')">Unregister</button>`;
+    const model = s.model ? `<code>${esc(s.model)}</code>` : `<span class="tools">auto</span>`;
     return `<tr>
       <td>${esc(s.name)}</td>
       <td><code>${esc(s.id)}</code></td>
       <td>${badge(s.status, SESSION_BADGE[s.status])}</td>
+      <td>${model}</td>
       <td class="tools">${esc(tools)}</td>
       <td><div class="actions">${ctrl}${compact}${stop}${unreg}</div></td>
     </tr>`;
@@ -132,6 +134,7 @@ async function spawnAgent() {
   try {
     const r = await api("/api/sessions/spawn", "POST", {
       name, cwd: $("sp-cwd").value.trim(),
+      model: $("sp-model").value,
       allowed_tools: collectTools("sp"),
       init_prompt: $("sp-init").value.trim(),
     });
@@ -148,6 +151,7 @@ async function registerAgent() {
   try {
     await api("/api/sessions", "POST", {
       id, name, cwd: $("rg-cwd").value.trim(),
+      model: $("rg-model").value,
       allowed_tools: collectTools("rg"),
     });
     showMsg("rg-msg", `Đã register '${name}'`, true);

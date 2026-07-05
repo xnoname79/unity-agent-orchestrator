@@ -91,6 +91,7 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'idle',   -- idle | running | paused | stopped
             allowed_tools TEXT NOT NULL DEFAULT '[]',
             permission_mode TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL DEFAULT '',         -- '' = auto (claude tự chọn); vd 'opus'/'sonnet'/'haiku'
             created_at TEXT NOT NULL,
             last_active TEXT NOT NULL DEFAULT ''
         );
@@ -134,6 +135,10 @@ def init_db():
     cols = [r[1] for r in conn.execute("PRAGMA table_info(signals)").fetchall()]
     if "dry_run" not in cols:
         conn.execute("ALTER TABLE signals ADD COLUMN dry_run INTEGER NOT NULL DEFAULT 0")
+    # migrate: thêm cột model cho sessions nếu DB cũ chưa có
+    scols = [r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+    if "model" not in scols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -149,15 +154,15 @@ def _now():
 
 # sessions
 
-def register_session(session_id, name, project="", cwd="", allowed_tools=None, permission_mode=""):
+def register_session(session_id, name, project="", cwd="", allowed_tools=None, permission_mode="", model=""):
     _ensure_db()
     conn = _conn()
     conn.execute(
-        "INSERT INTO sessions (id, name, project, cwd, status, allowed_tools, permission_mode, created_at, last_active) "
-        "VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, ?) "
+        "INSERT INTO sessions (id, name, project, cwd, status, allowed_tools, permission_mode, model, created_at, last_active) "
+        "VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?) "
         "ON CONFLICT(id) DO UPDATE SET name=excluded.name, project=excluded.project, cwd=excluded.cwd, "
-        "allowed_tools=excluded.allowed_tools, permission_mode=excluded.permission_mode",
-        (session_id, name, project, cwd, json.dumps(allowed_tools or []), permission_mode, _now(), _now()),
+        "allowed_tools=excluded.allowed_tools, permission_mode=excluded.permission_mode, model=excluded.model",
+        (session_id, name, project, cwd, json.dumps(allowed_tools or []), permission_mode, model, _now(), _now()),
     )
     conn.commit()
     conn.close()
@@ -461,6 +466,8 @@ async def _run_claude(session, prompt, on_event=None, dry_run=False):
         cmd += ["--allowedTools", " ".join(allowed)]
     if session.get("permission_mode"):
         cmd += ["--permission-mode", session["permission_mode"]]
+    if session.get("model"):
+        cmd += ["--model", session["model"]]
 
     cwd = session.get("cwd") or None
     proc = await asyncio.create_subprocess_exec(
@@ -548,9 +555,10 @@ def _parse_final(returncode, stdout, stderr, session_id):
     }
 
 
-async def spawn_session(name, project="", cwd="", allowed_tools=None, permission_mode="", init_prompt=""):
+async def spawn_session(name, project="", cwd="", allowed_tools=None, permission_mode="", init_prompt="", model=""):
     """Tạo một headless session mới bằng `claude -p`, lấy session_id, rồi register.
 
+    model: '' = auto (claude tự chọn); hoặc alias 'opus'/'sonnet'/'haiku' / model id cụ thể.
     Dry-run: tạo session_id giả để test UI mà không gọi claude.
     """
     init_prompt = init_prompt or (
@@ -562,6 +570,8 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
     else:
         # init_prompt qua STDIN (tránh lỗi khi prompt bắt đầu bằng '-', vd '---' frontmatter).
         cmd = [CLAUDE_BIN, "-p", "--output-format", "json"]
+        if model:
+            cmd += ["--model", model]
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, cwd=cwd or None, stdin=asyncio.subprocess.PIPE,
@@ -579,7 +589,7 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
         sid = data.get("session_id")
         if not sid:
             return {"error": "claude không trả session_id"}
-    register_session(sid, name, project, cwd, allowed_tools or [], permission_mode)
+    register_session(sid, name, project, cwd, allowed_tools or [], permission_mode, model)
     return get_session(sid)
 
 
@@ -871,7 +881,8 @@ def build_app():
         if not body.get("id") or not body.get("name"):
             return JSONResponse({"error": "id và name bắt buộc"}, status_code=400)
         register_session(body["id"], body["name"], body.get("project", ""), body.get("cwd", ""),
-                         body.get("allowed_tools", []), body.get("permission_mode", ""))
+                         body.get("allowed_tools", []), body.get("permission_mode", ""),
+                         body.get("model", ""))
         publish({"type": "session", "id": body["id"], "status": "idle"})
         return JSONResponse(get_session(body["id"]))
 
@@ -881,7 +892,7 @@ def build_app():
             return JSONResponse({"error": "name bắt buộc"}, status_code=400)
         res = await spawn_session(body["name"], body.get("project", ""), body.get("cwd", ""),
                                   body.get("allowed_tools", []), body.get("permission_mode", ""),
-                                  body.get("init_prompt", ""))
+                                  body.get("init_prompt", ""), body.get("model", ""))
         if res and res.get("error"):
             return JSONResponse(res, status_code=500)
         publish({"type": "session", "id": res["id"], "status": "idle"})
