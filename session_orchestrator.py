@@ -23,6 +23,7 @@ Env:
   ORCH_STREAM          "1" = stream transcript (thinking/tool_use/text) real-time (default 1)
   ORCH_STREAM_PARTIAL  "1" = thêm --include-partial-messages, text chảy từng token (default 0)
   ORCH_EVENT_TRUNC     số ký tự tối đa mỗi payload event (default 2000)
+  ORCH_DEFAULT_EFFORT  reasoning effort mặc định mọi session (default "xhigh"; low|medium|high|xhigh|max)
   CLAUDE_BIN           đường dẫn claude CLI (default "claude")
 
 Usage:
@@ -62,6 +63,9 @@ RETRY_BACKOFF = float(os.environ.get("ORCH_RETRY_BACKOFF", "2"))
 STREAM = os.environ.get("ORCH_STREAM", "1") == "1"          # 1 = dùng --output-format stream-json
 STREAM_PARTIAL = os.environ.get("ORCH_STREAM_PARTIAL", "0") == "1"  # 1 = thêm --include-partial-messages (token-level)
 EVENT_TRUNC = int(os.environ.get("ORCH_EVENT_TRUNC", "2000"))  # cắt payload event để tránh phình DB/lộ dữ liệu
+# Reasoning effort mặc định cho mọi session (session có thể override). "" = không truyền (claude dùng 'high').
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_EFFORT = os.environ.get("ORCH_DEFAULT_EFFORT", "xhigh")  # extra-high mặc định
 
 
 # ─── Store (SQLite) ───────────────────────────────────────────────────────────
@@ -92,6 +96,7 @@ def init_db():
             allowed_tools TEXT NOT NULL DEFAULT '[]',
             permission_mode TEXT NOT NULL DEFAULT '',
             model TEXT NOT NULL DEFAULT '',         -- '' = auto (claude tự chọn); vd 'opus'/'sonnet'/'haiku'
+            effort TEXT NOT NULL DEFAULT '',         -- '' = dùng ORCH_DEFAULT_EFFORT; low|medium|high|xhigh|max
             created_at TEXT NOT NULL,
             last_active TEXT NOT NULL DEFAULT ''
         );
@@ -139,6 +144,8 @@ def init_db():
     scols = [r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
     if "model" not in scols:
         conn.execute("ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''")
+    if "effort" not in scols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN effort TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -154,15 +161,16 @@ def _now():
 
 # sessions
 
-def register_session(session_id, name, project="", cwd="", allowed_tools=None, permission_mode="", model=""):
+def register_session(session_id, name, project="", cwd="", allowed_tools=None, permission_mode="", model="", effort=""):
     _ensure_db()
     conn = _conn()
     conn.execute(
-        "INSERT INTO sessions (id, name, project, cwd, status, allowed_tools, permission_mode, model, created_at, last_active) "
-        "VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?) "
+        "INSERT INTO sessions (id, name, project, cwd, status, allowed_tools, permission_mode, model, effort, created_at, last_active) "
+        "VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(id) DO UPDATE SET name=excluded.name, project=excluded.project, cwd=excluded.cwd, "
-        "allowed_tools=excluded.allowed_tools, permission_mode=excluded.permission_mode, model=excluded.model",
-        (session_id, name, project, cwd, json.dumps(allowed_tools or []), permission_mode, model, _now(), _now()),
+        "allowed_tools=excluded.allowed_tools, permission_mode=excluded.permission_mode, model=excluded.model, "
+        "effort=excluded.effort",
+        (session_id, name, project, cwd, json.dumps(allowed_tools or []), permission_mode, model, effort, _now(), _now()),
     )
     conn.commit()
     conn.close()
@@ -195,6 +203,13 @@ def set_session_status(session_id, status):
 def set_session_model(session_id, model):
     conn = _conn()
     conn.execute("UPDATE sessions SET model = ?, last_active = ? WHERE id = ?", (model, _now(), session_id))
+    conn.commit()
+    conn.close()
+
+
+def set_session_effort(session_id, effort):
+    conn = _conn()
+    conn.execute("UPDATE sessions SET effort = ?, last_active = ? WHERE id = ?", (effort, _now(), session_id))
     conn.commit()
     conn.close()
 
@@ -475,6 +490,9 @@ async def _run_claude(session, prompt, on_event=None, dry_run=False):
         cmd += ["--permission-mode", session["permission_mode"]]
     if session.get("model"):
         cmd += ["--model", session["model"]]
+    effort = session.get("effort") or DEFAULT_EFFORT
+    if effort:
+        cmd += ["--effort", effort]
 
     cwd = session.get("cwd") or None
     proc = await asyncio.create_subprocess_exec(
@@ -562,10 +580,11 @@ def _parse_final(returncode, stdout, stderr, session_id):
     }
 
 
-async def spawn_session(name, project="", cwd="", allowed_tools=None, permission_mode="", init_prompt="", model=""):
+async def spawn_session(name, project="", cwd="", allowed_tools=None, permission_mode="", init_prompt="", model="", effort=""):
     """Tạo một headless session mới bằng `claude -p`, lấy session_id, rồi register.
 
     model: '' = auto (claude tự chọn); hoặc alias 'opus'/'sonnet'/'haiku' / model id cụ thể.
+    effort: '' = dùng ORCH_DEFAULT_EFFORT (xhigh); hoặc low|medium|high|xhigh|max.
     Dry-run: tạo session_id giả để test UI mà không gọi claude.
     """
     init_prompt = init_prompt or (
@@ -579,6 +598,9 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
         cmd = [CLAUDE_BIN, "-p", "--output-format", "json"]
         if model:
             cmd += ["--model", model]
+        eff = effort or DEFAULT_EFFORT
+        if eff:
+            cmd += ["--effort", eff]
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, cwd=cwd or None, stdin=asyncio.subprocess.PIPE,
@@ -596,7 +618,7 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
         sid = data.get("session_id")
         if not sid:
             return {"error": "claude không trả session_id"}
-    register_session(sid, name, project, cwd, allowed_tools or [], permission_mode, model)
+    register_session(sid, name, project, cwd, allowed_tools or [], permission_mode, model, effort)
     return get_session(sid)
 
 
@@ -830,6 +852,7 @@ def build_app():
     async def health(request: Request):
         return JSONResponse({"status": "ok", "server": "Session-Orchestrator",
                              "dry_run": DRY_RUN, "kill_switch": _kill_switch,
+                             "default_effort": DEFAULT_EFFORT,
                              "limits": {"max_runs_per_session": MAX_RUNS_PER_SESSION,
                                         "session_token_budget": SESSION_TOKEN_BUDGET,
                                         "max_retries": MAX_RETRIES}})
@@ -889,7 +912,7 @@ def build_app():
             return JSONResponse({"error": "id và name bắt buộc"}, status_code=400)
         register_session(body["id"], body["name"], body.get("project", ""), body.get("cwd", ""),
                          body.get("allowed_tools", []), body.get("permission_mode", ""),
-                         body.get("model", ""))
+                         body.get("model", ""), body.get("effort", ""))
         publish({"type": "session", "id": body["id"], "status": "idle"})
         return JSONResponse(get_session(body["id"]))
 
@@ -899,7 +922,7 @@ def build_app():
             return JSONResponse({"error": "name bắt buộc"}, status_code=400)
         res = await spawn_session(body["name"], body.get("project", ""), body.get("cwd", ""),
                                   body.get("allowed_tools", []), body.get("permission_mode", ""),
-                                  body.get("init_prompt", ""), body.get("model", ""))
+                                  body.get("init_prompt", ""), body.get("model", ""), body.get("effort", ""))
         if res and res.get("error"):
             return JSONResponse(res, status_code=500)
         publish({"type": "session", "id": res["id"], "status": "idle"})
@@ -927,6 +950,23 @@ def build_app():
         except Exception:  # noqa: BLE001
             body = {}
         set_session_model(sid, (body.get("model") or "").strip())
+        s = get_session(sid)
+        publish({"type": "session", "id": sid, "status": s["status"]})
+        return JSONResponse(s)
+
+    async def api_set_effort(request: Request):
+        """Đổi reasoning effort của 1 session ngay trên bảng Sessions."""
+        sid = request.path_params["sid"]
+        if not get_session(sid):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        eff = (body.get("effort") or "").strip()
+        if eff and eff not in EFFORT_LEVELS:
+            return JSONResponse({"error": f"effort không hợp lệ; dùng: {', '.join(EFFORT_LEVELS)}"}, status_code=400)
+        set_session_effort(sid, eff)
         s = get_session(sid)
         publish({"type": "session", "id": sid, "status": s["status"]})
         return JSONResponse(s)
@@ -1044,6 +1084,7 @@ def build_app():
         Route("/api/sessions/{sid}/stop", api_stop, methods=["POST"]),
         Route("/api/sessions/{sid}/compact", api_compact, methods=["POST"]),
         Route("/api/sessions/{sid}/model", api_set_model, methods=["POST"]),
+        Route("/api/sessions/{sid}/effort", api_set_effort, methods=["POST"]),
         Route("/api/signals", api_signals),
         Route("/api/signals", api_enqueue, methods=["POST"]),
         Route("/api/signals/{sig_id}/approve", api_approve, methods=["POST"]),

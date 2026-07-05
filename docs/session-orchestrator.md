@@ -48,6 +48,7 @@ ORCH_DRY_RUN=1 python3 session_orchestrator.py serve
 | `ORCH_STREAM` | `1` | `1` = stream transcript (thinking/tool_use/text) real-time |
 | `ORCH_STREAM_PARTIAL` | `0` | `1` = thêm `--include-partial-messages` (text chảy từng token) |
 | `ORCH_EVENT_TRUNC` | `2000` | Số ký tự tối đa mỗi payload event (chống phình DB / lộ dữ liệu) |
+| `ORCH_DEFAULT_EFFORT` | `xhigh` | Reasoning effort mặc định mọi session (`low`/`medium`/`high`/`xhigh`/`max`) |
 | `CLAUDE_BIN` | `claude` | Đường dẫn claude CLI |
 
 ## Agent-to-agent (signal_mcp)
@@ -80,6 +81,11 @@ Mở `http://localhost:8992/` — panel **Manage agents** làm được mọi th
 - **Model** — dropdown chọn model thực thi cho session: `auto` (để claude tự chọn) hoặc
   alias `opus` / `sonnet` / `haiku` (CLI tự map sang bản mới nhất). Áp dụng cho mọi lượt
   của session đó, kể cả `/compact`. Có thể nhập model id cụ thể qua API nếu cần.
+- **Effort** — dropdown reasoning effort (`--effort`): `default` (dùng `ORCH_DEFAULT_EFFORT`,
+  mặc định **xhigh**) hoặc `low`/`medium`/`high`/`xhigh`/`max`. `xhigh`/`max` cho tác vụ
+  agentic dài; effort thấp tiết kiệm token cho việc đơn giản.
+- **Đổi model / effort ngay trên bảng Sessions**: mỗi dòng có dropdown Model và Effort —
+  đổi trực tiếp (áp dụng cho các lượt sau), không cần re-register.
 - **🔧 Load tools từ cwd** — bấm để lấy **checklist** tools khả dụng (built-in + tools của
   các MCP server đã đăng ký cho project đó) → tick chọn, không cần gõ. Mỗi MCP server có
   thêm wildcard `mcp__<server>__*` (allow toàn bộ tool của server).
@@ -159,6 +165,8 @@ Bản thân lần nén là một lượt gọi model (tốn ít token, tính và
 | POST | `/api/sessions/spawn` | orchestrator spawn session mới (`claude -p`) |
 | GET | `/api/sessions/{id}` · `/runs` | chi tiết · lịch sử run |
 | POST | `/api/sessions/{id}/pause` `resume` `stop` `unregister` | điều khiển / gỡ session |
+| POST | `/api/sessions/{id}/model` | đổi model session (body `{model}`) |
+| POST | `/api/sessions/{id}/effort` | đổi reasoning effort (body `{effort}`; low..max) |
 | POST | `/api/sessions/{id}/compact` | nén context session (body `{focus?}`) — enqueue `/compact` |
 | GET/POST | `/api/signals` | list / enqueue signal |
 | POST | `/api/signals/{id}/approve` `deny` | duyệt signal nhạy cảm |

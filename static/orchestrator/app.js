@@ -12,6 +12,7 @@ const EV_ICON = { system: "⚙️", thinking: "🧠", text: "💬", tool_use: "�
                   tool_result: "📄", result: "✅", error: "⚠️" };
 
 const MODEL_OPTS = ["", "opus", "sonnet", "haiku"];  // "" = auto
+const EFFORT_OPTS = ["", "low", "medium", "high", "xhigh", "max"];  // "" = default (xhigh)
 
 let killOn = false;
 let openRunId = null;   // run đang mở trong drawer (null = đóng)
@@ -62,6 +63,13 @@ async function setModel(id, model) {
 }
 window.setModel = setModel;
 
+// Đổi reasoning effort 1 session ngay trên bảng (áp dụng cho các lượt sau).
+async function setEffort(id, effort) {
+  try { await api(`/api/sessions/${id}/effort`, "POST", { effort }); await refreshAll(); }
+  catch (e) { console.error(e); alert("Lỗi đổi effort: " + e); }
+}
+window.setEffort = setEffort;
+
 // ── Renderers ──────────────────────────────────────────────────────────────
 
 function renderSessions(list) {
@@ -81,11 +89,16 @@ function renderSessions(list) {
     const modelSel = `<select class="mini" onchange="setModel('${id}', this.value)">` +
       MODEL_OPTS.map((m) => `<option value="${m}"${m === cur ? " selected" : ""}>${m || "auto"}</option>`).join("") +
       `</select>`;
+    const curEff = s.effort || "";
+    const effortSel = `<select class="mini" onchange="setEffort('${id}', this.value)">` +
+      EFFORT_OPTS.map((e) => `<option value="${e}"${e === curEff ? " selected" : ""}>${e || "default"}</option>`).join("") +
+      `</select>`;
     return `<tr>
       <td>${esc(s.name)}</td>
       <td><code>${esc(s.id)}</code></td>
       <td>${badge(s.status, SESSION_BADGE[s.status])}</td>
       <td>${modelSel}</td>
+      <td>${effortSel}</td>
       <td class="tools">${esc(tools)}</td>
       <td><div class="actions">${ctrl}${compact}${stop}${unreg}</div></td>
     </tr>`;
@@ -147,6 +160,7 @@ async function spawnAgent() {
     const r = await api("/api/sessions/spawn", "POST", {
       name, cwd: $("sp-cwd").value.trim(),
       model: $("sp-model").value,
+      effort: $("sp-effort").value,
       allowed_tools: collectTools("sp"),
       init_prompt: $("sp-init").value.trim(),
     });
@@ -164,6 +178,7 @@ async function registerAgent() {
     await api("/api/sessions", "POST", {
       id, name, cwd: $("rg-cwd").value.trim(),
       model: $("rg-model").value,
+      effort: $("rg-effort").value,
       allowed_tools: collectTools("rg"),
     });
     showMsg("rg-msg", `Đã register '${name}'`, true);

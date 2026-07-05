@@ -132,6 +132,15 @@
           <option value="sonnet">sonnet</option>
           <option value="haiku">haiku</option>
         </select>
+        <label>Effort (reasoning)</label>
+        <select id="sp-effort">
+          <option value="">default (xhigh)</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+          <option value="max">max</option>
+        </select>
         <label>Allowed tools</label>
         <button type="button" class="secondary" onclick="loadTools('sp')">🔧 Load tools từ cwd</button>
         <div id="sp-tools" class="toolpicker"></div>
@@ -152,6 +161,15 @@
           <option value="opus">opus</option>
           <option value="sonnet">sonnet</option>
           <option value="haiku">haiku</option>
+        </select>
+        <label>Effort (reasoning)</label>
+        <select id="rg-effort">
+          <option value="">default (xhigh)</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+          <option value="max">max</option>
         </select>
         <label>Allowed tools</label>
         <button type="button" class="secondary" onclick="loadTools('rg')">🔧 Load tools từ cwd</button>
@@ -178,7 +196,7 @@
   <section class="panel">
     <h2>Sessions</h2>
     <table>
-      <thead><tr><th>Name</th><th>Session ID</th><th>Status</th><th>Model</th><th>Allowed tools</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Name</th><th>Session ID</th><th>Status</th><th>Model</th><th>Effort</th><th>Allowed tools</th><th>Actions</th></tr></thead>
       <tbody id="sessions"></tbody>
     </table>
     <div id="sessions-empty" class="empty" hidden>Chưa có session nào.</div>
