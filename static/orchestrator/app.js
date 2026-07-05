@@ -41,6 +41,18 @@ async function act(path, method = "POST") {
 }
 window.act = act;
 
+// Nén context 1 session: hỏi focus (tùy chọn), enqueue /compact qua endpoint.
+async function compactSession(id, name) {
+  const focus = prompt(`Compact context cho '${name}'.\nFocus cần giữ lại (bỏ trống nếu không):`, "");
+  if (focus === null) return;  // huỷ
+  try {
+    const r = await api(`/api/sessions/${id}/compact`, "POST", { focus: focus.trim() });
+    console.log("compact enqueued", r);
+    await refreshAll();
+  } catch (e) { console.error(e); alert("Lỗi compact: " + e); }
+}
+window.compactSession = compactSession;
+
 // ── Renderers ──────────────────────────────────────────────────────────────
 
 function renderSessions(list) {
@@ -54,13 +66,14 @@ function renderSessions(list) {
       : `<button onclick="act('/api/sessions/${id}/pause')">Pause</button>`;
     const stop = s.status === "stopped" ? ""
       : `<button class="danger" onclick="act('/api/sessions/${id}/stop')">Stop</button>`;
+    const compact = `<button onclick="compactSession('${id}','${esc(s.name)}')">🗜 Compact</button>`;
     const unreg = `<button class="danger" onclick="if(confirm('Gỡ session ${esc(s.name)}?'))act('/api/sessions/${id}/unregister')">Unregister</button>`;
     return `<tr>
       <td>${esc(s.name)}</td>
       <td><code>${esc(s.id)}</code></td>
       <td>${badge(s.status, SESSION_BADGE[s.status])}</td>
       <td class="tools">${esc(tools)}</td>
-      <td><div class="actions">${ctrl}${stop}${unreg}</div></td>
+      <td><div class="actions">${ctrl}${compact}${stop}${unreg}</div></td>
     </tr>`;
   }).join("");
   // populate the "to role" dropdown, preserve selection

@@ -69,6 +69,35 @@ async def send_signal(to_role: str, message: str, from_role: str = "", requires_
 
 
 @mcp.tool()
+async def compact_context(role: str = "", focus: str = "", from_role: str = ""):
+    """Nén (compact) context của một agent để tránh phình transcript khi làm việc dài.
+
+    Gửi lệnh /compact tới session đích qua orchestrator. Vì đi qua per-session lock,
+    nếu agent tự nén chính mình thì việc nén sẽ chạy NGAY SAU khi lượt hiện tại kết thúc
+    (an toàn, không cắt ngang). Dùng sau khi hoàn tất một subtask lớn hoặc khi thấy nặng.
+
+    Args:
+        role: Role/tên agent cần nén. Bỏ trống = nén chính agent đang gọi (dùng from_role).
+        focus: (tùy chọn) nội dung cần giữ lại khi nén, vd "giữ API contract, bỏ log debug".
+        from_role: Role của agent gọi (để audit; cũng là đích nếu role trống).
+    """
+    target = role or from_role
+    if not target:
+        return "Cần 'role' (hoặc 'from_role') của agent cần nén."
+    message = "/compact" + (f" {focus}" if focus.strip() else "")
+    payload = {"to_role": target, "message": message, "from_role": from_role}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(f"{ORCH_URL}/api/signals", json=payload)
+    except Exception as e:  # noqa: BLE001
+        return f"Lỗi kết nối orchestrator tại {ORCH_URL}: {e}"
+    if r.status_code >= 400:
+        return f"Lỗi gửi lệnh compact ({r.status_code}): {r.text}"
+    data = r.json()
+    return f"Đã lên lịch compact cho '{target}' (signal #{data.get('id')})."
+
+
+@mcp.tool()
 async def list_agents():
     """Liệt kê các agent (session) đang được orchestrator quản lý + trạng thái.
 

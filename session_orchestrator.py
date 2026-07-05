@@ -871,6 +871,22 @@ def build_app():
         cwd = request.query_params.get("cwd", "")
         return JSONResponse(await discover_tools(cwd))
 
+    async def api_compact(request: Request):
+        """Nén context của 1 session: enqueue signal '/compact' (đi qua per-session lock,
+        không nén khi đang có prompt in-flight). Focus tùy chọn để giữ lại nội dung trọng tâm."""
+        sid = request.path_params["sid"]
+        if not get_session(sid):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        focus = (body.get("focus") or "").strip()
+        msg = "/compact" + (f" {focus}" if focus else "")
+        sig = enqueue_signal(sid, msg, "human", 0, 0)
+        publish({"type": "signal", "id": sig, "status": "pending", "to_session": sid})
+        return JSONResponse({"id": sig, "compact": True, "to_session": sid})
+
     # Signals
     async def api_signals(request: Request):
         return JSONResponse(list_signals())
@@ -966,6 +982,7 @@ def build_app():
         Route("/api/sessions/{sid}/pause", api_pause, methods=["POST"]),
         Route("/api/sessions/{sid}/resume", api_resume, methods=["POST"]),
         Route("/api/sessions/{sid}/stop", api_stop, methods=["POST"]),
+        Route("/api/sessions/{sid}/compact", api_compact, methods=["POST"]),
         Route("/api/signals", api_signals),
         Route("/api/signals", api_enqueue, methods=["POST"]),
         Route("/api/signals/{sig_id}/approve", api_approve, methods=["POST"]),
