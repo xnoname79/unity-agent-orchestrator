@@ -362,21 +362,44 @@ def _stringify_tool_result(content):
     return json.dumps(content, ensure_ascii=False) if content is not None else ""
 
 
+def _content_blocks(ev):
+    """Lấy list content block (dict) từ 1 event, chịu lỗi mọi biến thể:
+    message có thể thiếu / là str; content có thể là str (→ 1 block text) / list lẫn non-dict."""
+    msg = ev.get("message")
+    if isinstance(msg, str):
+        return [{"type": "text", "text": msg}]
+    if not isinstance(msg, dict):
+        return []
+    content = msg.get("content")
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    if isinstance(content, list):
+        return [b for b in content if isinstance(b, dict)]
+    return []
+
+
 def _iter_display_events(ev):
     """Chuyển 1 event NDJSON của claude thành list (kind, summary, payload) để hiển thị.
 
     1 message assistant có thể có nhiều content block → tách thành nhiều event con
-    (thinking / text / tool_use) cho timeline mượt.
+    (thinking / text / tool_use) cho timeline mượt. Chịu lỗi mọi biến thể payload.
     """
+    if not isinstance(ev, dict):
+        return [("text", _trunc(str(ev), 500), {"raw": _trunc(str(ev))})]
     t = ev.get("type")
     out = []
     if t == "system":
-        model = ev.get("model") or "?"
+        sub = ev.get("subtype") or "system"
         tools = ev.get("tools") or []
-        out.append(("system", f"session bắt đầu · model={model} · {len(tools)} tools",
-                    {"subtype": ev.get("subtype"), "tools": tools[:60]}))
+        if sub == "init":
+            model = ev.get("model") or "?"
+            out.append(("system", f"session bắt đầu · model={model} · {len(tools)} tools",
+                        {"subtype": sub, "tools": tools[:60]}))
+        else:
+            # subtype khác init (vd compact_boundary) — hiển thị nhãn riêng, không giả vờ "bắt đầu"
+            out.append(("system", f"system · {sub}", {"subtype": sub, "raw": _trunc(json.dumps(ev, ensure_ascii=False))}))
     elif t == "assistant":
-        for b in (ev.get("message") or {}).get("content", []):
+        for b in _content_blocks(ev):
             bt = b.get("type")
             if bt == "text":
                 tx = (b.get("text") or "").strip()
@@ -391,7 +414,7 @@ def _iter_display_events(ev):
                 out.append(("tool_use", f"{b.get('name', '?')}({inp})",
                             {"name": b.get("name"), "input": b.get("input")}))
     elif t == "user":
-        for b in (ev.get("message") or {}).get("content", []):
+        for b in _content_blocks(ev):
             if b.get("type") == "tool_result":
                 txt = _stringify_tool_result(b.get("content"))
                 is_err = bool(b.get("is_error"))
@@ -471,9 +494,14 @@ async def _run_claude(session, prompt, on_event=None, dry_run=False):
                 ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if ev.get("type") == "result":
+            if isinstance(ev, dict) and ev.get("type") == "result":
                 final = ev
-            for kind, summary, payload in _iter_display_events(ev):
+            # Một event lỗi (parse/hiển thị) KHÔNG được giết cả run — nuốt lỗi, đi tiếp.
+            try:
+                display = _iter_display_events(ev)
+            except Exception as e:  # noqa: BLE001
+                display = [("error", f"parse event lỗi: {e}", {"line": _trunc(line, 500)})]
+            for kind, summary, payload in display:
                 try:
                     await on_event(kind, summary, payload)
                 except Exception:  # noqa: BLE001 — không để lỗi UI làm hỏng run
