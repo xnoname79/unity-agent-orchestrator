@@ -45,6 +45,9 @@ ORCH_DRY_RUN=1 python3 session_orchestrator.py serve
 | `ORCH_MAX_RUNS_PER_SESSION` | `0` | Trần số run/session (0=tắt) — **chống lặp vô tận** |
 | `ORCH_SESSION_TOKEN_BUDGET` | `0` | Trần token/session (0=tắt) |
 | `ORCH_MAX_RETRIES` | `0` | Số lần retry khi executor lỗi |
+| `ORCH_STREAM` | `1` | `1` = stream transcript (thinking/tool_use/text) real-time |
+| `ORCH_STREAM_PARTIAL` | `0` | `1` = thêm `--include-partial-messages` (text chảy từng token) |
+| `ORCH_EVENT_TRUNC` | `2000` | Số ký tự tối đa mỗi payload event (chống phình DB / lộ dữ liệu) |
 | `CLAUDE_BIN` | `claude` | Đường dẫn claude CLI |
 
 ## Agent-to-agent (signal_mcp)
@@ -79,8 +82,27 @@ Mở `http://localhost:8992/` — panel **Manage agents** làm được mọi th
 - Bảng **Sessions**: Pause / Resume / Stop / **Unregister** từng session.
 - **Signal queue**: Approve / Deny signal cần duyệt.
 - **Kill switch** (STOP ALL) ở header.
+- Bảng **Audit log**: bấm vào một run → mở **drawer transcript** hiển thị từng bước
+  (🧠 thinking · 🔧 tool_use · 📄 tool_result · 💬 text · ✅ result) **theo thời gian thực**.
 
 Tất cả cũng có API tương ứng nếu muốn tự động hóa (xem bảng dưới).
+
+## Transcript real-time (streaming)
+
+Mặc định orchestrator chạy `claude -p` với `--output-format stream-json`, đọc **NDJSON**
+từng dòng ngay khi agent phát ra, thay vì chờ kết quả cuối. Mỗi bước được:
+
+1. Ghi vào bảng `run_events` (`run_id`, `seq`, `kind`, `summary`, `payload`) → **replay được** sau khi F5.
+2. Đẩy qua **SSE `/api/events`** (`type: "run_event"`) → dashboard append vào drawer đang mở **live**.
+
+Loại bước (`kind`): `system` (init) · `thinking` · `text` · `tool_use` · `tool_result` · `result` · `error`.
+
+- Payload mỗi bước bị **cắt** theo `ORCH_EVENT_TRUNC` (default 2000 ký tự) để tránh phình DB / lộ dữ liệu.
+- Muốn text chảy **từng token** (hiệu ứng gõ chữ): đặt `ORCH_STREAM_PARTIAL=1`.
+- Tắt hẳn streaming (về chế độ 1-cục-JSON cũ): `ORCH_STREAM=0`.
+
+> Lưu ý bảo mật: transcript có thể chứa nội dung file/lệnh agent đọc. Cắt bớt đã bật sẵn,
+> nhưng cân nhắc không cho tool nhạy cảm vào allowlist nếu dashboard được chia sẻ.
 
 ## Quy trình dùng (bằng API/curl — tương đương dashboard)
 
@@ -113,6 +135,7 @@ Tất cả cũng có API tương ứng nếu muốn tự động hóa (xem bản
 | GET/POST | `/api/signals` | list / enqueue signal |
 | POST | `/api/signals/{id}/approve` `deny` | duyệt signal nhạy cảm |
 | GET | `/api/runs` | audit log |
+| GET | `/api/runs/{id}/events` | transcript của 1 run (replay từng bước) |
 | POST | `/api/stop-all` `resume-all` | kill switch toàn cục |
 | GET | `/api/events` | SSE live stream |
 

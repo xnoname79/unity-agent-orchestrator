@@ -20,6 +20,9 @@ Env:
   ORCH_DRY_RUN         "1" = không gọi claude thật, trả stub (default "0")
   ORCH_POLL_INTERVAL   giây giữa các lần poll (default 5)
   ORCH_MAX_CONCURRENT  số session chạy song song tối đa (default 3)
+  ORCH_STREAM          "1" = stream transcript (thinking/tool_use/text) real-time (default 1)
+  ORCH_STREAM_PARTIAL  "1" = thêm --include-partial-messages, text chảy từng token (default 0)
+  ORCH_EVENT_TRUNC     số ký tự tối đa mỗi payload event (default 2000)
   CLAUDE_BIN           đường dẫn claude CLI (default "claude")
 
 Usage:
@@ -55,6 +58,10 @@ MAX_RUNS_PER_SESSION = int(os.environ.get("ORCH_MAX_RUNS_PER_SESSION", "0"))
 SESSION_TOKEN_BUDGET = int(os.environ.get("ORCH_SESSION_TOKEN_BUDGET", "0"))
 MAX_RETRIES = int(os.environ.get("ORCH_MAX_RETRIES", "0"))
 RETRY_BACKOFF = float(os.environ.get("ORCH_RETRY_BACKOFF", "2"))
+# Streaming — hiển thị chi tiết (thinking/tool_use/text) của headless agent theo thời gian thực.
+STREAM = os.environ.get("ORCH_STREAM", "1") == "1"          # 1 = dùng --output-format stream-json
+STREAM_PARTIAL = os.environ.get("ORCH_STREAM_PARTIAL", "0") == "1"  # 1 = thêm --include-partial-messages (token-level)
+EVENT_TRUNC = int(os.environ.get("ORCH_EVENT_TRUNC", "2000"))  # cắt payload event để tránh phình DB/lộ dữ liệu
 
 
 # ─── Store (SQLite) ───────────────────────────────────────────────────────────
@@ -104,11 +111,24 @@ def init_db():
             signal_id INTEGER,
             prompt TEXT NOT NULL,
             result_json TEXT NOT NULL DEFAULT '{}',
-            status TEXT NOT NULL,              -- ok | error
+            status TEXT NOT NULL,              -- running | ok | error
             tokens INTEGER NOT NULL DEFAULT 0,
             started_at TEXT NOT NULL,
             ended_at TEXT NOT NULL DEFAULT ''
         );
+        -- Streaming transcript: mỗi bước (thinking/text/tool_use/tool_result) của 1 run là 1 dòng.
+        CREATE TABLE IF NOT EXISTS run_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            session_id TEXT NOT NULL,
+            signal_id INTEGER,
+            seq INTEGER NOT NULL,              -- thứ tự trong run
+            kind TEXT NOT NULL,                -- system|thinking|text|tool_use|tool_result|result|error
+            summary TEXT NOT NULL DEFAULT '',  -- dòng ngắn để hiển thị
+            payload TEXT NOT NULL DEFAULT '{}',-- chi tiết (đã cắt bớt)
+            ts TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
     """)
     # migrate: thêm cột dry_run cho signals nếu DB cũ chưa có
     cols = [r[1] for r in conn.execute("PRAGMA table_info(signals)").fetchall()]
@@ -244,6 +264,51 @@ def record_run(session_id, signal_id, prompt, result_json, status, tokens, start
     return rid
 
 
+def start_run(session_id, signal_id, prompt, started_at):
+    """Mở 1 run ở trạng thái 'running' TRƯỚC khi chạy — để stream event vào ngay lúc chạy."""
+    conn = _conn()
+    cur = conn.execute(
+        "INSERT INTO runs (session_id, signal_id, prompt, result_json, status, tokens, started_at) "
+        "VALUES (?, ?, ?, '{}', 'running', 0, ?)",
+        (session_id, signal_id, prompt, started_at),
+    )
+    conn.commit()
+    rid = cur.lastrowid
+    conn.close()
+    return rid
+
+
+def finish_run(run_id, result_json, status, tokens, ended_at):
+    """Chốt 1 run đã mở bằng start_run."""
+    conn = _conn()
+    conn.execute(
+        "UPDATE runs SET result_json = ?, status = ?, tokens = ?, ended_at = ? WHERE id = ?",
+        (json.dumps(result_json, ensure_ascii=False), status, tokens, ended_at, run_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def record_run_event(run_id, session_id, signal_id, seq, kind, summary, payload):
+    """Ghi 1 bước transcript của run (thinking/text/tool_use/tool_result/...)."""
+    conn = _conn()
+    conn.execute(
+        "INSERT INTO run_events (run_id, session_id, signal_id, seq, kind, summary, payload, ts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, session_id, signal_id, seq, kind, summary, json.dumps(payload, ensure_ascii=False), _now()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_run_events(run_id):
+    _ensure_db()
+    conn = _conn()
+    rows = conn.execute("SELECT * FROM run_events WHERE run_id = ? ORDER BY seq", (run_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def list_runs(limit=50):
     _ensure_db()
     conn = _conn()
@@ -276,13 +341,81 @@ def cap_exceeded(session_id):
 # ─── Executor ─────────────────────────────────────────────────────────────────
 
 
-async def _run_claude(session, prompt, dry_run=False):
+def _trunc(s, n=None):
+    n = EVENT_TRUNC if n is None else n
+    s = str(s or "")
+    return s if len(s) <= n else s[:n] + f"… (+{len(s) - n} ký tự)"
+
+
+def _stringify_tool_result(content):
+    """tool_result.content có thể là str hoặc list block {type:text,text}."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if isinstance(b, dict):
+                parts.append(b.get("text") or b.get("content") or json.dumps(b, ensure_ascii=False))
+            else:
+                parts.append(str(b))
+        return "\n".join(parts)
+    return json.dumps(content, ensure_ascii=False) if content is not None else ""
+
+
+def _iter_display_events(ev):
+    """Chuyển 1 event NDJSON của claude thành list (kind, summary, payload) để hiển thị.
+
+    1 message assistant có thể có nhiều content block → tách thành nhiều event con
+    (thinking / text / tool_use) cho timeline mượt.
+    """
+    t = ev.get("type")
+    out = []
+    if t == "system":
+        model = ev.get("model") or "?"
+        tools = ev.get("tools") or []
+        out.append(("system", f"session bắt đầu · model={model} · {len(tools)} tools",
+                    {"subtype": ev.get("subtype"), "tools": tools[:60]}))
+    elif t == "assistant":
+        for b in (ev.get("message") or {}).get("content", []):
+            bt = b.get("type")
+            if bt == "text":
+                tx = (b.get("text") or "").strip()
+                if tx:
+                    out.append(("text", _trunc(tx, 500), {"text": _trunc(tx)}))
+            elif bt == "thinking":
+                th = (b.get("thinking") or "").strip()
+                if th:
+                    out.append(("thinking", _trunc(th, 500), {"thinking": _trunc(th)}))
+            elif bt == "tool_use":
+                inp = _trunc(json.dumps(b.get("input", {}), ensure_ascii=False), 300)
+                out.append(("tool_use", f"{b.get('name', '?')}({inp})",
+                            {"name": b.get("name"), "input": b.get("input")}))
+    elif t == "user":
+        for b in (ev.get("message") or {}).get("content", []):
+            if b.get("type") == "tool_result":
+                txt = _stringify_tool_result(b.get("content"))
+                is_err = bool(b.get("is_error"))
+                out.append(("tool_result", ("⚠ " if is_err else "") + _trunc(txt, 400),
+                            {"result": _trunc(txt), "is_error": is_err}))
+    elif t == "result":
+        usage = ev.get("usage") or {}
+        out.append(("result", f"xong · {ev.get('subtype', '')} · {ev.get('num_turns', '?')} turns",
+                    {"cost_usd": ev.get("total_cost_usd"), "duration_ms": ev.get("duration_ms"),
+                     "output_tokens": usage.get("output_tokens")}))
+    return out
+
+
+async def _run_claude(session, prompt, on_event=None, dry_run=False):
     """Chạy `claude -p --resume <id>` với allowlist. Trả dict kết quả.
 
+    on_event(kind, summary, payload): async callback được gọi cho mỗi bước khi STREAM=1
+    (thinking/text/tool_use/tool_result/...). Dùng để ghi run_events + đẩy SSE live.
     Dry-run (ORCH_DRY_RUN=1 hoặc dry_run per-signal): trả stub, không gọi claude.
     """
     session_id = session["id"]
     if DRY_RUN or dry_run:
+        if on_event:
+            await on_event("text", f"[dry-run] would inject: {_trunc(prompt, 300)}", {"dry_run": True})
         return {
             "ok": True,
             "result": f"[dry-run] would inject to {session['name']}: {prompt}",
@@ -291,10 +424,16 @@ async def _run_claude(session, prompt, dry_run=False):
             "raw": {"dry_run": True},
         }
 
+    allowed = json.loads(session.get("allowed_tools") or "[]")
+    stream = STREAM and on_event is not None
+    fmt = "stream-json" if stream else "json"
     # Prompt truyền qua STDIN (không phải argv) để tránh lỗi khi prompt bắt đầu bằng
     # dấu '-' (vd YAML frontmatter '---') hoặc chứa ký tự đặc biệt/multiline.
-    cmd = [CLAUDE_BIN, "-p", "--resume", session_id, "--output-format", "json"]
-    allowed = json.loads(session.get("allowed_tools") or "[]")
+    cmd = [CLAUDE_BIN, "-p", "--resume", session_id, "--output-format", fmt]
+    if stream:
+        cmd.append("--verbose")  # bắt buộc cho stream-json trong -p
+        if STREAM_PARTIAL:
+            cmd.append("--include-partial-messages")
     if allowed:
         cmd += ["--allowedTools", " ".join(allowed)]
     if session.get("permission_mode"):
@@ -305,32 +444,78 @@ async def _run_claude(session, prompt, dry_run=False):
         *cmd, cwd=cwd, stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    stdout, stderr = await proc.communicate(input=prompt.encode("utf-8"))
-    if proc.returncode != 0:
-        return {
-            "ok": False,
-            "result": (stderr or b"").decode("utf-8", "replace")[:2000],
-            "session_id": session_id,
-            "tokens": 0,
-            "raw": {"returncode": proc.returncode},
-        }
+
+    if not stream:
+        stdout, stderr = await proc.communicate(input=prompt.encode("utf-8"))
+        return _parse_final(proc.returncode, stdout, stderr, session_id)
+
+    # Streaming: gửi prompt qua stdin rồi đọc stdout theo từng dòng NDJSON.
+    proc.stdin.write(prompt.encode("utf-8"))
+    await proc.stdin.drain()
+    proc.stdin.close()
+
+    stderr_chunks: list[bytes] = []
+
+    async def _drain_stderr():
+        async for line in proc.stderr:
+            stderr_chunks.append(line)
+
+    stderr_task = asyncio.create_task(_drain_stderr())
+    final = None
+    try:
+        async for raw in proc.stdout:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("type") == "result":
+                final = ev
+            for kind, summary, payload in _iter_display_events(ev):
+                try:
+                    await on_event(kind, summary, payload)
+                except Exception:  # noqa: BLE001 — không để lỗi UI làm hỏng run
+                    pass
+    finally:
+        await proc.wait()
+        await stderr_task
+
+    stderr_txt = b"".join(stderr_chunks).decode("utf-8", "replace")
+    if proc.returncode != 0 and final is None:
+        return {"ok": False, "result": stderr_txt[:2000] or "claude exited nonzero",
+                "session_id": session_id, "tokens": 0, "raw": {"returncode": proc.returncode}}
+    if final is None:
+        return {"ok": False, "result": "không nhận được event 'result' từ claude.",
+                "session_id": session_id, "tokens": 0, "raw": {"stderr": stderr_txt[:2000]}}
+    usage = final.get("usage") or {}
+    return {
+        "ok": final.get("is_error", False) is False,
+        "result": final.get("result", ""),
+        "session_id": final.get("session_id", session_id),
+        "tokens": int(usage.get("output_tokens", 0) or 0),
+        "raw": final,
+    }
+
+
+def _parse_final(returncode, stdout, stderr, session_id):
+    """Parse kết quả cho chế độ --output-format json (không stream)."""
+    if returncode != 0:
+        return {"ok": False, "result": (stderr or b"").decode("utf-8", "replace")[:2000],
+                "session_id": session_id, "tokens": 0, "raw": {"returncode": returncode}}
     try:
         data = json.loads((stdout or b"").decode("utf-8", "replace"))
     except json.JSONDecodeError:
-        return {
-            "ok": False,
-            "result": "Không parse được JSON output từ claude.",
-            "session_id": session_id,
-            "tokens": 0,
-            "raw": {"stdout": (stdout or b"").decode("utf-8", "replace")[:2000]},
-        }
+        return {"ok": False, "result": "Không parse được JSON output từ claude.",
+                "session_id": session_id, "tokens": 0,
+                "raw": {"stdout": (stdout or b"").decode("utf-8", "replace")[:2000]}}
     usage = data.get("usage") or {}
-    tokens = int(usage.get("output_tokens", 0) or 0)
     return {
         "ok": data.get("is_error", False) is False,
         "result": data.get("result", ""),
         "session_id": data.get("session_id", session_id),
-        "tokens": tokens,
+        "tokens": int(usage.get("output_tokens", 0) or 0),
         "raw": data,
     }
 
@@ -523,21 +708,35 @@ async def process_signal(signal):
             publish({"type": "signal", "id": signal["id"], "status": "processing", "session": target["id"]})
             started = _now()
             dry = bool(signal.get("dry_run"))
+
+            # Mở run trước để có run_id, rồi stream từng bước vào run_events + SSE.
+            run_id = start_run(target["id"], signal["id"], signal["message"], started)
+            publish({"type": "run_start", "run_id": run_id, "session": target["id"],
+                     "signal": signal["id"]})
+            seq_box = [0]
+
+            async def on_event(kind, summary, payload, _rid=run_id, _sid=target["id"], _sig=signal["id"]):
+                seq_box[0] += 1
+                record_run_event(_rid, _sid, _sig, seq_box[0], kind, summary, payload)
+                publish({"type": "run_event", "run_id": _rid, "session": _sid,
+                         "seq": seq_box[0], "kind": kind, "summary": summary})
+
             attempts = 0
             while True:
                 try:
-                    res = await _run_claude(target, signal["message"], dry_run=dry)
+                    res = await _run_claude(target, signal["message"], on_event=on_event, dry_run=dry)
                 except Exception as e:  # noqa: BLE001
                     res = {"ok": False, "result": f"exception: {e}", "session_id": target["id"], "tokens": 0, "raw": {}}
+                    await on_event("error", f"exception: {e}", {"error": str(e)})
                 if res.get("ok") or attempts >= MAX_RETRIES:
                     break
                 attempts += 1
+                await on_event("error", f"retry {attempts}/{MAX_RETRIES} sau lỗi", {"attempt": attempts})
                 await asyncio.sleep(RETRY_BACKOFF * attempts)
             ended = _now()
 
             status = "ok" if res.get("ok") else "error"
-            run_id = record_run(target["id"], signal["id"], signal["message"], res.get("raw", {}),
-                                status, res.get("tokens", 0), started, ended)
+            finish_run(run_id, res.get("raw", {}), status, res.get("tokens", 0), ended)
             final = "done" if res.get("ok") else "failed"
             set_signal_status(signal["id"], final)
             set_session_status(target["id"], "idle")
@@ -711,6 +910,10 @@ def build_app():
     async def api_runs(request: Request):
         return JSONResponse(list_runs())
 
+    async def api_run_events(request: Request):
+        rid = int(request.path_params["rid"])
+        return JSONResponse(list_run_events(rid))
+
     # Kill switch
     async def api_stop_all(request: Request):
         set_kill_switch(True)
@@ -743,7 +946,7 @@ def build_app():
 
     @asynccontextmanager
     async def lifespan(app):
-        _ensure_db()
+        init_db()  # idempotent — cũng migrate bảng/cột mới cho DB cũ (vd run_events)
         task = asyncio.create_task(run_loop())
         print(f"[orchestrator] API on http://{ORCH_HOST}:{ORCH_PORT} (dry_run={DRY_RUN})")
         try:
@@ -768,6 +971,7 @@ def build_app():
         Route("/api/signals/{sig_id}/approve", api_approve, methods=["POST"]),
         Route("/api/signals/{sig_id}/deny", api_deny, methods=["POST"]),
         Route("/api/runs", api_runs),
+        Route("/api/runs/{rid}/events", api_run_events),
         Route("/api/stats", api_stats),
         Route("/api/stop-all", api_stop_all, methods=["POST"]),
         Route("/api/resume-all", api_resume_all, methods=["POST"]),

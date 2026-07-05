@@ -6,9 +6,13 @@ const $ = (id) => document.getElementById(id);
 const SESSION_BADGE = { idle: "b-gray", running: "b-blue", paused: "b-amber", stopped: "b-red" };
 const SIGNAL_BADGE = { pending: "b-gray", approved: "b-blue", processing: "b-blue",
                        done: "b-green", failed: "b-red", denied: "b-red", blocked: "b-amber" };
-const RUN_BADGE = { ok: "b-green", error: "b-red" };
+const RUN_BADGE = { ok: "b-green", error: "b-red", running: "b-blue" };
+
+const EV_ICON = { system: "⚙️", thinking: "🧠", text: "💬", tool_use: "🔧",
+                  tool_result: "📄", result: "✅", error: "⚠️" };
 
 let killOn = false;
+let openRunId = null;   // run đang mở trong drawer (null = đóng)
 
 function badge(text, cls) {
   return `<span class="badge ${cls || "b-gray"}">${text}</span>`;
@@ -179,14 +183,70 @@ function renderSignals(list) {
 function renderRuns(list) {
   const tb = $("runs");
   $("runs-empty").hidden = list.length > 0;
-  tb.innerHTML = list.map((r) => `<tr>
+  tb.innerHTML = list.map((r) => {
+    const live = r.status === "running" ? " live" : "";
+    return `<tr class="run-row${live}" onclick="openRun(${r.id})">
       <td>${r.id}</td>
       <td><code>${esc(r.session_id)}</code></td>
       <td>${r.signal_id ?? "—"}</td>
       <td>${badge(r.status, RUN_BADGE[r.status])}</td>
       <td>${r.tokens || 0}</td>
       <td><code>${shortTime(r.ended_at || r.started_at)}</code></td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
+}
+
+// ── Transcript drawer ────────────────────────────────────────────────────────
+
+function evRow(e) {
+  const kind = e.kind || "text";
+  const icon = EV_ICON[kind] || "•";
+  return `<div class="ev ${esc(kind)}">
+    <span class="t">${shortTime(e.ts)}</span>
+    <div class="k">${icon} ${esc(kind)}</div>
+    <div class="s">${esc(e.summary)}</div>
+  </div>`;
+}
+
+function scrollDrawerBottom() {
+  const b = $("dr-body");
+  b.scrollTop = b.scrollHeight;
+}
+
+async function openRun(runId) {
+  openRunId = runId;
+  $("dr-title").textContent = "Run #" + runId;
+  $("dr-badge").innerHTML = "";
+  $("dr-body").innerHTML = `<div class="empty">Đang tải transcript…</div>`;
+  $("drawer").classList.add("open");
+  $("drawer-overlay").classList.add("open");
+  try {
+    const events = await api("/api/runs/" + runId + "/events");
+    $("dr-body").innerHTML = events.length
+      ? events.map(evRow).join("")
+      : `<div class="empty">Chưa có bước nào (run có thể đang khởi động).</div>`;
+    scrollDrawerBottom();
+  } catch (e) {
+    $("dr-body").innerHTML = `<div class="empty" style="color:var(--red)">Lỗi tải: ${esc(e)}</div>`;
+  }
+}
+window.openRun = openRun;
+
+function closeDrawer() {
+  openRunId = null;
+  $("drawer").classList.remove("open");
+  $("drawer-overlay").classList.remove("open");
+}
+window.closeDrawer = closeDrawer;
+
+// Append 1 event live nếu drawer đang mở đúng run đó.
+function appendLiveEvent(ev) {
+  if (openRunId == null || ev.run_id !== openRunId) return;
+  const empty = $("dr-body").querySelector(".empty");
+  if (empty) $("dr-body").innerHTML = "";
+  $("dr-body").insertAdjacentHTML("beforeend",
+    evRow({ kind: ev.kind, summary: ev.summary, ts: ev.ts }));
+  scrollDrawerBottom();
 }
 
 // ── Data ───────────────────────────────────────────────────────────────────
@@ -225,7 +285,12 @@ function connectSSE() {
   const es = new EventSource("/api/events");
   es.addEventListener("ready", () => $("conn").className = "pill live", $("conn").textContent = "live");
   es.onopen = () => { $("conn").className = "pill live"; $("conn").textContent = "live"; };
-  es.onmessage = () => scheduleRefresh();
+  es.onmessage = (m) => {
+    let ev = null;
+    try { ev = JSON.parse(m.data); } catch { /* keepalive */ }
+    if (ev && ev.type === "run_event") appendLiveEvent(ev);  // live vào drawer, không cần refetch
+    scheduleRefresh();  // tables (debounced)
+  };
   es.onerror = () => {
     $("conn").className = "pill dead"; $("conn").textContent = "reconnecting…";
     // EventSource auto-reconnects; refresh once connection likely back
