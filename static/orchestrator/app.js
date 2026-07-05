@@ -66,11 +66,42 @@ function renderSessions(list) {
   if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
 }
 
+// ── Tool picker (checklist từ MCP servers của cwd) ───────────────────────────
+
+function toolCheck(val, cls) {
+  return `<label class="tool-item ${cls || ""}"><input type="checkbox" value="${esc(val)}"> ${esc(val)}</label>`;
+}
+
+function renderTools(data) {
+  let html = `<div class="tool-group"><b>Built-in</b>${(data.builtin || []).map((t) => toolCheck(t)).join("")}</div>`;
+  for (const [srv, info] of Object.entries(data.mcp || {})) {
+    html += `<div class="tool-group"><b>MCP: ${esc(srv)}</b>`;
+    html += toolCheck(info.wildcard, "wild");
+    html += (info.tools || []).map((t) => toolCheck(t)).join("");
+    html += `</div>`;
+  }
+  return html;
+}
+
+async function loadTools(prefix) {
+  const cwd = $(prefix + "-cwd").value.trim();
+  const box = $(prefix + "-tools");
+  box.innerHTML = `<div class="tool-group">Đang tải…</div>`;
+  try {
+    const data = await api("/api/available-tools?cwd=" + encodeURIComponent(cwd));
+    box.innerHTML = renderTools(data);
+  } catch (e) {
+    box.innerHTML = `<div class="tool-group" style="color:var(--red)">Lỗi tải tools: ${esc(e)}</div>`;
+  }
+}
+window.loadTools = loadTools;
+
+function collectTools(prefix) {
+  return [...$(prefix + "-tools").querySelectorAll("input:checked")].map((i) => i.value);
+}
+
 // ── Form handlers ────────────────────────────────────────────────────────────
 
-function parseTools(str) {
-  return (str || "").split(",").map((t) => t.trim()).filter(Boolean);
-}
 function showMsg(id, text, ok) {
   const el = $(id);
   el.textContent = text;
@@ -84,11 +115,12 @@ async function spawnAgent() {
   try {
     const r = await api("/api/sessions/spawn", "POST", {
       name, cwd: $("sp-cwd").value.trim(),
-      allowed_tools: parseTools($("sp-tools").value),
+      allowed_tools: collectTools("sp"),
       init_prompt: $("sp-init").value.trim(),
     });
     showMsg("sp-msg", `Đã spawn '${r.name}' (${r.id})`, true);
     $("sp-name").value = $("sp-init").value = "";
+    $("sp-tools").innerHTML = "";
     refreshAll();
   } catch (e) { showMsg("sp-msg", "Lỗi: " + e, false); }
 }
@@ -99,10 +131,11 @@ async function registerAgent() {
   try {
     await api("/api/sessions", "POST", {
       id, name, cwd: $("rg-cwd").value.trim(),
-      allowed_tools: parseTools($("rg-tools").value),
+      allowed_tools: collectTools("rg"),
     });
     showMsg("rg-msg", `Đã register '${name}'`, true);
     $("rg-id").value = $("rg-name").value = "";
+    $("rg-tools").innerHTML = "";
     refreshAll();
   } catch (e) { showMsg("rg-msg", "Lỗi: " + e, false); }
 }

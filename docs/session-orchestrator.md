@@ -69,7 +69,10 @@ role → inject vào session đó. `list_agents()` để xem role hợp lệ. Co
 Mở `http://localhost:8992/` — panel **Manage agents** làm được mọi thứ:
 
 - **🚀 Spawn agent** — orchestrator chạy `claude -p` tạo session mới (nhập role, cwd,
-  allowed tools, init prompt). Session_id tự sinh & register.
+  chọn allowed tools, init prompt). Session_id tự sinh & register.
+- **🔧 Load tools từ cwd** — bấm để lấy **checklist** tools khả dụng (built-in + tools của
+  các MCP server đã đăng ký cho project đó) → tick chọn, không cần gõ. Mỗi MCP server có
+  thêm wildcard `mcp__<server>__*` (allow toàn bộ tool của server).
 - **🔗 Register session có sẵn** — dán session_id (lấy từ `claude ... --output-format json`)
   + role/cwd/tools.
 - **✉️ Send signal** — chọn role đích, nhập message, tick requires-approval / dry-run.
