@@ -64,21 +64,39 @@ role → inject vào session đó. `list_agents()` để xem role hợp lệ. Co
 > **Quan trọng**: session của con người (panel VSCode) chỉ nên **phát** signal, KHÔNG bao
 > giờ là `to_role`/target → orchestrator không inject vào panel → không interleaving.
 
-## Quy trình dùng
+## Quản lý trên Dashboard (không cần curl)
 
-1. **Đăng ký session target** (session_id thật lấy từ `claude ... --output-format json`):
+Mở `http://localhost:8992/` — panel **Manage agents** làm được mọi thứ:
+
+- **🚀 Spawn agent** — orchestrator chạy `claude -p` tạo session mới (nhập role, cwd,
+  allowed tools, init prompt). Session_id tự sinh & register.
+- **🔗 Register session có sẵn** — dán session_id (lấy từ `claude ... --output-format json`)
+  + role/cwd/tools.
+- **✉️ Send signal** — chọn role đích, nhập message, tick requires-approval / dry-run.
+- Bảng **Sessions**: Pause / Resume / Stop / **Unregister** từng session.
+- **Signal queue**: Approve / Deny signal cần duyệt.
+- **Kill switch** (STOP ALL) ở header.
+
+Tất cả cũng có API tương ứng nếu muốn tự động hóa (xem bảng dưới).
+
+## Quy trình dùng (bằng API/curl — tương đương dashboard)
+
+1. **Spawn hoặc register session target**:
    ```bash
+   # orchestrator tự spawn
+   curl -X POST http://localhost:8992/api/sessions/spawn -H 'Content-Type: application/json' \
+     -d '{"name":"be-worker","cwd":"/path/repo","allowed_tools":["Read","Grep"]}'
+   # hoặc register session_id có sẵn
    curl -X POST http://localhost:8992/api/sessions -H 'Content-Type: application/json' \
      -d '{"id":"<session_id>","name":"be-worker","cwd":"/path/repo","allowed_tools":["Read","Grep"]}'
    ```
-2. **Phát signal** (agent hoặc tay):
+2. **Phát signal** (agent hoặc tay), resolve theo `to_role` hoặc `to_session`:
    ```bash
    curl -X POST http://localhost:8992/api/signals -H 'Content-Type: application/json' \
-     -d '{"to_session":"<session_id>","message":"kiểm tra API /login"}'
+     -d '{"to_role":"be-worker","message":"kiểm tra API /login"}'
    ```
    Thêm `"requires_approval":1` cho thao tác nhạy cảm → chờ Approve trên dashboard.
-3. **Theo dõi & điều khiển** trên dashboard `http://localhost:8992/`:
-   pause/resume/stop session, approve/deny signal, kill switch toàn cục, xem audit log.
+3. **Theo dõi & điều khiển** trên dashboard.
 
 ## API tóm tắt
 
@@ -86,8 +104,9 @@ role → inject vào session đó. `list_agents()` để xem role hợp lệ. Co
 |--------|------|-----------|
 | GET | `/health` | trạng thái + dry_run + kill_switch |
 | GET/POST | `/api/sessions` | list / register session |
+| POST | `/api/sessions/spawn` | orchestrator spawn session mới (`claude -p`) |
 | GET | `/api/sessions/{id}` · `/runs` | chi tiết · lịch sử run |
-| POST | `/api/sessions/{id}/pause` `resume` `stop` | điều khiển session |
+| POST | `/api/sessions/{id}/pause` `resume` `stop` `unregister` | điều khiển / gỡ session |
 | GET/POST | `/api/signals` | list / enqueue signal |
 | POST | `/api/signals/{id}/approve` `deny` | duyệt signal nhạy cảm |
 | GET | `/api/runs` | audit log |

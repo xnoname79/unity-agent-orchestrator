@@ -330,6 +330,47 @@ async def _run_claude(session, prompt, dry_run=False):
     }
 
 
+async def spawn_session(name, project="", cwd="", allowed_tools=None, permission_mode="", init_prompt=""):
+    """Tạo một headless session mới bằng `claude -p`, lấy session_id, rồi register.
+
+    Dry-run: tạo session_id giả để test UI mà không gọi claude.
+    """
+    init_prompt = init_prompt or (
+        f"Bạn là agent '{name}' trong hệ thống multi-agent được điều phối. "
+        f"Trả lời ngắn gọn 'ready'."
+    )
+    if DRY_RUN:
+        sid = f"dry-{name}-{datetime.now().strftime('%H%M%S%f')}"
+    else:
+        cmd = [CLAUDE_BIN, "-p", init_prompt, "--output-format", "json"]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, cwd=cwd or None, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"không chạy được claude: {e}"}
+        if proc.returncode != 0:
+            return {"error": (stderr or b"").decode("utf-8", "replace")[:500]}
+        try:
+            data = json.loads((stdout or b"").decode("utf-8", "replace"))
+        except json.JSONDecodeError:
+            return {"error": "không parse được output từ claude"}
+        sid = data.get("session_id")
+        if not sid:
+            return {"error": "claude không trả session_id"}
+    register_session(sid, name, project, cwd, allowed_tools or [], permission_mode)
+    return get_session(sid)
+
+
+def unregister_session(session_id):
+    """Gỡ session khỏi orchestrator (giữ lại runs cho audit)."""
+    conn = _conn()
+    conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+
 # ─── Core (poller + lock/queue) ───────────────────────────────────────────────
 
 _locks: dict[str, asyncio.Lock] = {}
@@ -531,6 +572,26 @@ def build_app():
         publish({"type": "session", "id": body["id"], "status": "idle"})
         return JSONResponse(get_session(body["id"]))
 
+    async def api_spawn(request: Request):
+        body = await request.json()
+        if not body.get("name"):
+            return JSONResponse({"error": "name bắt buộc"}, status_code=400)
+        res = await spawn_session(body["name"], body.get("project", ""), body.get("cwd", ""),
+                                  body.get("allowed_tools", []), body.get("permission_mode", ""),
+                                  body.get("init_prompt", ""))
+        if res and res.get("error"):
+            return JSONResponse(res, status_code=500)
+        publish({"type": "session", "id": res["id"], "status": "idle"})
+        return JSONResponse(res)
+
+    async def api_unregister(request: Request):
+        sid = request.path_params["sid"]
+        if not get_session(sid):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        unregister_session(sid)
+        publish({"type": "session", "id": sid, "status": "removed"})
+        return JSONResponse({"id": sid, "removed": True})
+
     # Signals
     async def api_signals(request: Request):
         return JSONResponse(list_signals())
@@ -614,7 +675,9 @@ def build_app():
         Route("/health", health),
         Route("/api/sessions", api_sessions),
         Route("/api/sessions", api_register, methods=["POST"]),
+        Route("/api/sessions/spawn", api_spawn, methods=["POST"]),
         Route("/api/sessions/{sid}", api_session_detail),
+        Route("/api/sessions/{sid}/unregister", api_unregister, methods=["POST"]),
         Route("/api/sessions/{sid}/runs", api_session_runs),
         Route("/api/sessions/{sid}/pause", api_pause, methods=["POST"]),
         Route("/api/sessions/{sid}/resume", api_resume, methods=["POST"]),

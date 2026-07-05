@@ -48,6 +48,21 @@
   .actions { display: flex; gap: 6px; }
   .actions button { padding: 3px 9px; font-size: 12px; }
   .tools { color: var(--muted); font-size: 12px; }
+  .forms { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; padding: 16px; }
+  .form-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .form-card h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+  .form-card label { display: block; font-size: 11px; color: var(--muted); margin: 8px 0 3px; }
+  .form-card input, .form-card textarea, .form-card select {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 6px 9px; font: inherit; font-size: 13px; }
+  .form-card textarea { resize: vertical; min-height: 46px; }
+  .form-card .row { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
+  .form-card .row label { margin: 0; display: flex; align-items: center; gap: 5px; }
+  .form-card .row input[type=checkbox] { width: auto; }
+  .form-card button { width: 100%; margin-top: 10px; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; padding: 7px; }
+  .form-msg { font-size: 12px; margin-top: 8px; min-height: 16px; }
+  .form-msg.ok { color: var(--green); } .form-msg.err { color: var(--red); }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -60,6 +75,46 @@
 </header>
 
 <main>
+  <section class="panel">
+    <h2>Manage agents</h2>
+    <div class="forms">
+      <div class="form-card">
+        <h3>🚀 Spawn agent</h3>
+        <div class="hint">Orchestrator chạy <code>claude -p</code> tạo session mới.</div>
+        <label>Role / name</label><input id="sp-name" placeholder="artist-director">
+        <label>Working dir (cwd)</label><input id="sp-cwd" placeholder="/path/to/project">
+        <label>Allowed tools (phẩy)</label><input id="sp-tools" placeholder="mcp__signal__send_signal, Read, Edit">
+        <label>Init prompt (tùy chọn)</label><textarea id="sp-init" placeholder="Bạn là Artist Director agent..."></textarea>
+        <button onclick="spawnAgent()">Spawn</button>
+        <div id="sp-msg" class="form-msg"></div>
+      </div>
+
+      <div class="form-card">
+        <h3>🔗 Register session có sẵn</h3>
+        <div class="hint">Dán session_id lấy từ <code>claude ... --output-format json</code>.</div>
+        <label>Session ID</label><input id="rg-id" placeholder="abc123-...">
+        <label>Role / name</label><input id="rg-name" placeholder="developer">
+        <label>Working dir (cwd)</label><input id="rg-cwd" placeholder="/path/to/project">
+        <label>Allowed tools (phẩy)</label><input id="rg-tools" placeholder="mcp__signal__send_signal, Read">
+        <button onclick="registerAgent()">Register</button>
+        <div id="rg-msg" class="form-msg"></div>
+      </div>
+
+      <div class="form-card">
+        <h3>✉️ Send signal</h3>
+        <div class="hint">Trigger tay hoặc test. Agent tự phát qua signal_mcp.</div>
+        <label>To role</label><select id="sg-role"></select>
+        <label>Message</label><textarea id="sg-msg" placeholder="Dựng scene ngọn hải đăng..."></textarea>
+        <div class="row">
+          <label><input type="checkbox" id="sg-approval"> requires approval</label>
+          <label><input type="checkbox" id="sg-dry"> dry-run</label>
+        </div>
+        <button onclick="sendSignal()">Send</button>
+        <div id="sg-result" class="form-msg"></div>
+      </div>
+    </div>
+  </section>
+
   <section class="panel">
     <h2>Sessions</h2>
     <table>

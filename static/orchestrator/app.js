@@ -43,21 +43,85 @@ function renderSessions(list) {
   const tb = $("sessions");
   $("sessions-empty").hidden = list.length > 0;
   tb.innerHTML = list.map((s) => {
+    const id = encodeURIComponent(s.id);
     const tools = (JSON.parse(s.allowed_tools || "[]") || []).join(", ") || "—";
     const ctrl = s.status === "paused"
-      ? `<button onclick="act('/api/sessions/${encodeURIComponent(s.id)}/resume')">Resume</button>`
-      : `<button onclick="act('/api/sessions/${encodeURIComponent(s.id)}/pause')">Pause</button>`;
+      ? `<button onclick="act('/api/sessions/${id}/resume')">Resume</button>`
+      : `<button onclick="act('/api/sessions/${id}/pause')">Pause</button>`;
     const stop = s.status === "stopped" ? ""
-      : `<button class="danger" onclick="act('/api/sessions/${encodeURIComponent(s.id)}/stop')">Stop</button>`;
+      : `<button class="danger" onclick="act('/api/sessions/${id}/stop')">Stop</button>`;
+    const unreg = `<button class="danger" onclick="if(confirm('Gỡ session ${esc(s.name)}?'))act('/api/sessions/${id}/unregister')">Unregister</button>`;
     return `<tr>
       <td>${esc(s.name)}</td>
       <td><code>${esc(s.id)}</code></td>
       <td>${badge(s.status, SESSION_BADGE[s.status])}</td>
       <td class="tools">${esc(tools)}</td>
-      <td><div class="actions">${ctrl}${stop}</div></td>
+      <td><div class="actions">${ctrl}${stop}${unreg}</div></td>
     </tr>`;
   }).join("");
+  // populate the "to role" dropdown, preserve selection
+  const sel = $("sg-role");
+  const cur = sel.value;
+  sel.innerHTML = list.map((s) => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join("");
+  if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
 }
+
+// ── Form handlers ────────────────────────────────────────────────────────────
+
+function parseTools(str) {
+  return (str || "").split(",").map((t) => t.trim()).filter(Boolean);
+}
+function showMsg(id, text, ok) {
+  const el = $(id);
+  el.textContent = text;
+  el.className = "form-msg " + (ok ? "ok" : "err");
+}
+
+async function spawnAgent() {
+  const name = $("sp-name").value.trim();
+  if (!name) return showMsg("sp-msg", "Cần role/name", false);
+  showMsg("sp-msg", "Đang spawn…", true);
+  try {
+    const r = await api("/api/sessions/spawn", "POST", {
+      name, cwd: $("sp-cwd").value.trim(),
+      allowed_tools: parseTools($("sp-tools").value),
+      init_prompt: $("sp-init").value.trim(),
+    });
+    showMsg("sp-msg", `Đã spawn '${r.name}' (${r.id})`, true);
+    $("sp-name").value = $("sp-init").value = "";
+    refreshAll();
+  } catch (e) { showMsg("sp-msg", "Lỗi: " + e, false); }
+}
+
+async function registerAgent() {
+  const id = $("rg-id").value.trim(), name = $("rg-name").value.trim();
+  if (!id || !name) return showMsg("rg-msg", "Cần session ID và name", false);
+  try {
+    await api("/api/sessions", "POST", {
+      id, name, cwd: $("rg-cwd").value.trim(),
+      allowed_tools: parseTools($("rg-tools").value),
+    });
+    showMsg("rg-msg", `Đã register '${name}'`, true);
+    $("rg-id").value = $("rg-name").value = "";
+    refreshAll();
+  } catch (e) { showMsg("rg-msg", "Lỗi: " + e, false); }
+}
+
+async function sendSignal() {
+  const to_role = $("sg-role").value, message = $("sg-msg").value.trim();
+  if (!to_role || !message) return showMsg("sg-result", "Cần role và message", false);
+  try {
+    const r = await api("/api/signals", "POST", {
+      to_role, message, from_role: "human",
+      requires_approval: $("sg-approval").checked ? 1 : 0,
+      dry_run: $("sg-dry").checked ? 1 : 0,
+    });
+    showMsg("sg-result", `Đã gửi signal #${r.id} → ${to_role}`, true);
+    $("sg-msg").value = "";
+    refreshAll();
+  } catch (e) { showMsg("sg-result", "Lỗi: " + e, false); }
+}
+window.spawnAgent = spawnAgent; window.registerAgent = registerAgent; window.sendSignal = sendSignal;
 
 function renderSignals(list) {
   const tb = $("signals");
