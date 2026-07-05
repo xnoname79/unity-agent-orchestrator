@@ -247,3 +247,31 @@ claude mcp add --transport http ui-workflow http://localhost:8991/mcp
 See **[docs/browser-ui.md](docs/browser-ui.md)** for setup and the
 **`ui-testing`** skill for methodology. Plan: [docs/browser-ui-plan.md](docs/browser-ui-plan.md).
 
+---
+
+## session-orchestrator
+
+Orchestrate **headless Claude sessions** for automation: agents emit signals →
+orchestrator injects them into target sessions via `claude -p --resume` → a web
+dashboard to monitor & control safely (pause/kill/approve, kill switch, audit log).
+
+```bash
+python3 session_orchestrator.py serve        # dashboard + API on port 8992
+# safe testing without invoking claude:
+ORCH_DRY_RUN=1 python3 session_orchestrator.py serve
+```
+
+For **agent-to-agent** signaling (agents trigger each other), also run `signal_mcp.py`:
+
+```bash
+python3 signal_mcp.py          # port 8993 → forwards to orchestrator
+claude mcp add --transport http signal http://localhost:8993/mcp
+```
+
+Agents call `send_signal(to_role="developer", message="...")`; orchestrator resolves the
+role and injects. Safety: run caps / token budget (`ORCH_MAX_RUNS_PER_SESSION`,
+`ORCH_SESSION_TOKEN_BUDGET`) act as a loop circuit-breaker.
+
+See **[docs/session-orchestrator.md](docs/session-orchestrator.md)** for setup/usage
+and **[docs/session-orchestrator-plan.md](docs/session-orchestrator-plan.md)** for design.
+
