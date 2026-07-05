@@ -291,7 +291,9 @@ async def _run_claude(session, prompt, dry_run=False):
             "raw": {"dry_run": True},
         }
 
-    cmd = [CLAUDE_BIN, "-p", prompt, "--resume", session_id, "--output-format", "json"]
+    # Prompt truyền qua STDIN (không phải argv) để tránh lỗi khi prompt bắt đầu bằng
+    # dấu '-' (vd YAML frontmatter '---') hoặc chứa ký tự đặc biệt/multiline.
+    cmd = [CLAUDE_BIN, "-p", "--resume", session_id, "--output-format", "json"]
     allowed = json.loads(session.get("allowed_tools") or "[]")
     if allowed:
         cmd += ["--allowedTools", " ".join(allowed)]
@@ -300,9 +302,10 @@ async def _run_claude(session, prompt, dry_run=False):
 
     cwd = session.get("cwd") or None
     proc = await asyncio.create_subprocess_exec(
-        *cmd, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        *cmd, cwd=cwd, stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    stdout, stderr = await proc.communicate()
+    stdout, stderr = await proc.communicate(input=prompt.encode("utf-8"))
     if proc.returncode != 0:
         return {
             "ok": False,
@@ -344,12 +347,14 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
     if DRY_RUN:
         sid = f"dry-{name}-{datetime.now().strftime('%H%M%S%f')}"
     else:
-        cmd = [CLAUDE_BIN, "-p", init_prompt, "--output-format", "json"]
+        # init_prompt qua STDIN (tránh lỗi khi prompt bắt đầu bằng '-', vd '---' frontmatter).
+        cmd = [CLAUDE_BIN, "-p", "--output-format", "json"]
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=cwd or None, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *cmd, cwd=cwd or None, stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            stdout, stderr = await proc.communicate()
+            stdout, stderr = await proc.communicate(input=init_prompt.encode("utf-8"))
         except Exception as e:  # noqa: BLE001
             return {"error": f"không chạy được claude: {e}"}
         if proc.returncode != 0:
