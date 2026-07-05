@@ -11,6 +11,8 @@ const RUN_BADGE = { ok: "b-green", error: "b-red", running: "b-blue" };
 const EV_ICON = { system: "⚙️", thinking: "🧠", text: "💬", tool_use: "🔧",
                   tool_result: "📄", result: "✅", error: "⚠️" };
 
+const MODEL_OPTS = ["", "opus", "sonnet", "haiku"];  // "" = auto
+
 let killOn = false;
 let openRunId = null;   // run đang mở trong drawer (null = đóng)
 
@@ -53,6 +55,13 @@ async function compactSession(id, name) {
 }
 window.compactSession = compactSession;
 
+// Đổi model 1 session ngay trên bảng (áp dụng cho các lượt sau).
+async function setModel(id, model) {
+  try { await api(`/api/sessions/${id}/model`, "POST", { model }); await refreshAll(); }
+  catch (e) { console.error(e); alert("Lỗi đổi model: " + e); }
+}
+window.setModel = setModel;
+
 // ── Renderers ──────────────────────────────────────────────────────────────
 
 function renderSessions(list) {
@@ -68,12 +77,15 @@ function renderSessions(list) {
       : `<button class="danger" onclick="act('/api/sessions/${id}/stop')">Stop</button>`;
     const compact = `<button onclick="compactSession('${id}','${esc(s.name)}')">🗜 Compact</button>`;
     const unreg = `<button class="danger" onclick="if(confirm('Gỡ session ${esc(s.name)}?'))act('/api/sessions/${id}/unregister')">Unregister</button>`;
-    const model = s.model ? `<code>${esc(s.model)}</code>` : `<span class="tools">auto</span>`;
+    const cur = s.model || "";
+    const modelSel = `<select class="mini" onchange="setModel('${id}', this.value)">` +
+      MODEL_OPTS.map((m) => `<option value="${m}"${m === cur ? " selected" : ""}>${m || "auto"}</option>`).join("") +
+      `</select>`;
     return `<tr>
       <td>${esc(s.name)}</td>
       <td><code>${esc(s.id)}</code></td>
       <td>${badge(s.status, SESSION_BADGE[s.status])}</td>
-      <td>${model}</td>
+      <td>${modelSel}</td>
       <td class="tools">${esc(tools)}</td>
       <td><div class="actions">${ctrl}${compact}${stop}${unreg}</div></td>
     </tr>`;

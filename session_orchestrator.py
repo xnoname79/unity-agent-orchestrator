@@ -192,6 +192,13 @@ def set_session_status(session_id, status):
     conn.close()
 
 
+def set_session_model(session_id, model):
+    conn = _conn()
+    conn.execute("UPDATE sessions SET model = ?, last_active = ? WHERE id = ?", (model, _now(), session_id))
+    conn.commit()
+    conn.close()
+
+
 def get_session_by_name(name):
     _ensure_db()
     conn = _conn()
@@ -910,6 +917,20 @@ def build_app():
         cwd = request.query_params.get("cwd", "")
         return JSONResponse(await discover_tools(cwd))
 
+    async def api_set_model(request: Request):
+        """Đổi model của 1 session ngay trên bảng Sessions (không cần re-register)."""
+        sid = request.path_params["sid"]
+        if not get_session(sid):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        set_session_model(sid, (body.get("model") or "").strip())
+        s = get_session(sid)
+        publish({"type": "session", "id": sid, "status": s["status"]})
+        return JSONResponse(s)
+
     async def api_compact(request: Request):
         """Nén context của 1 session: enqueue signal '/compact' (đi qua per-session lock,
         không nén khi đang có prompt in-flight). Focus tùy chọn để giữ lại nội dung trọng tâm."""
@@ -1022,6 +1043,7 @@ def build_app():
         Route("/api/sessions/{sid}/resume", api_resume, methods=["POST"]),
         Route("/api/sessions/{sid}/stop", api_stop, methods=["POST"]),
         Route("/api/sessions/{sid}/compact", api_compact, methods=["POST"]),
+        Route("/api/sessions/{sid}/model", api_set_model, methods=["POST"]),
         Route("/api/signals", api_signals),
         Route("/api/signals", api_enqueue, methods=["POST"]),
         Route("/api/signals/{sig_id}/approve", api_approve, methods=["POST"]),
