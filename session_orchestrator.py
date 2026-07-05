@@ -40,6 +40,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import httpx
+
 DB_DIR = Path.home() / ".session_orch_db"
 DB_NAME = os.environ.get("ORCH_DB", "orchestrator")
 DRY_RUN = os.environ.get("ORCH_DRY_RUN", "0") == "1"
@@ -371,6 +373,75 @@ def unregister_session(session_id):
     conn.close()
 
 
+# ─── Tool discovery (built-in + MCP servers của project) ──────────────────────
+
+BUILTIN_TOOLS = ["Task", "Bash", "Glob", "Grep", "LS", "Read", "Edit", "MultiEdit",
+                 "Write", "NotebookEdit", "WebFetch", "WebSearch", "TodoWrite"]
+
+
+def _read_mcp_servers(cwd):
+    """Đọc MCP servers cấu hình cho project: user scope (~/.claude.json mcpServers),
+    local scope (projects[cwd].mcpServers), project scope (<cwd>/.mcp.json)."""
+    servers = {}
+    try:
+        data = json.loads((Path.home() / ".claude.json").read_text())
+        servers.update(data.get("mcpServers") or {})
+        if cwd:
+            proj = (data.get("projects") or {}).get(cwd, {})
+            servers.update(proj.get("mcpServers") or {})
+    except Exception:  # noqa: BLE001
+        pass
+    if cwd:
+        try:
+            data = json.loads((Path(cwd) / ".mcp.json").read_text())
+            servers.update(data.get("mcpServers") or {})
+        except Exception:  # noqa: BLE001
+            pass
+    return servers
+
+
+async def _list_http_mcp_tools(url, timeout=6):
+    """MCP handshake qua streamable-http → trả danh sách tên tool."""
+    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+
+    def parse(text):
+        for line in text.strip().split("\n"):
+            if line.startswith("data: "):
+                return json.loads(line[6:])
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return None
+
+    async with httpx.AsyncClient(timeout=timeout) as c:
+        r = await c.post(url, json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                    "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                                               "clientInfo": {"name": "orchestrator", "version": "1"}}}, headers=headers)
+        sid = r.headers.get("mcp-session-id")
+        h2 = {**headers, **({"mcp-session-id": sid} if sid else {})}
+        await c.post(url, json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=h2)
+        r = await c.post(url, json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}, headers=h2)
+        data = parse(r.text) or {}
+        return [t["name"] for t in data.get("result", {}).get("tools", [])]
+
+
+async def discover_tools(cwd):
+    """Trả tools khả dụng cho project: built-in + tools từ mỗi MCP server (đặt tên
+    mcp__<server>__<tool>). Server không kết nối được → chỉ có wildcard mcp__<server>__*."""
+    out = {"builtin": list(BUILTIN_TOOLS), "mcp": {}}
+    for name, cfg in _read_mcp_servers(cwd).items():
+        url = cfg.get("url")
+        tools = []
+        if url:
+            try:
+                raw = await _list_http_mcp_tools(url)
+                tools = [f"mcp__{name}__{t}" for t in raw]
+            except Exception:  # noqa: BLE001
+                tools = []
+        out["mcp"][name] = {"wildcard": f"mcp__{name}__*", "tools": tools}
+    return out
+
+
 # ─── Core (poller + lock/queue) ───────────────────────────────────────────────
 
 _locks: dict[str, asyncio.Lock] = {}
@@ -592,6 +663,10 @@ def build_app():
         publish({"type": "session", "id": sid, "status": "removed"})
         return JSONResponse({"id": sid, "removed": True})
 
+    async def api_available_tools(request: Request):
+        cwd = request.query_params.get("cwd", "")
+        return JSONResponse(await discover_tools(cwd))
+
     # Signals
     async def api_signals(request: Request):
         return JSONResponse(list_signals())
@@ -676,6 +751,7 @@ def build_app():
         Route("/api/sessions", api_sessions),
         Route("/api/sessions", api_register, methods=["POST"]),
         Route("/api/sessions/spawn", api_spawn, methods=["POST"]),
+        Route("/api/available-tools", api_available_tools),
         Route("/api/sessions/{sid}", api_session_detail),
         Route("/api/sessions/{sid}/unregister", api_unregister, methods=["POST"]),
         Route("/api/sessions/{sid}/runs", api_session_runs),

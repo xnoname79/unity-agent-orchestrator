@@ -63,6 +63,18 @@
   .form-msg { font-size: 12px; margin-top: 8px; min-height: 16px; }
   .form-msg.ok { color: var(--green); } .form-msg.err { color: var(--red); }
   .hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  button.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); font-weight: 500; }
+  button.secondary:hover { border-color: var(--accent); }
+  .toolpicker { margin-top: 8px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px; background: var(--bg); font-size: 12px; }
+  .toolpicker:empty { display: none; }
+  .tool-group { padding: 4px 2px; }
+  .tool-group > b { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .03em; margin: 4px 4px 2px; }
+  .tool-item { display: flex; align-items: center; gap: 6px; padding: 2px 6px; border-radius: 4px; cursor: pointer; }
+  .tool-item:hover { background: var(--panel2); }
+  .tool-item input { width: auto; }
+  .tool-item.wild { color: var(--amber); }
 </style>
 </head>
 <body>
@@ -83,7 +95,9 @@
         <div class="hint">Orchestrator chạy <code>claude -p</code> tạo session mới.</div>
         <label>Role / name</label><input id="sp-name" placeholder="artist-director">
         <label>Working dir (cwd)</label><input id="sp-cwd" placeholder="/path/to/project">
-        <label>Allowed tools (phẩy)</label><input id="sp-tools" placeholder="mcp__signal__send_signal, Read, Edit">
+        <label>Allowed tools</label>
+        <button type="button" class="secondary" onclick="loadTools('sp')">🔧 Load tools từ cwd</button>
+        <div id="sp-tools" class="toolpicker"></div>
         <label>Init prompt (tùy chọn)</label><textarea id="sp-init" placeholder="Bạn là Artist Director agent..."></textarea>
         <button onclick="spawnAgent()">Spawn</button>
         <div id="sp-msg" class="form-msg"></div>
@@ -95,7 +109,9 @@
         <label>Session ID</label><input id="rg-id" placeholder="abc123-...">
         <label>Role / name</label><input id="rg-name" placeholder="developer">
         <label>Working dir (cwd)</label><input id="rg-cwd" placeholder="/path/to/project">
-        <label>Allowed tools (phẩy)</label><input id="rg-tools" placeholder="mcp__signal__send_signal, Read">
+        <label>Allowed tools</label>
+        <button type="button" class="secondary" onclick="loadTools('rg')">🔧 Load tools từ cwd</button>
+        <div id="rg-tools" class="toolpicker"></div>
         <button onclick="registerAgent()">Register</button>
         <div id="rg-msg" class="form-msg"></div>
       </div>
