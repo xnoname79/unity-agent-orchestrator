@@ -78,9 +78,13 @@ Mở `http://localhost:8992/` — panel **Manage agents** làm được mọi th
 
 - **🚀 Spawn agent** — orchestrator chạy `claude -p` tạo session mới (nhập role, cwd,
   **chọn model**, chọn allowed tools, init prompt). Session_id tự sinh & register.
-- **Model** — dropdown chọn model thực thi cho session: `auto` (để claude tự chọn) hoặc
-  alias `opus` / `sonnet` / `haiku` (CLI tự map sang bản mới nhất). Áp dụng cho mọi lượt
-  của session đó, kể cả `/compact`. Có thể nhập model id cụ thể qua API nếu cần.
+- **Model** — combobox (gõ hoặc chọn từ gợi ý) chọn model thực thi cho session:
+  - Để **trống** = auto (claude/tài khoản tự chọn).
+  - **Alias** `opus`/`sonnet`/`haiku` = luôn bản mới nhất mà CLI/tài khoản của bạn map tới
+    (vd máy bạn hiện map `opus` → Opus 4.6). **Không cố định version.**
+  - **Model id đầy đủ** (vd `claude-opus-4-8`) = **ghim đúng version** đó (cần tài khoản có quyền).
+
+  Áp dụng cho mọi lượt của session, kể cả `/compact`.
 - **Effort** — dropdown reasoning effort (`--effort`): `default` (dùng `ORCH_DEFAULT_EFFORT`,
   mặc định **xhigh**) hoặc `low`/`medium`/`high`/`xhigh`/`max`. `xhigh`/`max` cho tác vụ
   agentic dài; effort thấp tiết kiệm token cho việc đơn giản.

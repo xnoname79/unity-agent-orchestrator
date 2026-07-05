@@ -75,9 +75,10 @@
   .tool-item:hover { background: var(--panel2); }
   .tool-item input { width: auto; }
   .tool-item.wild { color: var(--amber); }
-  select.mini { background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  select.mini, input.mini { background: var(--bg); border: 1px solid var(--border); color: var(--text);
     border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 12px; }
-  select.mini:hover { border-color: var(--accent); }
+  select.mini:hover, input.mini:hover, input.mini:focus { border-color: var(--accent); }
+  input.model-in { width: 160px; }
   tr.run-row { cursor: pointer; }
   tr.run-row:hover td { background: var(--panel2); }
   tr.run-row.live td:first-child::before { content: "● "; color: var(--blue); animation: pulse 1.2s infinite; }
@@ -126,12 +127,8 @@
         <label>Role / name</label><input id="sp-name" placeholder="artist-director">
         <label>Working dir (cwd)</label><input id="sp-cwd" placeholder="/path/to/project">
         <label>Model</label>
-        <select id="sp-model">
-          <option value="">auto (claude tự chọn)</option>
-          <option value="opus">opus</option>
-          <option value="sonnet">sonnet</option>
-          <option value="haiku">haiku</option>
-        </select>
+        <input id="sp-model" list="model-list" placeholder="auto (để trống) — alias hoặc id cụ thể">
+        <div class="hint">Alias (<code>opus</code>) = bản mới nhất; id đầy đủ (<code>claude-opus-4-8</code>) = ghim version.</div>
         <label>Effort (reasoning)</label>
         <select id="sp-effort">
           <option value="">default (xhigh)</option>
@@ -156,12 +153,7 @@
         <label>Role / name</label><input id="rg-name" placeholder="developer">
         <label>Working dir (cwd)</label><input id="rg-cwd" placeholder="/path/to/project">
         <label>Model</label>
-        <select id="rg-model">
-          <option value="">auto (claude tự chọn)</option>
-          <option value="opus">opus</option>
-          <option value="sonnet">sonnet</option>
-          <option value="haiku">haiku</option>
-        </select>
+        <input id="rg-model" list="model-list" placeholder="auto (để trống) — alias hoặc id cụ thể">
         <label>Effort (reasoning)</label>
         <select id="rg-effort">
           <option value="">default (xhigh)</option>
@@ -232,6 +224,16 @@
   </div>
   <div id="dr-body" class="drawer-body"></div>
 </aside>
+
+<datalist id="model-list">
+  <option value="opus" label="alias — Opus mới nhất">
+  <option value="sonnet" label="alias — Sonnet mới nhất">
+  <option value="haiku" label="alias — Haiku mới nhất">
+  <option value="claude-opus-4-8" label="Opus 4.8 (mới nhất)">
+  <option value="claude-opus-4-6" label="Opus 4.6">
+  <option value="claude-sonnet-5" label="Sonnet 5">
+  <option value="claude-haiku-4-5-20251001" label="Haiku 4.5">
+</datalist>
 
 <script src="/app.js"></script>
 </body>

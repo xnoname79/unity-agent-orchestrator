@@ -11,7 +11,6 @@ const RUN_BADGE = { ok: "b-green", error: "b-red", running: "b-blue" };
 const EV_ICON = { system: "⚙️", thinking: "🧠", text: "💬", tool_use: "🔧",
                   tool_result: "📄", result: "✅", error: "⚠️" };
 
-const MODEL_OPTS = ["", "opus", "sonnet", "haiku"];  // "" = auto
 const EFFORT_OPTS = ["", "low", "medium", "high", "xhigh", "max"];  // "" = default (xhigh)
 
 let killOn = false;
@@ -86,9 +85,8 @@ function renderSessions(list) {
     const compact = `<button onclick="compactSession('${id}','${esc(s.name)}')">🗜 Compact</button>`;
     const unreg = `<button class="danger" onclick="if(confirm('Gỡ session ${esc(s.name)}?'))act('/api/sessions/${id}/unregister')">Unregister</button>`;
     const cur = s.model || "";
-    const modelSel = `<select class="mini" onchange="setModel('${id}', this.value)">` +
-      MODEL_OPTS.map((m) => `<option value="${m}"${m === cur ? " selected" : ""}>${m || "auto"}</option>`).join("") +
-      `</select>`;
+    const modelSel = `<input class="mini model-in" list="model-list" value="${esc(cur)}" placeholder="auto"
+      onchange="setModel('${id}', this.value.trim())">`;
     const curEff = s.effort || "";
     const effortSel = `<select class="mini" onchange="setEffort('${id}', this.value)">` +
       EFFORT_OPTS.map((e) => `<option value="${e}"${e === curEff ? " selected" : ""}>${e || "default"}</option>`).join("") +
