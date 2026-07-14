@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session Orchestrator</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #1a1d24; --panel2: #21252e; --border: #2b303b;
+    --text: #e6e8eb; --muted: #8b93a1; --accent: #4c8dff;
+    --gray: #6b7280; --blue: #4c8dff; --amber: #f0a020; --red: #e5484d; --green: #30a46c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 20px;
+    background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .spacer { flex: 1; }
+  .pill { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .pill.live { color: var(--green); border-color: var(--green); }
+  .pill.dead { color: var(--red); border-color: var(--red); }
+  .pill.dry { color: var(--amber); border-color: var(--amber); }
+  /* Bộ lọc workspace (đa tenant) trên header */
+  .ws-pick { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 6px;
+    text-transform: uppercase; letter-spacing: .04em; }
+  .ws-pick select { background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 13px; text-transform: none; letter-spacing: 0; }
+  .ws-pick select:hover { border-color: var(--accent); }
+  /* Chip trạng thái workspace đang lọc (suspended / kill switch) */
+  #ws-banner { display: none; align-items: center; gap: 10px; padding: 8px 16px;
+    background: var(--panel2); border-bottom: 1px solid var(--border); font-size: 12px; }
+  #ws-banner.show { display: flex; }
+  #ws-banner .grow { flex: 1; color: var(--muted); }
+  #ws-banner code { color: var(--text); }
+  button { font: inherit; cursor: pointer; border: 1px solid var(--border); background: var(--panel2);
+    color: var(--text); padding: 4px 10px; border-radius: 6px; }
+  button:hover { border-color: var(--accent); }
+  button.danger { border-color: var(--red); color: var(--red); }
+  button.warn { border-color: var(--amber, #f0a020); color: var(--amber, #f0a020); font-weight: 600; }
+  button.kill { background: var(--red); color: #fff; border-color: var(--red); font-weight: 600; }
+  button.kill.on { background: var(--green); border-color: var(--green); }
+  /* Ô "Today": số run đã chạy hôm nay / hạn mức ngày. Đỏ khi chạm trần. */
+  .day-cell { font-variant-numeric: tabular-nums; text-align: center; }
+  .day-ok { color: var(--muted); }
+  .day-hit { color: var(--red); font-weight: 600; }
+  main { padding: 20px; display: grid; gap: 20px; max-width: 1200px; margin: 0 auto; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .panel > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+    margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  /* Cuộn ngang cho bảng rộng (Sessions nhiều cột) — không để tràn cắt mất nút Actions */
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  /* Bảng Sessions: đặt min-width để các cột giữ độ rộng dễ đọc, tràn thì cuộn ngang */
+  table.wide { min-width: 1080px; }
+  th, td { text-align: left; padding: 9px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 500; }
+  tr:last-child td { border-bottom: none; }
+  td.msg { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  .empty { padding: 16px; color: var(--muted); font-style: italic; }
+  /* Hàng "load more" ở cuối bảng signal/audit — nút + tải thêm 10 record cũ */
+  tr.more-row td { text-align: center; padding: 10px 16px; }
+  tr.more-row:hover td { background: transparent; }
+  .more-btn { font-size: 12px; padding: 4px 14px; color: var(--accent); border-color: var(--border); }
+  .more-btn:hover { border-color: var(--accent); background: var(--panel2); }
+  .more-count { font-size: 11px; color: var(--muted); margin-left: 10px; }
+  .more-done { font-size: 11px; color: var(--muted); letter-spacing: .05em; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+    text-transform: uppercase; letter-spacing: .03em; }
+  /* badge có lý do (hover để xem): gợi ý bằng gạch chân chấm + con trỏ help */
+  .badge.has-tip { cursor: help; text-decoration: underline dotted rgba(255,255,255,.45); text-underline-offset: 2px; }
+  .b-gray { background: rgba(107,114,128,.18); color: #b3bac5; }
+  .b-blue { background: rgba(76,141,255,.18); color: #7fb0ff; }
+  .b-amber { background: rgba(240,160,32,.18); color: #f0b860; }
+  .b-red { background: rgba(229,72,77,.18); color: #f0787c; }
+  .b-green { background: rgba(48,163,108,.18); color: #4cc088; }
+  .actions { display: flex; gap: 6px; flex-wrap: nowrap; }
+  .actions button { white-space: nowrap; }
+  .actions button { padding: 3px 9px; font-size: 12px; }
+  .tools { color: var(--muted); font-size: 12px; }
+  /* cwd session: cắt bớt nếu dài (vd thư mục workspace), hover xem đầy đủ */
+  code.cwd { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; vertical-align: bottom; cursor: help; }
+  .cwd-none { color: var(--muted); }
+  .forms { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; padding: 16px; }
+  .form-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .form-card h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+  .form-card label { display: block; font-size: 11px; color: var(--muted); margin: 8px 0 3px; }
+  .form-card input, .form-card textarea, .form-card select {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 6px 9px; font: inherit; font-size: 13px; }
+  .form-card textarea { resize: vertical; min-height: 46px; }
+  .form-card .row { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
+  .form-card .row label { margin: 0; display: flex; align-items: center; gap: 5px; }
+  .form-card .row input[type=checkbox] { width: auto; }
+  .form-card button { width: 100%; margin-top: 10px; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; padding: 7px; }
+  .form-msg { font-size: 12px; margin-top: 8px; min-height: 16px; }
+  .form-msg.ok { color: var(--green); } .form-msg.err { color: var(--red); }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  button.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); font-weight: 500; }
+  button.secondary:hover { border-color: var(--accent); }
+  .toolpicker { margin-top: 8px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px; background: var(--bg); font-size: 12px; }
+  .toolpicker:empty { display: none; }
+  .tool-group { padding: 4px 2px; }
+  .tool-group > b { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .03em; margin: 4px 4px 2px; }
+  .tool-item { display: flex; align-items: center; gap: 6px; padding: 2px 6px; border-radius: 4px; cursor: pointer; }
+  .tool-item:hover { background: var(--panel2); }
+  .tool-item input { width: auto; }
+  .tool-item.wild { color: var(--amber); }
+  select.mini, input.mini { background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 12px; }
+  select.mini:hover, input.mini:hover, input.mini:focus { border-color: var(--accent); }
+  input.model-in { width: 160px; }
+  tr.run-row { cursor: pointer; }
+  tr.run-row:hover td { background: var(--panel2); }
+  tr.run-row.live td:first-child::before { content: "● "; color: var(--blue); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  /* Transcript drawer */
+  .drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 20; display: none; }
+  .drawer-overlay.open { display: block; }
+  .drawer { position: fixed; top: 0; right: 0; height: 100%; width: min(560px, 100%);
+    background: var(--panel); border-left: 1px solid var(--border); z-index: 21;
+    transform: translateX(100%); transition: transform .18s ease; display: flex; flex-direction: column; }
+  .drawer.open { transform: translateX(0); }
+  .drawer-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px;
+    border-bottom: 1px solid var(--border); }
+  .drawer-head h3 { margin: 0; font-size: 14px; }
+  .drawer-head .spacer { flex: 1; }
+  .drawer-body { flex: 1; overflow-y: auto; padding: 10px 14px; }
+  .ev { border-left: 2px solid var(--border); padding: 6px 10px; margin: 6px 0; background: var(--panel2);
+    border-radius: 0 6px 6px 0; }
+  .ev .k { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .ev .s { white-space: pre-wrap; word-break: break-word; font-size: 13px; margin-top: 2px; }
+  .ev.thinking { border-left-color: var(--amber); } .ev.thinking .s { color: #d9c48a; font-style: italic; }
+  .ev.tool_use { border-left-color: var(--blue); } .ev.tool_use .s { font-family: ui-monospace, monospace; font-size: 12px; }
+  .ev.tool_result { border-left-color: var(--gray); } .ev.tool_result .s { color: var(--muted); font-size: 12px; }
+  .ev.text { border-left-color: var(--green); }
+  .ev.system, .ev.result { border-left-color: var(--muted); } .ev.system .s, .ev.result .s { color: var(--muted); font-size: 12px; }
+  .ev.error { border-left-color: var(--red); } .ev.error .s { color: var(--red); }
+  .ev .t { float: right; font-size: 10px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚙️ Session Orchestrator</h1>
+  <span id="dry" class="pill dry" hidden>DRY-RUN</span>
+  <label class="ws-pick">Workspace
+    <select id="ws-filter" onchange="onWsFilter()"><option value="">Tất cả</option></select>
+  </label>
+  <button class="secondary" onclick="newWorkspace()">+ Workspace</button>
+  <div class="spacer"></div>
+  <span id="conn" class="pill dead">offline</span>
+  <button id="killBtn" class="kill">STOP ALL</button>
+</header>
+
+<div id="ws-banner">
+  <span id="ws-banner-info" class="grow"></span>
+  <div id="ws-banner-actions" class="actions"></div>
+</div>
+
+<main>
+  <section class="panel">
+    <h2>Manage agents</h2>
+    <div class="forms">
+      <div class="form-card">
+        <h3>🚀 Spawn agent</h3>
+        <div class="hint">Orchestrator chạy <code>claude -p</code> tạo session mới.</div>
+        <label>Workspace</label>
+        <select id="sp-ws"><option value="">default</option></select>
+        <div class="hint">Workspace ≠ default: cwd tự ghim vào thư mục workspace (bỏ ô cwd bên dưới).</div>
+        <label>Role / name</label><input id="sp-name" placeholder="artist-director">
+        <label>Working dir (cwd) — chỉ dùng cho workspace default</label><input id="sp-cwd" placeholder="/path/to/project">
+        <label>Model</label>
+        <input id="sp-model" list="model-list" placeholder="auto (để trống) — alias hoặc id cụ thể">
+        <div class="hint">Alias (<code>opus</code>) = bản mới nhất; id đầy đủ (<code>claude-opus-4-8</code>) = ghim version.</div>
+        <label>Effort (reasoning)</label>
+        <select id="sp-effort">
+          <option value="">default (high)</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="max">max</option>
+        </select>
+        <label>Allowed tools</label>
+        <button type="button" class="secondary" onclick="loadTools('sp')">🔧 Load tools từ cwd</button>
+        <div id="sp-tools" class="toolpicker"></div>
+        <label>Init prompt (tùy chọn)</label><textarea id="sp-init" placeholder="Bạn là Artist Director agent..."></textarea>
+        <button onclick="spawnAgent()">Spawn</button>
+        <div id="sp-msg" class="form-msg"></div>
+      </div>
+
+      <div class="form-card" hidden>
+        <h3>🔗 Register session có sẵn</h3>
+        <div class="hint">Dán session_id lấy từ <code>claude ... --output-format json</code>.</div>
+        <label>Session ID</label><input id="rg-id" placeholder="abc123-...">
+        <label>Role / name</label><input id="rg-name" placeholder="developer">
+        <label>Working dir (cwd)</label><input id="rg-cwd" placeholder="/path/to/project">
+        <label>Model</label>
+        <input id="rg-model" list="model-list" placeholder="auto (để trống) — alias hoặc id cụ thể">
+        <label>Effort (reasoning)</label>
+        <select id="rg-effort">
+          <option value="">default (high)</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="max">max</option>
+        </select>
+        <label>Allowed tools</label>
+        <button type="button" class="secondary" onclick="loadTools('rg')">🔧 Load tools từ cwd</button>
+        <div id="rg-tools" class="toolpicker"></div>
+        <button onclick="registerAgent()">Register</button>
+        <div id="rg-msg" class="form-msg"></div>
+      </div>
+
+      <div class="form-card">
+        <h3>✉️ Send signal</h3>
+        <div class="hint">Trigger tay hoặc test. Agent tự phát qua signal_mcp.</div>
+        <label>To role</label><select id="sg-role"></select>
+        <label>Message</label><textarea id="sg-msg" placeholder="Dựng scene ngọn hải đăng..."></textarea>
+        <div class="row">
+          <label><input type="checkbox" id="sg-approval"> requires approval</label>
+          <label><input type="checkbox" id="sg-dry"> dry-run</label>
+        </div>
+        <button onclick="sendSignal()">Send</button>
+        <div id="sg-result" class="form-msg"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Sessions</h2>
+    <div class="table-scroll">
+      <table class="wide">
+        <thead><tr><th>Name</th><th>Session ID</th><th>cwd</th><th>Status</th><th>Model</th><th>Effort</th><th title="Số run đã chạy hôm nay / hạn mức ngày">Today</th><th>Allowed tools</th><th>Actions</th></tr></thead>
+        <tbody id="sessions"></tbody>
+      </table>
+    </div>
+    <div id="sessions-empty" class="empty" hidden>Chưa có session nào.</div>
+  </section>
+
+  <section class="panel">
+    <h2>Signal queue</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>#</th><th>From → To</th><th>Message</th><th>Approval</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="signals"></tbody>
+      </table>
+    </div>
+    <div id="signals-empty" class="empty" hidden>Chưa có signal nào.</div>
+  </section>
+
+  <section class="panel">
+    <h2>Audit log (runs)</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>#</th><th>Session</th><th>Signal</th><th>Status</th><th>Tokens</th><th>Time</th></tr></thead>
+        <tbody id="runs"></tbody>
+      </table>
+    </div>
+    <div id="runs-empty" class="empty" hidden>Chưa có run nào.</div>
+    <div class="hint" style="padding:0 16px 12px">Bấm vào một run để xem transcript (thinking · tool · text) theo thời gian thực.</div>
+  </section>
+</main>
+
+<div id="drawer-overlay" class="drawer-overlay" onclick="closeDrawer()"></div>
+<aside id="drawer" class="drawer">
+  <div class="drawer-head">
+    <h3 id="dr-title">Run</h3>
+    <span id="dr-badge"></span>
+    <div class="spacer"></div>
+    <button class="secondary" onclick="closeDrawer()">Đóng</button>
+  </div>
+  <div id="dr-body" class="drawer-body"></div>
+</aside>
+
+<datalist id="model-list">
+  <option value="opus" label="alias — Opus mới nhất">
+  <option value="sonnet" label="alias — Sonnet mới nhất">
+  <option value="haiku" label="alias — Haiku mới nhất">
+  <option value="claude-opus-4-8" label="Opus 4.8 (mới nhất)">
+  <option value="claude-opus-4-6" label="Opus 4.6">
+  <option value="claude-sonnet-5" label="Sonnet 5">
+  <option value="claude-haiku-4-5-20251001" label="Haiku 4.5">
+</datalist>
+
+<script src="/app.js"></script>
+</body>
+</html>
