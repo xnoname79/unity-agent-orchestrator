@@ -19,13 +19,13 @@ Unity Editor directly — GameObjects, lighting, materials, screenshots.
 
 ---
 
-## Showcase — *THE ARK* (built by the agent team)
+## Showcase — *THE LAST SIGNAL (ALONE)* (built by the agent team)
 
 A sci-fi survival game built end-to-end by orchestrated Claude agents.
 
 | | |
 |---|---|
-| ![Cabin interior scene in Unity 6](images/image-1.jpeg) | **Playable scene** — the `Cabin_Interior` of *THE ARK*, lit and dressed in Unity 6. |
+| ![Cabin interior scene in Unity 6](images/image-1.jpeg) | **Playable scene** — the `Cabin_Interior` of *THE LAST SIGNAL (ALONE)*, lit and dressed in Unity 6. |
 | ![Radar signal-detection UI](images/image-2.jpg) | **In-game UI** — the radar signal-detection panel driven by the narrative database. |
 | ![ADA dialogue in the DeadShip_Medical scene](images/image-3.jpg) | **Narrative** — the AI companion *ADA* speaking inside `DeadShip_Medical`. |
 | ![Session Orchestrator dashboard](images/image-4.jpg) | **The orchestrator at work** — `game-developer`, `artist-director`, and `director` agents exchanging signals, with a live audit log of runs + token usage. |
