@@ -1,0 +1,13 @@
+__pycache__
+
+# DB files (per game project)
+*.db
+*.db-wal
+*.db-shm
+*.bak
+
+# Environment
+.env
+.env.*
+
+.venv
