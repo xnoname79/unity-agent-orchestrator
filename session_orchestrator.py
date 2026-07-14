@@ -961,6 +961,44 @@ def _parse_final(returncode, stdout, stderr, session_id):
     }
 
 
+def _skills_dir(cwd):
+    """Thư mục skills của project = <cwd>/.claude/skills. cwd rỗng → fallback cạnh file .py."""
+    base = Path(cwd) if cwd else Path(__file__).parent
+    return base / ".claude" / "skills"
+
+
+def _skill_path(cwd, name):
+    return _skills_dir(cwd) / name / "SKILL.md"
+
+
+def _role_skill(cwd, name):
+    """Đọc SKILL của role theo convention: <cwd>/.claude/skills/<name>/SKILL.md.
+    Trả '' nếu không có file (role không cần playbook riêng)."""
+    try:
+        return _skill_path(cwd, name).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _write_role_skill(cwd, name, content):
+    """Ghi init_prompt thành SKILL của role (vật thể hoá → đọc lại mỗi signal, không trôi).
+    Ghi đè nếu đã có. content rỗng → bỏ qua (không tạo SKILL rỗng)."""
+    if not content.strip():
+        return
+    p = _skill_path(cwd, name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+
+
+def _prepend_role(cwd, name, message):
+    """Ghim role + playbook vào MỖI signal inject → role không trôi khi history dài/compact.
+    Lazy-load: chỉ SKILL của role này, không nhồi mọi skill. Không có SKILL → chỉ prepend tên role."""
+    skill = _role_skill(cwd, name)
+    if skill:
+        return f"[Role: {name}]\n{skill}\n\n---\n\n{message}"
+    return f"[Role: {name}]\n{message}"
+
+
 def _build_init_prompt(name, init_prompt, workspace_id):
     """Dựng init/system prompt cho session mới.
 
@@ -994,6 +1032,9 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
         if not root:
             return {"error": f"workspace '{workspace_id}' không tồn tại"}
         cwd = root
+    # Vật thể hoá init_prompt thành SKILL của role (<cwd>/.claude/skills/<name>/SKILL.md) → mỗi
+    # signal sau prepend lại từ file này, role không trôi. Rỗng → bỏ qua. Ghi TRƯỚC khi seed generic.
+    _write_role_skill(cwd, name, init_prompt)
     # Seed init/system prompt: init_prompt của FE nếu có, else generic 'ready'.
     init_prompt = _build_init_prompt(name, init_prompt, workspace_id)
 
@@ -1366,9 +1407,11 @@ async def process_signal(signal):
 
             attempts = 0
             engine = engine_for(target)  # chọn engine theo session (default claude)
+            # Prepend role + SKILL vào MỖI inject → role không trôi khi history dài (xem _prepend_role).
+            inject_msg = _prepend_role(target.get("cwd", ""), target["name"], signal["message"])
             while True:
                 try:
-                    res = await engine.run(target, signal["message"], on_event=on_event, dry_run=dry)
+                    res = await engine.run(target, inject_msg, on_event=on_event, dry_run=dry)
                 except Exception as e:  # noqa: BLE001
                     res = {"ok": False, "result": f"exception: {e}", "session_id": target["id"], "tokens": 0, "raw": {}}
                     await on_event("error", f"exception: {e}", {"error": str(e)})
