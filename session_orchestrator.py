@@ -1259,10 +1259,6 @@ def set_kill_switch(on: bool):
     publish({"type": "kill_switch", "on": on})
 
 
-def kill_switch_on() -> bool:
-    return _kill_switch
-
-
 def set_workspace_kill_switch(workspace_id, on: bool):
     """Kill switch riêng 1 workspace — dừng xử lý signal của workspace đó, không đụng tenant khác."""
     conn = _conn()
