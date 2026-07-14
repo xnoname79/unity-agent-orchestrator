@@ -80,25 +80,6 @@ async function compactSession(id, name) {
 }
 window.compactSession = compactSession;
 
-// HARD-DELETE 1 session: xóa SẠCH mọi dấu vết (session + history + signals + runs + audit).
-// Nút hiện cho MỌI session; API tự suy engine từ model — CHỈ litellm xóa được, Claude → 400.
-// Bắt lỗi 400 để hiện lý do rõ (session Claude phải dùng Unregister), không nuốt như act().
-async function deleteSession(id, name) {
-  if (!confirm(`XÓA VĨNH VIỄN session '${name}'?\n\nXóa sạch cả lịch sử + signals + runs + audit log — KHÔNG khôi phục được.\n(Chỉ áp dụng cho session model litellm; session Claude sẽ bị từ chối, hãy dùng Unregister.)`))
-    return;
-  try {
-    const r = await api(`/api/sessions/${id}/delete`, "POST");
-    console.log("deleted", r);
-    await refreshAll();
-  } catch (e) {
-    // api() reject bằng text body. Delete 400 trả {"error": "..."} → bóc message cho gọn.
-    let msg = String(e);
-    try { const j = JSON.parse(e); if (j && j.error) msg = j.error; } catch (_) {}
-    alert("Không xóa được: " + msg);
-  }
-}
-window.deleteSession = deleteSession;
-
 // Xem compact context MỚI NHẤT của 1 session (metadata + full summary) trong drawer.
 async function viewCompact(id, name) {
   openRunId = null;  // rời chế độ xem run-transcript để live-event không chèn nhầm vào đây
@@ -256,8 +237,6 @@ function renderSessions(list) {
       ? `<button class="warn" onclick="allowMore('${id}','${esc(s.name)}')">Allow +${DAILY_STEP}</button>`
       : "";
     const unreg = `<button class="danger" onclick="if(confirm('Gỡ session ${esc(s.name)}?'))act('/api/sessions/${id}/unregister')">Unregister</button>`;
-    // Delete cứng: hiện cho MỌI session; API tự suy engine (chỉ litellm xóa được, Claude → 400).
-    const del = `<button class="danger" onclick="deleteSession('${id}','${esc(s.name)}')">🗑 Delete</button>`;
     const cur = s.model || "";
     const modelSel = `<input class="mini model-in" list="model-list" value="${esc(cur)}" placeholder="auto"
       onchange="setModel('${id}', this.value.trim())">`;
@@ -282,7 +261,7 @@ function renderSessions(list) {
       <td>${effortSel}</td>
       <td class="day-cell">${today}</td>
       <td class="tools">${esc(tools)}</td>
-      <td><div class="actions">${ctrl}${compact}${viewCompact}${allow}${unreg}${del}</div></td>
+      <td><div class="actions">${ctrl}${compact}${viewCompact}${allow}${unreg}</div></td>
     </tr>`;
   }).join("");
   // populate the "to role" dropdown, preserve selection
