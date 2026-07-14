@@ -1,24 +1,11 @@
-# Unity MCP — Project Rules
+# Unity Game Dev
 
-Rules cho project khi dùng [Coplay unity-mcp](https://github.com/CoplayDev/unity-mcp)
-để thao tác trực tiếp scene Unity, kết hợp với **unity-dev** MCP (kế hoạch/metadata).
-Setup: xem `docs/unity-mcp.md`.
+This project is for **Unity 3D game development**.
 
-## Hai bộ não bổ trợ
+Always fetch all tools from subscribed MCP servers before starting.
 
-- **unity-dev** = kế hoạch: GDD, story, scenes, asset tracking, C# templates.
-- **unity-mcp** = thực thi: tạo/di chuyển object, lighting, fog, materials, screenshot.
+## MCP servers
+- **unity-dev** (`unity_dev.py`, port 8990) — planning tools: story, scenes, assets, GDD, C# templates. DB per game project at `~/.unity_dev_db/<project>.db`.
+- **unity-mcp** ([Coplay](https://github.com/CoplayDev/unity-mcp)) — drives the Unity Editor directly (GameObjects, lighting, materials, screenshots).
 
-Luồng: plan (unity-dev) → build (unity-mcp) → screenshot → iterate → track (unity-dev).
-
-## Khi dựng / thiết kế môi trường 3D
-
-Invoke skill **`unity-environment-art`** — playbook art-direction đầy đủ (LOOK→
-CRITIQUE→ADJUST, lighting/atmosphere/post-processing/composition, recipe theo mood).
-
-## Safety
-
-- Làm việc trong scene đã lưu; lưu tăng dần, đừng đè scene chính khi thử nghiệm.
-- Thay đổi lớn (xóa hàng loạt, đổi lighting toàn cục) → xác nhận với user trước.
-- Đọc scene hierarchy trước khi sửa để không phá cấu trúc có sẵn.
-- Không chạy build/test nặng trừ khi được yêu cầu.
+unity-dev plans, unity-mcp executes. 

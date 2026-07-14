@@ -1,38 +1,38 @@
 # Unity MCP — 3D Environment Design (Coplay)
 
-Hướng dẫn cài đặt và tích hợp [Coplay unity-mcp](https://github.com/CoplayDev/unity-mcp)
-để Claude thao tác trực tiếp scene Unity: đặt object, chỉnh lighting, materials,
-chụp screenshot và tự đánh giá — vòng lặp art direction thật sự.
+Setup and integration guide for [Coplay unity-mcp](https://github.com/CoplayDev/unity-mcp)
+so Claude can operate directly on a Unity scene: place objects, adjust lighting,
+materials, take screenshots and self-critique — a real art-direction loop.
 
-## Hai "bộ não" bổ trợ nhau
+## Two complementary "brains"
 
 ```
 ┌─────────────────────────┐        ┌──────────────────────────┐
-│  unity-dev (repo này)    │        │  unity-mcp (Coplay)      │
-│  = BỘ NÃO KẾ HOẠCH       │        │  = ĐÔI TAY THỰC THI      │
+│  unity-dev (this repo)   │        │  unity-mcp (Coplay)      │
+│  = PLANNING BRAIN        │        │  = EXECUTING HANDS       │
 │                          │        │                          │
-│  • GDD, story, scenes    │  ───►  │  • Tạo/di chuyển object  │
+│  • GDD, story, scenes    │  ───►  │  • Create/move objects   │
 │  • asset tracking        │  plan  │  • Lighting, fog, PP     │
 │  • C# script templates   │        │  • Materials, prefab     │
 │                          │  ◄───  │  • Screenshot scene view │
-│  (metadata, SQLite)      │ verify │  (thao tác Unity thật)   │
+│  (metadata, SQLite)      │ verify │  (real Unity operations) │
 └─────────────────────────┘        └──────────────────────────┘
 ```
 
-- **unity-dev** trả lời "cần dựng gì" (kế hoạch, câu chuyện, danh sách asset).
-- **unity-mcp** thực hiện "dựng nó" trong Unity Editor và **chụp lại để Claude nhìn**.
+- **unity-dev** answers "what to build" (plan, story, asset list).
+- **unity-mcp** performs "build it" in the Unity Editor and **captures it back for Claude to see**.
 
-## Yêu cầu
+## Requirements
 
-| Thành phần | Phiên bản |
-|-----------|-----------|
+| Component | Version |
+|-----------|---------|
 | Unity | 2021.3 LTS → 6.x |
-| Python | 3.10+ (qua [`uv`](https://docs.astral.sh/uv/)) |
+| Python | 3.10+ (via [`uv`](https://docs.astral.sh/uv/)) |
 | MCP client | Claude Code |
 
-## Cài đặt (làm trên máy có Unity)
+## Setup (on a machine with Unity)
 
-### 1. Cài `uv` (package manager cho Python server)
+### 1. Install `uv` (package manager for the Python server)
 
 ```bash
 # macOS / Linux
@@ -42,51 +42,48 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-### 2. Cài Unity package (bridge chạy trong Editor)
+### 2. Install the Unity package (bridge running in the Editor)
 
-Trong Unity Editor: **Window → Package Manager → + → Add package from git URL**, dán:
+In the Unity Editor: **Window → Package Manager → + → Add package from git URL**, paste:
 
 ```
 https://github.com/CoplayDev/unity-mcp.git?path=/MCPForUnity#main
 ```
 
-> Pin bản ổn định: thay `#main` bằng `#v10.0.0`.
-> Hoặc dùng OpenUPM: `openupm add com.coplaydev.unity-mcp`
+> Pin a stable release: replace `#main` with `#v10.0.0`.
+> Or use OpenUPM: `openupm add com.coplaydev.unity-mcp`
 
-### 3. Auto-register với Claude Code
+### 3. Auto-register with Claude Code
 
-Trong Unity Editor: **Window → MCP for Unity → Configure All Detected Clients**.
+In the Unity Editor: **Window → MCP for Unity → Configure All Detected Clients**.
 
-Lệnh này tự động ghi cấu hình MCP server vào Claude Code (bridge tự tải Python
-server qua `uv` và chạy stdio transport — không cần start tay).
+This command automatically writes the MCP server config into Claude Code (the bridge
+downloads the Python server via `uv` and runs it over stdio transport — no manual
+start needed).
 
-### 4. Kiểm tra
+### 4. Verify
 
-Mở Claude Code trong thư mục Unity project và hỏi: *"list the current scene hierarchy"*.
-Nếu Claude đọc được cây object trong scene → kết nối OK.
+Open Claude Code in the Unity project folder and ask: *"list the current scene hierarchy"*.
+If Claude can read the object tree in the scene → the connection is OK.
 
-## Bộ công cụ unity-mcp (47 tool entrypoints)
+## unity-mcp toolset (47 tool entrypoints)
 
-Nhóm năng lực chính (xem [tool catalog](https://coplaydev.github.io/unity-mcp/reference/tools/)):
+Main capability groups (see the [tool catalog](https://coplaydev.github.io/unity-mcp/reference/tools/)):
 
-| Nhóm | Dùng để |
-|------|---------|
-| Scene & GameObject | Tạo/xóa/di chuyển object, set transform, parent, instantiate prefab |
+| Group | Used for |
+|-------|----------|
+| Scene & GameObject | Create/delete/move objects, set transform, parent, instantiate prefab |
 | Components | Add/config component (Light, AudioSource, Collider, ...) |
-| C# Scripts | Tạo/sửa script trực tiếp trong project |
-| Assets | Quản lý/import asset, materials |
-| Menu & Console | Chạy menu item, đọc console log |
-| Screenshot | **Chụp scene/game view** — mắt của Claude để art-direct |
-| Test & Build | Chạy test, build game |
+| C# Scripts | Create/edit scripts directly in the project |
+| Assets | Manage/import assets, materials |
+| Menu & Console | Run menu items, read console logs |
+| Screenshot | **Capture scene/game view** — Claude's eyes for art-direction |
+| Test & Build | Run tests, build the game |
 
-## Workflow đề xuất
+## Suggested workflow
 
-1. **Plan** (unity-dev): `get_gdd`, `list_scenes` → biết cần dựng scene nào, mood gì.
-2. **Blockout** (unity-mcp): tạo geometry thô, đặt object theo layout.
-3. **Screenshot** (unity-mcp): chụp lại.
-4. **Critique & iterate**: Claude nhìn ảnh → chỉnh lighting/fog/bố cục → chụp lại.
-5. **Track** (unity-dev): `update_scene` status `in_progress`→`done`, cập nhật asset.
-
-Art-direction playbook nằm trong skill **`unity-environment-art`**
-(`.claude/skills/unity-environment-art/SKILL.md`) — nạp theo yêu cầu khi dựng cảnh.
-Project binding + safety rules ở `memory/unity-mcp/CLAUDE.md`.
+1. **Plan** (unity-dev): `get_gdd`, `list_scenes` → know which scene to build, what mood.
+2. **Blockout** (unity-mcp): create rough geometry, place objects per layout.
+3. **Screenshot** (unity-mcp): capture it.
+4. **Critique & iterate**: Claude looks at the image → adjusts lighting/fog/composition → recaptures.
+5. **Track** (unity-dev): `update_scene` status `in_progress`→`done`, update assets.
