@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="vi">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -21,26 +21,12 @@
   .pill.live { color: var(--green); border-color: var(--green); }
   .pill.dead { color: var(--red); border-color: var(--red); }
   .pill.dry { color: var(--amber); border-color: var(--amber); }
-  /* Bộ lọc workspace (đa tenant) trên header */
-  .ws-pick { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 6px;
-    text-transform: uppercase; letter-spacing: .04em; }
-  .ws-pick select { background: var(--panel2); border: 1px solid var(--border); color: var(--text);
-    border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 13px; text-transform: none; letter-spacing: 0; }
-  .ws-pick select:hover { border-color: var(--accent); }
-  /* Chip trạng thái workspace đang lọc (suspended / kill switch) */
-  #ws-banner { display: none; align-items: center; gap: 10px; padding: 8px 16px;
-    background: var(--panel2); border-bottom: 1px solid var(--border); font-size: 12px; }
-  #ws-banner.show { display: flex; }
-  #ws-banner .grow { flex: 1; color: var(--muted); }
-  #ws-banner code { color: var(--text); }
   button { font: inherit; cursor: pointer; border: 1px solid var(--border); background: var(--panel2);
     color: var(--text); padding: 4px 10px; border-radius: 6px; }
   button:hover { border-color: var(--accent); }
   button.danger { border-color: var(--red); color: var(--red); }
   button.warn { border-color: var(--amber, #f0a020); color: var(--amber, #f0a020); font-weight: 600; }
-  button.kill { background: var(--red); color: #fff; border-color: var(--red); font-weight: 600; }
-  button.kill.on { background: var(--green); border-color: var(--green); }
-  /* Ô "Today": số run đã chạy hôm nay / hạn mức ngày. Đỏ khi chạm trần. */
+  /* "Today" cell: runs done today / daily limit. Red when cap hit. */
   .day-cell { font-variant-numeric: tabular-nums; text-align: center; }
   .day-ok { color: var(--muted); }
   .day-hit { color: var(--red); font-weight: 600; }
@@ -48,17 +34,17 @@
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   .panel > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
     margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-  /* Cuộn ngang cho bảng rộng (Sessions nhiều cột) — không để tràn cắt mất nút Actions */
+  /* Horizontal scroll for wide tables (Sessions has many columns) — keep Actions button visible */
   .table-scroll { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; }
-  /* Bảng Sessions: đặt min-width để các cột giữ độ rộng dễ đọc, tràn thì cuộn ngang */
+  /* Sessions table: min-width keeps columns readable; overflow scrolls horizontally */
   table.wide { min-width: 1080px; }
   th, td { text-align: left; padding: 9px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
   th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 500; }
   tr:last-child td { border-bottom: none; }
   td.msg { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
   .empty { padding: 16px; color: var(--muted); font-style: italic; }
-  /* Hàng "load more" ở cuối bảng signal/audit — nút + tải thêm 10 record cũ */
+  /* "Load more" row at the bottom of signal/audit tables — button loads 10 older records */
   tr.more-row td { text-align: center; padding: 10px 16px; }
   tr.more-row:hover td { background: transparent; }
   .more-btn { font-size: 12px; padding: 4px 14px; color: var(--accent); border-color: var(--border); }
@@ -68,7 +54,7 @@
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
   .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
     text-transform: uppercase; letter-spacing: .03em; }
-  /* badge có lý do (hover để xem): gợi ý bằng gạch chân chấm + con trỏ help */
+  /* badge with a reason (hover to see): dotted underline hint + help cursor */
   .badge.has-tip { cursor: help; text-decoration: underline dotted rgba(255,255,255,.45); text-underline-offset: 2px; }
   .b-gray { background: rgba(107,114,128,.18); color: #b3bac5; }
   .b-blue { background: rgba(76,141,255,.18); color: #7fb0ff; }
@@ -79,7 +65,7 @@
   .actions button { white-space: nowrap; }
   .actions button { padding: 3px 9px; font-size: 12px; }
   .tools { color: var(--muted); font-size: 12px; }
-  /* cwd session: cắt bớt nếu dài (vd thư mục workspace), hover xem đầy đủ */
+  /* session cwd: truncate if long (e.g. workspace folder), hover to see full */
   code.cwd { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; vertical-align: bottom; cursor: help; }
   .cwd-none { color: var(--muted); }
@@ -141,110 +127,93 @@
   .ev.system, .ev.result { border-left-color: var(--muted); } .ev.system .s, .ev.result .s { color: var(--muted); font-size: 12px; }
   .ev.error { border-left-color: var(--red); } .ev.error .s { color: var(--red); }
   .ev .t { float: right; font-size: 10px; color: var(--muted); }
+  /* Workspace list (master view) — grid cards, click into details */
+  .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+  .ws-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px;
+    cursor: pointer; transition: border-color .12s, transform .12s; }
+  .ws-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .ws-card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+  .ws-card .ws-id { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
+  .ws-card .ws-meta { margin-top: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .ws-card .ws-root { margin-top: 8px; font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-count { font-size: 22px; font-weight: 700; color: var(--text); }
+  /* Back button to workspace list from the details view */
+  .back-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+  .back-bar h2 { margin: 0; font-size: 18px; }
+  .back-btn { font-size: 13px; }
+  /* Detail view: inner panels need the same gap as main (they are not direct children of main) */
+  #ws-detail-view { display: grid; gap: 20px; }
+  #ws-detail-view[hidden] { display: none; }  /* keep hidden working (display:grid overrides hidden) */
+  /* Spawn agent form: sits below the workspace grid, width-limited for tidiness */
+  .spawn-panel { margin-top: 20px; max-width: 460px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>⚙️ Session Orchestrator</h1>
+  <h1 style="cursor:pointer" onclick="backToList()">⚙️ Session Orchestrator</h1>
   <span id="dry" class="pill dry" hidden>DRY-RUN</span>
-  <label class="ws-pick">Workspace
-    <select id="ws-filter" onchange="onWsFilter()"><option value="">Tất cả</option></select>
-  </label>
   <button class="secondary" onclick="newWorkspace()">+ Workspace</button>
   <div class="spacer"></div>
   <span id="conn" class="pill dead">offline</span>
-  <button id="killBtn" class="kill">STOP ALL</button>
 </header>
 
-<div id="ws-banner">
-  <span id="ws-banner-info" class="grow"></span>
-  <div id="ws-banner-actions" class="actions"></div>
-</div>
-
 <main>
-  <section class="panel">
-    <h2>Manage agents</h2>
-    <div class="forms">
-      <div class="form-card">
-        <h3>🚀 Spawn agent</h3>
-        <div class="hint">Orchestrator chạy <code>claude -p</code> tạo session mới.</div>
-        <label>Workspace</label>
-        <select id="sp-ws"><option value="">default</option></select>
-        <div class="hint">Workspace ≠ default: cwd tự ghim vào thư mục workspace (bỏ ô cwd bên dưới).</div>
-        <label>Vai / role (chọn template)</label>
-        <select id="sp-template"><option value="">— chọn template —</option></select>
-        <div class="hint">Tên vai = tên template. SKILL ghi vào <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/</code>.</div>
-        <label>Working dir (cwd) — chỉ dùng cho workspace default</label><input id="sp-cwd" placeholder="/path/to/project">
-        <label>Model</label>
-        <input id="sp-model" list="model-list" placeholder="auto (để trống) — alias hoặc id cụ thể">
-        <div class="hint">Alias (<code>opus</code>) = bản mới nhất; id đầy đủ (<code>claude-opus-4-8</code>) = ghim version.</div>
-        <label>Effort (reasoning)</label>
-        <select id="sp-effort">
-          <option value="">default (high)</option>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-          <option value="max">max</option>
-        </select>
-        <label>Allowed tools</label>
-        <button type="button" class="secondary" onclick="loadTools('sp')">🔧 Load tools từ cwd</button>
-        <div id="sp-tools" class="toolpicker"></div>
-        <label>Sinh SKILL từ kịch bản (GDD)</label>
-        <div class="hint">Đọc GDD của project → điền template (vai đã chọn) → đổ vào Init prompt để duyệt.</div>
-        <input id="sp-gdd-project" placeholder="project id (GDD)">
-        <button type="button" class="secondary" onclick="generateSkill()">✨ Generate from GDD</button>
-        <label>Init prompt / SKILL (duyệt trước khi Spawn)</label><textarea id="sp-init" placeholder="Bạn là Artist Director agent... (hoặc bấm Generate)"></textarea>
-        <button onclick="spawnAgent()">Spawn</button>
-        <div id="sp-msg" class="form-msg"></div>
-      </div>
-
-      <div class="form-card" hidden>
-        <h3>🔗 Register session có sẵn</h3>
-        <div class="hint">Dán session_id lấy từ <code>claude ... --output-format json</code>.</div>
-        <label>Session ID</label><input id="rg-id" placeholder="abc123-...">
-        <label>Role / name</label><input id="rg-name" placeholder="developer">
-        <label>Working dir (cwd)</label><input id="rg-cwd" placeholder="/path/to/project">
-        <label>Model</label>
-        <input id="rg-model" list="model-list" placeholder="auto (để trống) — alias hoặc id cụ thể">
-        <label>Effort (reasoning)</label>
-        <select id="rg-effort">
-          <option value="">default (high)</option>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-          <option value="max">max</option>
-        </select>
-        <label>Allowed tools</label>
-        <button type="button" class="secondary" onclick="loadTools('rg')">🔧 Load tools từ cwd</button>
-        <div id="rg-tools" class="toolpicker"></div>
-        <button onclick="registerAgent()">Register</button>
-        <div id="rg-msg" class="form-msg"></div>
-      </div>
-
-      <div class="form-card">
-        <h3>✉️ Send signal</h3>
-        <div class="hint">Trigger tay hoặc test. Agent tự phát qua signal_mcp.</div>
-        <label>To role</label><select id="sg-role"></select>
-        <label>Message</label><textarea id="sg-msg" placeholder="Dựng scene ngọn hải đăng..."></textarea>
-        <div class="row">
-          <label><input type="checkbox" id="sg-approval"> requires approval</label>
-          <label><input type="checkbox" id="sg-dry"> dry-run</label>
+  <!-- Master view: workspace list + spawn agent form -->
+  <section id="ws-list-view">
+    <div class="back-bar"><h2>Workspaces</h2></div>
+    <div id="ws-grid" class="ws-grid"></div>
+    <div id="ws-grid-empty" class="empty" hidden>No workspaces yet. Click + Workspace to create one.</div>
+    <div class="spawn-panel">
+        <div class="form-card">
+          <h3>🚀 Spawn agent</h3>
+          <div class="hint">Orchestrator runs <code>claude -p</code> to create a new session.</div>
+          <label>Workspace</label>
+          <select id="sp-ws"><option value="">default</option></select>
+          <div class="hint">Workspace ≠ default: cwd is pinned to the workspace folder (ignore the cwd field below).</div>
+          <label>Role (pick a template)</label>
+          <select id="sp-template"><option value="">— pick a template —</option></select>
+          <div class="hint">Role name = template name. SKILL is written to <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/</code>.</div>
+          <label>Working dir (cwd) — default workspace only</label><input id="sp-cwd" placeholder="/path/to/project">
+          <label>Model</label>
+          <input id="sp-model" list="model-list" placeholder="auto (leave empty) — alias or specific id">
+          <div class="hint">Alias (<code>opus</code>) = latest; full id (<code>claude-opus-4-8</code>) = pinned version.</div>
+          <label>Effort (reasoning)</label>
+          <select id="sp-effort">
+            <option value="">default (high)</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="max">max</option>
+          </select>
+          <label>Allowed tools</label>
+          <button type="button" class="secondary" onclick="loadTools('sp')">🔧 Load tools from cwd</button>
+          <div id="sp-tools" class="toolpicker"></div>
+          <label>Init prompt (optional)</label><textarea id="sp-init" placeholder="You are an Artist Director agent..."></textarea>
+          <button onclick="spawnAgent()">Spawn</button>
+          <div id="sp-msg" class="form-msg"></div>
         </div>
-        <button onclick="sendSignal()">Send</button>
-        <div id="sg-result" class="form-msg"></div>
-      </div>
     </div>
   </section>
+
+  <!-- Detail view: one workspace (view only — Sessions/Signal/Audit) -->
+  <div id="ws-detail-view" hidden>
+  <div class="back-bar">
+    <button class="secondary back-btn" onclick="backToList()">← Workspaces</button>
+    <h2 id="ws-detail-title">Workspace</h2>
+  </div>
+
+  <div id="ws-banner-actions" class="actions" style="margin-bottom:16px"></div>
 
   <section class="panel">
     <h2>Sessions</h2>
     <div class="table-scroll">
       <table class="wide">
-        <thead><tr><th>Name</th><th>Session ID</th><th>cwd</th><th>Status</th><th>Model</th><th>Effort</th><th title="Số run đã chạy hôm nay / hạn mức ngày">Today</th><th>Allowed tools</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Name</th><th>Session ID</th><th>cwd</th><th>Status</th><th>Model</th><th>Effort</th><th title="Runs done today / daily limit">Today</th><th>Allowed tools</th><th>Actions</th></tr></thead>
         <tbody id="sessions"></tbody>
       </table>
     </div>
-    <div id="sessions-empty" class="empty" hidden>Chưa có session nào.</div>
+    <div id="sessions-empty" class="empty" hidden>No sessions yet.</div>
   </section>
 
   <section class="panel">
@@ -255,7 +224,7 @@
         <tbody id="signals"></tbody>
       </table>
     </div>
-    <div id="signals-empty" class="empty" hidden>Chưa có signal nào.</div>
+    <div id="signals-empty" class="empty" hidden>No signals yet.</div>
   </section>
 
   <section class="panel">
@@ -266,9 +235,10 @@
         <tbody id="runs"></tbody>
       </table>
     </div>
-    <div id="runs-empty" class="empty" hidden>Chưa có run nào.</div>
-    <div class="hint" style="padding:0 16px 12px">Bấm vào một run để xem transcript (thinking · tool · text) theo thời gian thực.</div>
+    <div id="runs-empty" class="empty" hidden>No runs yet.</div>
+    <div class="hint" style="padding:0 16px 12px">Click a run to view its transcript (thinking · tool · text) in real time.</div>
   </section>
+  </div><!-- /ws-detail-view -->
 </main>
 
 <div id="drawer-overlay" class="drawer-overlay" onclick="closeDrawer()"></div>
@@ -277,16 +247,16 @@
     <h3 id="dr-title">Run</h3>
     <span id="dr-badge"></span>
     <div class="spacer"></div>
-    <button class="secondary" onclick="closeDrawer()">Đóng</button>
+    <button class="secondary" onclick="closeDrawer()">Close</button>
   </div>
   <div id="dr-body" class="drawer-body"></div>
 </aside>
 
 <datalist id="model-list">
-  <option value="opus" label="alias — Opus mới nhất">
-  <option value="sonnet" label="alias — Sonnet mới nhất">
-  <option value="haiku" label="alias — Haiku mới nhất">
-  <option value="claude-opus-4-8" label="Opus 4.8 (mới nhất)">
+  <option value="opus" label="alias — latest Opus">
+  <option value="sonnet" label="alias — latest Sonnet">
+  <option value="haiku" label="alias — latest Haiku">
+  <option value="claude-opus-4-8" label="Opus 4.8 (latest)">
   <option value="claude-opus-4-6" label="Opus 4.6">
   <option value="claude-sonnet-5" label="Sonnet 5">
   <option value="claude-haiku-4-5-20251001" label="Haiku 4.5">
