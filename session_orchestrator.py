@@ -39,6 +39,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import secrets
 import sqlite3
 import sys
@@ -999,6 +1000,86 @@ def _prepend_role(cwd, name, message):
     return f"[Role: {name}]\n{message}"
 
 
+# ─── Skill generation (kịch bản GDD → SKILL từ template) ─────────────────────
+
+TEMPLATES_DIR = Path(__file__).parent / ".claude" / "skills"
+UNITY_DEV_DB_DIR = Path.home() / ".unity_dev_db"
+
+
+def _list_skill_templates():
+    """Template hợp lệ = SKILL.md có placeholder <X>. Trả [{name, description}].
+    Stub rỗng (0 placeholder) bị bỏ — không phải template điền được."""
+    out = []
+    for d in sorted(TEMPLATES_DIR.glob("*/")):
+        f = d / "SKILL.md"
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if not re.search(r"<[A-Z_]+>", text):
+            continue
+        m = re.search(r"description:\s*>?\s*\n?\s*(.+)", text)
+        out.append({"name": d.name.rstrip("/"), "description": (m.group(1).strip()[:200] if m else "")})
+    return out
+
+
+def _read_gdd(project):
+    """Đọc toàn bộ GDD của project từ DB unity-dev (~/.unity_dev_db/<project>.db).
+    Trả text ghép các section, hoặc '' nếu GDD rỗng/DB chưa có."""
+    db = UNITY_DEV_DB_DIR / f"{project}.db"
+    if not db.exists():
+        return ""
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        rows = conn.execute("SELECT section, content FROM gdd ORDER BY section").fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return ""
+    parts = [f"## {s}\n{c}" for s, c in rows if (c or "").strip()]
+    return "\n\n".join(parts)
+
+
+async def generate_skill_from_gdd(template, project):
+    """Sinh SKILL từ template rỗng + GDD, dùng claude -p điền placeholder. KHÔNG ghi file
+    (để user preview). Trả (skill_text, error). GDD rỗng → error (user tạo GDD trước)."""
+    tf = TEMPLATES_DIR / template / "SKILL.md"
+    try:
+        tmpl = tf.read_text(encoding="utf-8")
+    except OSError:
+        return "", f"template '{template}' không tồn tại"
+    if not re.search(r"<[A-Z_]+>", tmpl):
+        return "", f"template '{template}' không có placeholder"
+    gdd = _read_gdd(project)
+    if not gdd:
+        return "", f"GDD của project '{project}' rỗng — tạo GDD ở main session (unity-dev) trước"
+
+    prompt = (
+        "Bạn điền một SKILL template cho một vai agent làm game Unity. Dưới đây là TEMPLATE "
+        "(chứa placeholder dạng <TÊN>) và GDD của game. Điền mọi placeholder bằng thông tin "
+        "TỪ GDD, giữ nguyên cấu trúc/markdown/frontmatter/code block của template. Bỏ các dòng "
+        "chú thích '(kịch bản điền)'. Nếu GDD thiếu thông tin cho placeholder nào, suy luận hợp "
+        "lý từ ngữ cảnh game. CHỈ trả về nội dung SKILL.md hoàn chỉnh, không rào đầu/cuối, không "
+        "bọc trong ```.\n\n===== TEMPLATE =====\n" + tmpl + "\n\n===== GDD =====\n" + gdd
+    )
+    if DRY_RUN:
+        return tmpl.replace("<GAME_NAME>", project), ""
+    cmd = [CLAUDE_BIN, "-p", "--output-format", "json"]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await proc.communicate(input=prompt.encode("utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return "", f"không chạy được claude: {e}"
+    if proc.returncode != 0:
+        return "", (stderr or b"").decode("utf-8", "replace")[:500]
+    try:
+        data = json.loads((stdout or b"").decode("utf-8", "replace"))
+    except json.JSONDecodeError:
+        return "", "không parse được output từ claude"
+    return (data.get("result") or "").strip(), ""
+
+
 def _build_init_prompt(name, init_prompt, workspace_id):
     """Dựng init/system prompt cho session mới.
 
@@ -1695,6 +1776,19 @@ def build_app():
         cwd = request.query_params.get("cwd", "")
         return JSONResponse(await discover_tools(cwd))
 
+    async def api_skill_templates(request: Request):
+        return JSONResponse(_list_skill_templates())
+
+    async def api_generate_skill(request: Request):
+        body = await request.json()
+        template, project = body.get("template", ""), body.get("project", "")
+        if not template or not project:
+            return JSONResponse({"error": "template và project bắt buộc"}, status_code=400)
+        skill, err = await generate_skill_from_gdd(template, project)
+        if err:
+            return JSONResponse({"error": err}, status_code=400)
+        return JSONResponse({"skill": skill})
+
     async def api_set_model(request: Request):
         """Đổi model của 1 session ngay trên bảng Sessions (không cần re-register)."""
         sid = request.path_params["sid"]
@@ -1968,6 +2062,8 @@ def build_app():
         Route("/api/sessions", api_register, methods=["POST"]),
         Route("/api/sessions/spawn", api_spawn, methods=["POST"]),
         Route("/api/available-tools", api_available_tools),
+        Route("/api/skills/templates", api_skill_templates),
+        Route("/api/skills/generate", api_generate_skill, methods=["POST"]),
         Route("/api/sessions/{sid}", api_session_detail),
         Route("/api/sessions/{sid}/unregister", api_unregister, methods=["POST"]),
         Route("/api/sessions/{sid}/runs", api_session_runs),

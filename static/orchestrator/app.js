@@ -301,6 +301,28 @@ async function loadTools(prefix) {
 }
 window.loadTools = loadTools;
 
+async function loadTemplates() {
+  const sel = $("sp-template");
+  if (!sel) return;
+  try {
+    const list = await api("/api/skills/templates");
+    sel.innerHTML = `<option value="">— chọn template —</option>` +
+      list.map(t => `<option value="${esc(t.name)}" title="${esc(t.description)}">${esc(t.name)}</option>`).join("");
+  } catch (e) { /* để dropdown trống nếu lỗi */ }
+}
+
+async function generateSkill() {
+  const template = $("sp-template").value, project = $("sp-gdd-project").value.trim();
+  if (!template || !project) return showMsg("sp-msg", "Cần chọn template + nhập project id (GDD)", false);
+  showMsg("sp-msg", "Đang sinh SKILL từ GDD… (có thể mất chút)", true);
+  try {
+    const r = await api("/api/skills/generate", "POST", { template, project });
+    $("sp-init").value = r.skill;
+    showMsg("sp-msg", "Đã sinh SKILL — duyệt/sửa Init prompt rồi bấm Spawn", true);
+  } catch (e) { showMsg("sp-msg", "Lỗi: " + e, false); }
+}
+window.generateSkill = generateSkill;
+
 function collectTools(prefix) {
   return [...$(prefix + "-tools").querySelectorAll("input:checked")].map((i) => i.value);
 }
@@ -314,8 +336,8 @@ function showMsg(id, text, ok) {
 }
 
 async function spawnAgent() {
-  const name = $("sp-name").value.trim();
-  if (!name) return showMsg("sp-msg", "Cần role/name", false);
+  const name = $("sp-template").value;
+  if (!name) return showMsg("sp-msg", "Cần chọn vai/template", false);
   showMsg("sp-msg", "Đang spawn…", true);
   try {
     const r = await api("/api/sessions/spawn", "POST", {
@@ -327,7 +349,7 @@ async function spawnAgent() {
       init_prompt: $("sp-init").value.trim(),
     });
     showMsg("sp-msg", `Đã spawn '${r.name}' (${r.id})`, true);
-    $("sp-name").value = $("sp-init").value = "";
+    $("sp-init").value = "";
     $("sp-tools").innerHTML = "";
     refreshAll();
   } catch (e) { showMsg("sp-msg", "Lỗi: " + e, false); }
@@ -540,4 +562,5 @@ function connectSSE() {
 }
 
 refreshAll();
+loadTemplates();
 connectSSE();
