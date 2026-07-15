@@ -767,8 +767,10 @@ def _iter_display_events(ev):
             model = ev.get("model") or "?"
             out.append(("system", f"session bắt đầu · model={model} · {len(tools)} tools",
                         {"subtype": sub, "tools": tools[:60]}))
+        elif sub.startswith("hook_"):
+            pass  # hook_started/hook_response là nhiễu nội bộ hook — bỏ khỏi audit log.
         else:
-            # subtype khác init (vd compact_boundary) — hiển thị nhãn riêng, không giả vờ "bắt đầu"
+            # subtype khác (compact_boundary...) giữ lại — cần biết agent compact lúc nào.
             out.append(("system", f"system · {sub}", {"subtype": sub, "raw": _trunc(json.dumps(ev, ensure_ascii=False))}))
     elif t == "assistant":
         for b in _content_blocks(ev):
@@ -1000,10 +1002,9 @@ def _prepend_role(cwd, name, message):
     return f"[Role: {name}]\n{message}"
 
 
-# ─── Skill generation (kịch bản GDD → SKILL từ template) ─────────────────────
+# ─── Skill templates (liệt kê vai/role cho dropdown spawn) ────────────────────
 
 TEMPLATES_DIR = Path(__file__).parent / ".claude" / "skills"
-UNITY_DEV_DB_DIR = Path.home() / ".unity_dev_db"
 
 
 def _list_skill_templates():
@@ -1021,63 +1022,6 @@ def _list_skill_templates():
         m = re.search(r"description:\s*>?\s*\n?\s*(.+)", text)
         out.append({"name": d.name.rstrip("/"), "description": (m.group(1).strip()[:200] if m else "")})
     return out
-
-
-def _read_gdd(project):
-    """Đọc toàn bộ GDD của project từ DB unity-dev (~/.unity_dev_db/<project>.db).
-    Trả text ghép các section, hoặc '' nếu GDD rỗng/DB chưa có."""
-    db = UNITY_DEV_DB_DIR / f"{project}.db"
-    if not db.exists():
-        return ""
-    try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        rows = conn.execute("SELECT section, content FROM gdd ORDER BY section").fetchall()
-        conn.close()
-    except sqlite3.Error:
-        return ""
-    parts = [f"## {s}\n{c}" for s, c in rows if (c or "").strip()]
-    return "\n\n".join(parts)
-
-
-async def generate_skill_from_gdd(template, project):
-    """Sinh SKILL từ template rỗng + GDD, dùng claude -p điền placeholder. KHÔNG ghi file
-    (để user preview). Trả (skill_text, error). GDD rỗng → error (user tạo GDD trước)."""
-    tf = TEMPLATES_DIR / template / "SKILL.md"
-    try:
-        tmpl = tf.read_text(encoding="utf-8")
-    except OSError:
-        return "", f"template '{template}' không tồn tại"
-    if not re.search(r"<[A-Z_]+>", tmpl):
-        return "", f"template '{template}' không có placeholder"
-    gdd = _read_gdd(project)
-    if not gdd:
-        return "", f"GDD của project '{project}' rỗng — tạo GDD ở main session (unity-dev) trước"
-
-    prompt = (
-        "Bạn điền một SKILL template cho một vai agent làm game Unity. Dưới đây là TEMPLATE "
-        "(chứa placeholder dạng <TÊN>) và GDD của game. Điền mọi placeholder bằng thông tin "
-        "TỪ GDD, giữ nguyên cấu trúc/markdown/frontmatter/code block của template. Bỏ các dòng "
-        "chú thích '(kịch bản điền)'. Nếu GDD thiếu thông tin cho placeholder nào, suy luận hợp "
-        "lý từ ngữ cảnh game. CHỈ trả về nội dung SKILL.md hoàn chỉnh, không rào đầu/cuối, không "
-        "bọc trong ```.\n\n===== TEMPLATE =====\n" + tmpl + "\n\n===== GDD =====\n" + gdd
-    )
-    if DRY_RUN:
-        return tmpl.replace("<GAME_NAME>", project), ""
-    cmd = [CLAUDE_BIN, "-p", "--output-format", "json"]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, stderr = await proc.communicate(input=prompt.encode("utf-8"))
-    except Exception as e:  # noqa: BLE001
-        return "", f"không chạy được claude: {e}"
-    if proc.returncode != 0:
-        return "", (stderr or b"").decode("utf-8", "replace")[:500]
-    try:
-        data = json.loads((stdout or b"").decode("utf-8", "replace"))
-    except json.JSONDecodeError:
-        return "", "không parse được output từ claude"
-    return (data.get("result") or "").strip(), ""
 
 
 def _build_init_prompt(name, init_prompt, workspace_id):
@@ -1371,43 +1315,22 @@ _semaphore: asyncio.Semaphore | None = None
 
 # Event bus for SSE (Phase B). Set of subscriber queues.
 _subscribers: set = set()
-# Global kill switch — when True, poller không xử lý signal nào (stop-all).
-_kill_switch = False
-
-
-def set_kill_switch(on: bool):
-    global _kill_switch
-    _kill_switch = on
-    publish({"type": "kill_switch", "on": on})
-
-
-def set_workspace_kill_switch(workspace_id, on: bool):
-    """Kill switch riêng 1 workspace — dừng xử lý signal của workspace đó, không đụng tenant khác."""
-    conn = _conn()
-    conn.execute("UPDATE workspaces SET kill_switch = ? WHERE id = ?", (1 if on else 0, workspace_id))
-    conn.commit()
-    conn.close()
-    publish({"type": "workspace", "id": workspace_id, "kill_switch": bool(on), "workspace_id": workspace_id})
-
-
 def workspace_blocked(workspace_id):
-    """Trả (True, reason) nếu workspace đang suspended hoặc bật kill switch riêng. Workspace không
-    tồn tại coi như không chặn (dữ liệu 'default' cũ / edge case)."""
+    """Trả (True, reason) nếu workspace đang suspended. Workspace không tồn tại coi như không
+    chặn (dữ liệu 'default' cũ / edge case)."""
     ws = get_workspace(workspace_id)
     if not ws:
         return False, ""
     if ws["status"] != "active":
         return True, f"workspace {ws['status']}"
-    if ws.get("kill_switch"):
-        return True, "workspace kill switch"
     return False, ""
 
 
 def publish(event: dict):
     """Đẩy event tới SSE subscriber, CÓ CÔ LẬP THEO WORKSPACE. Mỗi subscriber đăng ký kèm 1
     ws_filter (workspace_id nó muốn xem, hoặc None = admin xem tất cả). Event mang 'workspace_id'
-    chỉ tới subscriber cùng workspace (và admin); event KHÔNG mang workspace_id (global: kill_switch
-    toàn cục) tới mọi subscriber. Nhờ vậy tenant A không bao giờ thấy event của tenant B."""
+    chỉ tới subscriber cùng workspace (và admin); event KHÔNG mang workspace_id (global) tới mọi
+    subscriber. Nhờ vậy tenant A không bao giờ thấy event của tenant B."""
     event = {"ts": _now(), **event}
     ev_ws = event.get("workspace_id")
     for q, ws_filter in list(_subscribers):
@@ -1520,8 +1443,6 @@ async def process_signal(signal):
 
 async def process_pending():
     """Poll 1 lần: xử lý tất cả signal eligible (song song, serialize theo session)."""
-    if _kill_switch:
-        return []
     signals = eligible_signals()
     if not signals:
         return []
@@ -1565,6 +1486,7 @@ def build_app():
 
     import signal_mcp
     import unity_dev
+    import asset_fetch
 
     # signal_mcp gọi thẳng các hàm orchestrator thay vì POST HTTP về chính mình.
     signal_mcp._INPROC = True
@@ -1574,10 +1496,11 @@ def build_app():
     # /mcp sẽ lỗi 500 vì session manager chưa khởi động.
     signal_app = signal_mcp.mcp.streamable_http_app()
     unity_app = unity_dev.mcp.streamable_http_app()
+    asset_app = asset_fetch.mcp.streamable_http_app()
 
     async def health(request: Request):
         return JSONResponse({"status": "ok", "server": "Session-Orchestrator",
-                             "dry_run": DRY_RUN, "kill_switch": _kill_switch,
+                             "dry_run": DRY_RUN,
                              "default_effort": DEFAULT_EFFORT,
                              "daily_allow_step": DAILY_ALLOW_STEP,
                              "limits": {"max_runs_per_session": MAX_RUNS_PER_SESSION,
@@ -1657,21 +1580,6 @@ def build_app():
 
     async def api_activate_workspace(request: Request):
         return await _set_ws_status(request, "active")
-
-    async def api_ws_stop(request: Request):
-        """Kill switch riêng 1 workspace (dừng xử lý signal của nó, không đụng tenant khác)."""
-        wid = request.path_params["wid"]
-        if not get_workspace(wid):
-            return JSONResponse({"error": "not found"}, status_code=404)
-        set_workspace_kill_switch(wid, True)
-        return JSONResponse({"id": wid, "kill_switch": True})
-
-    async def api_ws_resume(request: Request):
-        wid = request.path_params["wid"]
-        if not get_workspace(wid):
-            return JSONResponse({"error": "not found"}, status_code=404)
-        set_workspace_kill_switch(wid, False)
-        return JSONResponse({"id": wid, "kill_switch": False})
 
     # Sessions
     async def api_sessions(request: Request):
@@ -1778,16 +1686,6 @@ def build_app():
 
     async def api_skill_templates(request: Request):
         return JSONResponse(_list_skill_templates())
-
-    async def api_generate_skill(request: Request):
-        body = await request.json()
-        template, project = body.get("template", ""), body.get("project", "")
-        if not template or not project:
-            return JSONResponse({"error": "template và project bắt buộc"}, status_code=400)
-        skill, err = await generate_skill_from_gdd(template, project)
-        if err:
-            return JSONResponse({"error": err}, status_code=400)
-        return JSONResponse({"skill": skill})
 
     async def api_set_model(request: Request):
         """Đổi model của 1 session ngay trên bảng Sessions (không cần re-register)."""
@@ -1984,15 +1882,6 @@ def build_app():
         rid = int(request.path_params["rid"])
         return JSONResponse(list_run_events(rid))
 
-    # Kill switch
-    async def api_stop_all(request: Request):
-        set_kill_switch(True)
-        return JSONResponse({"kill_switch": True})
-
-    async def api_resume_all(request: Request):
-        set_kill_switch(False)
-        return JSONResponse({"kill_switch": False})
-
     # SSE live events — cô lập theo workspace.
     async def api_events(request: Request):
         # ?workspace_id= → chỉ nhận event của tenant đó (FE mỗi user mở 1 stream riêng).
@@ -2027,6 +1916,7 @@ def build_app():
             # Khởi động session manager của từng MCP sub-app (bắt buộc cho /mcp).
             await stack.enter_async_context(signal_app.router.lifespan_context(app))
             await stack.enter_async_context(unity_app.router.lifespan_context(app))
+            await stack.enter_async_context(asset_app.router.lifespan_context(app))
             task = asyncio.create_task(run_loop())
             print(f"[orchestrator] API on http://{ORCH_HOST}:{ORCH_PORT} (dry_run={DRY_RUN})")
             print("[orchestrator] MCP mounted: /signal/mcp, /unity/mcp")
@@ -2056,14 +1946,11 @@ def build_app():
         Route("/api/workspaces/{wid}", api_workspace_detail),
         Route("/api/workspaces/{wid}/suspend", api_suspend_workspace, methods=["POST"]),
         Route("/api/workspaces/{wid}/activate", api_activate_workspace, methods=["POST"]),
-        Route("/api/workspaces/{wid}/stop", api_ws_stop, methods=["POST"]),
-        Route("/api/workspaces/{wid}/resume", api_ws_resume, methods=["POST"]),
         Route("/api/sessions", api_sessions),
         Route("/api/sessions", api_register, methods=["POST"]),
         Route("/api/sessions/spawn", api_spawn, methods=["POST"]),
         Route("/api/available-tools", api_available_tools),
         Route("/api/skills/templates", api_skill_templates),
-        Route("/api/skills/generate", api_generate_skill, methods=["POST"]),
         Route("/api/sessions/{sid}", api_session_detail),
         Route("/api/sessions/{sid}/unregister", api_unregister, methods=["POST"]),
         Route("/api/sessions/{sid}/runs", api_session_runs),
@@ -2084,12 +1971,11 @@ def build_app():
         Route("/api/runs", api_runs),
         Route("/api/runs/{rid}/events", api_run_events),
         Route("/api/stats", api_stats),
-        Route("/api/stop-all", api_stop_all, methods=["POST"]),
-        Route("/api/resume-all", api_resume_all, methods=["POST"]),
         Route("/api/events", api_events),
         # MCP server nội bộ mount chung port (đặt trước static "/"): /signal/mcp, /unity/mcp.
         Mount("/signal", app=signal_app),
         Mount("/unity", app=unity_app),
+        Mount("/assets", app=asset_app),
     ]
 
     # Dashboard (Phase C): serve static UI at "/" (must be last — catches the rest).
