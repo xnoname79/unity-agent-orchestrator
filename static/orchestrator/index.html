@@ -171,7 +171,9 @@
         <label>Workspace</label>
         <select id="sp-ws"><option value="">default</option></select>
         <div class="hint">Workspace ≠ default: cwd tự ghim vào thư mục workspace (bỏ ô cwd bên dưới).</div>
-        <label>Role / name</label><input id="sp-name" placeholder="artist-director">
+        <label>Vai / role (chọn template)</label>
+        <select id="sp-template"><option value="">— chọn template —</option></select>
+        <div class="hint">Tên vai = tên template. SKILL ghi vào <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/</code>.</div>
         <label>Working dir (cwd) — chỉ dùng cho workspace default</label><input id="sp-cwd" placeholder="/path/to/project">
         <label>Model</label>
         <input id="sp-model" list="model-list" placeholder="auto (để trống) — alias hoặc id cụ thể">
@@ -187,7 +189,11 @@
         <label>Allowed tools</label>
         <button type="button" class="secondary" onclick="loadTools('sp')">🔧 Load tools từ cwd</button>
         <div id="sp-tools" class="toolpicker"></div>
-        <label>Init prompt (tùy chọn)</label><textarea id="sp-init" placeholder="Bạn là Artist Director agent..."></textarea>
+        <label>Sinh SKILL từ kịch bản (GDD)</label>
+        <div class="hint">Đọc GDD của project → điền template (vai đã chọn) → đổ vào Init prompt để duyệt.</div>
+        <input id="sp-gdd-project" placeholder="project id (GDD)">
+        <button type="button" class="secondary" onclick="generateSkill()">✨ Generate from GDD</button>
+        <label>Init prompt / SKILL (duyệt trước khi Spawn)</label><textarea id="sp-init" placeholder="Bạn là Artist Director agent... (hoặc bấm Generate)"></textarea>
         <button onclick="spawnAgent()">Spawn</button>
         <div id="sp-msg" class="form-msg"></div>
       </div>
