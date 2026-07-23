@@ -24,6 +24,7 @@ Env:
   ORCH_STREAM_PARTIAL  "1" = thêm --include-partial-messages, text chảy từng token (default 0)
   ORCH_EVENT_TRUNC     số ký tự tối đa mỗi payload event (default 2000)
   ORCH_DEFAULT_EFFORT  reasoning effort mặc định mọi session (default "high"; low|medium|high|max)
+  ORCH_DEFAULT_PERMISSION_MODE  permission mode fallback khi session không set (default "bypassPermissions")
   CLAUDE_BIN           đường dẫn claude CLI (default "claude")
 
 Usage:
@@ -41,6 +42,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import sqlite3
 import sys
 from datetime import datetime
@@ -67,8 +69,9 @@ ORCH_API_KEY = os.environ.get("ORCH_API_KEY", "")
 # Phase D — safety caps (0 = tắt/không giới hạn)
 MAX_RUNS_PER_SESSION = int(os.environ.get("ORCH_MAX_RUNS_PER_SESSION", "0"))
 # Trần số run/NGÀY cho mỗi session (reset mỗi ngày). Đạt trần → signal bị blocked, chờ người
-# bấm "Allow +N" trên dashboard để nới thêm hạn mức cho riêng ngày hôm nay. 0 = tắt.
-MAX_RUNS_PER_DAY = int(os.environ.get("ORCH_MAX_RUNS_PER_DAY", "10"))
+# bấm "Allow +N" trên dashboard để nới thêm hạn mức cho riêng ngày hôm nay. 0 = tắt (unlimited).
+# TẠM để 0 = unlimited (bỏ cap ngày). Set ENV ORCH_MAX_RUNS_PER_DAY nếu muốn bật lại cap.
+MAX_RUNS_PER_DAY = int(os.environ.get("ORCH_MAX_RUNS_PER_DAY", "0"))
 # Mỗi lần bấm "Allow" thì nới thêm bao nhiêu run cho ngày hôm nay.
 DAILY_ALLOW_STEP = int(os.environ.get("ORCH_DAILY_ALLOW_STEP", "10"))
 SESSION_TOKEN_BUDGET = int(os.environ.get("ORCH_SESSION_TOKEN_BUDGET", "0"))
@@ -86,6 +89,10 @@ STREAM_LIMIT = int(os.environ.get("ORCH_STREAM_LIMIT", str(16 * 1024 * 1024)))
 # Lưu ý: các mức phải khớp với `claude --effort` của CLI đang cài (hiện chỉ: low|medium|high|max).
 EFFORT_LEVELS = ("low", "medium", "high", "max")
 DEFAULT_EFFORT = os.environ.get("ORCH_DEFAULT_EFFORT", "high")  # high mặc định
+# Permission mode mặc định khi session KHÔNG set. CLI 2.1.200 đổi default 'default'→'Manual':
+# headless -p ở Manual sẽ CHẶN tool chờ user duyệt → agent kẹt (không ai ở terminal). Orchestrator
+# đã có lớp approval riêng qua signal (requires_approval) nên bypass an toàn. Set '' để tắt fallback này.
+DEFAULT_PERMISSION_MODE = os.environ.get("ORCH_DEFAULT_PERMISSION_MODE", "bypassPermissions")
 
 
 # ─── Store (SQLite) ───────────────────────────────────────────────────────────
@@ -778,7 +785,8 @@ def _iter_display_events(ev):
             if bt == "text":
                 tx = (b.get("text") or "").strip()
                 if tx:
-                    out.append(("text", _trunc(tx, 500), {"text": _trunc(tx)}))
+                    # summary cắt (audit); payload['text']=FULL → publish gắn 'result' full (id=70).
+                    out.append(("text", _trunc(tx, 500), {"text": tx}))
             elif bt == "thinking":
                 th = (b.get("thinking") or "").strip()
                 if th:
@@ -833,8 +841,9 @@ async def _run_claude(session, prompt, on_event=None, dry_run=False):
             cmd.append("--include-partial-messages")
     if allowed:
         cmd += ["--allowedTools", " ".join(allowed)]
-    if session.get("permission_mode"):
-        cmd += ["--permission-mode", session["permission_mode"]]
+    perm_mode = session.get("permission_mode") or DEFAULT_PERMISSION_MODE
+    if perm_mode:
+        cmd += ["--permission-mode", perm_mode]
     if session.get("model"):
         cmd += ["--model", session["model"]]
     effort = session.get("effort") or DEFAULT_EFFORT
@@ -1044,7 +1053,7 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
     """Tạo một headless session mới bằng `claude -p`, lấy session_id, rồi register.
 
     model: '' = auto (claude tự chọn); hoặc alias 'opus'/'sonnet'/'haiku' / model id cụ thể.
-    effort: '' = dùng ORCH_DEFAULT_EFFORT (xhigh); hoặc low|medium|high|xhigh|max.
+    effort: '' = dùng ORCH_DEFAULT_EFFORT (high); hoặc low|medium|high|max.
     workspace_id: session thuộc workspace nào — cwd bị GHIM vào thư mục workspace đó (đa
         tenant). Chỉ workspace 'default' (single-tenant cũ) mới dùng cwd tự do truyền vào.
     Dry-run: tạo session_id giả để test UI mà không gọi claude.
@@ -1070,6 +1079,9 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
         cmd = [CLAUDE_BIN, "-p", "--output-format", "json"]
         if model:
             cmd += ["--model", model]
+        perm_mode = permission_mode or DEFAULT_PERMISSION_MODE
+        if perm_mode:
+            cmd += ["--permission-mode", perm_mode]  # CLI 2.1.200: Manual mặc định chặn tool headless
         eff = effort or DEFAULT_EFFORT
         if eff in EFFORT_LEVELS:
             cmd += ["--effort", eff]
@@ -1117,6 +1129,51 @@ def _find_transcript(session_id):
         if f.exists():
             return f
     return None
+
+
+def _transcript_title(f):
+    """Tiêu đề ngắn cho 1 transcript: dòng 'summary' đầu tiên, không có thì text user đầu tiên.
+    Chỉ đọc tối đa 40 dòng đầu — đủ cho cả transcript đã compact nhiều lần."""
+    try:
+        with f.open(encoding="utf-8") as fh:
+            for _ in range(40):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                t = obj.get("type")
+                if t == "summary" and obj.get("summary"):
+                    return _trunc(str(obj["summary"]).replace("\n", " "), 80)
+                if t == "user":
+                    c = (obj.get("message") or {}).get("content")
+                    if isinstance(c, list):
+                        c = next((b.get("text") for b in c
+                                  if isinstance(b, dict) and b.get("type") == "text"), "")
+                    # bỏ message máy (<system-reminder>, <ide_opened_file>…) — không phải lời user
+                    if isinstance(c, str) and c.strip() and not c.strip().startswith("<"):
+                        return _trunc(c.strip().replace("\n", " "), 80)
+    except OSError:
+        pass
+    return ""
+
+
+def list_claude_sessions(cwd, limit=30):
+    """Session Claude Code CLI của 1 project cwd (file ~/.claude/projects/<cwd-mã-hoá>/*.jsonl) —
+    KHÁC bảng sessions DB (DB = agent do orchestrator spawn). UI dùng để chọn 1 session làm
+    orchestrator chính của project. Trả [{id, title, mtime}] mới nhất trước.
+    ponytail: mã hoá thư mục theo quy ước claude (ký tự ngoài [A-Za-z0-9] → '-'); 2 cwd khác nhau
+    munge trùng thì lẫn session — hiếm, verify bằng field cwd trong jsonl khi thành vấn đề thật."""
+    enc = re.sub(r"[^A-Za-z0-9]", "-", cwd or "")
+    d = CLAUDE_PROJECTS_DIR / enc
+    if not (enc and d.is_dir()):
+        return []
+    files = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+    return [{"id": f.stem, "title": _transcript_title(f),
+             "mtime": datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds")}
+            for f in files]
 
 
 def _extract_compact(session_id):
@@ -1406,8 +1463,13 @@ async def process_signal(signal):
             async def on_event(kind, summary, payload, _rid=run_id, _sid=target["id"], _sig=signal["id"], _ws=wsid):
                 seq_box[0] += 1
                 record_run_event(_rid, _sid, _sig, seq_box[0], kind, summary, payload)
-                publish({"type": "run_event", "run_id": _rid, "session": _sid,
-                         "seq": seq_box[0], "kind": kind, "summary": summary, "workspace_id": _ws})
+                ev = {"type": "run_event", "run_id": _rid, "session": _sid,
+                      "seq": seq_box[0], "kind": kind, "summary": summary, "workspace_id": _ws}
+                # id=70: event 'text' mang thêm 'result' = FULL AI message (summary bị _trunc chỉ
+                # dùng cho audit) → client SSE dựng bubble mỗi message không bị cắt.
+                if kind == "text" and isinstance(payload, dict) and payload.get("text"):
+                    ev["result"] = payload["text"]
+                publish(ev)
 
             attempts = 0
             engine = engine_for(target)  # chọn engine theo session (default claude)
@@ -1432,12 +1494,16 @@ async def process_signal(signal):
             fail_reason = "" if res.get("ok") else _trunc(res.get("result", ""), 300)
             set_signal_status(signal["id"], final, fail_reason)
             set_session_status(target["id"], "idle")
-            # FE chốt pure signal-driven (spec id=14/G2): KHÔNG còn bóc [[RESULT]] marker → event
-            # 'result'. UI dựng CHỈ từ signal + tool chuẩn (push_draft_to_ui/notify_progress). Ở đây
-            # chỉ phát lifecycle 'run' + trạng thái 'signal'; không lôi text agent ra UI nữa.
+            # Signal-driven: phát lifecycle 'run' + trạng thái 'signal'. Text agent (nội dung trả lời)
+            # đi kèm signal done qua field 'result' — FULL, KHÔNG cắt (event 'text' SSE bị _trunc chỉ
+            # dùng cho audit/dashboard). Client đọc result từ signal status=done để hiện đủ nội dung.
             publish({"type": "run", "run_id": run_id, "session": target["id"], "signal": signal["id"],
                      "status": status, "tokens": res.get("tokens", 0), "workspace_id": wsid})
-            publish({"type": "signal", "id": signal["id"], "status": final, "session": target["id"], "workspace_id": wsid})
+            sig_ev = {"type": "signal", "id": signal["id"], "status": final,
+                      "session": target["id"], "workspace_id": wsid}
+            if res.get("ok"):
+                sig_ev["result"] = res.get("result", "")  # text agent full, chỉ khi done
+            publish(sig_ev)
             return {"signal": signal["id"], "status": final, "result": res.get("result", "")}
 
 
@@ -1481,7 +1547,7 @@ def build_app():
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.requests import Request
     from starlette.responses import JSONResponse, StreamingResponse
-    from starlette.routing import Mount, Route
+    from starlette.routing import Mount, Route, WebSocketRoute
     from starlette.staticfiles import StaticFiles
 
     import signal_mcp
@@ -1684,6 +1750,152 @@ def build_app():
         cwd = request.query_params.get("cwd", "")
         return JSONResponse(await discover_tools(cwd))
 
+    async def api_claude_sessions(request: Request):
+        """Session Claude Code CLI (transcript ~/.claude/projects) của 1 cwd — cho UI chọn
+        orchestrator của project. Không đụng DB sessions."""
+        cwd = (request.query_params.get("cwd") or "").strip()
+        if not cwd:
+            return JSONResponse({"error": "cwd bắt buộc"}, status_code=400)
+        return JSONResponse(list_claude_sessions(cwd))
+
+    async def _claude_mcp(args: list[str], cwd: str) -> str:
+        """Chạy `claude mcp <args>` tại cwd, trả stdout+stderr gộp (raw text cho UI)."""
+        proc = await asyncio.create_subprocess_exec(
+            CLAUDE_BIN, "mcp", *args, cwd=cwd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), 120)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return "timeout (120s): claude mcp " + " ".join(args)
+        return out.decode("utf-8", errors="replace")
+
+    async def api_mcp_list(request: Request):
+        """MCP đã đăng ký cho project (`claude mcp list` tại cwd)."""
+        cwd = (request.query_params.get("cwd") or "").strip()
+        if not cwd or not os.path.isdir(cwd):
+            return JSONResponse({"error": "cwd không hợp lệ"}, status_code=400)
+        return JSONResponse({"out": await _claude_mcp(["list"], cwd)})
+
+    async def api_mcp_add(request: Request):
+        """Add MCP cho project: `claude mcp add <args người dùng nhập>` tại cwd."""
+        body = await request.json()
+        cwd = (body.get("cwd") or "").strip()
+        args = (body.get("args") or "").strip()
+        if not cwd or not os.path.isdir(cwd):
+            return JSONResponse({"error": "cwd không hợp lệ"}, status_code=400)
+        if not args:
+            return JSONResponse({"error": "args bắt buộc (phần sau 'claude mcp add')"}, status_code=400)
+        try:
+            argv = shlex.split(args)
+        except ValueError as e:
+            return JSONResponse({"error": f"args không parse được: {e}"}, status_code=400)
+        return JSONResponse({"out": await _claude_mcp(["add", *argv], cwd)})
+
+    async def api_get_skill(request: Request):
+        """SKILL hiện tại của role + path đích (<cwd>/.claude/skills/<name>/SKILL.md)."""
+        s = get_session(request.path_params["sid"])
+        if not s:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        cwd, name = s.get("cwd") or "", s.get("name") or ""
+        return JSONResponse({"skill": _role_skill(cwd, name), "path": str(_skill_path(cwd, name))})
+
+    async def api_put_skill(request: Request):
+        """Upsert SKILL của role vào project cwd: tạo thư mục nếu chưa có, đè nếu đã có."""
+        s = get_session(request.path_params["sid"])
+        if not s:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        body = await request.json()
+        content = body.get("content") or ""
+        if not content.strip():
+            return JSONResponse({"error": "content rỗng — không ghi"}, status_code=400)
+        cwd, name = s.get("cwd") or "", s.get("name") or ""
+        _write_role_skill(cwd, name, content)
+        return JSONResponse({"path": str(_skill_path(cwd, name)), "bytes": len(content.encode("utf-8"))})
+
+    async def ws_terminal(websocket):
+        """Terminal thật trong browser (xterm.js): spawn `claude --resume <sid>` trong PTY tại cwd
+        của session, bơm 2 chiều qua WebSocket. Client gửi JSON {t:'i', d:<keys>} (input) và
+        {t:'r', c, r} (resize); server gửi bytes thô cho xterm ghi thẳng.
+        Mỗi kết nối 1 PTY + 1 thread đọc (os.read blocking); đóng WS là giết child."""
+        import fcntl
+        import pty
+        import struct
+        import termios
+
+        # Cùng chính sách auth với /api/*: ORCH_API_KEY set thì bắt ?api_key= khớp.
+        if ORCH_API_KEY and not secrets.compare_digest(
+                websocket.query_params.get("api_key", ""), ORCH_API_KEY):
+            await websocket.close(code=4401)
+            return
+        sid = websocket.query_params.get("session", "")
+        s = get_session(sid)
+        if not s:
+            await websocket.close(code=4404)
+            return
+        await websocket.accept()
+        cwd = (s.get("cwd") or "").strip() or str(Path.home())
+        pid, fd = pty.fork()
+        if pid == 0:  # child: chạy claude interactive trong PTY
+            try:
+                os.chdir(cwd)
+            except OSError:
+                pass
+            os.environ["TERM"] = "xterm-256color"
+            try:
+                os.execvp(CLAUDE_BIN, [CLAUDE_BIN, "--resume", sid])
+            finally:
+                os._exit(1)  # execvp fail — không được rơi ngược vào event loop của cha
+
+        loop = asyncio.get_running_loop()
+
+        def _read():
+            try:
+                return os.read(fd, 65536)
+            except OSError:  # EIO khi child thoát — coi như EOF
+                return b""
+
+        async def pump_out():
+            while True:
+                data = await loop.run_in_executor(None, _read)
+                if not data:
+                    break
+                await websocket.send_bytes(data)
+            await websocket.close()
+
+        out_task = asyncio.create_task(pump_out())
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if msg.get("t") == "i":
+                    os.write(fd, str(msg.get("d", "")).encode("utf-8"))
+                elif msg.get("t") == "r":
+                    try:
+                        fcntl.ioctl(fd, termios.TIOCSWINSZ,
+                                    struct.pack("HHHH", int(msg.get("r", 24)), int(msg.get("c", 80)), 0, 0))
+                    except (OSError, ValueError):
+                        pass
+        except Exception:  # noqa: BLE001 — WS đóng/lỗi đều đi đường dọn dẹp chung
+            pass
+        finally:
+            out_task.cancel()
+            try:
+                os.kill(pid, 15)
+            except ProcessLookupError:
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
+
     async def api_skill_templates(request: Request):
         return JSONResponse(_list_skill_templates())
 
@@ -1724,7 +1936,10 @@ def build_app():
         s = get_session(sid)
         if not s:
             return JSONResponse({"error": "not found"}, status_code=404)
-        return JSONResponse(engine_for(s).get_compact(sid))
+        out = engine_for(s).get_compact(sid)
+        # SKILL của role (playbook _prepend_role nhồi mỗi signal) — UI hiện kèm trong drawer Context.
+        out["skill"] = _role_skill(s.get("cwd") or "", s.get("name") or "")
+        return JSONResponse(out)
 
     async def api_compact(request: Request):
         """Nén context của 1 session: enqueue signal '/compact' (đi qua per-session lock,
@@ -1950,6 +2165,10 @@ def build_app():
         Route("/api/sessions", api_register, methods=["POST"]),
         Route("/api/sessions/spawn", api_spawn, methods=["POST"]),
         Route("/api/available-tools", api_available_tools),
+        Route("/api/claude-sessions", api_claude_sessions),
+        Route("/api/mcp", api_mcp_list),
+        Route("/api/mcp", api_mcp_add, methods=["POST"]),
+        WebSocketRoute("/ws/terminal", ws_terminal),
         Route("/api/skills/templates", api_skill_templates),
         Route("/api/sessions/{sid}", api_session_detail),
         Route("/api/sessions/{sid}/unregister", api_unregister, methods=["POST"]),
@@ -1957,6 +2176,8 @@ def build_app():
         Route("/api/sessions/{sid}/pause", api_pause, methods=["POST"]),
         Route("/api/sessions/{sid}/resume", api_resume, methods=["POST"]),
         Route("/api/sessions/{sid}/stop", api_stop, methods=["POST"]),
+        Route("/api/sessions/{sid}/skill", api_get_skill),
+        Route("/api/sessions/{sid}/skill", api_put_skill, methods=["POST"]),
         Route("/api/sessions/{sid}/compact", api_get_compact),
         Route("/api/sessions/{sid}/compact", api_compact, methods=["POST"]),
         Route("/api/sessions/{sid}/model", api_set_model, methods=["POST"]),
@@ -1989,6 +2210,12 @@ def build_app():
 
 def serve():
     import uvicorn
+    # Nếu server được start từ TRONG một session Claude Code (vd agent restart hộ), env mang
+    # marker session con → mọi `claude` spawn (PTY terminal + headless -p) tưởng mình là child
+    # session và TẮT lưu transcript (~/.claude/projects) — vỡ compact/resume/chọn-orchestrator.
+    # Strip 1 lần ở đây: mọi child kế thừa env sạch.
+    for k in ("CLAUDE_CODE_CHILD_SESSION", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID"):
+        os.environ.pop(k, None)
     uvicorn.run(build_app(), host=ORCH_HOST, port=ORCH_PORT)
 
 

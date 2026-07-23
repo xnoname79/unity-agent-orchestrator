@@ -3,7 +3,6 @@
 
 const $ = (id) => document.getElementById(id);
 
-const SESSION_BADGE = { idle: "b-gray", running: "b-blue", paused: "b-amber", stopped: "b-red" };
 const SIGNAL_BADGE = { pending: "b-gray", approved: "b-blue", processing: "b-blue",
                        done: "b-green", failed: "b-red", denied: "b-red", blocked: "b-amber" };
 const RUN_BADGE = { ok: "b-green", error: "b-red", running: "b-blue" };
@@ -89,9 +88,16 @@ async function viewCompact(id, name) {
   $("drawer-overlay").classList.add("open");
   try {
     const c = await api(`/api/sessions/${id}/compact`);
+    // SKILL của role (playbook nhồi mỗi signal) — luôn hiện, không phụ thuộc đã compact hay chưa.
+    const skill = c.skill
+      ? `<div class="ev text"><div class="k">🧩 SKILL (${c.skill.length.toLocaleString()} ký tự)</div>
+          <div class="s">${esc(c.skill)}</div></div>`
+      : `<div class="ev system"><div class="k">🧩 SKILL</div><div class="s">Session chưa có SKILL.</div></div>`;
     if (!c.found) {
       $("dr-badge").innerHTML = badge("chưa compact", "b-gray");
-      $("dr-body").innerHTML = `<div class="empty">${esc(c.reason || "Session chưa từng compact.")}</div>`;
+      $("dr-body").innerHTML = skill +
+        `<div class="empty">${esc(c.reason || "Session chưa từng compact.")}</div>`;
+      $("dr-body").scrollTop = 0;
       return;
     }
     const b = c.boundary || {};
@@ -104,13 +110,51 @@ async function viewCompact(id, name) {
         · cập nhật transcript ${esc(shortDateTime(c.mtime))}</div></div>`;
     const summary = `<div class="ev text"><div class="k">📄 summary (${c.summary.length.toLocaleString()} ký tự)</div>
       <div class="s">${esc(c.summary)}</div></div>`;
-    $("dr-body").innerHTML = meta + summary;
+    $("dr-body").innerHTML = skill + meta + summary;
     $("dr-body").scrollTop = 0;
   } catch (e) {
     $("dr-body").innerHTML = `<div class="empty" style="color:var(--red)">Lỗi đọc compact: ${esc(e)}</div>`;
   }
 }
 window.viewCompact = viewCompact;
+
+// Editor SKILL của role trong drawer: đọc SKILL hiện tại, sửa, upsert vào
+// <cwd>/.claude/skills/<name>/SKILL.md (tạo thư mục nếu chưa có, đè nếu đã có).
+async function editSkill(id, name) {
+  openRunId = null;
+  $("dr-title").textContent = `SKILL · ${name}`;
+  $("dr-badge").innerHTML = "";
+  $("dr-body").innerHTML = `<div class="empty">Đang đọc SKILL…</div>`;
+  $("drawer").classList.add("open");
+  $("drawer-overlay").classList.add("open");
+  try {
+    const r = await api(`/api/sessions/${id}/skill`);
+    $("dr-body").innerHTML = `
+      <div class="ev system"><div class="k">📘 path</div><div class="s">${esc(r.path)}</div></div>
+      <textarea id="skill-ta" class="skill-ta" spellcheck="false"
+        placeholder="Chưa có SKILL — dán nội dung SKILL.md vào đây rồi bấm Upsert."></textarea>
+      <div class="skill-save">
+        <button onclick="saveSkill('${id}')">💾 Upsert SKILL</button>
+        <span id="skill-msg" class="hint"></span>
+      </div>`;
+    $("skill-ta").value = r.skill || "";
+  } catch (e) {
+    $("dr-body").innerHTML = `<div class="empty" style="color:var(--red)">Lỗi đọc SKILL: ${esc(e)}</div>`;
+  }
+}
+window.editSkill = editSkill;
+
+async function saveSkill(id) {
+  const content = $("skill-ta").value;
+  const msg = $("skill-msg");
+  if (!content.trim()) { msg.textContent = "SKILL rỗng — không ghi."; return; }
+  msg.textContent = "Đang ghi…";
+  try {
+    const r = await api(`/api/sessions/${id}/skill`, "POST", { content });
+    msg.textContent = `✔ Đã ghi ${r.bytes.toLocaleString()} bytes → ${r.path}`;
+  } catch (e) { console.error(e); msg.textContent = "Lỗi ghi: " + e; }
+}
+window.saveSkill = saveSkill;
 
 // Xóa 1 signal đã kết thúc + audit log (runs/run_events) của nó. Có confirm vì phá hủy.
 async function deleteSignal(id) {
@@ -210,15 +254,18 @@ function renderWsBanner() {
 }
 
 // Master-detail navigation: chọn workspace → detail view; back → list view.
+// URL hash #ws=<id> để F5/share link giữ nguyên workspace đang xem.
 function selectWorkspace(id) {
   currentWS = id;
   sigShown = runsShown = PAGE;   // đổi workspace → reset phân trang
+  location.hash = id ? "ws=" + encodeURIComponent(id) : "";
   refreshAll();
 }
 window.selectWorkspace = selectWorkspace;
 
 function backToList() {
   currentWS = "";
+  location.hash = "";
   refreshAll();
 }
 window.backToList = backToList;
@@ -226,54 +273,563 @@ window.backToList = backToList;
 // Query suffix để scope API theo workspace đang lọc.
 function wsQuery() { return currentWS ? "?workspace_id=" + encodeURIComponent(currentWS) : ""; }
 
-// ── Renderers ──────────────────────────────────────────────────────────────
+// ── Agents canvas (nodeterm-style) ──────────────────────────────────────────
+// Mỗi session = 1 card trên canvas pan/zoom; các agent CHUNG cwd (≥2) được bao trong
+// 1 group card thư mục. Vị trí card + view (pan/zoom) lưu localStorage theo workspace.
 
-function renderSessions(list) {
-  const tb = $("sessions");
-  $("sessions-empty").hidden = list.length > 0;
-  tb.innerHTML = list.map((s) => {
-    const id = encodeURIComponent(s.id);
-    const tools = (JSON.parse(s.allowed_tools || "[]") || []).join(", ") || "—";
-    // paused HOẶC stopped → cho Resume (đưa về idle để nhận signal lại); còn lại → Pause.
-    // (Nút Stop đã ẩn nên phải để stopped resume được từ đây, tránh session kẹt trạng thái.)
-    const ctrl = (s.status === "paused" || s.status === "stopped")
-      ? `<button onclick="act('/api/sessions/${id}/resume')">Resume</button>`
-      : `<button onclick="act('/api/sessions/${id}/pause')">Pause</button>`;
-    // Nút Stop đã ẩn: run thường chạy hết rồi mới ngừng; cần dừng khẩn thì dùng Kill-switch tổng.
-    const compact = `<button onclick="compactSession('${id}','${esc(s.name)}')">🗜 Compact</button>`;
-    const viewCompact = `<button class="secondary" onclick="viewCompact('${id}','${esc(s.name)}')">📄 Context</button>`;
-    // Cap theo ngày: hiện "đã dùng/hạn mức"; khi chạm trần thì thêm nút Allow +N để nới hôm nay.
-    const allow = s.daily_blocked
-      ? `<button class="warn" onclick="allowMore('${id}','${esc(s.name)}')">Allow +${DAILY_STEP}</button>`
-      : "";
-    const unreg = `<button class="danger" onclick="if(confirm('Gỡ session ${esc(s.name)}?'))act('/api/sessions/${id}/unregister')">Unregister</button>`;
-    const cur = s.model || "";
-    const modelSel = `<input class="mini model-in" list="model-list" value="${esc(cur)}" placeholder="auto"
-      onchange="setModel('${id}', this.value.trim())">`;
-    const curEff = s.effort || "";
-    const effortSel = `<select class="mini" onchange="setEffort('${id}', this.value)">` +
-      EFFORT_OPTS.map((e) => `<option value="${e}"${e === curEff ? " selected" : ""}>${e || "default"}</option>`).join("") +
-      `</select>`;
-    // Ô "hôm nay": số run đã dùng / hạn mức ngày. 0 hạn mức = cap ngày đang tắt → "—".
-    const today = s.daily_limit
-      ? `<span class="${s.daily_blocked ? "day-hit" : "day-ok"}" title="Số run đã chạy hôm nay / hạn mức ngày">${s.used_today}/${s.daily_limit}</span>`
-      : "—";
-    // cwd: có thể dài (thư mục workspace) → cắt bớt hiển thị, hover xem đầy đủ.
-    const cwd = s.cwd
-      ? `<code class="cwd" title="${esc(s.cwd)}">${esc(s.cwd)}</code>`
-      : `<span class="cwd-none">—</span>`;
-    return `<tr>
-      <td>${esc(s.name)}</td>
-      <td><code>${esc(s.id)}</code></td>
-      <td>${cwd}</td>
-      <td>${badge(s.status, SESSION_BADGE[s.status])}</td>
-      <td>${modelSel}</td>
-      <td>${effortSel}</td>
-      <td class="day-cell">${today}</td>
-      <td class="tools">${esc(tools)}</td>
-      <td><div class="actions">${ctrl}${compact}${viewCompact}${allow}${unreg}</div></td>
-    </tr>`;
-  }).join("");
+let CV = { k: 1, tx: 40, ty: 40 };  // view transform hiện tại (scale + translate)
+let cvWs = null;                    // workspace mà CV đang thuộc về (đổi ws → nạp lại view)
+let cvInteracting = false;          // đang pan/kéo card → SSE refresh KHÔNG re-render canvas
+let cvPending = null;               // data đến trong lúc kéo → render lại khi thả
+
+const cvStoreKey = () => "orch-canvas." + (currentWS || "default");
+function cvLoad() {
+  try { return JSON.parse(localStorage.getItem(cvStoreKey())) || {}; } catch { return {}; }
+}
+function cvSave(patch) {
+  const st = { ...cvLoad(), ...patch };
+  try { localStorage.setItem(cvStoreKey(), JSON.stringify(st)); } catch { /* full/private mode */ }
+}
+
+function applyView() {
+  $("world").style.transform = `translate(${CV.tx}px, ${CV.ty}px) scale(${CV.k})`;
+  $("cv-zoom").textContent = Math.round(CV.k * 100) + "%";
+}
+
+// Zoom quanh tâm khung nhìn (nút +/−) — wheel thì zoom quanh con trỏ (xem cvInit).
+function cvZoom(f) {
+  const cv = $("canvas"), cx = cv.clientWidth / 2, cy = cv.clientHeight / 2;
+  const k2 = Math.min(1.6, Math.max(0.35, CV.k * f));
+  CV.tx = cx - (cx - CV.tx) * (k2 / CV.k);
+  CV.ty = cy - (cy - CV.ty) * (k2 / CV.k);
+  CV.k = k2; applyView(); cvSave({ view: CV });
+}
+window.cvZoom = cvZoom;
+
+// Fit toàn bộ node vào khung nhìn (padding 40, không phóng quá 100%).
+function cvFit() {
+  const cv = $("canvas");
+  const nodes = [...$("world").children].filter((el) => el.classList.contains("node"));
+  if (!nodes.length) { CV = { k: 1, tx: 40, ty: 40 }; applyView(); return; }
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const el of nodes) {
+    const x = parseFloat(el.style.left) || 0, y = parseFloat(el.style.top) || 0;
+    x0 = Math.min(x0, x); y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x + el.offsetWidth); y1 = Math.max(y1, y + el.offsetHeight);
+  }
+  const k = Math.min(1, (cv.clientWidth - 80) / (x1 - x0), (cv.clientHeight - 80) / (y1 - y0));
+  CV = { k, tx: 40 - x0 * k, ty: 40 - y0 * k };
+  applyView(); cvSave({ view: CV });
+}
+window.cvFit = cvFit;
+
+// ── Terminal nhúng trong card 👑 (xterm.js ↔ /ws/terminal ↔ PTY claude --resume) ──
+// Element terminal sống NGOÀI chu trình innerHTML của canvas: tạo 1 lần per session,
+// sau mỗi render chỉ re-attach vào .term-slot của card orchestrator → SSE refresh không giết PTY.
+let cvTerms = {};  // sid → {sid, host, started, term, fit, ws}
+
+function startTerm(t) {
+  t.started = true;
+  t.term = new Terminal({ fontSize: 12, cursorBlink: true, scrollback: 5000,
+                          theme: { background: "#0c0e12", foreground: "#e6e8eb" } });
+  t.fit = new FitAddon.FitAddon();
+  t.term.loadAddon(t.fit);
+  t.term.open(t.host);
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  t.ws = new WebSocket(`${proto}://${location.host}/ws/terminal?session=${encodeURIComponent(t.sid)}`);
+  t.ws.binaryType = "arraybuffer";
+  t.ws.onopen = () => fitTerm(t);
+  t.ws.onmessage = (e) => t.term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
+  t.ws.onclose = () => { if (t.term) t.term.write("\r\n\x1b[31m[đã ngắt — bấm 🔄 reload]\x1b[0m\r\n"); };
+  t.term.onData((d) => { if (t.ws.readyState === 1) t.ws.send(JSON.stringify({ t: "i", d })); });
+}
+
+function fitTerm(t) {
+  if (!t.term || !t.fit || !t.host.isConnected) return;
+  try { t.fit.fit(); } catch { return; }
+  if (t.ws && t.ws.readyState === 1)
+    t.ws.send(JSON.stringify({ t: "r", c: t.term.cols, r: t.term.rows }));
+}
+
+function destroyTerm(sid) {
+  const t = cvTerms[sid];
+  if (!t) return;
+  if (t.ws) { try { t.ws.close(); } catch { /* đã đóng */ } }
+  if (t.term) t.term.dispose();
+  t.host.remove();
+  delete cvTerms[sid];
+}
+
+// Reload session/terminal: hủy PTY cũ, refetch data (session id có thể đã xoay sau lần resume
+// trước) rồi render lại → attach phiên `claude --resume` mới.
+async function reconnectTerm(sid) {
+  destroyTerm(sid);
+  await refreshAll();
+}
+window.reconnectTerm = reconnectTerm;
+
+// Sau mỗi render: cắm terminal vào slot của các card 👑; hủy terminal của card không còn.
+function attachTerms() {
+  const seen = new Set();
+  for (const slot of $("world").querySelectorAll(".term-slot")) {
+    const sid = slot.dataset.sid;
+    seen.add(sid);
+    let t = cvTerms[sid];
+    if (!t) t = cvTerms[sid] = { sid, host: Object.assign(document.createElement("div"),
+                                                          { className: "term-host" }),
+                                 started: false, term: null, fit: null, ws: null };
+    slot.appendChild(t.host);
+    requestAnimationFrame(() => { if (!t.started) startTerm(t); else fitTerm(t); });
+  }
+  for (const sid of Object.keys(cvTerms)) if (!seen.has(sid)) destroyTerm(sid);
+}
+
+// Gửi signal nhanh tới 1 agent ngay trên card.
+async function sendSignalTo(id, name) {
+  const msg = prompt(`Signal tới '${name}':`, "");
+  if (!msg || !msg.trim()) return;
+  try { await api("/api/signals", "POST", { to_session: id, message: msg.trim() }); await refreshAll(); }
+  catch (e) { console.error(e); alert("Lỗi gửi signal: " + e); }
+}
+window.sendSignalTo = sendSignalTo;
+
+// 1 card agent. needsYou = có signal chờ duyệt tới nó; isOrch = được chọn làm orchestrator của cwd.
+function agentCard(s, needsYou, isOrch) {
+  const id = encodeURIComponent(s.id);
+  const tools = JSON.parse(s.allowed_tools || "[]") || [];
+  const ctrl = (s.status === "paused" || s.status === "stopped")
+    ? `<button onclick="act('/api/sessions/${id}/resume')" title="Resume">▶</button>`
+    : `<button onclick="act('/api/sessions/${id}/pause')" title="Pause">⏸</button>`;
+  const allow = s.daily_blocked
+    ? `<button class="warn" onclick="allowMore('${id}','${esc(s.name)}')">Allow +${DAILY_STEP}</button>` : "";
+  const today = s.daily_limit
+    ? `<span class="${s.daily_blocked ? "day-hit" : "day-ok"}" title="run hôm nay / hạn mức">${s.used_today}/${s.daily_limit}</span>`
+    : "";
+  const effortSel = `<select class="mini" onchange="setEffort('${id}', this.value)">` +
+    EFFORT_OPTS.map((e) => `<option value="${e}"${e === (s.effort || "") ? " selected" : ""}>${e || "effort"}</option>`).join("") +
+    `</select>`;
+  const head = `<div class="node-head">
+      <span class="status-dot dot-${esc(s.status)}"></span>
+      ${isOrch ? `<span title="Orchestrator của project này">👑</span>` : ""}
+      <b title="${esc(s.name)}">${esc(s.name)}</b>
+      ${needsYou ? `<span class="needs-badge">NEEDS YOU</span>` : ""}
+      <span class="spacer"></span>
+      <span class="sid" title="${esc(s.id)}">${esc(s.id)}</span>
+    </div>`;
+  const ctxBtn = `<button class="secondary" onclick="viewCompact('${id}','${esc(s.name)}')" title="Xem context/SKILL">📄</button>`;
+  const unregBtn = `<button class="danger" onclick="if(confirm('Gỡ session ${esc(s.name)}?'))act('/api/sessions/${id}/unregister')" title="Unregister">🗑</button>`;
+  const cls = `st-${esc(s.status)}${needsYou ? " needs-you" : ""}`;
+
+  // Card 👑: terminal thật nhúng thẳng trong card, action buttons xếp dọc left bar.
+  if (isOrch)
+    return `<div class="agent-card orch-term is-orch ${cls}" data-sid="${esc(s.id)}">
+      ${head}
+      <div class="orch-body">
+        <div class="orch-side">
+          ${ctrl}${allow}
+          <button onclick="reconnectTerm('${esc(s.id)}')" title="Reload session/terminal (chạy lại claude --resume)">🔄</button>
+          ${ctxBtn}${unregBtn}
+        </div>
+        <div class="term-slot" data-sid="${esc(s.id)}"></div>
+      </div>
+    </div>`;
+
+  return `<div class="agent-card ${cls}" data-sid="${esc(s.id)}">
+    ${head}
+    <div class="agent-body">
+      <div class="rw"><input class="mini model-in grow" list="model-list" value="${esc(s.model || "")}"
+        placeholder="model: auto" onchange="setModel('${id}', this.value.trim())">${effortSel}</div>
+      <div class="rw"><span title="${esc(tools.join(", ") || "full quyền")}">🔧 ${tools.length ? tools.length + " tools" : "all tools"}</span>
+        <span class="spacer"></span>${today}</div>
+    </div>
+    <div class="agent-actions">
+      ${ctrl}${allow}
+      ${ctxBtn}<button class="secondary" onclick="editSkill('${id}','${esc(s.name)}')"
+        title="Update SKILL của role (upsert vào .claude/skills trong cwd project)">📘</button>${unregBtn}
+    </div>
+  </div>`;
+}
+
+// ── Zone (cwd) + orchestrator + chat ────────────────────────────────────────
+let cvGroups = [];    // [{cwd, els:[nodeEl]}] — rebuild mỗi render; drag group đọc từ đây
+let cvNodeEls = {};   // session_id → node element (để vẽ edge)
+let cvEdges = [];     // [{from, to, cls}] resolve từ signal list
+let cvLast = { sessions: [], signals: [] };  // data mới nhất (setOrch re-render không cần fetch)
+
+const EDGE_COLORS = { wait: "#f0a020", run: "#4c8dff", done: "#30a46c", fail: "#e5484d" };
+const EDGE_DEFS = "<defs>" + Object.entries(EDGE_COLORS).map(([k, c]) =>
+  `<marker id="ah-${k}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+     <path d="M0,0L8,4L0,8z" fill="${c}"/></marker>`).join("") + "</defs>";
+
+// Danh sách session Claude Code CLI (transcript ~/.claude/projects) theo cwd.
+// undefined = chưa tải, null = đang tải, [] / [...] = kết quả. Nguồn CHỌN orchestrator —
+// khác agent DB (agent do orchestrator spawn, đã là card trên canvas).
+let cvClaude = {};
+
+async function loadClaudeSessions(gi, force) {
+  const g = cvGroups[gi];
+  if (!g || (!force && cvClaude[g.cwd] !== undefined)) return;
+  cvClaude[g.cwd] = null;
+  try { cvClaude[g.cwd] = await api("/api/claude-sessions?cwd=" + encodeURIComponent(g.cwd)); }
+  catch (e) { console.error(e); cvClaude[g.cwd] = []; }
+  if (!cvInteracting) renderCanvas(cvLast.sessions, cvLast.signals);
+}
+window.loadClaudeSessions = loadClaudeSessions;
+
+// Chọn 1 session Claude CLI làm orchestrator chính của project (cwd). Session này nằm ngoài DB
+// → auto-register vào orchestrator (engine claude, giữ nguyên id) để nhận signal/chat được.
+// Lựa chọn lưu localStorage theo workspace.
+async function setOrch(gi, sid) {
+  const g = cvGroups[gi];
+  if (!g) return;
+  const orch = cvLoad().orch || {};
+  if (sid) {
+    if (!(cvLast.sessions || []).some((s) => s.id === sid)) {
+      const base = g.cwd.replace(/\/+$/, "").split("/").pop() || "project";
+      try {
+        await api("/api/sessions", "POST",
+                  { id: sid, name: "orch-" + base, cwd: g.cwd, workspace_id: currentWS });
+      } catch (e) { console.error(e); alert("Lỗi đăng ký session làm orchestrator: " + e); return; }
+    }
+    orch[g.cwd] = sid;
+  } else delete orch[g.cwd];
+  cvSave({ orch });
+  await refreshAll();
+}
+window.setOrch = setOrch;
+
+// ── MCP của project (claude mcp list/add tại cwd) ───────────────────────────
+let mcpCache = {};  // cwd → {out} | null (đang tải) | undefined (chưa tải)
+let mcpOpen = {};   // cwd → panel đang mở
+let mcpDraft = {};  // cwd → text đang gõ trong input add (sống qua re-render SSE)
+
+async function loadMcp(gi, force) {
+  const g = cvGroups[gi];
+  if (!g || (!force && mcpCache[g.cwd] !== undefined)) return;
+  mcpCache[g.cwd] = null;
+  if (!cvInteracting) renderCanvas(cvLast.sessions, cvLast.signals);
+  try { mcpCache[g.cwd] = await api("/api/mcp?cwd=" + encodeURIComponent(g.cwd)); }
+  catch (e) { console.error(e); mcpCache[g.cwd] = { out: "lỗi: " + e }; }
+  if (!cvInteracting) renderCanvas(cvLast.sessions, cvLast.signals);
+}
+window.loadMcp = loadMcp;
+
+function toggleMcp(gi) {
+  const g = cvGroups[gi];
+  if (!g) return;
+  mcpOpen[g.cwd] = !mcpOpen[g.cwd];
+  if (mcpOpen[g.cwd]) loadMcp(gi);
+  renderCanvas(cvLast.sessions, cvLast.signals);
+}
+window.toggleMcp = toggleMcp;
+
+function mcpDraftSet(gi, v) { const g = cvGroups[gi]; if (g) mcpDraft[g.cwd] = v; }
+window.mcpDraftSet = mcpDraftSet;
+
+// Add MCP: chạy `claude mcp add <args>` tại cwd, rồi reload list — output add hiển thị trên đầu panel.
+async function mcpAdd(gi) {
+  const g = cvGroups[gi];
+  if (!g) return;
+  const args = (mcpDraft[g.cwd] || "").trim();
+  if (!args) return;
+  mcpCache[g.cwd] = null;
+  renderCanvas(cvLast.sessions, cvLast.signals);
+  try {
+    const r = await api("/api/mcp", "POST", { cwd: g.cwd, args });
+    mcpDraft[g.cwd] = "";
+    const l = await api("/api/mcp?cwd=" + encodeURIComponent(g.cwd));
+    mcpCache[g.cwd] = { out: "$ claude mcp add " + args + "\n" + (r.out || "").trim() + "\n\n" + (l.out || "") };
+  } catch (e) { console.error(e); mcpCache[g.cwd] = { out: "lỗi add: " + e }; }
+  renderCanvas(cvLast.sessions, cvLast.signals);
+}
+window.mcpAdd = mcpAdd;
+
+function mcpPanelHtml(gi, cwd) {
+  if (!mcpOpen[cwd]) return "";
+  const m = mcpCache[cwd];
+  const body = (m === undefined || m === null) ? "đang tải…" : (m.out || "").trim() || "(chưa có MCP nào)";
+  return `<div class="zone-mcp">
+    <div class="mcp-head"><b>🔌 MCP của project</b><span class="spacer"></span>
+      <button class="secondary" onclick="loadMcp(${gi}, true)" title="Tải lại danh sách MCP">🔄</button>
+      <button class="secondary" onclick="toggleMcp(${gi})" title="Đóng panel">✕</button></div>
+    <pre class="mcp-list">${esc(body)}</pre>
+    <div class="mcp-add">
+      <span class="mcp-pre">claude mcp add</span>
+      <input class="mini" placeholder="vd: unity npx -y unity-mcp" value="${esc(mcpDraft[cwd] || "")}"
+        oninput="mcpDraftSet(${gi}, this.value)" onkeydown="if(event.key==='Enter')mcpAdd(${gi})">
+      <button onclick="mcpAdd(${gi})" title="Chạy claude mcp add tại cwd project">➕</button>
+    </div>
+  </div>`;
+}
+
+// Options cho dropdown orchestrator: session Claude CLI của cwd (trừ những id đã là agent DB —
+// transcript của agent spawn nằm cùng thư mục; giữ lại id đang được chọn để select không mất giá trị).
+function orchOptions(cwd, agentList, orchId) {
+  let opts = `<option value="">— chọn orchestrator —</option>`;
+  const claude = cvClaude[cwd];
+  if (claude === undefined || claude === null)
+    return opts + `<option disabled>đang tải sessions…</option>`;
+  const agentIds = new Set(agentList.map((s) => s.id));
+  const items = claude.filter((c) => !agentIds.has(c.id) || c.id === orchId);
+  if (orchId && !items.some((c) => c.id === orchId))
+    opts += `<option value="${esc(orchId)}" selected>👑 ${esc(orchId.slice(0, 8))}…</option>`;
+  if (!items.length && !orchId)
+    opts += `<option disabled>không có session claude nào trong cwd này</option>`;
+  return opts + items.map((c) =>
+    `<option value="${esc(c.id)}"${c.id === orchId ? " selected" : ""} title="${esc(c.id)} · ${esc(c.mtime)}">` +
+    `${esc((c.title || "").slice(0, 48) || c.id.slice(0, 8))} · ${esc(c.id.slice(0, 8))}</option>`).join("");
+}
+
+function zoneHtml(gi, cwd, list, orchId) {
+  const base = cwd.replace(/\/+$/, "").split("/").pop() || cwd;
+  return `<div class="node group-zone" data-nid="g:${esc(cwd)}" data-gi="${gi}">
+    <div class="zone-head">
+      <div class="zone-title">📁 <b>${esc(base)}</b><span class="g-count">${list.length} agents</span>
+        <span class="g-path" title="${esc(cwd)}">${esc(cwd)}</span></div>
+      <div class="zone-ctl">
+        <select class="mini" onchange="setOrch(${gi}, this.value)"
+          title="Session Claude Code của project (từ ~/.claude/projects) làm orchestrator chính">${orchOptions(cwd, list, orchId)}</select>
+        <button class="secondary" onclick="loadClaudeSessions(${gi}, true)" title="Tải lại danh sách session">🔄</button>
+        <button class="secondary" onclick="toggleMcp(${gi})" title="MCP của project (claude mcp list/add)">🔌 MCP</button>
+      </div>
+      ${mcpPanelHtml(gi, cwd)}
+    </div>
+  </div>`;
+}
+
+// Zone tự bo quanh member: bbox các node member + header. Gọi sau mỗi lần đặt/kéo node.
+function layoutZones() {
+  for (const z of $("world").querySelectorAll(".group-zone")) {
+    const g = cvGroups[+z.dataset.gi];
+    if (!g || !g.els.length) continue;
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (const el of g.els) {
+      const x = parseFloat(el.style.left) || 0, y = parseFloat(el.style.top) || 0;
+      x0 = Math.min(x0, x); y0 = Math.min(y0, y);
+      x1 = Math.max(x1, x + el.offsetWidth); y1 = Math.max(y1, y + el.offsetHeight);
+    }
+    const headH = (z.querySelector(".zone-head") || {}).offsetHeight || 74;
+    z.style.left = (x0 - 18) + "px";
+    z.style.top = (y0 - headH - 14) + "px";
+    z.style.width = Math.max(x1 - x0 + 36, 400) + "px";
+    z.style.height = (y1 - y0 + headH + 32) + "px";
+  }
+}
+
+// Điểm trên biên rect r theo hướng tới (tx,ty) — mũi tên chạm mép card thay vì chui vào giữa.
+function rectBorderPoint(r, tx, ty) {
+  const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+  const dx = tx - cx, dy = ty - cy;
+  if (!dx && !dy) return { x: cx, y: cy };
+  const t = Math.min((r.w / 2) / Math.abs(dx || 1e-9), (r.h / 2) / Math.abs(dy || 1e-9));
+  return { x: cx + dx * t, y: cy + dy * t };
+}
+
+// Vẽ lại toàn bộ mũi tên signal theo vị trí node hiện tại (gọi cả trong lúc kéo).
+function redrawEdges() {
+  const svg = $("edges");
+  if (!svg) return;
+  const rect = (el) => ({ x: parseFloat(el.style.left) || 0, y: parseFloat(el.style.top) || 0,
+                          w: el.offsetWidth, h: el.offsetHeight });
+  let out = "";
+  for (const e of cvEdges) {
+    const a = cvNodeEls[e.from], b = cvNodeEls[e.to];
+    if (!a || !b) continue;
+    const ra = rect(a), rb = rect(b);
+    const p1 = rectBorderPoint(ra, rb.x + rb.w / 2, rb.y + rb.h / 2);
+    const p2 = rectBorderPoint(rb, ra.x + ra.w / 2, ra.y + ra.h / 2);
+    out += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" class="edge edge-${e.cls}" marker-end="url(#ah-${e.cls})"/>`;
+  }
+  svg.innerHTML = EDGE_DEFS + out;
+}
+
+function renderCanvas(sessions, signals) {
+  cvLast = { sessions, signals };
+  if (cvInteracting) { cvPending = cvLast; return; }  // đừng phá thao tác kéo
+  const world = $("world");
+  $("cv-empty").hidden = sessions.length > 0;
+
+  // Signal pending chờ duyệt → card đích sáng "NEEDS YOU" (kiểu nodeterm).
+  const needs = new Set((signals || [])
+    .filter((s) => s.requires_approval && s.status === "pending")
+    .map((s) => s.to_session));
+
+  const st = cvLoad();
+  const pos = st.pos || {};
+  const orch = st.orch || {};
+
+  // Gom theo cwd: ≥2 agent chung cwd → zone bo quanh; member vẫn là node TỰ DO trên canvas.
+  const byCwd = new Map();
+  for (const s of sessions) {
+    const k = s.cwd || "";
+    if (!byCwd.has(k)) byCwd.set(k, []);
+    byCwd.get(k).push(s);
+  }
+  cvGroups = [];
+  let zonesHtml = "", nodesHtml = "";
+  const nodeMeta = [];  // {sid, cwd, grouped, gi} theo thứ tự render
+  for (const [cwd, list] of byCwd) {
+    const grouped = !!cwd && list.length >= 2;
+    let gi = -1;
+    if (grouped) {
+      gi = cvGroups.length;
+      cvGroups.push({ cwd, els: [] });
+      zonesHtml += zoneHtml(gi, cwd, list, orch[cwd]);
+    }
+    for (const s of list) {
+      nodesHtml += `<div class="node" data-nid="s:${esc(s.id)}">${agentCard(s, needs.has(s.id), orch[cwd] === s.id)}</div>`;
+      nodeMeta.push({ sid: s.id, cwd, grouped, gi });
+    }
+  }
+  // Thứ tự vẽ: zone (dưới) → edges (giữa) → agent card (trên).
+  world.innerHTML = zonesHtml + `<svg id="edges" class="edges"></svg>` + nodesHtml;
+
+  // Đặt vị trí agent: có lưu → dùng lại; mới → xếp cụm theo cwd (seed từ pos group cũ nếu có).
+  cvNodeEls = {};
+  const agentEls = world.querySelectorAll(".node:not(.group-zone)");
+  let cx = 40, cy = 40, rowH = 0;
+  const gcur = {};  // cwd → con trỏ xếp lưới 3 cột cho member mới
+  nodeMeta.forEach((m, i) => {
+    const el = agentEls[i], nid = "s:" + m.sid;
+    cvNodeEls[m.sid] = el;
+    if (m.grouped) cvGroups[m.gi].els.push(el);
+    if (!pos[nid]) {
+      if (m.grouped) {
+        let gc = gcur[m.cwd];
+        if (!gc) {
+          const old = pos["g:" + m.cwd];  // migrate: vị trí group-card kiểu cũ làm gốc cụm
+          if (old) gc = { x0: old.x + 20, y0: old.y + 90, i: 0 };
+          else {
+            if (cx + 940 > 1360 && cx > 40) { cx = 40; cy += rowH + 80; rowH = 0; }
+            gc = { x0: cx, y0: cy + 80, i: 0 };
+            cx += 980; rowH = Math.max(rowH, 480);
+          }
+          gcur[m.cwd] = gc;
+        }
+        pos[nid] = { x: gc.x0 + (gc.i % 3) * 300, y: gc.y0 + Math.floor(gc.i / 3) * 200 };
+        gc.i++;
+      } else {
+        if (cx + el.offsetWidth > 1360 && cx > 40) { cx = 40; cy += rowH + 40; rowH = 0; }
+        pos[nid] = { x: cx, y: cy };
+        cx += el.offsetWidth + 40;
+        rowH = Math.max(rowH, el.offsetHeight);
+      }
+    }
+    el.style.left = pos[nid].x + "px";
+    el.style.top = pos[nid].y + "px";
+  });
+  cvSave({ pos });
+  layoutZones();
+  // Nạp danh sách session Claude CLI cho các cwd chưa có cache (async — về thì re-render).
+  cvGroups.forEach((g, gi) => { if (cvClaude[g.cwd] === undefined) loadClaudeSessions(gi); });
+
+  // Mũi tên signal: resolve from/to về session id (nhận cả id lẫn name), dedup theo cặp
+  // (ưu tiên trạng thái "đang chạy" > "chờ" > "lỗi" > "xong").
+  const byId = {}, byName = {};
+  for (const s of sessions) { byId[s.id] = s.id; byName[s.name] = s.id; }
+  const PRIO = { run: 0, wait: 1, fail: 2, done: 3 };
+  const pairBest = new Map();
+  for (const sg of signals || []) {
+    const from = byId[sg.from_session] || byName[sg.from_session];
+    const to = byId[sg.to_session] || byName[sg.to_session];
+    if (!from || !to || from === to) continue;
+    const cls = sg.status === "processing" ? "run"
+      : (sg.status === "pending" || sg.status === "approved") ? "wait"
+      : sg.status === "done" ? "done" : "fail";
+    const key = from + "→" + to;
+    if (!pairBest.has(key) || PRIO[cls] < PRIO[pairBest.get(key).cls])
+      pairBest.set(key, { from, to, cls });
+  }
+  cvEdges = [...pairBest.values()];
+  redrawEdges();
+  attachTerms();  // cắm terminal bền vào card 👑 (sau khi node đã vào DOM)
+
+  // Đổi workspace (hoặc lần đầu) → nạp view đã lưu, chưa có thì fit.
+  if (cvWs !== currentWS) {
+    cvWs = currentWS;
+    if (st.view) { CV = st.view; applyView(); } else cvFit();
+  } else applyView();
+}
+
+// Pan (kéo nền) / zoom (wheel, quanh con trỏ) / kéo card (header) / kéo zone-head (cả cụm).
+// Gắn 1 lần lúc load.
+function cvInit() {
+  const cv = $("canvas");
+  let drag = null;  // {mode:'pan'|'node'|'group', ...}
+  cv.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button, select, input, textarea, option")) return;
+    if (e.target.closest(".zone-mcp, .cv-overlay")) return;  // panel MCP / overlay toolbar-hint: không pan/kéo
+    const head = e.target.closest(".node-head, .zone-head");
+    const node = head && head.closest(".node");
+    if (node && node.classList.contains("group-zone")) {
+      // Kéo header 📁 → di chuyển cả cụm member (zone tự bo theo).
+      const g = cvGroups[+node.dataset.gi] || { els: [] };
+      drag = { mode: "group", sx: e.clientX, sy: e.clientY,
+               parts: g.els.map((el) => ({ el, ox: parseFloat(el.style.left) || 0,
+                                           oy: parseFloat(el.style.top) || 0 })) };
+    } else if (node) {
+      drag = { mode: "node", el: node, nid: node.dataset.nid, sx: e.clientX, sy: e.clientY,
+               ox: parseFloat(node.style.left) || 0, oy: parseFloat(node.style.top) || 0 };
+    } else if (!e.target.closest(".node")) {
+      drag = { mode: "pan", sx: e.clientX, sy: e.clientY, ox: CV.tx, oy: CV.ty };
+    } else return;
+    cvInteracting = true;
+    cv.classList.add("grabbing");
+    cv.setPointerCapture(e.pointerId);
+  });
+  cv.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+    if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;  // phân biệt click vs kéo
+    if (drag.mode === "pan") { CV.tx = drag.ox + dx; CV.ty = drag.oy + dy; applyView(); return; }
+    if (drag.mode === "node") {
+      drag.el.style.left = (drag.ox + dx / CV.k) + "px";
+      drag.el.style.top = (drag.oy + dy / CV.k) + "px";
+    } else {
+      for (const p of drag.parts) {
+        p.el.style.left = (p.ox + dx / CV.k) + "px";
+        p.el.style.top = (p.oy + dy / CV.k) + "px";
+      }
+    }
+    layoutZones(); redrawEdges();  // zone bo theo + mũi tên bám node ngay khi kéo
+  });
+  const up = () => {
+    if (!drag) return;
+    if (drag.mode === "node" || drag.mode === "group") {
+      const pos = cvLoad().pos || {};
+      const save = (el) => {
+        pos[el.dataset.nid] = { x: parseFloat(el.style.left) || 0, y: parseFloat(el.style.top) || 0 };
+      };
+      if (drag.mode === "node") save(drag.el); else drag.parts.forEach((p) => save(p.el));
+      cvSave({ pos });
+    } else cvSave({ view: CV });
+    // Click (không kéo) vào header card agent → mở drawer run mới nhất.
+    if (drag.mode === "node" && !drag.moved) {
+      const card = drag.el.querySelector(".agent-card");
+      if (card && !card.classList.contains("orch-term")) openSessionRun(card.dataset.sid);
+    }
+    drag = null; cvInteracting = false;
+    cv.classList.remove("grabbing");
+    if (cvPending) { const p = cvPending; cvPending = null; renderCanvas(p.sessions, p.signals); }
+  };
+  cv.addEventListener("pointerup", up);
+  cv.addEventListener("pointercancel", up);
+  // Click vào THÂN card (ngoài header — header đi đường pointerup ở trên) → drawer run.
+  cv.addEventListener("click", (e) => {
+    if (e.target.closest("button, select, input, textarea, option, .term-slot, .zone-mcp, .node-head, .zone-head")) return;
+    const card = e.target.closest(".agent-card");
+    if (card && !card.classList.contains("orch-term")) openSessionRun(card.dataset.sid);
+  });
+  cv.addEventListener("wheel", (e) => {
+    if (e.target.closest(".term-slot, .zone-mcp, .cv-overlay")) return;  // wheel trong terminal/panel MCP/overlay = scroll, không zoom
+    e.preventDefault();  // wheel = zoom quanh con trỏ (không scroll trang)
+    const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    const k2 = Math.min(1.6, Math.max(0.35, CV.k * Math.exp(-e.deltaY * 0.0012)));
+    CV.tx = mx - (mx - CV.tx) * (k2 / CV.k);
+    CV.ty = my - (my - CV.ty) * (k2 / CV.k);
+    CV.k = k2; applyView();
+    clearTimeout(cvInit._t); cvInit._t = setTimeout(() => cvSave({ view: CV }), 300);
+  }, { passive: false });
 }
 
 // ── Tool picker (checklist từ MCP servers của cwd) ───────────────────────────
@@ -448,6 +1004,43 @@ function closeDrawer() {
 }
 window.closeDrawer = closeDrawer;
 
+// Click card agent trên canvas → drawer run MỚI NHẤT của session đó
+// (đang chạy thì openRun đặt openRunId → SSE append messages live).
+async function openSessionRun(sid) {
+  const s = (cvLast.sessions || []).find((x) => x.id === sid);
+  openRunId = null;
+  $("dr-title").textContent = `Run · ${s ? s.name : sid}`;
+  $("dr-badge").innerHTML = "";
+  $("dr-body").innerHTML = `<div class="empty">Đang tìm run…</div>`;
+  $("drawer").classList.add("open");
+  $("drawer-overlay").classList.add("open");
+  try {
+    const runs = await api(`/api/sessions/${encodeURIComponent(sid)}/runs`);
+    if (!runs.length) {
+      $("dr-body").innerHTML = `<div class="empty">Session chưa có run nào.</div>`;
+      return;
+    }
+    await openRun(runs[0].id);
+    $("dr-title").textContent = `Run #${runs[0].id} · ${s ? s.name : ""}`;
+    $("dr-badge").innerHTML = badge(runs[0].status, RUN_BADGE[runs[0].status]);
+  } catch (e) {
+    $("dr-body").innerHTML = `<div class="empty" style="color:var(--red)">Lỗi: ${esc(e)}</div>`;
+  }
+}
+window.openSessionRun = openSessionRun;
+
+// ── Tabs: Agents (canvas) / History (signal queue + audit log) ──────────────
+function switchTab(name) {
+  $("tab-agents").hidden = name !== "agents";
+  $("tab-history").hidden = name !== "history";
+  $("tab-btn-agents").classList.toggle("active", name === "agents");
+  $("tab-btn-history").classList.toggle("active", name === "history");
+  try { localStorage.setItem("orch-tab", name); } catch { /* private mode */ }
+  // Quay lại tab agents: xterm cần fit lại (lúc ẩn display:none đo được 0×0).
+  if (name === "agents") requestAnimationFrame(() => Object.values(cvTerms).forEach(fitTerm));
+}
+window.switchTab = switchTab;
+
 // Append 1 event live nếu drawer đang mở đúng run đó.
 function appendLiveEvent(ev) {
   if (openRunId == null || ev.run_id !== openRunId) return;
@@ -479,6 +1072,7 @@ async function refreshAll() {
     const inDetail = !!currentWS;
     $("ws-list-view").hidden = inDetail;
     $("ws-detail-view").hidden = !inDetail;
+    $("hdr-ws").hidden = !inDetail;   // breadcrumb + tabs trong header chỉ hiện ở detail view
     if (!inDetail) return;   // màn list chỉ cần workspaces, khỏi fetch sessions/signals/runs
 
     const q = wsQuery();
@@ -487,7 +1081,7 @@ async function refreshAll() {
       api("/api/signals" + pagedQuery(sigShown)),
       api("/api/runs" + pagedQuery(runsShown)),
     ]);
-    renderSessions(sessions);
+    renderCanvas(sessions, signals.items);
     sigHasMore = signals.has_more; renderSignals(signals.items);
     runsHasMore = runs.has_more; renderRuns(runs.items);
   } catch (e) { console.error(e); }
@@ -517,6 +1111,10 @@ function connectSSE() {
   };
 }
 
+// Deep-link: mở lại đúng workspace từ URL hash (#ws=<id>).
+if (location.hash.startsWith("#ws=")) currentWS = decodeURIComponent(location.hash.slice(4));
+cvInit();
+try { switchTab(localStorage.getItem("orch-tab") || "agents"); } catch { /* tab mặc định */ }
 refreshAll();
 loadTemplates();
-connectSSE();
+if (!location.search.includes("nosse")) connectSSE();  // ?nosse: tắt SSE khi debug/test headless

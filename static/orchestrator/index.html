@@ -4,18 +4,30 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Session Orchestrator</title>
+<link rel="stylesheet" href="/vendor/xterm.css">
 <style>
   :root {
-    --bg: #0f1115; --panel: #1a1d24; --panel2: #21252e; --border: #2b303b;
-    --text: #e6e8eb; --muted: #8b93a1; --accent: #4c8dff;
-    --gray: #6b7280; --blue: #4c8dff; --amber: #f0a020; --red: #e5484d; --green: #30a46c;
+    --bg: #f3f5f8; --panel: #ffffff; --panel2: #eef1f6; --border: #d8dee8;
+    --text: #1d2433; --muted: #647082; --accent: #3b74e0;
+    --gray: #6b7280; --blue: #3b74e0; --amber: #b45309; --red: #d92d20; --green: #1a7f4e;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
+  /* App shell: header mảnh cố định, main chiếm phần còn lại (canvas full-bleed bên trong) */
+  body { margin: 0; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden;
+    display: flex; flex-direction: column;
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  header { display: flex; align-items: center; gap: 16px; padding: 14px 20px;
-    background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
-  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header { display: flex; align-items: center; gap: 12px; padding: 0 16px; height: 52px; flex: none;
+    background: var(--panel); border-bottom: 1px solid var(--border); z-index: 5; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 650; cursor: pointer; white-space: nowrap; }
+  header h1:hover { color: var(--accent); }
+  /* Breadcrumb workspace (chỉ hiện trong detail view) */
+  #hdr-ws { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  #hdr-ws[hidden] { display: none; }
+  .crumb-sep { color: var(--border); font-size: 18px; font-weight: 300; user-select: none; }
+  #ws-detail-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; display: flex; align-items: center; gap: 8px; }
+  #ws-banner-actions { display: flex; gap: 6px; }
+  #ws-banner-actions button { padding: 3px 10px; font-size: 12px; }
   .spacer { flex: 1; }
   .pill { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
   .pill.live { color: var(--green); border-color: var(--green); }
@@ -30,7 +42,11 @@
   .day-cell { font-variant-numeric: tabular-nums; text-align: center; }
   .day-ok { color: var(--muted); }
   .day-hit { color: var(--red); font-weight: 600; }
-  main { padding: 20px; display: grid; gap: 20px; max-width: 1200px; margin: 0 auto; }
+  main { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+  /* Master view (list workspace): container giữa trang, 2 cột grid + form spawn */
+  #ws-list-view { width: 100%; max-width: 1200px; margin: 0 auto; padding: 24px; }
+  .list-cols { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 24px; align-items: start; }
+  @media (max-width: 900px) { .list-cols { grid-template-columns: 1fr; } }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   .panel > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
     margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--border); }
@@ -55,12 +71,12 @@
   .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
     text-transform: uppercase; letter-spacing: .03em; }
   /* badge with a reason (hover to see): dotted underline hint + help cursor */
-  .badge.has-tip { cursor: help; text-decoration: underline dotted rgba(255,255,255,.45); text-underline-offset: 2px; }
-  .b-gray { background: rgba(107,114,128,.18); color: #b3bac5; }
-  .b-blue { background: rgba(76,141,255,.18); color: #7fb0ff; }
-  .b-amber { background: rgba(240,160,32,.18); color: #f0b860; }
-  .b-red { background: rgba(229,72,77,.18); color: #f0787c; }
-  .b-green { background: rgba(48,163,108,.18); color: #4cc088; }
+  .badge.has-tip { cursor: help; text-decoration: underline dotted rgba(0,0,0,.35); text-underline-offset: 2px; }
+  .b-gray { background: rgba(107,114,128,.14); color: #4b5563; }
+  .b-blue { background: rgba(59,116,224,.12); color: #2d5fc0; }
+  .b-amber { background: rgba(240,160,32,.16); color: #92600a; }
+  .b-red { background: rgba(217,45,32,.12); color: #b42318; }
+  .b-green { background: rgba(26,127,78,.13); color: #17714a; }
   .actions { display: flex; gap: 6px; flex-wrap: nowrap; }
   .actions button { white-space: nowrap; }
   .actions button { padding: 3px 9px; font-size: 12px; }
@@ -120,7 +136,7 @@
     border-radius: 0 6px 6px 0; }
   .ev .k { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
   .ev .s { white-space: pre-wrap; word-break: break-word; font-size: 13px; margin-top: 2px; }
-  .ev.thinking { border-left-color: var(--amber); } .ev.thinking .s { color: #d9c48a; font-style: italic; }
+  .ev.thinking { border-left-color: var(--amber); } .ev.thinking .s { color: #8a6d1f; font-style: italic; }
   .ev.tool_use { border-left-color: var(--blue); } .ev.tool_use .s { font-family: ui-monospace, monospace; font-size: 12px; }
   .ev.tool_result { border-left-color: var(--gray); } .ev.tool_result .s { color: var(--muted); font-size: 12px; }
   .ev.text { border-left-color: var(--green); }
@@ -142,19 +158,145 @@
   .back-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
   .back-bar h2 { margin: 0; font-size: 18px; }
   .back-btn { font-size: 13px; }
-  /* Detail view: inner panels need the same gap as main (they are not direct children of main) */
-  #ws-detail-view { display: grid; gap: 20px; }
-  #ws-detail-view[hidden] { display: none; }  /* keep hidden working (display:grid overrides hidden) */
-  /* Spawn agent form: sits below the workspace grid, width-limited for tidiness */
-  .spawn-panel { margin-top: 20px; max-width: 460px; }
+  /* Detail view: flex column chiếm hết main → tab Agents (canvas) giãn full */
+  #ws-detail-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #ws-detail-view[hidden] { display: none; }  /* keep hidden working (display:flex overrides hidden) */
+
+  /* ── Agents canvas (nodeterm-style): pan/zoom, mỗi agent 1 card, chung cwd → group card ── */
+  .panel > h2 { display: flex; align-items: center; gap: 10px; }
+  /* Tabs Agents / History — segmented control trong header */
+  .tabs { display: flex; gap: 2px; background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 9px; padding: 3px; flex: none; }
+  .tabs .tab { padding: 4px 14px; font-size: 12.5px; background: transparent; border: none;
+    border-radius: 7px; color: var(--muted); cursor: pointer; }
+  .tabs .tab.active { color: var(--text); background: var(--panel); box-shadow: 0 1px 3px rgba(16,24,40,.14); }
+  .agent-card { cursor: pointer; }
+  /* Tab Agents = canvas full-bleed chiếm hết phần còn lại của viewport */
+  #tab-agents { flex: 1; min-height: 0; display: flex; }
+  #tab-agents[hidden] { display: none; }
+  /* Tab History: container giữa trang, scroll trong main */
+  #tab-history { width: 100%; max-width: 1200px; margin: 0 auto; padding: 20px 24px;
+    display: grid; gap: 16px; align-content: start; }
+  #tab-history[hidden] { display: none; }
+  .canvas { position: relative; flex: 1; min-width: 0; overflow: hidden; cursor: grab;
+    touch-action: none;
+    background: radial-gradient(circle, #c6cede 1px, transparent 1px) 0 0 / 22px 22px, #eef1f6; }
+  /* Overlay nổi trên canvas (toolbar zoom, nút ?, popover hint) — không pan/zoom xuyên qua */
+  .cv-overlay { position: absolute; z-index: 3; }
+  .cv-toolbar { right: 16px; bottom: 16px; display: flex; align-items: center; gap: 2px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 3px;
+    box-shadow: 0 6px 20px rgba(16,24,40,.12); }
+  .cv-toolbar button { border: none; background: transparent; padding: 4px 10px; border-radius: 7px;
+    font-size: 14px; line-height: 1.2; }
+  .cv-toolbar button:hover { background: var(--panel2); }
+  #cv-zoom { font-size: 11px; color: var(--muted); min-width: 40px; text-align: center;
+    font-variant-numeric: tabular-nums; }
+  .cv-sep { width: 1px; height: 16px; background: var(--border); margin: 0 3px; }
+  .cv-help { left: 16px; bottom: 16px; width: 28px; height: 28px; padding: 0; border-radius: 50%;
+    background: var(--panel); border: 1px solid var(--border); color: var(--muted); font-size: 13px;
+    box-shadow: 0 6px 20px rgba(16,24,40,.12); }
+  .cv-help:hover { color: var(--text); }
+  .cv-hint { left: 16px; bottom: 52px; max-width: 380px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font-size: 12px;
+    color: var(--muted); line-height: 1.7; box-shadow: 0 10px 30px rgba(16,24,40,.16); }
+  .cv-hint b { color: var(--text); }
+  .canvas.grabbing { cursor: grabbing; }
+  .world { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+  .node { position: absolute; }
+  .cv-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-style: italic; pointer-events: none; }
+  .cv-empty[hidden] { display: none; }  /* display:flex đè attribute hidden nếu không có dòng này */
+  /* Agent card (node) */
+  .agent-card { width: 280px; background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 6px 18px rgba(16,24,40,.10); font-size: 12px; overflow: hidden; }
+  .agent-card.st-running { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue), 0 6px 18px rgba(0,0,0,.35); }
+  .agent-card.st-paused, .agent-card.needs-you { border-color: var(--amber); }
+  .agent-card.st-stopped { border-color: var(--red); opacity: .75; }
+  .node-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    border-bottom: 1px solid var(--border); cursor: grab; user-select: none; }
+  .node-head b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node-head .sid { font-family: ui-monospace, monospace; font-size: 10px; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 90px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--gray); }
+  .dot-running { background: var(--blue); animation: pulse 1.2s infinite; }
+  .dot-paused { background: var(--amber); }
+  .dot-stopped { background: var(--red); }
+  .needs-badge { font-size: 9px; font-weight: 700; letter-spacing: .05em; color: var(--amber);
+    border: 1px solid var(--amber); border-radius: 4px; padding: 1px 5px; animation: pulse 1.2s infinite; }
+  .agent-body { padding: 8px 10px; display: grid; gap: 6px; }
+  .agent-body .rw { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+  .agent-body .rw .grow { flex: 1; }
+  .agent-body input.model-in { width: 100%; }
+  .agent-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-top: 1px solid var(--border); }
+  .agent-actions button { padding: 2px 7px; font-size: 11px; }
+  /* Group ZONE: khung tự bo quanh các agent chung cwd (member là node tự do trên canvas).
+     Thân zone pointer-events:none để pan xuyên qua; chỉ header bắt chuột (kéo cả cụm + panel MCP). */
+  .group-zone { border: 1.5px dashed #a8b6d2; border-radius: 14px; background: rgba(76,141,255,.05);
+    pointer-events: none; }
+  .zone-head { pointer-events: auto; cursor: grab; user-select: none; padding: 8px 12px;
+    display: flex; flex-direction: column; gap: 6px; }
+  .zone-title { display: flex; align-items: baseline; gap: 8px; overflow: hidden; }
+  .zone-title b { font-size: 13px; }
+  .g-count { font-size: 11px; color: var(--muted); flex: none; }
+  .g-path { font-family: ui-monospace, monospace; font-size: 10px; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .zone-ctl { display: flex; gap: 6px; align-items: center; }
+  .zone-ctl select { max-width: 220px; }
+  .zone-ctl button { padding: 3px 10px; font-size: 12px; flex: none; }
+  /* Panel MCP của project: nằm trong zone-head (headH tự giãn, layoutZones bo theo) */
+  .zone-mcp { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border);
+    padding-top: 6px; cursor: default; width: 460px; max-width: 100%; }
+  .mcp-head { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+  .mcp-head button { padding: 2px 7px; font-size: 11px; }
+  pre.mcp-list { margin: 0; max-height: 180px; overflow: auto; font-size: 11px; line-height: 1.5;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+    white-space: pre-wrap; word-break: break-all; user-select: text; }
+  .mcp-add { display: flex; gap: 6px; align-items: center; }
+  .mcp-add .mcp-pre { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); flex: none; }
+  .mcp-add input { flex: 1; min-width: 0; }
+  .mcp-add button { flex: none; padding: 3px 10px; }
+  .agent-card.is-orch { border-color: #d4a017; box-shadow: 0 0 0 1px #d4a017, 0 6px 18px rgba(16,24,40,.12); }
+  /* Edges: mũi tên signal agent→agent (SVG nằm dưới node, trên zone) */
+  svg.edges { position: absolute; top: 0; left: 0; width: 10px; height: 10px;
+    overflow: visible; pointer-events: none; }
+  .edge { stroke-width: 1.6; fill: none; }
+  .edge-wait { stroke: #f0a020; }
+  .edge-run { stroke: #4c8dff; stroke-dasharray: 6 5; animation: edgeflow .6s linear infinite; }
+  .edge-done { stroke: #30a46c; opacity: .4; }
+  .edge-fail { stroke: #e5484d; opacity: .55; }
+  @keyframes edgeflow { to { stroke-dashoffset: -11; } }
+  /* Card orchestrator (👑): terminal THẬT (xterm.js ↔ PTY claude --resume) nhúng thẳng trong card,
+     left bar dọc chứa action buttons. Element terminal được JS giữ bền qua các lần re-render. */
+  .agent-card.orch-term { width: 680px; }
+  .orch-body { display: flex; min-height: 0; }
+  .orch-side { display: flex; flex-direction: column; gap: 4px; padding: 8px 6px;
+    border-right: 1px solid var(--border); flex: none; }
+  .orch-side button { font-size: 12px; padding: 3px 7px; }
+  .term-slot { flex: 1; height: 360px; min-width: 0; background: #0c0e12; }
+  .term-host { height: 100%; padding: 4px 0 4px 8px; }
+  .term-host .xterm { height: 100%; }
+  /* Editor SKILL trong drawer (nút 📘 trên card agent) */
+  .skill-ta { width: 100%; height: 55vh; resize: vertical; font-family: ui-monospace, monospace;
+    font-size: 12px; line-height: 1.5; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; box-sizing: border-box; }
+  .skill-save { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
 </style>
 </head>
 <body>
 <header>
-  <h1 style="cursor:pointer" onclick="backToList()">⚙️ Session Orchestrator</h1>
+  <h1 onclick="backToList()">⚙️ Orchestrator</h1>
+  <div id="hdr-ws" hidden>
+    <span class="crumb-sep">/</span>
+    <span id="ws-detail-title"></span>
+    <span id="ws-banner-actions"></span>
+    <div class="tabs">
+      <button id="tab-btn-agents" class="tab active" onclick="switchTab('agents')">🗺 Agents</button>
+      <button id="tab-btn-history" class="tab" onclick="switchTab('history')">🕘 History</button>
+    </div>
+  </div>
+  <div class="spacer"></div>
   <span id="dry" class="pill dry" hidden>DRY-RUN</span>
   <button class="secondary" onclick="newWorkspace()">+ Workspace</button>
-  <div class="spacer"></div>
   <span id="conn" class="pill dead">offline</span>
 </header>
 
@@ -162,8 +304,11 @@
   <!-- Master view: workspace list + spawn agent form -->
   <section id="ws-list-view">
     <div class="back-bar"><h2>Workspaces</h2></div>
-    <div id="ws-grid" class="ws-grid"></div>
-    <div id="ws-grid-empty" class="empty" hidden>No workspaces yet. Click + Workspace to create one.</div>
+    <div class="list-cols">
+    <div>
+      <div id="ws-grid" class="ws-grid"></div>
+      <div id="ws-grid-empty" class="empty" hidden>No workspaces yet. Click + Workspace to create one.</div>
+    </div>
     <div class="spawn-panel">
         <div class="form-card">
           <h3>🚀 Spawn agent</h3>
@@ -194,28 +339,35 @@
           <div id="sp-msg" class="form-msg"></div>
         </div>
     </div>
+    </div><!-- /list-cols -->
   </section>
 
   <!-- Detail view: one workspace (view only — Sessions/Signal/Audit) -->
   <div id="ws-detail-view" hidden>
-  <div class="back-bar">
-    <button class="secondary back-btn" onclick="backToList()">← Workspaces</button>
-    <h2 id="ws-detail-title">Workspace</h2>
-  </div>
-
-  <div id="ws-banner-actions" class="actions" style="margin-bottom:16px"></div>
-
-  <section class="panel">
-    <h2>Sessions</h2>
-    <div class="table-scroll">
-      <table class="wide">
-        <thead><tr><th>Name</th><th>Session ID</th><th>cwd</th><th>Status</th><th>Model</th><th>Effort</th><th title="Runs done today / daily limit">Today</th><th>Allowed tools</th><th>Actions</th></tr></thead>
-        <tbody id="sessions"></tbody>
-      </table>
+  <div id="tab-agents">
+    <div id="canvas" class="canvas">
+      <div id="world" class="world"></div>
+      <div id="cv-empty" class="cv-empty" hidden>Chưa có agent nào trong workspace này.</div>
+      <div class="cv-overlay cv-toolbar">
+        <button onclick="cvZoom(1/1.2)" title="Zoom out">−</button>
+        <span id="cv-zoom">100%</span>
+        <button onclick="cvZoom(1.2)" title="Zoom in">+</button>
+        <span class="cv-sep"></span>
+        <button onclick="cvFit()" title="Fit toàn bộ agent vào khung">⤢</button>
+      </div>
+      <button class="cv-overlay cv-help" title="Hướng dẫn canvas"
+        onclick="const h = document.getElementById('cv-hint'); h.hidden = !h.hidden">?</button>
+      <div id="cv-hint" class="cv-overlay cv-hint" hidden>
+        <b>Điều khiển:</b> kéo nền = pan · lăn chuột = zoom · kéo header card = di chuyển agent ·
+        kéo header 📁 = di chuyển cả cụm · click card = xem run mới nhất (live).<br>
+        <b>Mũi tên</b> = signal giữa các agent: vàng chờ · xanh chạy · lục xong · đỏ lỗi.<br>
+        <b>Trong card 📁:</b> chọn 👑 orchestrator (giao việc qua terminal trong card 👑) ·
+        🔌 MCP để xem/add MCP cho project.
+      </div>
     </div>
-    <div id="sessions-empty" class="empty" hidden>No sessions yet.</div>
-  </section>
+  </div><!-- /tab-agents -->
 
+  <div id="tab-history" hidden>
   <section class="panel">
     <h2>Signal queue</h2>
     <div class="table-scroll">
@@ -238,10 +390,12 @@
     <div id="runs-empty" class="empty" hidden>No runs yet.</div>
     <div class="hint" style="padding:0 16px 12px">Click a run to view its transcript (thinking · tool · text) in real time.</div>
   </section>
+  </div><!-- /tab-history -->
   </div><!-- /ws-detail-view -->
 </main>
 
 <div id="drawer-overlay" class="drawer-overlay" onclick="closeDrawer()"></div>
+
 <aside id="drawer" class="drawer">
   <div class="drawer-head">
     <h3 id="dr-title">Run</h3>
@@ -262,6 +416,8 @@
   <option value="claude-haiku-4-5-20251001" label="Haiku 4.5">
 </datalist>
 
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/xterm-addon-fit.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>
