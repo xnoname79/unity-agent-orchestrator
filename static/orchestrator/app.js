@@ -327,6 +327,10 @@ window.cvFit = cvFit;
 // Element terminal sống NGOÀI chu trình innerHTML của canvas: tạo 1 lần per session,
 // sau mỗi render chỉ re-attach vào .term-slot của card orchestrator → SSE refresh không giết PTY.
 let cvTerms = {};  // sid → {sid, host, started, term, fit, ws}
+// Khóa terminal orch: run tự động (signal [BÁO CÁO] từ worker) đang/đã chạy trên session
+// → PTY cũ hết ngữ cảnh, 2 claude cùng ghi 1 transcript sẽ xung đột. Key theo NAME
+// (bền qua xoay session id); chỉ mở lại khi user bấm 🔄.
+let termLock = {};  // session name → true
 
 function startTerm(t) {
   t.started = true;
@@ -360,9 +364,11 @@ function destroyTerm(sid) {
   delete cvTerms[sid];
 }
 
-// Reload session/terminal: hủy PTY cũ, refetch data (session id có thể đã xoay sau lần resume
-// trước) rồi render lại → attach phiên `claude --resume` mới.
-async function reconnectTerm(sid) {
+// Reload session/terminal: hủy PTY cũ, gỡ khóa, refetch data (session id có thể đã xoay
+// sau lần resume trước) rồi render lại → attach phiên `claude --resume` mới.
+// Nếu run tự động VẪN đang chạy, refreshAll thấy status=running sẽ khóa lại ngay — an toàn.
+async function reconnectTerm(sid, name) {
+  if (name) delete termLock[name];
   destroyTerm(sid);
   await refreshAll();
 }
@@ -379,7 +385,11 @@ function attachTerms() {
                                                           { className: "term-host" }),
                                  started: false, term: null, fit: null, ws: null };
     slot.appendChild(t.host);
-    requestAnimationFrame(() => { if (!t.started) startTerm(t); else fitTerm(t); });
+    // Slot đang khóa: KHÔNG start PTY mới (đợi user bấm 🔄 sau khi run tự động xong).
+    requestAnimationFrame(() => {
+      if (!t.started) { if (!slot.dataset.lock) startTerm(t); }
+      else fitTerm(t);
+    });
   }
   for (const sid of Object.keys(cvTerms)) if (!seen.has(sid)) destroyTerm(sid);
 }
@@ -421,18 +431,33 @@ function agentCard(s, needsYou, isOrch) {
   const cls = `st-${esc(s.status)}${needsYou ? " needs-you" : ""}`;
 
   // Card 👑: terminal thật nhúng thẳng trong card, action buttons xếp dọc left bar.
-  if (isOrch)
+  if (isOrch) {
+    // Run tự động (báo cáo worker → run mới) đang chạy → khóa chat + ngắt PTY cũ ngay
+    // (2 claude cùng ghi 1 session = xung đột transcript). Khóa giữ tới khi user bấm 🔄.
+    if (s.status === "running") termLock[s.name] = true;
+    const locked = !!termLock[s.name];
+    if (locked) {
+      const t = cvTerms[s.id];
+      if (t && t.ws && t.ws.readyState <= 1) { try { t.ws.close(); } catch { /* đã đóng */ } }
+    }
+    const lock = s.status === "running"
+      ? `<div class="term-lock">⏳ Orch đang chạy run tự động (xử lý báo cáo từ agent)…<br>
+           Xong sẽ mở lại chat bằng nút 🔄</div>`
+      : locked
+        ? `<div class="term-lock">✅ Run tự động đã xong — bấm 🔄 để nạp ngữ cảnh mới và chat tiếp.</div>`
+        : "";
     return `<div class="agent-card orch-term is-orch ${cls}" data-sid="${esc(s.id)}">
       ${head}
       <div class="orch-body">
         <div class="orch-side">
           ${ctrl}${allow}
-          <button onclick="reconnectTerm('${esc(s.id)}')" title="Reload session/terminal (chạy lại claude --resume)">🔄</button>
+          <button onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')" title="Reload session/terminal (chạy lại claude --resume)">🔄</button>
           ${ctxBtn}${unregBtn}
         </div>
-        <div class="term-slot" data-sid="${esc(s.id)}"></div>
+        <div class="term-slot" data-sid="${esc(s.id)}"${locked ? ` data-lock="1"` : ""}>${lock}</div>
       </div>
     </div>`;
+  }
 
   return `<div class="agent-card ${cls}" data-sid="${esc(s.id)}">
     ${head}
@@ -456,7 +481,7 @@ let cvNodeEls = {};   // session_id → node element (để vẽ edge)
 let cvEdges = [];     // [{from, to, cls}] resolve từ signal list
 let cvLast = { sessions: [], signals: [] };  // data mới nhất (setOrch re-render không cần fetch)
 
-const EDGE_COLORS = { wait: "#f0a020", run: "#4c8dff", done: "#30a46c", fail: "#e5484d" };
+const EDGE_COLORS = { wait: "#f0a020", run: "#4c8dff" };  // done/failed không vẽ mũi tên
 const EDGE_DEFS = "<defs>" + Object.entries(EDGE_COLORS).map(([k, c]) =>
   `<marker id="ah-${k}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
      <path d="M0,0L8,4L0,8z" fill="${c}"/></marker>`).join("") + "</defs>";
@@ -723,21 +748,20 @@ function renderCanvas(sessions, signals) {
   // Nạp danh sách session Claude CLI cho các cwd chưa có cache (async — về thì re-render).
   cvGroups.forEach((g, gi) => { if (cvClaude[g.cwd] === undefined) loadClaudeSessions(gi); });
 
-  // Mũi tên signal: resolve from/to về session id (nhận cả id lẫn name), dedup theo cặp
-  // (ưu tiên trạng thái "đang chạy" > "chờ" > "lỗi" > "xong").
+  // Mũi tên signal: CHỈ vẽ task ĐANG hoạt động (chạy/chờ) — done/failed ẩn, xem ở History.
+  // Resolve from/to về session id (nhận cả id lẫn name), dedup theo cặp (chạy > chờ).
   const byId = {}, byName = {};
   for (const s of sessions) { byId[s.id] = s.id; byName[s.name] = s.id; }
-  const PRIO = { run: 0, wait: 1, fail: 2, done: 3 };
   const pairBest = new Map();
   for (const sg of signals || []) {
     const from = byId[sg.from_session] || byName[sg.from_session];
     const to = byId[sg.to_session] || byName[sg.to_session];
     if (!from || !to || from === to) continue;
     const cls = sg.status === "processing" ? "run"
-      : (sg.status === "pending" || sg.status === "approved") ? "wait"
-      : sg.status === "done" ? "done" : "fail";
+      : (sg.status === "pending" || sg.status === "approved") ? "wait" : null;
+    if (!cls) continue;
     const key = from + "→" + to;
-    if (!pairBest.has(key) || PRIO[cls] < PRIO[pairBest.get(key).cls])
+    if (!pairBest.has(key) || cls === "run")
       pairBest.set(key, { from, to, cls });
   }
   cvEdges = [...pairBest.values()];
@@ -966,11 +990,50 @@ function renderRuns(list) {
 function evRow(e) {
   const kind = e.kind || "text";
   const icon = EV_ICON[kind] || "•";
-  return `<div class="ev ${esc(kind)}">
-    <span class="t">${shortTime(e.ts)}</span>
-    <div class="k">${icon} ${esc(kind)}</div>
-    <div class="s">${esc(e.summary)}</div>
+  const n = e.n || 1;
+  // Card tool_use gộp luôn kết quả (tool_result kế tiếp) bên dưới; chưa có = "…" (pend).
+  let tr = "";
+  if (kind === "tool_use") {
+    const r = e.result_ev;
+    const cls = r ? ((r.summary || "").startsWith("⚠") ? " err" : "") : " pend";
+    tr = `<div class="tr${cls}">${r ? esc(r.summary) : "…"}</div>`;
+  }
+  return `<div class="ev ${esc(kind)}" data-kind="${esc(kind)}" data-sum="${esc(e.summary)}" data-n="${n}">
+    <span class="ev-ic">${icon}</span>
+    <div class="ev-main">
+      <div class="ev-meta">
+        <span class="k">${kind === "tool_use" ? "tool" : esc(kind)}</span>
+        <span class="rep" ${n > 1 ? "" : "hidden"}>×${n}</span>
+        <span class="t">${shortTime(e.ts)}</span>
+      </div>
+      <div class="s">${esc(e.summary)}</div>${tr}
+    </div>
   </div>`;
+}
+
+// Ghép tool_result vào tool_use đứng ngay trước nó → 1 card gọi + kết quả.
+function pairTools(evs) {
+  const out = [];
+  for (const e of evs) {
+    const last = out[out.length - 1];
+    if (e.kind === "tool_result" && last && last.kind === "tool_use" && !last.result_ev) {
+      last.result_ev = e;
+      continue;
+    }
+    out.push(e);
+  }
+  return out;
+}
+
+// Gộp các event LIÊN TIẾP trùng kind+summary (vd system lặp) thành 1 row ×N.
+function coalesceEvents(events) {
+  const out = [];
+  for (const e of events) {
+    const last = out[out.length - 1];
+    if (last && last.kind === e.kind && last.summary === e.summary) { last.n++; last.ts = e.ts; }
+    else out.push({ ...e, n: 1 });
+  }
+  return out;
 }
 
 function scrollDrawerBottom() {
@@ -988,7 +1051,7 @@ async function openRun(runId) {
   try {
     const events = await api("/api/runs/" + runId + "/events");
     $("dr-body").innerHTML = events.length
-      ? events.map(evRow).join("")
+      ? pairTools(coalesceEvents(events)).map(evRow).join("")
       : `<div class="empty">Chưa có bước nào (run có thể đang khởi động).</div>`;
     scrollDrawerBottom();
   } catch (e) {
@@ -1042,14 +1105,43 @@ function switchTab(name) {
 window.switchTab = switchTab;
 
 // Append 1 event live nếu drawer đang mở đúng run đó.
+// Trùng kind+summary với row cuối → bump ×N thay vì thêm row (chống spam system lặp).
 function appendLiveEvent(ev) {
   if (openRunId == null || ev.run_id !== openRunId) return;
-  const empty = $("dr-body").querySelector(".empty");
-  if (empty) $("dr-body").innerHTML = "";
-  $("dr-body").insertAdjacentHTML("beforeend",
-    evRow({ kind: ev.kind, summary: ev.summary, ts: ev.ts }));
+  const body = $("dr-body");
+  const empty = body.querySelector(".empty");
+  if (empty) body.innerHTML = "";
+  const last = body.lastElementChild;
+  // tool_result → điền vào card tool_use đang chờ (".tr.pend") thay vì thêm card mới.
+  if (ev.kind === "tool_result" && last && last.dataset.kind === "tool_use") {
+    const tr = last.querySelector(".tr.pend");
+    if (tr) {
+      tr.textContent = ev.summary;
+      tr.classList.remove("pend");
+      if ((ev.summary || "").startsWith("⚠")) tr.classList.add("err");
+      last.querySelector(".t").textContent = shortTime(ev.ts);
+      scrollDrawerBottom();
+      return;
+    }
+  }
+  if (last && last.dataset.kind === ev.kind && last.dataset.sum === ev.summary) {
+    const n = (+last.dataset.n || 1) + 1;
+    last.dataset.n = n;
+    const rep = last.querySelector(".rep");
+    rep.hidden = false; rep.textContent = "×" + n;
+    last.querySelector(".t").textContent = shortTime(ev.ts);
+  } else {
+    body.insertAdjacentHTML("beforeend", evRow({ kind: ev.kind, summary: ev.summary, ts: ev.ts }));
+  }
   scrollDrawerBottom();
 }
+
+// Row thinking/tool dài bị clamp — click để mở/thu (bỏ qua khi đang bôi đen copy).
+$("dr-body").addEventListener("click", (e) => {
+  if (getSelection().toString()) return;
+  const row = e.target.closest(".ev");
+  if (row) row.classList.toggle("open");
+});
 
 // ── Data ───────────────────────────────────────────────────────────────────
 

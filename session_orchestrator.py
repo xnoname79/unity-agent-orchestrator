@@ -774,8 +774,8 @@ def _iter_display_events(ev):
             model = ev.get("model") or "?"
             out.append(("system", f"session bắt đầu · model={model} · {len(tools)} tools",
                         {"subtype": sub, "tools": tools[:60]}))
-        elif sub.startswith("hook_"):
-            pass  # hook_started/hook_response là nhiễu nội bộ hook — bỏ khỏi audit log.
+        elif sub.startswith("hook_") or sub == "thinking_tokens":
+            pass  # hook_* / thinking_tokens: nhiễu tiến trình bắn liên tục — bỏ khỏi audit log.
         else:
             # subtype khác (compact_boundary...) giữ lại — cần biết agent compact lúc nào.
             out.append(("system", f"system · {sub}", {"subtype": sub, "raw": _trunc(json.dumps(ev, ensure_ascii=False))}))
