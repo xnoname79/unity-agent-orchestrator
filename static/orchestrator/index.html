@@ -43,10 +43,9 @@
   .day-ok { color: var(--muted); }
   .day-hit { color: var(--red); font-weight: 600; }
   main { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
-  /* Master view (list workspace): container giữa trang, 2 cột grid + form spawn */
+  /* Master view (list workspace): container giữa trang, form spawn full-width nằm DƯỚI grid */
   #ws-list-view { width: 100%; max-width: 1200px; margin: 0 auto; padding: 24px; }
-  .list-cols { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 24px; align-items: start; }
-  @media (max-width: 900px) { .list-cols { grid-template-columns: 1fr; } }
+  .spawn-panel { margin-top: 24px; }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   .panel > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
     margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--border); }
@@ -97,6 +96,33 @@
   .form-card .row label { margin: 0; display: flex; align-items: center; gap: 5px; }
   .form-card .row input[type=checkbox] { width: auto; }
   .form-card button { width: 100%; margin-top: 10px; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; padding: 7px; }
+  /* Picker dạng card (workspace / template / model) trong form spawn */
+  .pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 8px; margin-top: 4px; }
+  .pick-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+    cursor: pointer; background: var(--bg); transition: border-color .12s; }
+  .pick-card:hover { border-color: var(--accent); }
+  .pick-card.sel { border-color: var(--accent); background: rgba(59,116,224,.08);
+    box-shadow: 0 0 0 1px var(--accent); }
+  .pick-card b { display: block; font-size: 12.5px; }
+  .pick-card code { font-size: 10px; }
+  .pick-card .pd { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.45; }
+  /* Duyệt thư mục server-side cho Working dir */
+  .dir-row { display: flex; gap: 6px; }
+  .dir-row input { flex: 1; }
+  .form-card .dir-row button { width: auto; margin-top: 0; padding: 6px 12px;
+    background: var(--panel); border-color: var(--border); color: var(--text); font-weight: 500; }
+  .dir-browse { margin-top: 6px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg); padding: 8px; font-size: 12px; }
+  .dir-crumb { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted);
+    margin-bottom: 6px; word-break: break-all; }
+  .dir-list { max-height: 180px; overflow-y: auto; display: grid; gap: 2px; }
+  .dir-item { padding: 3px 8px; border-radius: 6px; cursor: pointer; }
+  .dir-item:hover { background: var(--panel2); }
+  .dir-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .form-card .dir-actions button { width: auto; margin-top: 0; padding: 4px 12px; font-size: 12px;
+    background: var(--panel); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .form-card .dir-actions button.secondary { border-color: var(--border); color: var(--text); font-weight: 500; }
   .form-msg { font-size: 12px; margin-top: 8px; min-height: 16px; }
   .form-msg.ok { color: var(--green); } .form-msg.err { color: var(--red); }
   .hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
@@ -294,7 +320,7 @@
   /* Khóa chat orch khi run tự động đang/đã chạy — overlay phủ terminal, chặn gõ/click */
   .term-lock { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center;
     justify-content: center; text-align: center; padding: 20px; background: rgba(12,14,18,.85);
-    color: #e6e8eb; font-size: 12px; line-height: 1.8; cursor: not-allowed; }
+    color: #e6e8eb; font-size: 12px; line-height: 1.8; cursor: pointer; }
   .term-host { height: 100%; padding: 4px 0 4px 8px; }
   .term-host .xterm { height: 100%; }
   /* Editor SKILL trong drawer (nút 📘 trên card agent) */
@@ -336,15 +362,23 @@
           <h3>🚀 Spawn agent</h3>
           <div class="hint">Orchestrator runs <code>claude -p</code> to create a new session.</div>
           <label>Workspace</label>
-          <select id="sp-ws"><option value="">default</option></select>
-          <div class="hint">Workspace ≠ default: cwd is pinned to the workspace folder (ignore the cwd field below).</div>
+          <div id="sp-ws-cards" class="pick-grid"></div>
+          <div class="hint">Workspace ≠ default: cwd is pinned to the workspace folder (ignore Working dir below).</div>
           <label>Role (pick a template)</label>
-          <select id="sp-template"><option value="">— pick a template —</option></select>
+          <div id="sp-template-cards" class="pick-grid"></div>
           <div class="hint">Role name = template name. SKILL is written to <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/</code>.</div>
-          <label>Working dir (cwd) — default workspace only</label><input id="sp-cwd" placeholder="/path/to/project">
+          <label>Working dir (cwd) — default workspace only</label>
+          <div class="dir-row">
+            <input id="sp-cwd" placeholder="/path/to/project">
+            <button type="button" onclick="browseDir(document.getElementById('sp-cwd').value.trim())"
+              title="Duyệt thư mục trên máy chạy orchestrator">📁</button>
+          </div>
+          <div id="sp-dir" class="dir-browse" hidden></div>
           <label>Model</label>
-          <input id="sp-model" list="model-list" placeholder="auto (leave empty) — alias or specific id">
-          <div class="hint">Alias (<code>opus</code>) = latest; full id (<code>claude-opus-4-8</code>) = pinned version.</div>
+          <div id="sp-model-cards" class="pick-grid"></div>
+          <div id="sp-model-custom" hidden>
+            <input id="sp-model" list="model-list" placeholder="model id / alias tùy chỉnh">
+          </div>
           <label>Effort (reasoning)</label>
           <select id="sp-effort">
             <option value="">default (high)</option>
@@ -433,10 +467,13 @@
   <option value="opus" label="alias — latest Opus">
   <option value="sonnet" label="alias — latest Sonnet">
   <option value="haiku" label="alias — latest Haiku">
-  <option value="claude-opus-4-8" label="Opus 4.8 (latest)">
+  <option value="claude-fable-5" label="Fable 5 — mạnh nhất (Claude 5)">
+  <option value="claude-opus-4-8" label="Opus 4.8 (Opus mới nhất)">
+  <option value="claude-opus-4-7" label="Opus 4.7">
   <option value="claude-opus-4-6" label="Opus 4.6">
   <option value="claude-sonnet-5" label="Sonnet 5">
-  <option value="claude-haiku-4-5-20251001" label="Haiku 4.5">
+  <option value="claude-sonnet-4-6" label="Sonnet 4.6">
+  <option value="claude-haiku-4-5" label="Haiku 4.5">
 </datalist>
 
 <script src="/vendor/xterm.js"></script>

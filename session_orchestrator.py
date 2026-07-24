@@ -1021,6 +1021,8 @@ def _list_skill_templates():
     Stub rỗng (0 placeholder) bị bỏ — không phải template điền được."""
     out = []
     for d in sorted(TEMPLATES_DIR.glob("*/")):
+        if d.name.rstrip("/") == "game-director":
+            continue  # vai orch-only: seed tự động khi đăng ký orchestrator (api_register), không spawn như worker
         f = d / "SKILL.md"
         try:
             text = f.read_text(encoding="utf-8")
@@ -1426,8 +1428,11 @@ async def process_signal(signal):
     if target["status"] in ("paused", "stopped"):
         return {"signal": signal["id"], "status": "skipped", "reason": f"session {target['status']}"}
 
-    async with _semaphore:
-        async with _lock_for(target["id"]):
+    # Thứ tự khóa: lock SESSION trước (chờ agent bận không tốn slot), semaphore sau —
+    # slot chỉ bị giữ bởi run đang chạy thật, agent rảnh không bao giờ bị đói slot
+    # vì hàng đợi của 1 agent bận.
+    async with _lock_for(target["id"]):
+        async with _semaphore:
             # Kiểm tra lại sau khi có lock (trạng thái có thể đổi trong lúc chờ)
             target = get_session(target["id"])
             if target["status"] in ("paused", "stopped"):
@@ -1516,14 +1521,32 @@ async def process_pending():
     return results
 
 
+_inflight: set = set()  # signal id đang có task xử lý (chờ lock hoặc đang chạy)
+
+
+async def _process_one(sig):
+    try:
+        r = await process_signal(sig)
+        if r:
+            print(f"[orchestrator] signal #{r['signal']} → {r['status']}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[orchestrator] signal #{sig['id']} error: {e}", file=sys.stderr)
+    finally:
+        _inflight.discard(sig["id"])
+
+
 async def run_loop():
+    """Mỗi poll: spawn task RIÊNG cho từng signal eligible chưa in-flight — agent khác nhau
+    chạy SONG SONG ngay; signal tới agent đang bận chỉ đợi lock session của agent đó
+    (không chặn cả batch như gather trước đây)."""
     print(f"[orchestrator] loop start (dry_run={DRY_RUN}, poll={POLL_INTERVAL}s, db={_db_path()})")
     while True:
         try:
-            results = await process_pending()
-            if results:
-                for r in results:
-                    print(f"[orchestrator] signal #{r['signal']} → {r['status']}")
+            for sig in eligible_signals():
+                if sig["id"] in _inflight:
+                    continue
+                _inflight.add(sig["id"])
+                asyncio.create_task(_process_one(sig))
         except Exception as e:  # noqa: BLE001
             print(f"[orchestrator] loop error: {e}", file=sys.stderr)
         await asyncio.sleep(POLL_INTERVAL)
@@ -1716,6 +1739,15 @@ def build_app():
         register_session(body["id"], body["name"], body.get("project", ""), cwd,
                          body.get("allowed_tools", []), body.get("permission_mode", ""),
                          body.get("model", ""), body.get("effort", ""), wid, "claude")
+        # Đăng ký làm ORCHESTRATOR (flag từ setOrch trên UI): chưa có SKILL trong cwd → seed
+        # playbook director từ template game-director (điền sẵn tên orch; các placeholder
+        # khác — GAME_NAME/PROJECT_ID... — điền tay sau theo project).
+        if body.get("seed_director_skill") and cwd and not _skill_path(cwd, body["name"]).exists():
+            try:
+                tpl = (TEMPLATES_DIR / "game-director" / "SKILL.md").read_text(encoding="utf-8")
+                _write_role_skill(cwd, body["name"], tpl.replace("<ORCH_NAME>", body["name"]))
+            except OSError:
+                pass  # thiếu template → orch vẫn chạy, chỉ không có playbook
         publish({"type": "session", "id": body["id"], "status": "idle", "workspace_id": wid})
         return JSONResponse(get_session(body["id"]))
 
@@ -1769,6 +1801,23 @@ def build_app():
             proc.kill()
             return "timeout (120s): claude mcp " + " ".join(args)
         return out.decode("utf-8", errors="replace")
+
+    async def api_fs_list(request: Request):
+        """Duyệt thư mục server-side cho picker Working dir (form spawn).
+        Chỉ liệt kê THƯ MỤC (không file), bỏ hidden. Mặc định: $HOME."""
+        raw = (request.query_params.get("path") or "").strip() or str(Path.home())
+        p = Path(raw).expanduser()
+        try:
+            p = p.resolve()
+            if not p.is_dir():
+                return JSONResponse({"error": f"không phải thư mục: {p}"}, status_code=400)
+            dirs = sorted((d.name for d in p.iterdir()
+                           if d.is_dir() and not d.name.startswith(".")), key=str.lower)[:300]
+        except PermissionError:
+            return JSONResponse({"error": f"không có quyền đọc: {p}"}, status_code=403)
+        return JSONResponse({"path": str(p),
+                             "parent": str(p.parent) if p != p.parent else None,
+                             "dirs": dirs})
 
     async def api_mcp_list(request: Request):
         """MCP đã đăng ký cho project (`claude mcp list` tại cwd)."""
@@ -2166,6 +2215,7 @@ def build_app():
         Route("/api/sessions/spawn", api_spawn, methods=["POST"]),
         Route("/api/available-tools", api_available_tools),
         Route("/api/claude-sessions", api_claude_sessions),
+        Route("/api/fs", api_fs_list),
         Route("/api/mcp", api_mcp_list),
         Route("/api/mcp", api_mcp_add, methods=["POST"]),
         WebSocketRoute("/ws/terminal", ws_terminal),
@@ -2216,6 +2266,14 @@ def serve():
     # Strip 1 lần ở đây: mọi child kế thừa env sạch.
     for k in ("CLAUDE_CODE_CHILD_SESSION", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID"):
         os.environ.pop(k, None)
+    # Dọn trạng thái kẹt từ lần chạy trước (crash/kill giữa run): không run nào sống qua
+    # restart — session 'running' → idle (kẻo card orch khóa vĩnh viễn), run 'running' → error.
+    _ensure_db()
+    conn = _conn()
+    conn.execute("UPDATE sessions SET status = 'idle' WHERE status = 'running'")
+    conn.execute("UPDATE runs SET status = 'error', ended_at = ? WHERE status = 'running'", (_now(),))
+    conn.commit()
+    conn.close()
     uvicorn.run(build_app(), host=ORCH_HOST, port=ORCH_PORT)
 
 

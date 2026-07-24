@@ -213,15 +213,7 @@ window.newWorkspace = newWorkspace;
 function renderWorkspaces(list) {
   WORKSPACES = list;
   renderWorkspaceGrid(list);
-  // form spawn: dropdown workspace (giữ 'default' để vẫn spawn được vào default).
-  const opt = (w) => `<option value="${esc(w.id)}">${esc(w.name || w.id)}${w.status !== "active" ? " (" + w.status + ")" : ""}</option>`;
-  const spws = $("sp-ws");
-  if (spws) {
-    spws.innerHTML = `<option value="">default</option>` +
-      list.filter((w) => w.id !== "default").map(opt).join("");
-    // trong detail view, ghim dropdown vào workspace đang xem (spawn vào đúng nơi).
-    if (currentWS && currentWS !== "default") spws.value = currentWS;
-  }
+  renderSpawnPickers();   // form spawn: card picker workspace đồng bộ theo list mới
   renderWsBanner();
 }
 
@@ -432,19 +424,27 @@ function agentCard(s, needsYou, isOrch) {
 
   // Card 👑: terminal thật nhúng thẳng trong card, action buttons xếp dọc left bar.
   if (isOrch) {
-    // Run tự động (báo cáo worker → run mới) đang chạy → khóa chat + ngắt PTY cũ ngay
-    // (2 claude cùng ghi 1 session = xung đột transcript). Khóa giữ tới khi user bấm 🔄.
-    if (s.status === "running") termLock[s.name] = true;
+    // Run tự động (báo cáo worker → run mới) đang chạy HOẶC đang xếp hàng → khóa chat +
+    // ngắt PTY cũ ngay (2 claude cùng ghi 1 session = xung đột transcript). Tính cả signal
+    // queued để 🔄 trong khe hở giữa 2 run liên tiếp không mở PTY xung đột. Signal pending
+    // chờ approval KHÔNG tính (không tự chạy — đừng khóa oan). Khóa giữ tới khi bấm 🔄.
+    const queued = (cvLast.signals || []).some((sg) =>
+      (sg.to_session === s.id || sg.to_session === s.name) &&
+      (sg.status === "processing" || sg.status === "approved" ||
+       (sg.status === "pending" && !sg.requires_approval)));
+    const busy = s.status === "running" || queued;
+    if (busy) termLock[s.name] = true;
     const locked = !!termLock[s.name];
     if (locked) {
       const t = cvTerms[s.id];
       if (t && t.ws && t.ws.readyState <= 1) { try { t.ws.close(); } catch { /* đã đóng */ } }
     }
-    const lock = s.status === "running"
+    const lock = busy
       ? `<div class="term-lock">⏳ Orch đang chạy run tự động (xử lý báo cáo từ agent)…<br>
-           Xong sẽ mở lại chat bằng nút 🔄</div>`
+           Click để xem run · xong sẽ mở lại chat bằng nút 🔄</div>`
       : locked
-        ? `<div class="term-lock">✅ Run tự động đã xong — bấm 🔄 để nạp ngữ cảnh mới và chat tiếp.</div>`
+        ? `<div class="term-lock">✅ Run tự động đã xong — bấm 🔄 để nạp ngữ cảnh mới và chat tiếp.<br>
+           Click để xem run vừa chạy.</div>`
         : "";
     return `<div class="agent-card orch-term is-orch ${cls}" data-sid="${esc(s.id)}">
       ${head}
@@ -513,7 +513,8 @@ async function setOrch(gi, sid) {
       const base = g.cwd.replace(/\/+$/, "").split("/").pop() || "project";
       try {
         await api("/api/sessions", "POST",
-                  { id: sid, name: "orch-" + base, cwd: g.cwd, workspace_id: currentWS });
+                  { id: sid, name: "orch-" + base, cwd: g.cwd, workspace_id: currentWS,
+                    seed_director_skill: true });  // chưa có SKILL → seed playbook director vào cwd
       } catch (e) { console.error(e); alert("Lỗi đăng ký session làm orchestrator: " + e); return; }
     }
     orch[g.cwd] = sid;
@@ -827,10 +828,10 @@ function cvInit() {
       if (drag.mode === "node") save(drag.el); else drag.parts.forEach((p) => save(p.el));
       cvSave({ pos });
     } else cvSave({ view: CV });
-    // Click (không kéo) vào header card agent → mở drawer run mới nhất.
+    // Click (không kéo) vào header card agent (kể cả card 👑) → mở drawer run mới nhất.
     if (drag.mode === "node" && !drag.moved) {
       const card = drag.el.querySelector(".agent-card");
-      if (card && !card.classList.contains("orch-term")) openSessionRun(card.dataset.sid);
+      if (card) openSessionRun(card.dataset.sid);
     }
     drag = null; cvInteracting = false;
     cv.classList.remove("grabbing");
@@ -839,10 +840,14 @@ function cvInit() {
   cv.addEventListener("pointerup", up);
   cv.addEventListener("pointercancel", up);
   // Click vào THÂN card (ngoài header — header đi đường pointerup ở trên) → drawer run.
+  // Card 👑: terminal (.term-slot) miễn trừ, nhưng overlay khóa (.term-lock) thì mở drawer
+  // để xem run tự động đang chạy.
   cv.addEventListener("click", (e) => {
+    const lock = e.target.closest(".term-lock");
+    if (lock) { openSessionRun(lock.closest(".agent-card").dataset.sid); return; }
     if (e.target.closest("button, select, input, textarea, option, .term-slot, .zone-mcp, .node-head, .zone-head")) return;
     const card = e.target.closest(".agent-card");
-    if (card && !card.classList.contains("orch-term")) openSessionRun(card.dataset.sid);
+    if (card) openSessionRun(card.dataset.sid);
   });
   cv.addEventListener("wheel", (e) => {
     if (e.target.closest(".term-slot, .zone-mcp, .cv-overlay")) return;  // wheel trong terminal/panel MCP/overlay = scroll, không zoom
@@ -886,14 +891,90 @@ async function loadTools(prefix) {
 }
 window.loadTools = loadTools;
 
-async function loadTemplates() {
-  const sel = $("sp-template");
-  if (!sel) return;
+// ── Spawn form: picker dạng card (workspace / template / model) + duyệt thư mục ──
+
+const MODELS = [
+  { id: "", name: "Auto", desc: "Orchestrator / CLI tự chọn model mặc định" },
+  { id: "opus", name: "Opus · alias", desc: "Luôn trỏ bản Opus mới nhất" },
+  { id: "sonnet", name: "Sonnet · alias", desc: "Cân bằng chất lượng / tốc độ / giá" },
+  { id: "haiku", name: "Haiku · alias", desc: "Nhanh và rẻ — việc nhẹ, lặp nhiều" },
+  { id: "claude-fable-5", name: "Fable 5", desc: "Mạnh nhất (Claude 5) — reasoning + agentic dài hơi; đắt hơn Opus" },
+  { id: "claude-opus-4-8", name: "Opus 4.8", desc: "Opus mới nhất — agentic tự chủ dài hơi, mặc định tốt nhất" },
+  { id: "claude-sonnet-5", name: "Sonnet 5", desc: "Gần chất lượng Opus cho code/agentic, giá Sonnet" },
+  { id: "claude-haiku-4-5", name: "Haiku 4.5", desc: "Nhanh nhất, rẻ nhất — task đơn giản" },
+  { id: "__custom", name: "Tùy chỉnh…", desc: "Tự nhập model id / alias khác (bản cũ: opus-4-7/4-6, sonnet-4-6…)" },
+];
+let SP_TEMPLATES = [];                          // cache /api/skills/templates
+let spSel = { ws: "", template: "", model: "" };  // lựa chọn hiện tại của form spawn
+
+function pickCard(group, val, inner, title) {
+  return `<div class="pick-card${spSel[group] === val ? " sel" : ""}"` +
+    `${title ? ` title="${esc(title)}"` : ""} onclick="spPick('${group}','${esc(val)}')">${inner}</div>`;
+}
+
+function renderSpawnPickers() {
+  const wsBox = $("sp-ws-cards");
+  if (!wsBox) return;
+  const wsItems = [{ id: "", name: "default", note: "workspace chung — cwd tự chọn bên dưới" }]
+    .concat(WORKSPACES.filter((w) => w.id !== "default").map((w) => ({
+      id: w.id, name: w.name || w.id,
+      note: w.id + (w.status !== "active" ? " · " + w.status : ""),
+    })));
+  wsBox.innerHTML = wsItems.map((w) =>
+    pickCard("ws", w.id, `<b>${esc(w.name)}</b><div class="pd">${esc(w.note)}</div>`)).join("");
+  $("sp-template-cards").innerHTML = SP_TEMPLATES.length
+    ? SP_TEMPLATES.map((t) => pickCard("template", t.name,
+        `<b>${esc(t.name)}</b><div class="pd">${esc(t.description || "")}</div>`, t.description)).join("")
+    : `<div class="hint">Chưa có template (.claude/skills của repo orchestrator).</div>`;
+  $("sp-model-cards").innerHTML = MODELS.map((m) => pickCard("model", m.id,
+    `<b>${esc(m.name)}</b>` +
+    (m.id && m.id !== "__custom" ? `<code>${esc(m.id)}</code>` : "") +
+    `<div class="pd">${esc(m.desc)}</div>`)).join("");
+  $("sp-model-custom").hidden = spSel.model !== "__custom";
+}
+
+function spPick(group, val) {
+  spSel[group] = val;
+  renderSpawnPickers();
+}
+window.spPick = spPick;
+
+// Duyệt thư mục server-side (/api/fs) cho Working dir. Path đi qua data-attribute +
+// listener ủy quyền (không nhét vào inline onclick — path có thể chứa ký tự phá attr).
+async function browseDir(start) {
+  const box = $("sp-dir");
+  box.hidden = false;
+  box.innerHTML = `<div class="dir-crumb">Đang tải…</div>`;
   try {
-    const list = await api("/api/skills/templates");
-    sel.innerHTML = `<option value="">— chọn template —</option>` +
-      list.map(t => `<option value="${esc(t.name)}" title="${esc(t.description)}">${esc(t.name)}</option>`).join("");
-  } catch (e) { /* để dropdown trống nếu lỗi */ }
+    const d = await api("/api/fs" + (start ? "?path=" + encodeURIComponent(start) : ""));
+    box.dataset.path = d.path;
+    const item = (p, label) => `<div class="dir-item" data-path="${esc(p)}">${label}</div>`;
+    box.innerHTML =
+      `<div class="dir-crumb">📂 ${esc(d.path)}</div>
+       <div class="dir-list">
+         ${d.parent ? item(d.parent, "⬆ ..") : ""}
+         ${d.dirs.map((n) => item(d.path.endsWith("/") ? d.path + n : d.path + "/" + n,
+                                  "📁 " + esc(n))).join("") || `<div class="hint">(không có thư mục con)</div>`}
+       </div>
+       <div class="dir-actions">
+         <button type="button" onclick="pickDir()">✔ Chọn thư mục này</button>
+         <button type="button" class="secondary" onclick="closeDirBrowse()">Đóng</button>
+       </div>`;
+  } catch (e) {
+    if (start) return browseDir("");   // path gõ tay sai → fallback về $HOME
+    box.innerHTML = `<div class="dir-crumb" style="color:var(--red)">Lỗi: ${esc(e)}</div>`;
+  }
+}
+function pickDir() { $("sp-cwd").value = $("sp-dir").dataset.path || ""; closeDirBrowse(); }
+function closeDirBrowse() { $("sp-dir").hidden = true; }
+window.browseDir = browseDir; window.pickDir = pickDir; window.closeDirBrowse = closeDirBrowse;
+
+async function loadTemplates() {
+  if (!$("sp-template-cards")) return;
+  try {
+    SP_TEMPLATES = await api("/api/skills/templates");
+  } catch (e) { SP_TEMPLATES = []; }
+  renderSpawnPickers();
 }
 
 function collectTools(prefix) {
@@ -909,14 +990,14 @@ function showMsg(id, text, ok) {
 }
 
 async function spawnAgent() {
-  const name = $("sp-template").value;
+  const name = spSel.template;
   if (!name) return showMsg("sp-msg", "Cần chọn vai/template", false);
   showMsg("sp-msg", "Đang spawn…", true);
   try {
     const r = await api("/api/sessions/spawn", "POST", {
       name, cwd: $("sp-cwd").value.trim(),
-      workspace_id: $("sp-ws").value,       // "" = default; ≠ default thì cwd tự ghim
-      model: $("sp-model").value,
+      workspace_id: spSel.ws,               // "" = default; ≠ default thì cwd tự ghim
+      model: spSel.model === "__custom" ? $("sp-model").value.trim() : spSel.model,
       effort: $("sp-effort").value,
       allowed_tools: collectTools("sp"),
       init_prompt: $("sp-init").value.trim(),
@@ -1206,6 +1287,11 @@ function connectSSE() {
 // Deep-link: mở lại đúng workspace từ URL hash (#ws=<id>).
 if (location.hash.startsWith("#ws=")) currentWS = decodeURIComponent(location.hash.slice(4));
 cvInit();
+// Duyệt thư mục: click folder trong panel → đi sâu vào (path nằm ở data-path, không inline).
+$("sp-dir").addEventListener("click", (e) => {
+  const it = e.target.closest(".dir-item");
+  if (it) browseDir(it.dataset.path);
+});
 try { switchTab(localStorage.getItem("orch-tab") || "agents"); } catch { /* tab mặc định */ }
 refreshAll();
 loadTemplates();
