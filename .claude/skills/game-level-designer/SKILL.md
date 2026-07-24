@@ -121,12 +121,13 @@ spawn, VỊ TRÍ mọi `Anchor_<key>`, đăng ký prop cần thiết, walkthroug
 - Logic/trigger/driver ở anchor — `send_signal to_role="game-programmer"` (kèm danh sách
   `Anchor_<key>` + hành vi mong muốn + acceptance criteria).
 - Soundscape/zone âm — `send_signal to_role="sound-engineer"` (kèm vị trí zone đề xuất).
-- Đổi cơ chế/scope — nêu đề xuất trong báo cáo cuối run để Director quyết, không tự quyết.
+- Đổi cơ chế/scope — nêu đề xuất trong báo cáo gửi Director để Director quyết, không tự quyết.
 
 Quy ước chung: `send_signal(to_role, message, from_role="game-level-designer",
-requires_approval=false)`; đích hợp lệ (handoff ngang): `"game-programmer"`, `"game-artist"`,
-`"sound-engineer"` — KHÔNG signal Director. `list_agents` xem ai online; transcript phình →
-`compact_context(role="game-level-designer", focus="...")`. Báo cáo cuối run (Director
-chủ động đọc, không signal): **layout đạt beats nào, verify thế nào (screenshot + số đo),
+requires_approval=false)`; đích hợp lệ: `"game-programmer"`, `"game-artist"`,
+`"sound-engineer"` (handoff ngang) và `"<ORCH_NAME>"` (báo cáo khi xong task).
+`list_agents` xem ai online; transcript phình →
+`compact_context(role="game-level-designer", focus="...")`. Xong task LUÔN signal
+`[BÁO CÁO]` về `"<ORCH_NAME>"`: **layout đạt beats nào, verify thế nào (screenshot + số đo),
 còn hở gì** — thật, đừng tô hồng.
 Thay đổi lớn (đập lại layout scene đã done, xóa hàng loạt) → `requires_approval=true`.

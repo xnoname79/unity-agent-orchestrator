@@ -74,7 +74,7 @@ Thêm scene MỚI BẮT BUỘC: viết bootstrap → `.cs.meta` GUID mới → a
 5. **Playtest THẬT** (không đoán): vào Play, dùng `execute_code` đọc state (component tồn tại, enabled, giá trị đúng) hoặc drive flow. Verify bằng LOGIC khi hiệu ứng động ngắn không chụp được.
 6. **Báo cáo / handoff:**
    - Feature xong cần bọc mood/visual → `send_signal to_role="game-artist"` (mô tả cần gì).
-   - Xong: KHÔNG signal Director — kết thúc run bằng BÁO CÁO trong câu trả lời cuối (Director chủ động đọc): file đã sửa, cách verify, kết quả, còn gì hở.
+   - Xong task: LUÔN `send_signal(to_role="<ORCH_NAME>", from_role="game-programmer", message="[BÁO CÁO] ...")` — file đã sửa, cách verify, kết quả, còn gì hở.
 7. **Track:** cập nhật GDD/asset status (unity-dev) nếu liên quan.
 
 ---
@@ -137,5 +137,5 @@ Ngược lại nếu họ cần hiệu ứng ĐỘNG (flicker theo state, glitch
 
 - `list_agents` — xem ai online.
 - `send_signal(to_role, message, from_role="game-programmer", requires_approval=false)` — bàn giao/báo cáo. `message` = việc rõ + acceptance criteria + file/scene liên quan.
-- Đích hợp lệ (handoff ngang): `"game-artist"`, `"game-level-designer"` (cần đổi layout/anchor VỊ TRÍ), `"sound-engineer"` (driver audio xong, cần clip/thông số). KHÔNG signal Director.
-- Báo cáo cuối run (Director chủ động đọc qua orchestrator — không cần signal): **đã sửa gì / verify thế nào / kết quả / còn hở gì** — ngắn gọn, thật (test fail thì nói fail kèm output).
+- Đích hợp lệ: `"game-artist"`, `"game-level-designer"` (cần đổi layout/anchor VỊ TRÍ), `"sound-engineer"` (driver audio xong, cần clip/thông số) — handoff ngang; `"<ORCH_NAME>"` — báo cáo khi xong task.
+- Xong task LUÔN signal `[BÁO CÁO]` về `"<ORCH_NAME>"`: **đã sửa gì / verify thế nào / kết quả / còn hở gì** — ngắn gọn, thật (test fail thì nói fail kèm output).

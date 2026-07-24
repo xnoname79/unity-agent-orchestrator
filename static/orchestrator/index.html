@@ -123,26 +123,46 @@
   /* Transcript drawer */
   .drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 20; display: none; }
   .drawer-overlay.open { display: block; }
-  .drawer { position: fixed; top: 0; right: 0; height: 100%; width: min(560px, 100%);
+  .drawer { position: fixed; top: 0; right: 0; height: 100%; width: min(640px, 100%);
     background: var(--panel); border-left: 1px solid var(--border); z-index: 21;
+    box-shadow: -12px 0 40px rgba(16,24,40,.14);
     transform: translateX(100%); transition: transform .18s ease; display: flex; flex-direction: column; }
   .drawer.open { transform: translateX(0); }
-  .drawer-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px;
+  .drawer-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px;
     border-bottom: 1px solid var(--border); }
   .drawer-head h3 { margin: 0; font-size: 14px; }
   .drawer-head .spacer { flex: 1; }
-  .drawer-body { flex: 1; overflow-y: auto; padding: 10px 14px; }
-  .ev { border-left: 2px solid var(--border); padding: 6px 10px; margin: 6px 0; background: var(--panel2);
-    border-radius: 0 6px 6px 0; }
-  .ev .k { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
-  .ev .s { white-space: pre-wrap; word-break: break-word; font-size: 13px; margin-top: 2px; }
+  .drawer-body { flex: 1; overflow-y: auto; padding: 12px 16px; background: var(--bg); }
+  /* Timeline event: icon | (kind ×N time / nội dung). Row dài clamp 3 dòng, click mở. */
+  .ev { display: flex; gap: 9px; padding: 7px 10px; margin: 5px 0; background: var(--panel);
+    border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 8px; }
+  .ev-ic { flex: none; font-size: 13px; line-height: 1.5; }
+  .ev-main { flex: 1; min-width: 0; }
+  .ev-meta { display: flex; align-items: center; gap: 8px; }
+  .ev .k { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+    font-weight: 600; }
+  .ev .rep { font-size: 10px; font-weight: 700; color: var(--accent);
+    background: rgba(59,116,224,.10); border-radius: 999px; padding: 0 7px; }
+  .ev .t { margin-left: auto; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ev .s { white-space: pre-wrap; word-break: break-word; font-size: 12.5px; margin-top: 2px; }
+  .ev.thinking .s, .ev.tool_use .s, .ev.tool_result .s { display: -webkit-box;
+    -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+  .ev.open .s { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
+  /* Phần kết quả gộp trong card tool: ngăn cách nét đứt, mono, clamp như .s */
+  .ev .tr { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border);
+    font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--muted);
+    white-space: pre-wrap; word-break: break-word; display: -webkit-box;
+    -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+  .ev.open .tr { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
+  .ev .tr.pend { font-style: italic; border-top-style: dotted; }
+  .ev .tr.err { color: var(--red); }
   .ev.thinking { border-left-color: var(--amber); } .ev.thinking .s { color: #8a6d1f; font-style: italic; }
   .ev.tool_use { border-left-color: var(--blue); } .ev.tool_use .s { font-family: ui-monospace, monospace; font-size: 12px; }
   .ev.tool_result { border-left-color: var(--gray); } .ev.tool_result .s { color: var(--muted); font-size: 12px; }
   .ev.text { border-left-color: var(--green); }
-  .ev.system, .ev.result { border-left-color: var(--muted); } .ev.system .s, .ev.result .s { color: var(--muted); font-size: 12px; }
+  .ev.system, .ev.result { border-left-color: var(--border); border-style: solid; opacity: .85; }
+  .ev.system .s, .ev.result .s { color: var(--muted); font-size: 12px; }
   .ev.error { border-left-color: var(--red); } .ev.error .s { color: var(--red); }
-  .ev .t { float: right; font-size: 10px; color: var(--muted); }
   /* Workspace list (master view) — grid cards, click into details */
   .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
   .ws-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px;
@@ -262,8 +282,6 @@
   .edge { stroke-width: 1.6; fill: none; }
   .edge-wait { stroke: #f0a020; }
   .edge-run { stroke: #4c8dff; stroke-dasharray: 6 5; animation: edgeflow .6s linear infinite; }
-  .edge-done { stroke: #30a46c; opacity: .4; }
-  .edge-fail { stroke: #e5484d; opacity: .55; }
   @keyframes edgeflow { to { stroke-dashoffset: -11; } }
   /* Card orchestrator (👑): terminal THẬT (xterm.js ↔ PTY claude --resume) nhúng thẳng trong card,
      left bar dọc chứa action buttons. Element terminal được JS giữ bền qua các lần re-render. */
@@ -272,7 +290,11 @@
   .orch-side { display: flex; flex-direction: column; gap: 4px; padding: 8px 6px;
     border-right: 1px solid var(--border); flex: none; }
   .orch-side button { font-size: 12px; padding: 3px 7px; }
-  .term-slot { flex: 1; height: 360px; min-width: 0; background: #0c0e12; }
+  .term-slot { flex: 1; height: 360px; min-width: 0; background: #0c0e12; position: relative; }
+  /* Khóa chat orch khi run tự động đang/đã chạy — overlay phủ terminal, chặn gõ/click */
+  .term-lock { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center;
+    justify-content: center; text-align: center; padding: 20px; background: rgba(12,14,18,.85);
+    color: #e6e8eb; font-size: 12px; line-height: 1.8; cursor: not-allowed; }
   .term-host { height: 100%; padding: 4px 0 4px 8px; }
   .term-host .xterm { height: 100%; }
   /* Editor SKILL trong drawer (nút 📘 trên card agent) */
@@ -360,7 +382,8 @@
       <div id="cv-hint" class="cv-overlay cv-hint" hidden>
         <b>Điều khiển:</b> kéo nền = pan · lăn chuột = zoom · kéo header card = di chuyển agent ·
         kéo header 📁 = di chuyển cả cụm · click card = xem run mới nhất (live).<br>
-        <b>Mũi tên</b> = signal giữa các agent: vàng chờ · xanh chạy · lục xong · đỏ lỗi.<br>
+        <b>Mũi tên</b> = task ĐANG hoạt động giữa các agent: vàng chờ · xanh chạy —
+        xong/lỗi thì ẩn (xem tab History).<br>
         <b>Trong card 📁:</b> chọn 👑 orchestrator (giao việc qua terminal trong card 👑) ·
         🔌 MCP để xem/add MCP cho project.
       </div>
