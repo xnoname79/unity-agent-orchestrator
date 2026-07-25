@@ -85,13 +85,26 @@
     white-space: nowrap; vertical-align: bottom; cursor: help; }
   .cwd-none { color: var(--muted); }
   .forms { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; padding: 16px; }
-  .form-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .form-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
   .form-card h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
-  .form-card label { display: block; font-size: 11px; color: var(--muted); margin: 8px 0 3px; }
+  .form-card label { display: block; font-size: 11px; color: var(--muted); margin: 14px 0 5px; }
   .form-card input, .form-card textarea, .form-card select {
     width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
     border-radius: 6px; padding: 6px 9px; font: inherit; font-size: 13px; }
   .form-card textarea { resize: vertical; min-height: 46px; }
+  #sp-init { min-height: 200px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  /* Nút Spawn tách riêng khỏi các control khác (divider + canh phải) — tránh click nhầm */
+  .form-card .spawn-actions { border-top: 1px solid var(--border); margin-top: 18px; padding-top: 14px;
+    display: flex; justify-content: flex-end; gap: 10px; }
+  .form-card .spawn-actions button { width: auto; margin-top: 0; padding: 8px 32px; }
+  .form-card .spawn-actions button.secondary { background: var(--panel); border-color: var(--border);
+    color: var(--text); font-weight: 500; }
+  /* Modal đăng ký CLI session làm agent */
+  .modal-back { position: fixed; inset: 0; background: rgba(12, 14, 18, .5); z-index: 60;
+    display: flex; align-items: center; justify-content: center; }
+  .modal-back[hidden] { display: none; }
+  .modal { width: min(600px, 92vw); max-height: 86vh; overflow: auto; background: var(--panel); }
+  #reg-init { min-height: 180px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .form-card .row { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
   .form-card .row label { margin: 0; display: flex; align-items: center; gap: 5px; }
   .form-card .row input[type=checkbox] { width: auto; }
@@ -102,6 +115,9 @@
   .pick-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
     cursor: pointer; background: var(--bg); transition: border-color .12s; }
   .pick-card:hover { border-color: var(--accent); }
+  /* Khối nhập tên custom role (spawn form + modal register) — tách khỏi grid card phía trên */
+  #sp-role-custom, #reg-role-custom { margin: 12px 0 4px; }
+  #sp-role-custom .hint, #reg-role-custom .hint { margin-top: 5px; }
   .pick-card.sel { border-color: var(--accent); background: rgba(59,116,224,.08);
     box-shadow: 0 0 0 1px var(--accent); }
   .pick-card b { display: block; font-size: 12.5px; }
@@ -366,6 +382,10 @@
           <div class="hint">Workspace ≠ default: cwd is pinned to the workspace folder (ignore Working dir below).</div>
           <label>Role (pick a template)</label>
           <div id="sp-template-cards" class="pick-grid"></div>
+          <div id="sp-role-custom" hidden>
+            <input id="sp-role" placeholder="Tên role (vd: VFX Artist)" oninput="spRoleSlug()">
+            <div class="hint" id="sp-role-hint"></div>
+          </div>
           <div class="hint">Role name = template name. SKILL is written to <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/</code>.</div>
           <label>Working dir (cwd) — default workspace only</label>
           <div class="dir-row">
@@ -390,8 +410,8 @@
           <label>Allowed tools</label>
           <button type="button" class="secondary" onclick="loadTools('sp')">🔧 Load tools from cwd</button>
           <div id="sp-tools" class="toolpicker"></div>
-          <label>Init prompt (optional)</label><textarea id="sp-init" placeholder="You are an Artist Director agent..."></textarea>
-          <button onclick="spawnAgent()">Spawn</button>
+          <label id="sp-init-label">Init prompt (optional)</label><textarea id="sp-init" placeholder="You are an Artist Director agent..."></textarea>
+          <div class="spawn-actions"><button onclick="spawnAgent()">🚀 Spawn</button></div>
           <div id="sp-msg" class="form-msg"></div>
         </div>
     </div>
@@ -476,6 +496,26 @@
   <option value="claude-haiku-4-5" label="Haiku 4.5">
 </datalist>
 
+<!-- Modal đăng ký CLI session làm agent (từ dropdown zone trên canvas) -->
+<div id="reg-modal" class="modal-back" hidden>
+  <div class="modal form-card">
+    <h3>➕ Đăng ký CLI session làm agent</h3>
+    <div class="hint" id="reg-info"></div>
+    <label>Role (template hoặc tùy chỉnh)</label>
+    <div id="reg-template-cards" class="pick-grid"></div>
+    <div id="reg-role-custom" hidden>
+      <input id="reg-role" placeholder="Tên role (vd: VFX Artist)" oninput="regRoleSlug()">
+      <div class="hint" id="reg-role-hint"></div>
+    </div>
+    <label id="reg-init-label" hidden>Init prompt (bắt buộc — sửa template mẫu theo role)</label>
+    <textarea id="reg-init" hidden></textarea>
+    <div class="spawn-actions">
+      <button type="button" class="secondary" onclick="closeRegModal()">Đóng</button>
+      <button type="button" onclick="regConfirm()">✔ Đăng ký</button>
+    </div>
+    <div id="reg-msg" class="form-msg"></div>
+  </div>
+</div>
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/xterm-addon-fit.js"></script>
 <script src="/app.js"></script>

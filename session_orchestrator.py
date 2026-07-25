@@ -205,6 +205,8 @@ def init_db():
         conn.execute(f"ALTER TABLE sessions ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '{DEFAULT_WORKSPACE}'")
     if "engine" not in scols:
         conn.execute("ALTER TABLE sessions ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude'")
+    if "is_orch" not in scols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN is_orch INTEGER NOT NULL DEFAULT 0")
     # migrate: thêm workspace_id cho runs nếu DB cũ chưa có
     rcols = [r[1] for r in conn.execute("PRAGMA table_info(runs)").fetchall()]
     if "workspace_id" not in rcols:
@@ -380,13 +382,56 @@ def get_session_by_name(name, workspace_id=None):
     return dict(row) if row else None
 
 
-def resolve_session_id(ref, workspace_id=None):
+# Alias dành riêng: worker gửi to_role="orch" → resolve về session đang bật is_orch.
+# Routing không phụ thuộc tên session → toggle orch sang session khác không gãy [BÁO CÁO].
+ORCH_ALIAS = "orch"
+
+
+def set_session_orch(session_id, on):
+    """Bật/tắt vai orchestrator. Bật: demote mọi orch cũ CÙNG cwd (ràng buộc 1 orch/cwd)."""
+    _ensure_db()
+    conn = _conn()
+    if on:
+        row = conn.execute("SELECT cwd FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if row:
+            conn.execute("UPDATE sessions SET is_orch = 0 WHERE cwd = ? AND is_orch = 1", (row["cwd"],))
+    conn.execute("UPDATE sessions SET is_orch = ?, last_active = ? WHERE id = ?",
+                 (1 if on else 0, _now(), session_id))
+    conn.commit()
+    conn.close()
+
+
+def _resolve_orch(workspace_id=None, from_ref=None):
+    """Resolve alias 'orch' → session_id đang is_orch. Workspace default có thể chứa nhiều cwd
+    (nhiều project → nhiều orch): ưu tiên orch CÙNG cwd với sender; còn mơ hồ lấy last_active."""
+    _ensure_db()
+    conn = _conn()
+    q, args = "SELECT id, cwd FROM sessions WHERE is_orch = 1", []
+    if workspace_id is not None:
+        q += " AND workspace_id = ?"
+        args.append(workspace_id)
+    rows = [dict(r) for r in conn.execute(q + " ORDER BY last_active DESC", args).fetchall()]
+    conn.close()
+    if len(rows) > 1 and from_ref:
+        sender = get_session(from_ref) or get_session_by_name(from_ref, workspace_id)
+        if sender:
+            same = [r for r in rows if r["cwd"] == sender.get("cwd")]
+            if same:
+                rows = same
+    return rows[0]["id"] if rows else None
+
+
+def resolve_session_id(ref, workspace_id=None, from_ref=None):
     """ref = session_id (exact match) HOẶC role/name → trả session_id, None nếu không thấy.
+    ref == 'orch' (alias dành riêng) → session đang is_orch (xem _resolve_orch).
 
     workspace_id != None: chỉ resolve trong phạm vi workspace đó (chống signal đi nhầm tenant
-    khi hai workspace trùng role). Nếu ref là session_id thì cũng phải thuộc đúng workspace."""
+    khi hai workspace trùng role). Nếu ref là session_id thì cũng phải thuộc đúng workspace.
+    from_ref: id/name người gửi — chỉ dùng để chọn đúng orch khi 1 workspace có nhiều cwd."""
     if not ref:
         return None
+    if ref == ORCH_ALIAS:
+        return _resolve_orch(workspace_id, from_ref)
     s = get_session(ref)
     if s:
         if workspace_id is not None and s.get("workspace_id") != workspace_id:
@@ -1002,13 +1047,28 @@ def _write_role_skill(cwd, name, content):
     p.write_text(content, encoding="utf-8")
 
 
-def _prepend_role(cwd, name, message):
+# Playbook director nằm ở folder CỐ ĐỊNH (không theo tên session) → toggle orch sang session
+# khác không phải ghi/xoá file; session demote tự hết vai director ngay signal kế.
+DIRECTOR_SKILL = "director"
+
+
+def _prepend_role(cwd, name, message, is_orch=False):
     """Ghim role + playbook vào MỖI signal inject → role không trôi khi history dài/compact.
-    Lazy-load: chỉ SKILL của role này, không nhồi mọi skill. Không có SKILL → chỉ prepend tên role."""
+    Lazy-load: chỉ SKILL của role này, không nhồi mọi skill. Không có SKILL → chỉ prepend tên role.
+    is_orch: session kiêm orchestrator → nhồi CẢ playbook director (folder cố định) LẪN SKILL
+    role riêng — orch vừa điều phối vừa làm việc chuyên môn theo skill của nó."""
+    parts = []
+    if is_orch:
+        d = _role_skill(cwd, DIRECTOR_SKILL)
+        if d:
+            parts.append(d)
     skill = _role_skill(cwd, name)
     if skill:
-        return f"[Role: {name}]\n{skill}\n\n---\n\n{message}"
-    return f"[Role: {name}]\n{message}"
+        parts.append(skill)
+    label = f"{name} (orchestrator)" if is_orch else name
+    if parts:
+        return f"[Role: {label}]\n" + "\n\n---\n\n".join(parts) + f"\n\n---\n\n{message}"
+    return f"[Role: {label}]\n{message}"
 
 
 # ─── Skill templates (liệt kê vai/role cho dropdown spawn) ────────────────────
@@ -1016,13 +1076,25 @@ def _prepend_role(cwd, name, message):
 TEMPLATES_DIR = Path(__file__).parent / ".claude" / "skills"
 
 
+def _seed_director_skill(cwd):
+    """Seed playbook director vào <cwd>/.claude/skills/director/ nếu CHƯA có (không đè bản
+    chỉnh tay). Gọi lúc toggle-on orch. Seed từ template 'director' GENERIC (đa domain);
+    bản chuyên môn hoá (vd game-director) là role template pick riêng hoặc chép tay vào
+    director/ của cwd. Worker báo cáo về alias 'orch' — không phụ thuộc tên session."""
+    if not cwd or _skill_path(cwd, DIRECTOR_SKILL).exists():
+        return
+    try:
+        tpl = (TEMPLATES_DIR / DIRECTOR_SKILL / "SKILL.md").read_text(encoding="utf-8")
+        _write_role_skill(cwd, DIRECTOR_SKILL, tpl)
+    except OSError:
+        pass  # thiếu template → orch vẫn chạy, chỉ không có playbook director
+
+
 def _list_skill_templates():
     """Template hợp lệ = SKILL.md có placeholder <X>. Trả [{name, description}].
     Stub rỗng (0 placeholder) bị bỏ — không phải template điền được."""
     out = []
     for d in sorted(TEMPLATES_DIR.glob("*/")):
-        if d.name.rstrip("/") == "game-director":
-            continue  # vai orch-only: seed tự động khi đăng ký orchestrator (api_register), không spawn như worker
         f = d / "SKILL.md"
         try:
             text = f.read_text(encoding="utf-8")
@@ -1479,7 +1551,8 @@ async def process_signal(signal):
             attempts = 0
             engine = engine_for(target)  # chọn engine theo session (default claude)
             # Prepend role + SKILL vào MỖI inject → role không trôi khi history dài (xem _prepend_role).
-            inject_msg = _prepend_role(target.get("cwd", ""), target["name"], signal["message"])
+            inject_msg = _prepend_role(target.get("cwd", ""), target["name"], signal["message"],
+                                       bool(target.get("is_orch")))
             while True:
                 try:
                     res = await engine.run(target, inject_msg, on_event=on_event, dry_run=dry)
@@ -1725,6 +1798,17 @@ def build_app():
             return wid, JSONResponse({"error": f"workspace '{wid}' đang {ws['status']}"}, status_code=409)
         return wid, None
 
+    def _validate_name(name, wid, session_id=None):
+        """'orch' là alias dành riêng; tên role phải unique trong workspace (routing theo tên
+        — trùng là signal đi nhầm session). session_id: bỏ qua chính nó khi re-register."""
+        if name == ORCH_ALIAS:
+            return JSONResponse({"error": f"'{ORCH_ALIAS}' là alias dành riêng cho orchestrator"},
+                                status_code=400)
+        dup = get_session_by_name(name, wid)
+        if dup and dup["id"] != session_id:
+            return JSONResponse({"error": f"role '{name}' đã tồn tại trong workspace"}, status_code=409)
+        return None
+
     async def api_register(request: Request):
         body = await request.json()
         if not body.get("id") or not body.get("name"):
@@ -1732,24 +1816,45 @@ def build_app():
         wid, err = _validate_workspace(body)
         if err:
             return err
+        name = body["name"].strip()
+        err = _validate_name(name, wid, body["id"])
+        if err:
+            return err
         # cwd: workspace ≠ default thì GHIM vào thư mục workspace (bỏ cwd tùy ý từ body).
         cwd = body.get("cwd", "")
         if wid != DEFAULT_WORKSPACE:
             cwd = workspace_root(wid) or cwd
-        register_session(body["id"], body["name"], body.get("project", ""), cwd,
+        register_session(body["id"], name, body.get("project", ""), cwd,
                          body.get("allowed_tools", []), body.get("permission_mode", ""),
                          body.get("model", ""), body.get("effort", ""), wid, "claude")
-        # Đăng ký làm ORCHESTRATOR (flag từ setOrch trên UI): chưa có SKILL trong cwd → seed
-        # playbook director từ template game-director (điền sẵn tên orch; các placeholder
-        # khác — GAME_NAME/PROJECT_ID... — điền tay sau theo project).
-        if body.get("seed_director_skill") and cwd and not _skill_path(cwd, body["name"]).exists():
-            try:
-                tpl = (TEMPLATES_DIR / "game-director" / "SKILL.md").read_text(encoding="utf-8")
-                _write_role_skill(cwd, body["name"], tpl.replace("<ORCH_NAME>", body["name"]))
-            except OSError:
-                pass  # thiếu template → orch vẫn chạy, chỉ không có playbook
+        # Register CLI session làm worker: ghi SKILL role vào cwd nếu CHƯA có (không đè bản
+        # chỉnh tay). `template` = seed từ TEMPLATES_DIR; `init_prompt` = nội dung custom role.
+        if cwd and not _skill_path(cwd, name).exists():
+            if body.get("template"):
+                try:
+                    _write_role_skill(cwd, name,
+                                      (TEMPLATES_DIR / body["template"] / "SKILL.md").read_text(encoding="utf-8"))
+                except OSError:
+                    pass  # thiếu template → session vẫn đăng ký, chỉ không có playbook
+            elif body.get("init_prompt"):
+                _write_role_skill(cwd, name, body["init_prompt"])
         publish({"type": "session", "id": body["id"], "status": "idle", "workspace_id": wid})
         return JSONResponse(get_session(body["id"]))
+
+    async def api_orch_toggle(request: Request):
+        """Toggle vai orchestrator cho 1 session DB. Bật: demote orch cũ cùng cwd (1 orch/cwd)
+        + seed playbook director (.claude/skills/director/) nếu cwd chưa có. Tắt: về headless."""
+        sid = request.path_params["sid"]
+        s = get_session(sid)
+        if not s:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        body = await request.json()
+        on = bool(body.get("on", True))
+        set_session_orch(sid, on)
+        if on:
+            _seed_director_skill(s.get("cwd", ""))
+        publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": s.get("workspace_id")})
+        return JSONResponse(get_session(sid))
 
     async def api_spawn(request: Request):
         body = await request.json()
@@ -1758,11 +1863,22 @@ def build_app():
         wid, err = _validate_workspace(body)
         if err:
             return err
+        err = _validate_name(body["name"].strip(), wid)
+        if err:
+            return err
+        # Role template không kèm init prompt → seed playbook từ TEMPLATES_DIR (đồng bộ flow
+        # register; custom role thì FE đã bắt buộc init_prompt).
+        init_prompt = body.get("init_prompt", "")
+        if not init_prompt:
+            try:
+                init_prompt = (TEMPLATES_DIR / body["name"] / "SKILL.md").read_text(encoding="utf-8")
+            except OSError:
+                pass  # không phải tên template → giữ init prompt rỗng như cũ
         # engine.spawn tự ghim cwd theo workspace (bỏ cwd tùy ý cho ws ≠ default).
         res = await engine_for("claude").spawn(
             body["name"], project=body.get("project", ""), cwd=body.get("cwd", ""),
             allowed_tools=body.get("allowed_tools", []), permission_mode=body.get("permission_mode", ""),
-            init_prompt=body.get("init_prompt", ""), model=body.get("model", ""),
+            init_prompt=init_prompt, model=body.get("model", ""),
             effort=body.get("effort", ""), workspace_id=wid)
         if res and res.get("error"):
             return JSONResponse(res, status_code=500)
@@ -2056,8 +2172,9 @@ def build_app():
         if not ref or not body.get("message"):
             return JSONResponse({"error": "to_session/to_role và message bắt buộc"}, status_code=400)
         # Resolve trong phạm vi workspace nếu có (chống signal đi nhầm tenant khi trùng role).
+        # from_ref: alias 'orch' cần biết người gửi để chọn đúng orch khi workspace có nhiều cwd.
         wid = body.get("workspace_id") or None
-        target = resolve_session_id(ref, wid)
+        target = resolve_session_id(ref, wid, body.get("from_session") or body.get("from_role"))
         if not target:
             scope = f" trong workspace '{wid}'" if wid else ""
             return JSONResponse({"error": f"không tìm thấy session cho '{ref}'{scope}"}, status_code=404)
@@ -2226,6 +2343,7 @@ def build_app():
         Route("/api/sessions/{sid}/pause", api_pause, methods=["POST"]),
         Route("/api/sessions/{sid}/resume", api_resume, methods=["POST"]),
         Route("/api/sessions/{sid}/stop", api_stop, methods=["POST"]),
+        Route("/api/sessions/{sid}/orch", api_orch_toggle, methods=["POST"]),
         Route("/api/sessions/{sid}/skill", api_get_skill),
         Route("/api/sessions/{sid}/skill", api_put_skill, methods=["POST"]),
         Route("/api/sessions/{sid}/compact", api_get_compact),

@@ -62,7 +62,8 @@ async def _enqueue(to_role: str, message: str, from_role: str = "", requires_app
             matches = {s.get("workspace_id") for s in orch.list_sessions() if s.get("name") == from_role}
             if len(matches) == 1:
                 sender_ws = next(iter(matches))
-        target = orch.resolve_session_id(to_role, sender_ws)
+        # from_role: alias 'orch' resolve theo người gửi (chọn orch cùng cwd khi workspace có nhiều project)
+        target = orch.resolve_session_id(to_role, sender_ws, from_role)
         if not target:
             scope = f" trong workspace '{sender_ws}'" if sender_ws else ""
             return False, f"không tìm thấy session cho '{to_role}'{scope}"

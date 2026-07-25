@@ -125,9 +125,9 @@ spawn, VỊ TRÍ mọi `Anchor_<key>`, đăng ký prop cần thiết, walkthroug
 
 Quy ước chung: `send_signal(to_role, message, from_role="game-level-designer",
 requires_approval=false)`; đích hợp lệ: `"game-programmer"`, `"game-artist"`,
-`"sound-engineer"` (handoff ngang) và `"<ORCH_NAME>"` (báo cáo khi xong task).
+`"sound-engineer"` (handoff ngang) và `"orch"` (báo cáo khi xong task).
 `list_agents` xem ai online; transcript phình →
 `compact_context(role="game-level-designer", focus="...")`. Xong task LUÔN signal
-`[BÁO CÁO]` về `"<ORCH_NAME>"`: **layout đạt beats nào, verify thế nào (screenshot + số đo),
+`[BÁO CÁO]` về `"orch"`: **layout đạt beats nào, verify thế nào (screenshot + số đo),
 còn hở gì** — thật, đừng tô hồng.
 Thay đổi lớn (đập lại layout scene đã done, xóa hàng loạt) → `requires_approval=true`.

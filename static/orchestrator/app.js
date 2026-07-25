@@ -395,7 +395,8 @@ async function sendSignalTo(id, name) {
 }
 window.sendSignalTo = sendSignalTo;
 
-// 1 card agent. needsYou = có signal chờ duyệt tới nó; isOrch = được chọn làm orchestrator của cwd.
+// 1 card agent. needsYou = có signal chờ duyệt tới nó; isOrch = s.is_orch (backend, toggle 👑
+// — session vừa là director điều phối vừa làm việc theo SKILL role riêng của nó).
 function agentCard(s, needsYou, isOrch) {
   const id = encodeURIComponent(s.id);
   const tools = JSON.parse(s.allowed_tools || "[]") || [];
@@ -452,6 +453,7 @@ function agentCard(s, needsYou, isOrch) {
         <div class="orch-side">
           ${ctrl}${allow}
           <button onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')" title="Reload session/terminal (chạy lại claude --resume)">🔄</button>
+          <button class="secondary" onclick="if(confirm('Bỏ vai orchestrator của ${esc(s.name)}? Session về headless worker.'))toggleOrch('${id}',0)" title="Bỏ vai orchestrator — session về headless worker">👑</button>
           ${ctxBtn}${unregBtn}
         </div>
         <div class="term-slot" data-sid="${esc(s.id)}"${locked ? ` data-lock="1"` : ""}>${lock}</div>
@@ -469,6 +471,8 @@ function agentCard(s, needsYou, isOrch) {
     </div>
     <div class="agent-actions">
       ${ctrl}${allow}
+      <button class="secondary" onclick="toggleOrch('${id}',1)"
+        title="Đặt làm orchestrator của project (demote orch cũ cùng cwd; session kiêm director + role riêng)">👑</button>
       ${ctxBtn}<button class="secondary" onclick="editSkill('${id}','${esc(s.name)}')"
         title="Update SKILL của role (upsert vào .claude/skills trong cwd project)">📘</button>${unregBtn}
     </div>
@@ -479,7 +483,7 @@ function agentCard(s, needsYou, isOrch) {
 let cvGroups = [];    // [{cwd, els:[nodeEl]}] — rebuild mỗi render; drag group đọc từ đây
 let cvNodeEls = {};   // session_id → node element (để vẽ edge)
 let cvEdges = [];     // [{from, to, cls}] resolve từ signal list
-let cvLast = { sessions: [], signals: [] };  // data mới nhất (setOrch re-render không cần fetch)
+let cvLast = { sessions: [], signals: [] };  // data mới nhất (re-render cục bộ không cần fetch)
 
 const EDGE_COLORS = { wait: "#f0a020", run: "#4c8dff" };  // done/failed không vẽ mũi tên
 const EDGE_DEFS = "<defs>" + Object.entries(EDGE_COLORS).map(([k, c]) =>
@@ -501,28 +505,87 @@ async function loadClaudeSessions(gi, force) {
 }
 window.loadClaudeSessions = loadClaudeSessions;
 
-// Chọn 1 session Claude CLI làm orchestrator chính của project (cwd). Session này nằm ngoài DB
-// → auto-register vào orchestrator (engine claude, giữ nguyên id) để nhận signal/chat được.
-// Lựa chọn lưu localStorage theo workspace.
-async function setOrch(gi, sid) {
-  const g = cvGroups[gi];
-  if (!g) return;
-  const orch = cvLoad().orch || {};
-  if (sid) {
-    if (!(cvLast.sessions || []).some((s) => s.id === sid)) {
-      const base = g.cwd.replace(/\/+$/, "").split("/").pop() || "project";
-      try {
-        await api("/api/sessions", "POST",
-                  { id: sid, name: "orch-" + base, cwd: g.cwd, workspace_id: currentWS,
-                    seed_director_skill: true });  // chưa có SKILL → seed playbook director vào cwd
-      } catch (e) { console.error(e); alert("Lỗi đăng ký session làm orchestrator: " + e); return; }
-    }
-    orch[g.cwd] = sid;
-  } else delete orch[g.cwd];
-  cvSave({ orch });
+// Toggle vai orchestrator cho 1 session DB (nguồn sự thật: cột is_orch backend — không còn
+// localStorage). Bật: backend tự demote orch cũ cùng cwd + seed director SKILL nếu thiếu.
+async function toggleOrch(id, on) {
+  try { await api("/api/sessions/" + id + "/orch", "POST", { on: !!on }); }
+  catch (e) { console.error(e); alert("Lỗi toggle orchestrator: " + e); return; }
   await refreshAll();
 }
-window.setOrch = setOrch;
+window.toggleOrch = toggleOrch;
+
+// ── Modal đăng ký CLI session làm agent (từ dropdown zone) ──────────────────
+let regCtx = null;   // {cwd, sid} session CLI đang đăng ký
+let regSel = "";     // template đang chọn ("__custom" = tự đặt role)
+
+function renderRegPicker() {
+  $("reg-template-cards").innerHTML = SP_TEMPLATES.map((t) =>
+    `<div class="pick-card${regSel === t.name ? " sel" : ""}" onclick="regPick('${esc(t.name)}')">` +
+    `<b>${esc(t.name)}</b><div class="pd">${esc(t.description || "")}</div></div>`)
+    .concat(`<div class="pick-card${regSel === "__custom" ? " sel" : ""}" onclick="regPick('__custom')">` +
+      `<b>Tùy chỉnh…</b><div class="pd">Tự đặt tên role + viết init prompt (lưu thành SKILL trong cwd)</div></div>`)
+    .join("");
+  const custom = regSel === "__custom";
+  $("reg-role-custom").hidden = !custom;
+  $("reg-init-label").hidden = !custom;
+  $("reg-init").hidden = !custom;
+}
+
+function regPick(v) {
+  regSel = v;
+  if (v === "__custom" && !$("reg-init").value.trim()) $("reg-init").value = CUSTOM_INIT_TEMPLATE;
+  renderRegPicker();
+  if (v === "__custom") { regRoleSlug(); $("reg-role").focus(); }
+}
+window.regPick = regPick;
+
+function regRoleSlug() {
+  const slug = slugRole($("reg-role").value);
+  $("reg-role-hint").innerHTML = slug
+    ? `Session/skill: <code>${esc(slug)}</code> → <code>&lt;cwd&gt;/.claude/skills/${esc(slug)}/SKILL.md</code>`
+    : `Tên được format kiểu folder: chữ thường, bỏ dấu, khoảng trắng thành "-".`;
+}
+window.regRoleSlug = regRoleSlug;
+
+async function openRegModal(gi, sid) {
+  const g = cvGroups[gi];
+  if (!g || !sid) return;
+  regCtx = { cwd: g.cwd, sid };
+  regSel = "";
+  $("reg-info").textContent = `Session ${sid.slice(0, 8)}… · ${g.cwd}`;
+  $("reg-msg").textContent = "";
+  $("reg-msg").className = "form-msg";
+  if (!SP_TEMPLATES.length) await loadTemplates();  // canvas có thể mở trước list view (nơi vẫn load templates)
+  renderRegPicker();
+  $("reg-modal").hidden = false;
+}
+window.openRegModal = openRegModal;
+
+function closeRegModal() { $("reg-modal").hidden = true; regCtx = null; }
+window.closeRegModal = closeRegModal;
+
+async function regConfirm() {
+  if (!regCtx) return;
+  let name = regSel;
+  const extra = {};
+  if (!name) return showMsg("reg-msg", "Cần chọn role", false);
+  if (name === "__custom") {
+    name = slugRole($("reg-role").value);
+    if (!name) return showMsg("reg-msg", "Cần nhập tên role tùy chỉnh", false);
+    if (!$("reg-init").value.trim())
+      return showMsg("reg-msg", "Role tùy chỉnh bắt buộc có init prompt (thành SKILL của role)", false);
+    extra.init_prompt = $("reg-init").value;
+  } else {
+    extra.template = name;  // backend seed SKILL từ TEMPLATES_DIR nếu cwd chưa có
+  }
+  try {
+    await api("/api/sessions", "POST",
+              { id: regCtx.sid, name, cwd: regCtx.cwd, workspace_id: currentWS, ...extra });
+  } catch (e) { return showMsg("reg-msg", "Lỗi: " + e, false); }
+  closeRegModal();
+  await refreshAll();
+}
+window.regConfirm = regConfirm;
 
 // ── MCP của project (claude mcp list/add tại cwd) ───────────────────────────
 let mcpCache = {};  // cwd → {out} | null (đang tải) | undefined (chưa tải)
@@ -588,33 +651,31 @@ function mcpPanelHtml(gi, cwd) {
   </div>`;
 }
 
-// Options cho dropdown orchestrator: session Claude CLI của cwd (trừ những id đã là agent DB —
-// transcript của agent spawn nằm cùng thư mục; giữ lại id đang được chọn để select không mất giá trị).
-function orchOptions(cwd, agentList, orchId) {
-  let opts = `<option value="">— chọn orchestrator —</option>`;
+// Options cho dropdown đăng ký agent: session Claude CLI của cwd chưa nằm trong DB
+// (transcript của agent spawn nằm cùng thư mục — lọc ra để khỏi đăng ký trùng).
+function regOptions(cwd, agentList) {
+  let opts = `<option value="">— thêm CLI session làm agent —</option>`;
   const claude = cvClaude[cwd];
   if (claude === undefined || claude === null)
     return opts + `<option disabled>đang tải sessions…</option>`;
   const agentIds = new Set(agentList.map((s) => s.id));
-  const items = claude.filter((c) => !agentIds.has(c.id) || c.id === orchId);
-  if (orchId && !items.some((c) => c.id === orchId))
-    opts += `<option value="${esc(orchId)}" selected>👑 ${esc(orchId.slice(0, 8))}…</option>`;
-  if (!items.length && !orchId)
-    opts += `<option disabled>không có session claude nào trong cwd này</option>`;
+  const items = claude.filter((c) => !agentIds.has(c.id));
+  if (!items.length)
+    opts += `<option disabled>không còn session claude nào chưa đăng ký</option>`;
   return opts + items.map((c) =>
-    `<option value="${esc(c.id)}"${c.id === orchId ? " selected" : ""} title="${esc(c.id)} · ${esc(c.mtime)}">` +
+    `<option value="${esc(c.id)}" title="${esc(c.id)} · ${esc(c.mtime)}">` +
     `${esc((c.title || "").slice(0, 48) || c.id.slice(0, 8))} · ${esc(c.id.slice(0, 8))}</option>`).join("");
 }
 
-function zoneHtml(gi, cwd, list, orchId) {
+function zoneHtml(gi, cwd, list) {
   const base = cwd.replace(/\/+$/, "").split("/").pop() || cwd;
   return `<div class="node group-zone" data-nid="g:${esc(cwd)}" data-gi="${gi}">
     <div class="zone-head">
       <div class="zone-title">📁 <b>${esc(base)}</b><span class="g-count">${list.length} agents</span>
         <span class="g-path" title="${esc(cwd)}">${esc(cwd)}</span></div>
       <div class="zone-ctl">
-        <select class="mini" onchange="setOrch(${gi}, this.value)"
-          title="Session Claude Code của project (từ ~/.claude/projects) làm orchestrator chính">${orchOptions(cwd, list, orchId)}</select>
+        <select class="mini" onchange="openRegModal(${gi}, this.value); this.value=''"
+          title="Đăng ký session Claude Code CLI của project (~/.claude/projects) làm agent — chọn role trong modal">${regOptions(cwd, list)}</select>
         <button class="secondary" onclick="loadClaudeSessions(${gi}, true)" title="Tải lại danh sách session">🔄</button>
         <button class="secondary" onclick="toggleMcp(${gi})" title="MCP của project (claude mcp list/add)">🔌 MCP</button>
       </div>
@@ -682,7 +743,6 @@ function renderCanvas(sessions, signals) {
 
   const st = cvLoad();
   const pos = st.pos || {};
-  const orch = st.orch || {};
 
   // Gom theo cwd: ≥2 agent chung cwd → zone bo quanh; member vẫn là node TỰ DO trên canvas.
   const byCwd = new Map();
@@ -700,10 +760,10 @@ function renderCanvas(sessions, signals) {
     if (grouped) {
       gi = cvGroups.length;
       cvGroups.push({ cwd, els: [] });
-      zonesHtml += zoneHtml(gi, cwd, list, orch[cwd]);
+      zonesHtml += zoneHtml(gi, cwd, list);
     }
     for (const s of list) {
-      nodesHtml += `<div class="node" data-nid="s:${esc(s.id)}">${agentCard(s, needs.has(s.id), orch[cwd] === s.id)}</div>`;
+      nodesHtml += `<div class="node" data-nid="s:${esc(s.id)}">${agentCard(s, needs.has(s.id), !!s.is_orch)}</div>`;
       nodeMeta.push({ sid: s.id, cwd, grouped, gi });
     }
   }
@@ -907,6 +967,51 @@ const MODELS = [
 let SP_TEMPLATES = [];                          // cache /api/skills/templates
 let spSel = { ws: "", template: "", model: "" };  // lựa chọn hiện tại của form spawn
 
+// Mẫu init prompt cho role tùy chỉnh — prefill vào textarea khi user chọn card
+// "Tùy chỉnh…" (chỉ khi textarea đang rỗng, không đè bản user đã sửa).
+const CUSTOM_INIT_TEMPLATE = `---
+name: <ROLE_NAME>
+description: >
+  Vai <TÊN VAI> cho project. KÍCH HOẠT khi nhận signal to_role="<ROLE_NAME>"
+  hoặc khi việc thuộc chuyên môn: <liệt kê>. KHÔNG làm việc của vai khác —
+  bàn giao qua send_signal.
+---
+
+# <Tên vai> — <TÊN PROJECT>
+
+Bạn là **<Tên vai>** trong studio 1-người-nhiều-agent.
+
+## Vai trò & ranh giới
+
+**Bạn LÀM:** <việc chính 1>, <việc chính 2>, <việc chính 3>.
+**Bạn KHÔNG làm:** <việc của vai khác> → send_signal(to_role="<role-phụ-trách>").
+
+## Giao tiếp qua MCP signal
+
+- \`list_agents\` — xem team ai online trước khi bàn giao.
+- \`send_signal(to_role="<tên-session-đích>", from_role="<ROLE_NAME>", message="...")\` —
+  bàn giao ngang. Agent kia KHÔNG thấy hội thoại của bạn — message phải tự chứa đủ
+  ngữ cảnh (goal, file/scene liên quan, tiêu chí "đạt").
+- Xong task: LUÔN send_signal(to_role="orch", from_role="<ROLE_NAME>",
+  message="[BÁO CÁO] kết quả + bằng chứng (số liệu/screenshot) + còn hở gì") —
+  "orch" là alias cố định, tự resolve về session orchestrator hiện tại.
+- Transcript phình khi làm dài → compact_context(role="<ROLE_NAME>", focus="việc đang dở").
+`;
+
+// Format tên role thành slug kiểu folder: bỏ dấu tiếng Việt, chữ thường, [a-z0-9-].
+function slugRole(s) {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/gi, "d")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function spRoleSlug() {
+  const slug = slugRole($("sp-role").value);
+  $("sp-role-hint").innerHTML = slug
+    ? `Session/skill: <code>${esc(slug)}</code> → <code>&lt;cwd&gt;/.claude/skills/${esc(slug)}/SKILL.md</code>`
+    : `Tên được format kiểu folder: chữ thường, bỏ dấu, khoảng trắng thành "-".`;
+}
+window.spRoleSlug = spRoleSlug;
+
 function pickCard(group, val, inner, title) {
   return `<div class="pick-card${spSel[group] === val ? " sel" : ""}"` +
     `${title ? ` title="${esc(title)}"` : ""} onclick="spPick('${group}','${esc(val)}')">${inner}</div>`;
@@ -922,10 +1027,15 @@ function renderSpawnPickers() {
     })));
   wsBox.innerHTML = wsItems.map((w) =>
     pickCard("ws", w.id, `<b>${esc(w.name)}</b><div class="pd">${esc(w.note)}</div>`)).join("");
-  $("sp-template-cards").innerHTML = SP_TEMPLATES.length
-    ? SP_TEMPLATES.map((t) => pickCard("template", t.name,
-        `<b>${esc(t.name)}</b><div class="pd">${esc(t.description || "")}</div>`, t.description)).join("")
-    : `<div class="hint">Chưa có template (.claude/skills của repo orchestrator).</div>`;
+  $("sp-template-cards").innerHTML = SP_TEMPLATES.map((t) => pickCard("template", t.name,
+      `<b>${esc(t.name)}</b><div class="pd">${esc(t.description || "")}</div>`, t.description))
+    .concat(pickCard("template", "__custom",
+      `<b>Tùy chỉnh…</b><div class="pd">Tự đặt tên role + viết init prompt (lưu thành SKILL trong cwd)</div>`))
+    .join("");
+  const isCustomRole = spSel.template === "__custom";
+  $("sp-role-custom").hidden = !isCustomRole;
+  $("sp-init-label").textContent = isCustomRole
+    ? "Init prompt (bắt buộc — sửa template mẫu theo role)" : "Init prompt (optional)";
   $("sp-model-cards").innerHTML = MODELS.map((m) => pickCard("model", m.id,
     `<b>${esc(m.name)}</b>` +
     (m.id && m.id !== "__custom" ? `<code>${esc(m.id)}</code>` : "") +
@@ -934,8 +1044,19 @@ function renderSpawnPickers() {
 }
 
 function spPick(group, val) {
+  const prev = spSel[group];
   spSel[group] = val;
+  if (group === "template") {
+    const box = $("sp-init");
+    if (val === "__custom") {
+      if (!box.value.trim()) box.value = CUSTOM_INIT_TEMPLATE;
+      spRoleSlug();
+    } else if (prev === "__custom" && box.value === CUSTOM_INIT_TEMPLATE) {
+      box.value = "";   // mẫu chưa sửa gì thì dọn — kẻo bị ghi đè SKILL của template thật
+    }
+  }
   renderSpawnPickers();
+  if (group === "template" && val === "__custom") $("sp-role").focus();
 }
 window.spPick = spPick;
 
@@ -990,8 +1111,14 @@ function showMsg(id, text, ok) {
 }
 
 async function spawnAgent() {
-  const name = spSel.template;
+  let name = spSel.template;
   if (!name) return showMsg("sp-msg", "Cần chọn vai/template", false);
+  if (name === "__custom") {
+    name = slugRole($("sp-role").value);
+    if (!name) return showMsg("sp-msg", "Cần nhập tên role tùy chỉnh", false);
+    if (!$("sp-init").value.trim())
+      return showMsg("sp-msg", "Role tùy chỉnh bắt buộc có init prompt (thành SKILL của role)", false);
+  }
   showMsg("sp-msg", "Đang spawn…", true);
   try {
     const r = await api("/api/sessions/spawn", "POST", {
@@ -1004,6 +1131,7 @@ async function spawnAgent() {
     });
     showMsg("sp-msg", `Đã spawn '${r.name}' (${r.id})`, true);
     $("sp-init").value = "";
+    $("sp-role").value = "";
     $("sp-tools").innerHTML = "";
     refreshAll();
   } catch (e) { showMsg("sp-msg", "Lỗi: " + e, false); }
