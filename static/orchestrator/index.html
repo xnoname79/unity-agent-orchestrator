@@ -240,6 +240,12 @@
   #tab-history { width: 100%; max-width: 1200px; margin: 0 auto; padding: 20px 24px;
     display: grid; gap: 16px; align-content: start; }
   #tab-history[hidden] { display: none; }
+  /* Form gửi signal thủ công (giữ từ dashboard cũ: approval + dry-run) */
+  .sg-form { display: flex; gap: 8px; align-items: center; padding: 4px 16px 14px; flex-wrap: wrap; }
+  .sg-form select { min-width: 160px; }
+  .sg-form input#sg-msg { flex: 1; min-width: 240px; }
+  .sg-chk { display: inline-flex; gap: 4px; align-items: center; font-size: 12px;
+    color: var(--muted); white-space: nowrap; }
   .canvas { position: relative; flex: 1; min-width: 0; overflow: hidden; cursor: grab;
     touch-action: none;
     background: radial-gradient(circle, #c6cede 1px, transparent 1px) 0 0 / 22px 22px, #eef1f6; }
@@ -379,7 +385,7 @@
           <div class="hint">Orchestrator runs <code>claude -p</code> to create a new session.</div>
           <label>Workspace</label>
           <div id="sp-ws-cards" class="pick-grid"></div>
-          <div class="hint">Workspace ≠ default: cwd is pinned to the workspace folder (ignore Working dir below).</div>
+          <div class="hint">Working dir bỏ trống + workspace ≠ default → agent chạy trong thư mục workspace.</div>
           <label>Role (pick a template)</label>
           <div id="sp-template-cards" class="pick-grid"></div>
           <div id="sp-role-custom" hidden>
@@ -387,7 +393,7 @@
             <div class="hint" id="sp-role-hint"></div>
           </div>
           <div class="hint">Role name = template name. SKILL is written to <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/</code>.</div>
-          <label>Working dir (cwd) — default workspace only</label>
+          <label>Working dir (cwd) — thư mục project của agent</label>
           <div class="dir-row">
             <input id="sp-cwd" placeholder="/path/to/project">
             <button type="button" onclick="browseDir(document.getElementById('sp-cwd').value.trim())"
@@ -445,6 +451,17 @@
   </div><!-- /tab-agents -->
 
   <div id="tab-history" hidden>
+  <section class="panel">
+    <h2>Send signal</h2>
+    <div class="sg-form">
+      <select id="sg-to"></select>
+      <input id="sg-msg" placeholder="Message (string hoặc JSON tự do)">
+      <label class="sg-chk" title="Signal chờ Approve trên queue mới chạy"><input type="checkbox" id="sg-approval"> approval</label>
+      <label class="sg-chk" title="Không gọi claude thật — test pipeline"><input type="checkbox" id="sg-dry"> dry-run</label>
+      <button onclick="sendSignal()">Send</button>
+    </div>
+  </section>
+
   <section class="panel">
     <h2>Signal queue</h2>
     <div class="table-scroll">

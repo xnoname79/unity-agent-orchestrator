@@ -395,6 +395,34 @@ async function sendSignalTo(id, name) {
 }
 window.sendSignalTo = sendSignalTo;
 
+// Form gửi signal thủ công (tab History) — giữ từ dashboard cũ: chọn role, bật
+// requires_approval / dry_run (sendSignalTo trên card chỉ gửi nhanh, không có 2 flag này).
+function fillSignalForm(sessions) {
+  const sel = $("sg-to");
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = sessions.map((s) =>
+    `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join("");
+  if (cur && sessions.some((s) => s.name === cur)) sel.value = cur;
+}
+
+async function sendSignal() {
+  const to = $("sg-to").value;
+  const msg = $("sg-msg").value.trim();
+  if (!to || !msg) { alert("Chọn role đích và nhập message."); return; }
+  try {
+    await api("/api/signals", "POST", {
+      to_role: to, message: msg, from_role: "human",
+      workspace_id: currentWS || undefined,
+      requires_approval: $("sg-approval").checked ? 1 : 0,
+      dry_run: $("sg-dry").checked ? 1 : 0,
+    });
+    $("sg-msg").value = "";
+    await refreshAll();
+  } catch (e) { console.error(e); alert("Lỗi gửi signal: " + e); }
+}
+window.sendSignal = sendSignal;
+
 // 1 card agent. needsYou = có signal chờ duyệt tới nó; isOrch = s.is_orch (backend, toggle 👑
 // — session vừa là director điều phối vừa làm việc theo SKILL role riêng của nó).
 function agentCard(s, needsYou, isOrch) {
@@ -767,6 +795,11 @@ function renderCanvas(sessions, signals) {
       nodeMeta.push({ sid: s.id, cwd, grouped, gi });
     }
   }
+  // innerHTML rebuild sẽ detach t.host → textarea của xterm bị BLUR (mất focus giữa lúc gõ).
+  // Nhớ terminal nào đang giữ focus để trả lại sau khi attach (SSE re-render rất thường xuyên
+  // khi worker đang chạy — không nhớ là user gõ vài phím lại văng focus một lần).
+  const focusSid = Object.keys(cvTerms).find((sid) =>
+    cvTerms[sid].host.contains(document.activeElement)) || null;
   // Thứ tự vẽ: zone (dưới) → edges (giữa) → agent card (trên).
   world.innerHTML = zonesHtml + `<svg id="edges" class="edges"></svg>` + nodesHtml;
 
@@ -828,6 +861,9 @@ function renderCanvas(sessions, signals) {
   cvEdges = [...pairBest.values()];
   redrawEdges();
   attachTerms();  // cắm terminal bền vào card 👑 (sau khi node đã vào DOM)
+  // Trả focus cho terminal đang gõ dở (rAF: sau khi attachTerms đã cắm host vào slot mới).
+  if (focusSid && cvTerms[focusSid])
+    requestAnimationFrame(() => { const t = cvTerms[focusSid]; if (t && t.term) t.term.focus(); });
 
   // Đổi workspace (hoặc lần đầu) → nạp view đã lưu, chưa có thì fit.
   if (cvWs !== currentWS) {
@@ -1383,6 +1419,7 @@ async function refreshAll() {
       api("/api/runs" + pagedQuery(runsShown)),
     ]);
     renderCanvas(sessions, signals.items);
+    fillSignalForm(sessions);
     sigHasMore = signals.has_more; renderSignals(signals.items);
     runsHasMore = runs.has_more; renderRuns(runs.items);
   } catch (e) { console.error(e); }

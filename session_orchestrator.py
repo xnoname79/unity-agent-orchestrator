@@ -50,6 +50,25 @@ from pathlib import Path
 
 import httpx
 
+
+# ── .env loader (stdlib, không thêm dep) ─────────────────────────────────────
+# Đọc file .env cạnh script NẾU có, chạy TRƯỚC mọi os.environ.get bên dưới.
+# setdefault → env thật (shell export / systemd EnvironmentFile) LUÔN thắng;
+# .env chỉ lấp biến còn trống. Dòng trống / bắt đầu '#' / không có '=' bị bỏ qua.
+def _load_dotenv(path=None):
+    path = path or Path(__file__).with_name(".env")
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
+
 DB_DIR = Path.home() / ".session_orch_db"
 DB_NAME = os.environ.get("ORCH_DB", "orchestrator")
 # Multi-tenant: mỗi workspace là 1 thư mục riêng dưới root này; cwd của mọi session
@@ -1090,6 +1109,12 @@ def _seed_director_skill(cwd):
         pass  # thiếu template → orch vẫn chạy, chỉ không có playbook director
 
 
+def _safe_template_name(name):
+    """Tên template/role dùng làm PATH SEGMENT dưới TEMPLATES_DIR — chặn traversal ('..', '/').
+    Ký tự đầu alnum → loại '.' '..' và mọi biến thể ẩn; phần sau cho phép . _ - như tên skill thường."""
+    return bool(name) and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name))
+
+
 def _list_skill_templates():
     """Template hợp lệ = SKILL.md có placeholder <X>. Trả [{name, description}].
     Stub rỗng (0 placeholder) bị bỏ — không phải template điền được."""
@@ -1128,18 +1153,20 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
 
     model: '' = auto (claude tự chọn); hoặc alias 'opus'/'sonnet'/'haiku' / model id cụ thể.
     effort: '' = dùng ORCH_DEFAULT_EFFORT (high); hoặc low|medium|high|max.
-    workspace_id: session thuộc workspace nào — cwd bị GHIM vào thư mục workspace đó (đa
-        tenant). Chỉ workspace 'default' (single-tenant cũ) mới dùng cwd tự do truyền vào.
+    workspace_id: session thuộc workspace nào (nhóm logic). cwd truyền vào được tôn trọng;
+        bỏ trống + workspace ≠ default → mặc định thư mục ghim của workspace.
     Dry-run: tạo session_id giả để test UI mà không gọi claude.
     """
-    # Cô lập file: mọi session trong 1 workspace (≠ default) chạy trong thư mục ghim của
-    # workspace — KHÔNG nhận cwd tùy ý từ ngoài (chống trỏ ra ngoài đọc/sửa file tenant khác).
+    # Workspace = nhóm logic; cwd truyền vào ĐƯỢC TÔN TRỌNG (mỗi agent một project được).
+    # Bỏ trống cwd + workspace ≠ default → mặc định về thư mục ghim của workspace.
+    # (Caller API vốn trusted — API key chung; không còn ép cách ly theo thư mục workspace.)
     is_tenant = bool(workspace_id) and workspace_id != DEFAULT_WORKSPACE
     if is_tenant:
         root = workspace_root(workspace_id)
         if not root:
             return {"error": f"workspace '{workspace_id}' không tồn tại"}
-        cwd = root
+        if not cwd:
+            cwd = root
     # Vật thể hoá init_prompt thành SKILL của role (<cwd>/.claude/skills/<name>/SKILL.md) → mỗi
     # signal sau prepend lại từ file này, role không trôi. Rỗng → bỏ qua. Ghi TRƯỚC khi seed generic.
     _write_role_skill(cwd, name, init_prompt)
@@ -1820,17 +1847,17 @@ def build_app():
         err = _validate_name(name, wid, body["id"])
         if err:
             return err
-        # cwd: workspace ≠ default thì GHIM vào thư mục workspace (bỏ cwd tùy ý từ body).
+        # cwd truyền vào được tôn trọng; bỏ trống + workspace ≠ default → thư mục workspace.
         cwd = body.get("cwd", "")
-        if wid != DEFAULT_WORKSPACE:
-            cwd = workspace_root(wid) or cwd
+        if not cwd and wid != DEFAULT_WORKSPACE:
+            cwd = workspace_root(wid) or ""
         register_session(body["id"], name, body.get("project", ""), cwd,
                          body.get("allowed_tools", []), body.get("permission_mode", ""),
                          body.get("model", ""), body.get("effort", ""), wid, "claude")
         # Register CLI session làm worker: ghi SKILL role vào cwd nếu CHƯA có (không đè bản
         # chỉnh tay). `template` = seed từ TEMPLATES_DIR; `init_prompt` = nội dung custom role.
         if cwd and not _skill_path(cwd, name).exists():
-            if body.get("template"):
+            if _safe_template_name(body.get("template", "")):
                 try:
                     _write_role_skill(cwd, name,
                                       (TEMPLATES_DIR / body["template"] / "SKILL.md").read_text(encoding="utf-8"))
@@ -1869,12 +1896,12 @@ def build_app():
         # Role template không kèm init prompt → seed playbook từ TEMPLATES_DIR (đồng bộ flow
         # register; custom role thì FE đã bắt buộc init_prompt).
         init_prompt = body.get("init_prompt", "")
-        if not init_prompt:
+        if not init_prompt and _safe_template_name(body["name"].strip()):
             try:
                 init_prompt = (TEMPLATES_DIR / body["name"] / "SKILL.md").read_text(encoding="utf-8")
             except OSError:
                 pass  # không phải tên template → giữ init prompt rỗng như cũ
-        # engine.spawn tự ghim cwd theo workspace (bỏ cwd tùy ý cho ws ≠ default).
+        # engine.spawn: cwd truyền vào giữ nguyên; rỗng thì tự về thư mục workspace (≠ default).
         res = await engine_for("claude").spawn(
             body["name"], project=body.get("project", ""), cwd=body.get("cwd", ""),
             allowed_tools=body.get("allowed_tools", []), permission_mode=body.get("permission_mode", ""),
