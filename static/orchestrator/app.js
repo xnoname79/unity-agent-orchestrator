@@ -382,6 +382,69 @@ async function reconnectTerm(sid, name) {
 window.reconnectTerm = reconnectTerm;
 
 // Sau mỗi render: cắm terminal vào slot của các card 👑; hủy terminal của card không còn.
+// ── Card VS Code (code serve-web trong iframe) ──────────────────────────────
+// CHỈ 1 card tại một thời điểm — server chỉ giữ 1 tiến trình, mở cho session khác là giết cái cũ.
+// iframe sống NGOÀI chu trình innerHTML của canvas (giống terminal): mỗi render chỉ re-attach vào
+// .vscode-slot, nếu không thì mỗi lần SSE re-render là VS Code tải lại từ đầu.
+let vscodeState = { open: false };   // {open, session, name, cwd, port, token, ready}
+let cvVscode = null;                 // {el: <iframe>, key} — key đổi thì mới dựng iframe mới
+
+function vscodeUrl(st) {
+  // Server bind 0.0.0.0 nên không tự biết hostname client gọi được → ghép ở đây.
+  return `http://${location.hostname}:${st.port}/?tkn=${encodeURIComponent(st.token)}`
+       + `&folder=${encodeURIComponent(st.cwd)}`;
+}
+
+async function openVscode(sid, name) {
+  if (vscodeState.open && vscodeState.session !== sid
+      && !confirm(`VS Code đang mở cho '${vscodeState.name}'.\n\nMở cho '${name}' sẽ ĐÓNG HẲN cái cũ (thoát tiến trình). Tiếp tục?`))
+    return;
+  try {
+    vscodeState = await api("/api/vscode/open", "POST", { session: sid });
+    await refreshAll();
+  } catch (e) { alert("Không mở được VS Code: " + e); }
+}
+window.openVscode = openVscode;
+
+async function closeVscode() {
+  if (!confirm("Đóng VS Code? Tiến trình serve-web sẽ thoát hẳn.")) return;
+  try { await api("/api/vscode/close", "POST"); vscodeState = { open: false }; await refreshAll(); }
+  catch (e) { alert("Lỗi đóng VS Code: " + e); }
+}
+window.closeVscode = closeVscode;
+
+function reloadVscode() {
+  // Lần chạy đầu VS Code còn tải server → iframe có thể rỗng. Nút này nạp lại chính iframe đó.
+  if (cvVscode) cvVscode.el.src = cvVscode.el.src;
+}
+window.reloadVscode = reloadVscode;
+
+function vscodeCardHtml(st) {
+  return `<div class="agent-card vscode-card">
+    <div class="node-head vscode-head">
+      <span>💻 VS Code</span><b>${esc(st.name || "")}</b>
+      <span class="cwd" title="${esc(st.cwd || "")}">${esc(st.cwd || "")}</span>
+      <span class="spacer"></span>
+      <button class="secondary" onclick="reloadVscode()" title="Nạp lại iframe (dùng khi lần đầu còn đang tải server)">🔄</button>
+      <button class="danger" onclick="closeVscode()" title="Đóng VS Code (thoát tiến trình)">✕</button>
+    </div>
+    <div class="vscode-slot"></div>
+  </div>`;
+}
+
+function attachVscode() {
+  const slot = $("world").querySelector(".vscode-slot");
+  if (!slot) { cvVscode = null; return; }   // card không còn → bỏ iframe (server đã giết proc)
+  const key = `${vscodeState.session}|${vscodeState.token}`;
+  if (!cvVscode || cvVscode.key !== key) {
+    const el = document.createElement("iframe");
+    el.className = "vscode-frame";
+    el.src = vscodeUrl(vscodeState);
+    cvVscode = { el, key };
+  }
+  slot.appendChild(cvVscode.el);   // re-attach, KHÔNG đặt lại src → không reload
+}
+
 function attachTerms() {
   const seen = new Set();
   for (const slot of $("world").querySelectorAll(".term-slot")) {
@@ -464,6 +527,10 @@ function agentCard(s, needsYou, isOrch) {
     </div>`;
   const ctxBtn = `<button class="secondary" onclick="viewCompact('${id}','${esc(s.name)}')" title="Xem context/SKILL">📄</button>`;
   const unregBtn = `<button class="danger" onclick="if(confirm('Gỡ session ${esc(s.name)}?'))act('/api/sessions/${id}/unregister')" title="Unregister">🗑</button>`;
+  const vsBtn = (s.cwd || "").trim()
+    ? `<button class="secondary" onclick="openVscode('${id}','${esc(s.name)}')"
+        title="Mở project của session này bằng VS Code (1 card duy nhất — mở cái mới sẽ đóng cái cũ)">💻</button>`
+    : "";
   const killBtn = s.status === "running"
     ? `<button class="danger" onclick="if(confirm('Kill run đang chạy của ${esc(s.name)}? Run sẽ bị đánh failed, không retry.'))act('/api/sessions/${id}/kill')" title="Kill run đang chạy (chặn chạy mãi)">🛑</button>`
     : "";
@@ -497,7 +564,7 @@ function agentCard(s, needsYou, isOrch) {
       ${head}
       <div class="orch-body">
         <div class="orch-side">
-          ${ctrl}${killBtn}${allow}
+          ${ctrl}${killBtn}${allow}${vsBtn}
           <button onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')" title="Reload session/terminal (chạy lại claude --resume)">🔄</button>
           <button class="secondary" onclick="termEsc('${esc(s.id)}')"
                   title="Gửi phím Esc vào terminal — dùng khi bấm Esc trên bàn phím không ăn (bộ gõ tiếng Việt / trình duyệt nuốt mất). Tương đương Ctrl+[">⎋</button>
@@ -518,7 +585,7 @@ function agentCard(s, needsYou, isOrch) {
         <span class="spacer"></span>${today}</div>
     </div>
     <div class="agent-actions">
-      ${ctrl}${killBtn}${allow}
+      ${ctrl}${killBtn}${allow}${vsBtn}
       <button class="secondary" onclick="toggleOrch('${id}',1)"
         title="Đặt làm orchestrator của project (demote orch cũ cùng cwd; session kiêm director + role riêng)">👑</button>
       ${ctxBtn}<button class="secondary" onclick="editSkill('${id}','${esc(s.name)}')"
@@ -821,6 +888,9 @@ function renderCanvas(sessions, signals) {
   const focusSid = Object.keys(cvTerms).find((sid) =>
     cvTerms[sid].host.contains(document.activeElement)) || null;
   // Thứ tự vẽ: zone (dưới) → edges (giữa) → agent card (trên).
+  // Card VS Code: 1 node độc lập (không thuộc session nào) — kéo thả/lưu vị trí như node khác.
+  if (vscodeState.open)
+    nodesHtml += `<div class="node" data-nid="vscode">${vscodeCardHtml(vscodeState)}</div>`;
   world.innerHTML = zonesHtml + `<svg id="edges" class="edges"></svg>` + nodesHtml;
 
   // Đặt vị trí agent: có lưu → dùng lại; mới → xếp cụm theo cwd (seed từ pos group cũ nếu có).
@@ -857,6 +927,12 @@ function renderCanvas(sessions, signals) {
     el.style.left = pos[nid].x + "px";
     el.style.top = pos[nid].y + "px";
   });
+  const vsEl = world.querySelector('.node[data-nid="vscode"]');
+  if (vsEl) {
+    if (!pos.vscode) pos.vscode = { x: 40, y: 40 };
+    vsEl.style.left = pos.vscode.x + "px";
+    vsEl.style.top = pos.vscode.y + "px";
+  }
   cvSave({ pos });
   layoutZones();
   // Nạp danh sách session Claude CLI cho các cwd chưa có cache (async — về thì re-render).
@@ -881,6 +957,7 @@ function renderCanvas(sessions, signals) {
   cvEdges = [...pairBest.values()];
   redrawEdges();
   attachTerms();  // cắm terminal bền vào card 👑 (sau khi node đã vào DOM)
+  attachVscode(); // iframe VS Code cũng phải bền qua re-render, không thì reload liên tục
   // Trả focus cho terminal đang gõ dở (rAF: sau khi attachTerms đã cắm host vào slot mới).
   if (focusSid && cvTerms[focusSid])
     requestAnimationFrame(() => { const t = cvTerms[focusSid]; if (t && t.term) t.term.focus(); });
@@ -961,12 +1038,12 @@ function cvInit() {
   cv.addEventListener("click", (e) => {
     const lock = e.target.closest(".term-lock");
     if (lock) { openSessionRun(lock.closest(".agent-card").dataset.sid); return; }
-    if (e.target.closest("button, select, input, textarea, option, .term-slot, .zone-mcp, .node-head, .zone-head")) return;
+    if (e.target.closest("button, select, input, textarea, option, .term-slot, .vscode-slot, .zone-mcp, .node-head, .zone-head")) return;
     const card = e.target.closest(".agent-card");
     if (card) openSessionRun(card.dataset.sid);
   });
   cv.addEventListener("wheel", (e) => {
-    if (e.target.closest(".term-slot, .zone-mcp, .cv-overlay")) return;  // wheel trong terminal/panel MCP/overlay = scroll, không zoom
+    if (e.target.closest(".term-slot, .vscode-slot, .zone-mcp, .cv-overlay")) return;  // wheel trong terminal/panel MCP/overlay = scroll, không zoom
     e.preventDefault();  // wheel = zoom quanh con trỏ (không scroll trang)
     const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
     const k2 = Math.min(1.6, Math.max(0.35, CV.k * Math.exp(-e.deltaY * 0.0012)));
@@ -1433,11 +1510,13 @@ async function refreshAll() {
     if (!inDetail) return;   // màn list chỉ cần workspaces, khỏi fetch sessions/signals/runs
 
     const q = wsQuery();
-    const [sessions, signals, runs] = await Promise.all([
+    const [sessions, signals, runs, vsc] = await Promise.all([
       api("/api/sessions" + q),
       api("/api/signals" + pagedQuery(sigShown)),
       api("/api/runs" + pagedQuery(runsShown)),
+      api("/api/vscode").catch(() => ({ open: false })),
     ]);
+    vscodeState = vsc;
     renderCanvas(sessions, signals.items);
     fillSignalForm(sessions);
     sigHasMore = signals.has_more; renderSignals(signals.items);

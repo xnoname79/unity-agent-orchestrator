@@ -350,6 +350,16 @@
     font-size: 12px; line-height: 1.5; background: var(--panel2); color: var(--text);
     border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; box-sizing: border-box; }
   .skill-save { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
+  /* Card VS Code trên canvas — 1 card duy nhất, kéo bằng header như node khác */
+  .vscode-card { width: 1100px; max-width: 92vw; display: flex; flex-direction: column; padding: 0; }
+  .vscode-head { display: flex; gap: 8px; align-items: center; padding: 6px 10px;
+    border-bottom: 1px solid var(--border); font-size: 12px; cursor: grab; }
+  .vscode-head b { color: var(--accent); }
+  .vscode-head .cwd { color: var(--muted); max-width: 380px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .vscode-head button { padding: 2px 8px; font-size: 12px; }
+  .vscode-slot { height: 640px; max-height: 72vh; background: #1e1e1e; }
+  .vscode-frame { width: 100%; height: 100%; border: 0; display: block; }
 </style>
 </head>
 <body>

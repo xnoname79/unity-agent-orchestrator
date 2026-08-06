@@ -999,6 +999,87 @@ ACTIVE_PROCS = {}
 # Session user vừa bấm kill — process_signal thấy thì KHÔNG retry run bị giết.
 KILLED_SESSIONS = set()
 
+# ─── VS Code trong trình duyệt (1 card duy nhất trên canvas) ──────────────────
+# `code serve-web` phục vụ VS Code qua HTTP → nhúng iframe vào 1 card canvas. Đã ĐO trên máy này:
+# response KHÔNG có X-Frame-Options lẫn CSP frame-ancestors nên nhúng iframe được.
+# CHỈ 1 tiến trình tại một thời điểm: mở cho session khác = GIẾT tiến trình cũ (chốt với user).
+# Luôn phát --connection-token ngẫu nhiên: serve-web mở là cả filesystem + terminal, không token
+# thì bất kỳ ai trong mạng LAN cũng vào được. Token đi kèm URL, chỉ trả qua API (đã có ORCH_API_KEY).
+VSCODE_BIN = os.environ.get("ORCH_VSCODE_BIN", "code")
+VSCODE_HOST = os.environ.get("ORCH_VSCODE_HOST", "0.0.0.0")   # bám theo host của orchestrator
+VSCODE_PORT = int(os.environ.get("ORCH_VSCODE_PORT", "8995"))
+VSCODE_READY_TIMEOUT = float(os.environ.get("ORCH_VSCODE_READY_TIMEOUT", "20"))
+_vscode: dict = {}   # rỗng = đang tắt; {proc, session, name, cwd, token, started}
+
+
+def vscode_state():
+    """Trạng thái cho FE dựng iframe. URL do FE ghép (dùng location.hostname) — server bind
+    0.0.0.0 nên không tự biết hostname nào client gọi được."""
+    if not _vscode.get("proc"):
+        return {"open": False}
+    return {"open": True, "session": _vscode["session"], "name": _vscode["name"],
+            "cwd": _vscode["cwd"], "port": VSCODE_PORT, "token": _vscode["token"],
+            "started": _vscode["started"]}
+
+
+async def vscode_stop():
+    """Tắt serve-web đang chạy. Trả True nếu vừa tắt một tiến trình.
+
+    Giết cả NHÓM tiến trình (start_new_session=True lúc spawn), không chỉ tiến trình cha.
+
+    KHÔNG đuổi theo server nền `code-server`/`server-main.js`: nó nghe UNIX SOCKET chứ không nghe
+    cổng TCP — chính CLI mới là thứ mở cổng và proxy vào socket. Giết CLI là cổng nhả, card chết,
+    đúng nghĩa "thoát VS Code". Server nền do VS Code tự quản (lần mở sau DÙNG LẠI chính nó, đã đo:
+    mở lần 2 không đẻ thêm tiến trình nào) nên không tích tụ, và diệt nó là phá luôn phiên serve-web
+    mà người dùng tự chạy ngoài dashboard."""
+    proc = _vscode.get("proc")
+    _vscode.clear()
+    if proc is None:
+        return False
+    for sig in (15, 9):   # SIGTERM rồi SIGKILL nếu chưa chịu chết
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError):
+            break
+        try:
+            await asyncio.wait_for(proc.wait(), 5)
+            break
+        except asyncio.TimeoutError:
+            continue
+    publish({"type": "vscode", "open": False})
+    return True
+
+
+async def _vscode_wait_ready(timeout):
+    """Chờ cổng nhận kết nối TCP. Lần chạy ĐẦU TIÊN VS Code còn tải server (~100MB) nên có thể
+    lâu hơn timeout — vẫn trả về False chứ không treo API; FE hiện 'đang khởi động', bấm 🔄 sau."""
+    host = "127.0.0.1" if VSCODE_HOST in ("0.0.0.0", "") else VSCODE_HOST
+    for _ in range(max(1, int(timeout / 0.5))):
+        try:
+            _r, w = await asyncio.open_connection(host, VSCODE_PORT)
+            w.close()
+            return True
+        except OSError:
+            await asyncio.sleep(0.5)
+    return False
+
+
+async def vscode_start(session):
+    """Mở VS Code web tại cwd của session. Giết tiến trình cũ trước — chỉ 1 card tại 1 thời điểm."""
+    await vscode_stop()
+    cwd = (session.get("cwd") or "").strip() or str(Path.home())
+    token = secrets.token_urlsafe(24)
+    proc = await asyncio.create_subprocess_exec(
+        VSCODE_BIN, "serve-web", "--host", VSCODE_HOST, "--port", str(VSCODE_PORT),
+        "--connection-token", token, "--accept-server-license-terms",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True)   # process group riêng → vscode_stop() killpg được cả cây con
+    _vscode.update({"proc": proc, "session": session["id"], "name": session["name"],
+                    "cwd": cwd, "token": token, "started": _now()})
+    info = {**vscode_state(), "ready": await _vscode_wait_ready(VSCODE_READY_TIMEOUT)}
+    publish({"type": "vscode", **info})
+    return info
+
 
 async def _run_claude(session, prompt, on_event=None, dry_run=False):
     """Chạy `claude -p --resume <id>` với allowlist. Trả dict kết quả.
@@ -1950,6 +2031,27 @@ def build_app():
     async def api_stop(request: Request):
         return await _set_status(request, "stopped")
 
+    async def api_vscode(request: Request):
+        """Trạng thái card VS Code hiện tại ({open:false} nếu chưa mở)."""
+        return JSONResponse(vscode_state())
+
+    async def api_vscode_open(request: Request):
+        """Mở VS Code web tại cwd của session. Session khác đang mở → tiến trình cũ bị GIẾT."""
+        body = await request.json()
+        s = get_session(body.get("session") or "")
+        if not s:
+            return JSONResponse({"error": "session không tồn tại"}, status_code=404)
+        if not (s.get("cwd") or "").strip():
+            return JSONResponse({"error": "session chưa có cwd để mở"}, status_code=400)
+        try:
+            return JSONResponse(await vscode_start(s))
+        except FileNotFoundError:
+            return JSONResponse({"error": f"không tìm thấy lệnh '{VSCODE_BIN}' (cài VS Code CLI "
+                                          f"hoặc set ORCH_VSCODE_BIN)"}, status_code=500)
+
+    async def api_vscode_close(request: Request):
+        return JSONResponse({"ok": True, "was_open": await vscode_stop()})
+
     async def api_kill(request: Request):
         """Giết proc claude của run đang chạy (session treo/chạy mãi). Run kết thúc theo luồng
         lỗi thường: run=error, signal=failed (reason kill), status về idle; KHÔNG retry."""
@@ -2531,6 +2633,9 @@ def build_app():
         Route("/api/sessions/{sid}/resume", api_resume, methods=["POST"]),
         Route("/api/sessions/{sid}/stop", api_stop, methods=["POST"]),
         Route("/api/sessions/{sid}/kill", api_kill, methods=["POST"]),
+        Route("/api/vscode", api_vscode),
+        Route("/api/vscode/open", api_vscode_open, methods=["POST"]),
+        Route("/api/vscode/close", api_vscode_close, methods=["POST"]),
         Route("/api/sessions/{sid}/orch", api_orch_toggle, methods=["POST"]),
         Route("/api/sessions/{sid}/skill", api_get_skill),
         Route("/api/sessions/{sid}/skill", api_put_skill, methods=["POST"]),
