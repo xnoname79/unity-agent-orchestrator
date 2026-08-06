@@ -41,6 +41,21 @@ async def lifespan(server):
 mcp = FastMCP("Agent-Signal", lifespan=lifespan, host=HOST, port=PORT)
 
 
+def _sender_workspace(orch, from_role: str = "", workspace_id: str = ""):
+    """Workspace của agent ĐANG GỌI, theo thứ tự tin cậy:
+      1. workspace_id truyền thẳng (orchestrator cấp lúc spawn — chính xác nhất)
+      2. suy từ from_role NẾU tên đó chỉ tồn tại ở đúng 1 workspace
+    Không xác định được → None (caller tự quyết: _enqueue resolve toàn cục, list_agents từ chối).
+    Trùng tên giữa nhiều workspace thì KHÔNG đoán bừa — đoán sai là rò sang tenant khác."""
+    if workspace_id:
+        return workspace_id
+    if from_role:
+        matches = {s.get("workspace_id") for s in orch.list_sessions() if s.get("name") == from_role}
+        if len(matches) == 1:
+            return next(iter(matches))
+    return None
+
+
 async def _enqueue(to_role: str, message: str, from_role: str = "", requires_approval: int = 0,
                    workspace_id: str = ""):
     """Đẩy 1 signal vào orchestrator. In-process nếu chạy chung, ngược lại POST HTTP.
@@ -55,20 +70,21 @@ async def _enqueue(to_role: str, message: str, from_role: str = "", requires_app
     """
     if _INPROC:
         import session_orchestrator as orch
-        sender_ws = workspace_id or None
         # Chỉ suy workspace từ tên khi tên đó KHÔNG trùng giữa các workspace (nếu trùng thì
         # không đoán bừa — để resolve toàn cục, tránh gửi nhầm tenant).
-        if sender_ws is None and from_role:
-            matches = {s.get("workspace_id") for s in orch.list_sessions() if s.get("name") == from_role}
-            if len(matches) == 1:
-                sender_ws = next(iter(matches))
+        sender_ws = _sender_workspace(orch, from_role, workspace_id)
         # from_role: alias 'orch' resolve theo người gửi (chọn orch cùng cwd khi workspace có nhiều project)
         target = orch.resolve_session_id(to_role, sender_ws, from_role)
         if not target:
             scope = f" trong workspace '{sender_ws}'" if sender_ws else ""
             return False, f"không tìm thấy session cho '{to_role}'{scope}"
         target_ws = orch.get_session(target).get("workspace_id") or orch.DEFAULT_WORKSPACE
-        sid = orch.enqueue_signal(target, message, from_role, int(requires_approval), 0, target_ws)
+        try:
+            sid = orch.enqueue_signal(target, message, from_role, int(requires_approval), 0, target_ws)
+        except orch.SignalPairCapExceeded as e:
+            # id=94 trần ping-pong: trả NGUYÊN VĂN lời hướng dẫn cho agent (nó phải đọc được là
+            # cần báo cáo cho người dùng, không phải thử lại).
+            return False, str(e)
         orch.publish({"type": "signal", "id": sid, "status": "pending",
                       "to_session": target, "workspace_id": target_ws})
         return True, {"id": sid, "to_session": target, "workspace_id": target_ws}
@@ -111,7 +127,9 @@ async def send_signal(to_role: str, message: str, from_role: str = "", requires_
     """
     ok, data = await _enqueue(to_role, message, from_role, 1 if requires_approval else 0, workspace_id)
     if not ok:
-        return f"Lỗi gửi signal {data}"
+        # Trần ping-pong (id=94) đã là câu chỉ dẫn hoàn chỉnh — trả nguyên văn, đừng bọc thêm chữ
+        # "Lỗi" khiến agent tưởng là trục trặc kỹ thuật rồi thử lại.
+        return str(data) if str(data).startswith("⛔") else f"Lỗi gửi signal {data}"
     return f"Đã gửi signal #{data.get('id')} tới '{to_role}' (target: {data.get('to_session')})."
 
 
@@ -140,18 +158,34 @@ async def compact_context(role: str = "", focus: str = "", from_role: str = "", 
 
 
 @mcp.tool()
-async def list_agents():
-    """Liệt kê các agent (session) đang được orchestrator quản lý + trạng thái.
+async def list_agents(from_role: str = "", workspace_id: str = ""):
+    """Liệt kê các agent (session) TRONG CÙNG WORKSPACE với bạn + trạng thái.
 
-    Dùng để biết có thể gửi signal cho ai (to_role nào hợp lệ).
+    Dùng để biết có thể gửi signal cho ai (to_role nào hợp lệ). CHỈ thấy agent cùng workspace —
+    agent của workspace khác không hiện ra và cũng không gửi signal tới được.
+
+    Args:
+        from_role: Role của chính bạn (vai đang gọi). Dùng để xác định workspace.
+        workspace_id: Workspace của bạn — orchestrator cấp lúc spawn. Truyền vào là chắc nhất
+                 (bắt buộc khi role bị trùng tên giữa nhiều workspace).
     """
     if _INPROC:
         import session_orchestrator as orch
-        sessions = orch.list_sessions()
+        # id=94: KHÔNG suy được workspace thì TỪ CHỐI, không trả toàn bộ. Trả hết = rò danh sách
+        # agent của tenant khác, và mời model gửi signal xuyên workspace.
+        sender_ws = _sender_workspace(orch, from_role, workspace_id)
+        if sender_ws is None:
+            return ("Cần biết bạn thuộc workspace nào mới liệt kê được. Gọi lại kèm from_role="
+                    "<vai của bạn> (hoặc workspace_id nếu vai bị trùng tên giữa nhiều workspace).")
+        sessions = [s for s in orch.list_sessions() if s.get("workspace_id") == sender_ws]
     else:
+        if not workspace_id:
+            return ("Chế độ HTTP cần workspace_id tường minh để lọc đúng workspace của bạn "
+                    "(orchestrator cấp lúc spawn).")
+        sender_ws = workspace_id
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(f"{ORCH_URL}/api/sessions")
+                r = await client.get(f"{ORCH_URL}/api/sessions", params={"workspace_id": workspace_id})
         except Exception as e:  # noqa: BLE001
             return f"Lỗi kết nối orchestrator tại {ORCH_URL}: {e}"
         if r.status_code >= 400:
@@ -159,7 +193,7 @@ async def list_agents():
         sessions = r.json()
     agents = [{"role": s["name"], "status": s["status"], "project": s.get("project", "")} for s in sessions]
     if not agents:
-        return "Chưa có agent nào được register."
+        return f"Chưa có agent nào trong workspace '{sender_ws}'."
     return json.dumps(agents, ensure_ascii=False)
 
 

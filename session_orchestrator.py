@@ -45,7 +45,7 @@ import secrets
 import shlex
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -492,9 +492,127 @@ def _extract_ticket(message):
     return ""
 
 
+# id=94 TRẦN PING-PONG. Hai agent nhắn qua lại tối đa PAIR_SIGNAL_CAP lượt (nguồn→đích, đích→nguồn,
+# nguồn→đích, đích→nguồn) rồi DỪNG: agent nguồn tổng hợp và báo cáo cho NGƯỜI DÙNG quyết định bước
+# kế. Chống vòng signal tự đẻ việc, kéo scope ra ngoài thứ người dùng yêu cầu.
+PAIR_SIGNAL_CAP = int(os.environ.get("ORCH_PAIR_SIGNAL_CAP", "4"))
+# Người gửi KHÔNG phải agent: không tính vào trần, và là MỐC RESET (người dùng giao việc mới thì
+# hai bên có lại đủ lượt). '' = FE BFF/hệ thống, 'human' = chat trên dashboard.
+_HUMAN_SENDERS = ("", "human", "user")
+# CỬA SỔ THỜI GIAN — chỉ đếm signal gần đây. Vì sao BẮT BUỘC có: vai điều phối (director/worker)
+# nhận việc từ người dùng qua TERMINAL (PTY claude --resume), đường đó KHÔNG đẻ dòng signal nào →
+# không bao giờ có mốc reset kiểu "signal do người gửi" → bộ đếm gộp cả lịch sử nhiều ngày và chặn
+# oan (đo thật trên 1 cặp: 73 signal trải 10 ngày, 0 signal do người gửi → báo 59/4).
+# Vòng ping-pong xấu diễn ra trong vài phút, nên cắt theo giờ là đủ bắt mà không đụng lịch sử cũ.
+PAIR_SIGNAL_WINDOW_MIN = float(os.environ.get("ORCH_PAIR_SIGNAL_WINDOW_MIN", "60"))
+# VÒNG VIỆC (id=94b). Mốc reset KHÔNG gắn theo "vai được người dùng chạm" mà theo CHUỖI việc:
+#   người dùng gõ cho vai S  → mở vòng mới ở S
+#   A gửi signal cho B       → B THỪA HƯỞNG vòng của A
+# Vì luồng thật là 3 chặng: người dùng → (terminal) director → worker A → worker B. Việc mới rơi
+# vào director chứ không vào worker, nên mốc gắn theo vai thì cặp worker không bao giờ thấy → hết
+# ngân sách từ request trước là kẹt luôn ở request sau. Lan theo chuỗi thì việc mới giao cho orch
+# mở lại ngân sách cho MỌI cặp phía sau; còn vòng lặp không ai trông (không có input người) thì mốc
+# đứng yên và trần vẫn cắn ở lượt thứ PAIR_SIGNAL_CAP. Mỗi CẶP có ngân sách riêng.
+# Giữ RAM: nó chỉ NỚI trần, mất khi restart cũng không sai (cửa sổ thời gian đỡ bên dưới).
+_round_at: dict = {}   # (workspace_id, tên vai) → ISO ts mở vòng việc hiện tại
+
+
+def _round_key(workspace_id, name):
+    return (workspace_id or DEFAULT_WORKSPACE, name or "")
+
+
+def note_human_touch(name, workspace_id=DEFAULT_WORKSPACE):
+    """Người dùng gõ thẳng / giao việc cho vai này → MỞ VÒNG VIỆC MỚI tại vai đó."""
+    if name:
+        _round_at[_round_key(workspace_id, name)] = _now()
+
+
+def _session_name(session_id):
+    conn = _conn()
+    row = conn.execute("SELECT name FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    conn.close()
+    return (row["name"] if row else "") or ""
+
+
+class SignalPairCapExceeded(Exception):
+    """enqueue_signal từ chối: cặp agent đã hết lượt trao đổi trong chu kỳ này."""
+
+
+def _pair_key(a, b):
+    """Khoá cặp KHÔNG thứ tự → A→B và B→A cùng một cặp."""
+    return tuple(sorted((a or "", b or "")))
+
+
+def pair_signal_count(from_role, to_session, workspace_id):
+    """Đếm signal đã trao đổi giữa CẶP (from_role ↔ vai đích) kể từ lần NGƯỜI DÙNG chạm vào gần
+    nhất. Trả (số lượt, tên vai đích).
+
+    Quy về TÊN VAI cả hai phía: cột from_session lưu from_role (tên) còn to_session lưu session_id
+    — hai đầu khác hệ, không so trực tiếp được.
+
+    Chu kỳ tính từ mốc GẦN NHẤT trong 3 mốc, cái nào mới hơn thắng:
+      1. cửa sổ PAIR_SIGNAL_WINDOW_MIN phút đổ lại (chặn gộp lịch sử cũ)
+      2. VÒNG VIỆC của 1 trong 2 vai (_round_at — người dùng mở, rồi lan theo chuỗi signal)
+      3. signal do người gửi (from_session ∈ _HUMAN_SENDERS) tới 1 trong 2 vai
+    Duyệt từ mới về cũ, chạm mốc thì dừng đếm. Không cần bảng/cột trạng thái nào.
+
+    Signal điều khiển '/compact' KHÔNG tính — nó là lệnh vận hành, không phải một lượt trao đổi."""
+    _ensure_db()
+    conn = _conn()
+    to_row = conn.execute("SELECT name FROM sessions WHERE id = ?", (to_session,)).fetchone()
+    to_name = (to_row["name"] if to_row else "") or ""
+    pair = _pair_key(from_role, to_name)
+    cutoff = (datetime.now() - timedelta(minutes=PAIR_SIGNAL_WINDOW_MIN)).isoformat()
+    for role in (from_role, to_name):
+        opened = _round_at.get(_round_key(workspace_id, role))
+        if opened and opened > cutoff:
+            cutoff = opened
+    # LIMIT: chặn quét cả bảng. 200 signal gần nhất của workspace dư sức chứa 1 chu kỳ hội thoại.
+    rows = conn.execute(
+        "SELECT s.from_session AS f, sess.name AS t, s.created_at AS ts, "
+        "substr(s.message, 1, 8) AS head "
+        "FROM signals s LEFT JOIN sessions sess ON sess.id = s.to_session "
+        "WHERE s.workspace_id = ? ORDER BY s.id DESC LIMIT 200", (workspace_id,)).fetchall()
+    conn.close()
+    n = 0
+    for r in rows:
+        if (r["ts"] or "") < cutoff:
+            break              # ra ngoài chu kỳ (quá cũ / trước lần người dùng cầm lái)
+        f, t = r["f"] or "", r["t"] or ""
+        if f in _HUMAN_SENDERS:
+            if t in pair:
+                break          # người dùng vừa giao việc cho 1 trong 2 → chu kỳ mới
+            continue
+        if _pair_key(f, t) == pair and (r["head"] or "") != "/compact":
+            n += 1
+    return n, to_name
+
+
 def enqueue_signal(to_session, message, from_session="", requires_approval=0, dry_run=0,
                    workspace_id=DEFAULT_WORKSPACE):
     _ensure_db()
+    # id=94: chặn NGAY Ở HÀM GHI (mọi đường vào signal đều qua đây: MCP send_signal, POST
+    # /api/signals, và bất kỳ caller mới nào) thay vì rào ở từng caller — rào lẻ thì thêm đường
+    # mới là thủng. Người gửi là NGƯỜI thì không chặn; '/compact' là lệnh vận hành, cũng không.
+    if from_session in _HUMAN_SENDERS:
+        # Người / hệ thống giao việc (chat dashboard) → mở vòng việc mới ở vai nhận.
+        note_human_touch(_session_name(to_session), workspace_id)
+    elif not str(message or "").startswith("/compact"):
+        n, to_name = pair_signal_count(from_session, to_session, workspace_id)
+        if n < PAIR_SIGNAL_CAP:
+            # LAN VÒNG: đích thừa hưởng vòng của nguồn. Nhờ vậy chuỗi director→worker→worker cùng
+            # một vòng, và việc mới người dùng giao cho director mở lại ngân sách cho cặp phía sau.
+            src = _round_at.get(_round_key(workspace_id, from_session), "")
+            if src > _round_at.get(_round_key(workspace_id, to_name), ""):
+                _round_at[_round_key(workspace_id, to_name)] = src
+        if n >= PAIR_SIGNAL_CAP:
+            raise SignalPairCapExceeded(
+                f"⛔ HẾT LƯỢT SIGNAL: '{from_session}' và '{to_name or to_session}' đã trao đổi "
+                f"{n}/{PAIR_SIGNAL_CAP} lượt cho việc này. DỪNG gửi signal cho nhau. "
+                f"Việc phải làm NGAY: tổng hợp kết quả đã có + nêu rõ còn vướng gì, rồi BÁO CÁO "
+                f"cho NGƯỜI DÙNG bằng text trong lượt trả lời này để họ quyết định bước kế. "
+                f"KHÔNG thử gửi lại, KHÔNG vòng qua agent khác để nhắn hộ. "
+                f"Bộ đếm tự mở lại khi người dùng giao việc mới.")
     conn = _conn()
     cur = conn.execute(
         "INSERT INTO signals (workspace_id, from_session, to_session, message, requires_approval, dry_run, status, created_at) "
@@ -874,6 +992,14 @@ def _iter_display_events(ev):
     return out
 
 
+# Proc claude đang chạy per session — cho /api/sessions/{sid}/kill giết run treo/chạy mãi.
+# 1 proc/session (signal serialize qua per-session lock). Entry stale sau exception vẫn vô hại:
+# endpoint check returncode, run mới đè entry cũ.
+ACTIVE_PROCS = {}
+# Session user vừa bấm kill — process_signal thấy thì KHÔNG retry run bị giết.
+KILLED_SESSIONS = set()
+
+
 async def _run_claude(session, prompt, on_event=None, dry_run=False):
     """Chạy `claude -p --resume <id>` với allowlist. Trả dict kết quả.
 
@@ -923,8 +1049,13 @@ async def _run_claude(session, prompt, on_event=None, dry_run=False):
         limit=STREAM_LIMIT,  # tránh LimitOverrunError khi 1 dòng NDJSON > 64KB
     )
 
+    ACTIVE_PROCS[session_id] = proc  # cho nút 🛑 kill từ dashboard
+
     if not stream:
-        stdout, stderr = await proc.communicate(input=prompt.encode("utf-8"))
+        try:
+            stdout, stderr = await proc.communicate(input=prompt.encode("utf-8"))
+        finally:
+            ACTIVE_PROCS.pop(session_id, None)
         return _parse_final(proc.returncode, stdout, stderr, session_id)
 
     # Streaming: gửi prompt qua stdin rồi đọc stdout theo từng dòng NDJSON.
@@ -990,6 +1121,7 @@ async def _run_claude(session, prompt, on_event=None, dry_run=False):
     finally:
         await proc.wait()
         await stderr_task
+        ACTIVE_PROCS.pop(session_id, None)
 
     stderr_txt = b"".join(stderr_chunks).decode("utf-8", "replace")
     if proc.returncode != 0 and final is None:
@@ -1586,17 +1718,21 @@ async def process_signal(signal):
                 except Exception as e:  # noqa: BLE001
                     res = {"ok": False, "result": f"exception: {e}", "session_id": target["id"], "tokens": 0, "raw": {}}
                     await on_event("error", f"exception: {e}", {"error": str(e)})
-                if res.get("ok") or attempts >= MAX_RETRIES:
+                # User bấm 🛑 kill → run chết chủ động, KHÔNG retry (retry = tự chạy lại cái vừa giết).
+                if res.get("ok") or attempts >= MAX_RETRIES or target["id"] in KILLED_SESSIONS:
                     break
                 attempts += 1
                 await on_event("error", f"retry {attempts}/{MAX_RETRIES} sau lỗi", {"attempt": attempts})
                 await asyncio.sleep(RETRY_BACKOFF * attempts)
             ended = _now()
 
+            was_killed = target["id"] in KILLED_SESSIONS
+            KILLED_SESSIONS.discard(target["id"])
             status = "ok" if res.get("ok") else "error"
             finish_run(run_id, res.get("raw", {}), status, res.get("tokens", 0), ended)
             final = "done" if res.get("ok") else "failed"
-            fail_reason = "" if res.get("ok") else _trunc(res.get("result", ""), 300)
+            fail_reason = "" if res.get("ok") else \
+                ("run bị kill thủ công từ dashboard" if was_killed else _trunc(res.get("result", ""), 300))
             set_signal_status(signal["id"], final, fail_reason)
             set_session_status(target["id"], "idle")
             # Signal-driven: phát lifecycle 'run' + trạng thái 'signal'. Text agent (nội dung trả lời)
@@ -1813,6 +1949,20 @@ def build_app():
 
     async def api_stop(request: Request):
         return await _set_status(request, "stopped")
+
+    async def api_kill(request: Request):
+        """Giết proc claude của run đang chạy (session treo/chạy mãi). Run kết thúc theo luồng
+        lỗi thường: run=error, signal=failed (reason kill), status về idle; KHÔNG retry."""
+        sid = request.path_params["sid"]
+        proc = ACTIVE_PROCS.get(sid)
+        if not proc or proc.returncode is not None:
+            return JSONResponse({"error": "không có run đang chạy cho session này"}, status_code=409)
+        KILLED_SESSIONS.add(sid)
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass  # vừa tự thoát xong — coi như đã kill
+        return JSONResponse({"ok": True})
 
     def _validate_workspace(body):
         """Trả (workspace_id, error_response|None). Bỏ trống = 'default' (single-tenant cũ).
@@ -2064,6 +2214,10 @@ def build_app():
                 except json.JSONDecodeError:
                     continue
                 if msg.get("t") == "i":
+                    # id=94: người dùng đang gõ thẳng cho vai này = đang cầm lái → mốc reset trần
+                    # ping-pong. Vai điều phối nhận việc qua terminal chứ không qua signal, không
+                    # đánh dấu ở đây thì bộ đếm của chúng không bao giờ về 0.
+                    note_human_touch(s.get("name"), s.get("workspace_id"))
                     os.write(fd, str(msg.get("d", "")).encode("utf-8"))
                 elif msg.get("t") == "r":
                     try:
@@ -2215,9 +2369,15 @@ def build_app():
             for cid in close_ask_user_choice_by_ticket(_ticket, target_ws):
                 publish({"type": "signal", "id": cid, "status": "done",
                          "to_session": target, "workspace_id": target_ws})
-        sid = enqueue_signal(target, body["message"],
-                             body.get("from_session", "") or body.get("from_role", ""),
-                             int(body.get("requires_approval", 0)), int(body.get("dry_run", 0)), target_ws)
+        try:
+            sid = enqueue_signal(target, body["message"],
+                                 body.get("from_session", "") or body.get("from_role", ""),
+                                 int(body.get("requires_approval", 0)), int(body.get("dry_run", 0)), target_ws)
+        except SignalPairCapExceeded as e:
+            # id=94: 429 = "đúng đường nhưng hết lượt". Body mang nguyên lời hướng dẫn để caller
+            # đọc được phải làm gì thay vì chỉ thấy mã lỗi.
+            return JSONResponse({"error": str(e), "code": "pair_signal_cap",
+                                 "cap": PAIR_SIGNAL_CAP}, status_code=429)
         publish({"type": "signal", "id": sid, "status": "pending", "to_session": target, "workspace_id": target_ws})
         return JSONResponse({"id": sid, "status": "pending", "to_session": target, "workspace_id": target_ws})
 
@@ -2370,6 +2530,7 @@ def build_app():
         Route("/api/sessions/{sid}/pause", api_pause, methods=["POST"]),
         Route("/api/sessions/{sid}/resume", api_resume, methods=["POST"]),
         Route("/api/sessions/{sid}/stop", api_stop, methods=["POST"]),
+        Route("/api/sessions/{sid}/kill", api_kill, methods=["POST"]),
         Route("/api/sessions/{sid}/orch", api_orch_toggle, methods=["POST"]),
         Route("/api/sessions/{sid}/skill", api_get_skill),
         Route("/api/sessions/{sid}/skill", api_put_skill, methods=["POST"]),

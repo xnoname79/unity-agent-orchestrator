@@ -340,6 +340,21 @@ function startTerm(t) {
   t.term.onData((d) => { if (t.ws.readyState === 1) t.ws.send(JSON.stringify({ t: "i", d })); });
 }
 
+// Gửi thẳng 1 chuỗi phím vào PTY qua WS, KHÔNG đi qua bàn phím/xterm. Dùng cho phím hay bị
+// nuốt trước khi tới trang: Esc bị bộ gõ tiếng Việt (Unikey/ibus) ăn để đóng bảng gợi ý, bị
+// trình duyệt ăn khi đang fullscreen, hoặc terminal vừa mất focus sau một lần SSE re-render.
+// Phím thường (chữ, Enter) không dính vì bộ gõ nhả chúng ra; Esc thì không.
+function termSend(sid, seq) {
+  const t = cvTerms[sid];
+  if (!t || !t.ws || t.ws.readyState !== 1) return;
+  t.ws.send(JSON.stringify({ t: "i", d: seq }));
+  if (t.term) t.term.focus();   // trả focus để gõ tiếp ngay
+}
+window.termSend = termSend;
+
+function termEsc(sid) { termSend(sid, "\x1b"); }
+window.termEsc = termEsc;
+
 function fitTerm(t) {
   if (!t.term || !t.fit || !t.host.isConnected) return;
   try { t.fit.fit(); } catch { return; }
@@ -449,6 +464,9 @@ function agentCard(s, needsYou, isOrch) {
     </div>`;
   const ctxBtn = `<button class="secondary" onclick="viewCompact('${id}','${esc(s.name)}')" title="Xem context/SKILL">📄</button>`;
   const unregBtn = `<button class="danger" onclick="if(confirm('Gỡ session ${esc(s.name)}?'))act('/api/sessions/${id}/unregister')" title="Unregister">🗑</button>`;
+  const killBtn = s.status === "running"
+    ? `<button class="danger" onclick="if(confirm('Kill run đang chạy của ${esc(s.name)}? Run sẽ bị đánh failed, không retry.'))act('/api/sessions/${id}/kill')" title="Kill run đang chạy (chặn chạy mãi)">🛑</button>`
+    : "";
   const cls = `st-${esc(s.status)}${needsYou ? " needs-you" : ""}`;
 
   // Card 👑: terminal thật nhúng thẳng trong card, action buttons xếp dọc left bar.
@@ -479,8 +497,10 @@ function agentCard(s, needsYou, isOrch) {
       ${head}
       <div class="orch-body">
         <div class="orch-side">
-          ${ctrl}${allow}
+          ${ctrl}${killBtn}${allow}
           <button onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')" title="Reload session/terminal (chạy lại claude --resume)">🔄</button>
+          <button class="secondary" onclick="termEsc('${esc(s.id)}')"
+                  title="Gửi phím Esc vào terminal — dùng khi bấm Esc trên bàn phím không ăn (bộ gõ tiếng Việt / trình duyệt nuốt mất). Tương đương Ctrl+[">⎋</button>
           <button class="secondary" onclick="if(confirm('Bỏ vai orchestrator của ${esc(s.name)}? Session về headless worker.'))toggleOrch('${id}',0)" title="Bỏ vai orchestrator — session về headless worker">👑</button>
           ${ctxBtn}${unregBtn}
         </div>
@@ -498,7 +518,7 @@ function agentCard(s, needsYou, isOrch) {
         <span class="spacer"></span>${today}</div>
     </div>
     <div class="agent-actions">
-      ${ctrl}${allow}
+      ${ctrl}${killBtn}${allow}
       <button class="secondary" onclick="toggleOrch('${id}',1)"
         title="Đặt làm orchestrator của project (demote orch cũ cùng cwd; session kiêm director + role riêng)">👑</button>
       ${ctxBtn}<button class="secondary" onclick="editSkill('${id}','${esc(s.name)}')"
