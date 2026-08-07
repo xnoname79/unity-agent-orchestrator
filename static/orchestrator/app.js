@@ -10,8 +10,27 @@ const RUN_BADGE = { ok: "b-green", error: "b-red", running: "b-blue" };
 const EV_ICON = { system: "⚙️", thinking: "🧠", text: "💬", tool_use: "🔧",
                   tool_result: "📄", result: "✅", error: "⚠️" };
 
-const EFFORT_OPTS = ["", "low", "medium", "high", "max"];  // "" = default (high)
+// Effort: 1 thang chung, trần khác nhau theo engine/model. PHẢI khớp EFFORT_LADDER /
+// CLAUDE_MAX_EFFORT / CODEX_MAX_EFFORT bên service (check_ui_engine.py đối chiếu) — lệch thì
+// UI mời chọn mức mà service sẽ lặng lẽ hạ xuống.
+const EFFORT_LADDER = ["low", "medium", "high", "xhigh", "max", "ultra"];
+const CLAUDE_MAX_EFFORT = "max";
+const CODEX_MAX_EFFORT = { "gpt-5.6-terra": "ultra", "gpt-5.6-luna": "max" };
+const CODEX_MAX_EFFORT_DEFAULT = "xhigh";
+
+// Mức cao nhất model này nhận (claude theo CLI, codex theo TỪNG model).
+function effortCeiling(model) {
+  if (engineOfModel(model) === "claude") return CLAUDE_MAX_EFFORT;
+  const m = (model || "").trim().toLowerCase();
+  return CODEX_MAX_EFFORT[m.includes(":") ? m.split(":")[1].trim() : ""] || CODEX_MAX_EFFORT_DEFAULT;
+}
+
+// Các mức chọn được cho model này ("" = theo mặc định orchestrator).
+function effortOptsFor(model) {
+  return ["", ...EFFORT_LADDER.slice(0, EFFORT_LADDER.indexOf(effortCeiling(model)) + 1)];
+}
 let DAILY_STEP = 10;  // số run cộng thêm mỗi lần bấm Allow; đồng bộ từ /health lúc load.
+let DEFAULT_EFFORT = "high";  // nhãn cho option "" ở picker effort; đồng bộ từ /health lúc load.
 
 let openRunId = null;   // run đang mở trong drawer (null = đóng)
 let currentWS = "";     // workspace đang lọc ("" = tất cả, admin view)
@@ -323,6 +342,23 @@ let cvTerms = {};  // sid → {sid, host, started, term, fit, ws}
 // → PTY cũ hết ngữ cảnh, 2 claude cùng ghi 1 transcript sẽ xung đột. Key theo NAME
 // (bền qua xoay session id); chỉ mở lại khi user bấm 🔄.
 let termLock = {};  // session name → true
+// CLI người dùng chọn cho terminal, theo NAME (bền qua xoay session id) — rỗng = theo engine của
+// session. Chọn CLI KHÁC engine thì backend mở phiên MỚI (id của claude không resume được bằng
+// codex và ngược lại), nên đổi lựa chọn = hủy PTY cũ rồi nối lại.
+let termCli = {};   // session name → 'claude' | 'codex'
+
+// Gương của engine_from_model bên service — model là nguồn sự thật duy nhất của engine.
+// Lệch với backend là UI hiện sai (vd mời chọn effort 'ultra' mà engine không nhận).
+function engineOfModel(model) {
+  const m = (model || "").trim().toLowerCase();
+  return m === "codex" || m.startsWith("codex:") ? "codex" : "claude";
+}
+
+async function setTermCli(sid, name, cli) {
+  termCli[name] = cli;
+  await reconnectTerm(sid, name);
+}
+window.setTermCli = setTermCli;
 
 function startTerm(t) {
   t.started = true;
@@ -332,7 +368,8 @@ function startTerm(t) {
   t.term.loadAddon(t.fit);
   t.term.open(t.host);
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  t.ws = new WebSocket(`${proto}://${location.host}/ws/terminal?session=${encodeURIComponent(t.sid)}`);
+  t.ws = new WebSocket(`${proto}://${location.host}/ws/terminal?session=${encodeURIComponent(t.sid)}`
+                       + (t.cli ? `&cli=${encodeURIComponent(t.cli)}` : ""));
   t.ws.binaryType = "arraybuffer";
   t.ws.onopen = () => fitTerm(t);
   t.ws.onmessage = (e) => t.term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
@@ -454,6 +491,7 @@ function attachTerms() {
     if (!t) t = cvTerms[sid] = { sid, host: Object.assign(document.createElement("div"),
                                                           { className: "term-host" }),
                                  started: false, term: null, fit: null, ws: null };
+    t.cli = slot.dataset.cli || "";   // đọc TRƯỚC startTerm (rAF chạy sau vòng render này)
     slot.appendChild(t.host);
     // Slot đang khóa: KHÔNG start PTY mới (đợi user bấm 🔄 sau khi run tự động xong).
     requestAnimationFrame(() => {
@@ -472,6 +510,19 @@ async function sendSignalTo(id, name) {
   catch (e) { console.error(e); alert("Lỗi gửi signal: " + e); }
 }
 window.sendSignalTo = sendSignalTo;
+
+// Dropdown "Action" trên card: mọi lựa chọn đều phá hủy nên luôn qua confirm.
+// Trả select về "Chọn…" NGAY (trước cả confirm) — nếu để kẹt ở lựa chọn cũ thì lần sau chọn lại
+// đúng mục đó sẽ không phát onchange, người dùng bấm mà không thấy gì xảy ra.
+async function runAction(id, name, sel) {
+  const action = sel.value;
+  sel.value = "";
+  if (action === "unregister") {
+    if (confirm(`Gỡ session '${name}' khỏi orchestrator?\n\nRuns/signals/audit vẫn giữ lại.`))
+      await act(`/api/sessions/${id}/unregister`);
+  }
+}
+window.runAction = runAction;
 
 // Form gửi signal thủ công (tab History) — giữ từ dashboard cũ: chọn role, bật
 // requires_approval / dry_run (sendSignalTo trên card chỉ gửi nhanh, không có 2 flag này).
@@ -514,8 +565,9 @@ function agentCard(s, needsYou, isOrch) {
   const today = s.daily_limit
     ? `<span class="${s.daily_blocked ? "day-hit" : "day-ok"}" title="run hôm nay / hạn mức">${s.used_today}/${s.daily_limit}</span>`
     : "";
+  // Mức hiện ra bám theo model của CHÍNH session này — gpt-5.5 không có 'max', đừng mời chọn.
   const effortSel = `<select class="mini" onchange="setEffort('${id}', this.value)">` +
-    EFFORT_OPTS.map((e) => `<option value="${e}"${e === (s.effort || "") ? " selected" : ""}>${e || "effort"}</option>`).join("") +
+    effortOptsFor(s.model).map((e) => `<option value="${e}"${e === (s.effort || "") ? " selected" : ""}>${e || "effort"}</option>`).join("") +
     `</select>`;
   const head = `<div class="node-head">
       <span class="status-dot dot-${esc(s.status)}"></span>
@@ -525,15 +577,32 @@ function agentCard(s, needsYou, isOrch) {
       <span class="spacer"></span>
       <span class="sid" title="${esc(s.id)}">${esc(s.id)}</span>
     </div>`;
-  const ctxBtn = `<button class="secondary" onclick="viewCompact('${id}','${esc(s.name)}')" title="Xem context/SKILL">📄</button>`;
-  const unregBtn = `<button class="danger" onclick="if(confirm('Gỡ session ${esc(s.name)}?'))act('/api/sessions/${id}/unregister')" title="Unregister">🗑</button>`;
+  const engine = engineOfModel(s.model);
+  // Nút biểu tượng = thao tác MỞ một thứ gì đó (terminal / thư mục project) → giữ icon.
+  // Nút chữ = thao tác trên dữ liệu session → gom theo nhãn Context / Action ở dưới.
   const vsBtn = (s.cwd || "").trim()
     ? `<button class="secondary" onclick="openVscode('${id}','${esc(s.name)}')"
-        title="Mở project của session này bằng VS Code (1 card duy nhất — mở cái mới sẽ đóng cái cũ)">💻</button>`
+        title="Mở thư mục project của session bằng VS Code (1 card duy nhất — mở cái mới sẽ đóng cái cũ)">📁</button>`
     : "";
   const killBtn = s.status === "running"
     ? `<button class="danger" onclick="if(confirm('Kill run đang chạy của ${esc(s.name)}? Run sẽ bị đánh failed, không retry.'))act('/api/sessions/${id}/kill')" title="Kill run đang chạy (chặn chạy mãi)">🛑</button>`
     : "";
+  const ctxGroup = (extra = "") => `<div class="act-group"><span class="act-label">Context</span>
+    <button class="secondary act-txt" onclick="viewCompact('${id}','${esc(s.name)}')"
+      title="Xem context/SKILL hiện tại của session">Xem</button>${extra}</div>`;
+  // Action đều là thao tác PHÁ HỦY → giấu sau dropdown, không để bấm nhầm khi rê chuột trên card.
+  // KHÔNG có "Xóa vĩnh viễn": transcript do CLI (claude/codex) giữ, orchestrator không xóa được
+  // — bày ra là mời user chọn thứ chắc chắn lỗi. Gỡ session thì dùng Unregister.
+  // Nhãn NGẮN: select đóng chỉ hiện 1 dòng và không ellipsis được text option — nhãn dài sẽ
+  // đẩy rộng cả cột nút, ăn chỗ terminal. Giải thích đầy đủ để ở title (hover).
+  const actOpts = [["unregister", "Unregister", "Gỡ session khỏi orchestrator — runs/signals/audit vẫn giữ"]];
+  const actGroup = `<div class="act-group"><span class="act-label">Action</span>
+    <select class="mini act-sel" title="Thao tác phá hủy — chọn rồi xác nhận"
+      onchange="runAction('${id}','${esc(s.name)}', this)">
+      <option value="">Chọn…</option>
+      ${actOpts.map(([v, label, hint]) =>
+        `<option value="${v}" title="${esc(hint)}">${esc(label)}</option>`).join("")}
+    </select></div>`;
   const cls = `st-${esc(s.status)}${needsYou ? " needs-you" : ""}`;
 
   // Card 👑: terminal thật nhúng thẳng trong card, action buttons xếp dọc left bar.
@@ -553,6 +622,15 @@ function agentCard(s, needsYou, isOrch) {
       const t = cvTerms[s.id];
       if (t && t.ws && t.ws.readyState <= 1) { try { t.ws.close(); } catch { /* đã đóng */ } }
     }
+    // Chọn CLI cho terminal. CLI trùng engine của session = resume đúng phiên đó; CLI khác =
+    // phiên MỚI trong cùng cwd (nhãn nói rõ để không tưởng mất ngữ cảnh vì lỗi).
+    const eng = engineOfModel(s.model);
+    const cli = termCli[s.name] || eng;
+    const cliSel = `<select class="mini cli-sel" title="CLI chạy trong terminal (engine session: ${eng}) — ✦ = khác engine, mở phiên MỚI trong cùng cwd"
+      onchange="setTermCli('${esc(s.id)}','${esc(s.name)}', this.value)">
+      ${["claude", "codex"].map((c) => `<option value="${c}"${c === cli ? " selected" : ""}
+        >${c === "claude" ? "🅒" : "🅞"} ${c}${c === eng ? "" : " ✦"}</option>`).join("")}
+    </select>`;
     const lock = busy
       ? `<div class="term-lock">⏳ Orch đang chạy run tự động (xử lý báo cáo từ agent)…<br>
            Click để xem run · xong sẽ mở lại chat bằng nút 🔄</div>`
@@ -565,13 +643,15 @@ function agentCard(s, needsYou, isOrch) {
       <div class="orch-body">
         <div class="orch-side">
           ${ctrl}${killBtn}${allow}${vsBtn}
-          <button onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')" title="Reload session/terminal (chạy lại claude --resume)">🔄</button>
+          ${cliSel}
+          <button onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')" title="Reload session/terminal (chạy lại CLI đang chọn)">🔄</button>
           <button class="secondary" onclick="termEsc('${esc(s.id)}')"
                   title="Gửi phím Esc vào terminal — dùng khi bấm Esc trên bàn phím không ăn (bộ gõ tiếng Việt / trình duyệt nuốt mất). Tương đương Ctrl+[">⎋</button>
-          <button class="secondary" onclick="if(confirm('Bỏ vai orchestrator của ${esc(s.name)}? Session về headless worker.'))toggleOrch('${id}',0)" title="Bỏ vai orchestrator — session về headless worker">👑</button>
-          ${ctxBtn}${unregBtn}
+          <button class="secondary" onclick="if(confirm('Đóng terminal của ${esc(s.name)}? Session về headless worker (bỏ vai orchestrator).'))toggleOrch('${id}',0)"
+            title="Đóng terminal — session về headless worker, bỏ vai orchestrator">💻</button>
+          ${ctxGroup()}${actGroup}
         </div>
-        <div class="term-slot" data-sid="${esc(s.id)}"${locked ? ` data-lock="1"` : ""}>${lock}</div>
+        <div class="term-slot" data-sid="${esc(s.id)}" data-cli="${cli}"${locked ? ` data-lock="1"` : ""}>${lock}</div>
       </div>
     </div>`;
   }
@@ -585,11 +665,15 @@ function agentCard(s, needsYou, isOrch) {
         <span class="spacer"></span>${today}</div>
     </div>
     <div class="agent-actions">
-      ${ctrl}${killBtn}${allow}${vsBtn}
-      <button class="secondary" onclick="toggleOrch('${id}',1)"
-        title="Đặt làm orchestrator của project (demote orch cũ cùng cwd; session kiêm director + role riêng)">👑</button>
-      ${ctxBtn}<button class="secondary" onclick="editSkill('${id}','${esc(s.name)}')"
-        title="Update SKILL của role (upsert vào .claude/skills trong cwd project)">📘</button>${unregBtn}
+      <div class="act-row">
+        ${ctrl}${killBtn}${allow}
+        <button class="secondary" onclick="toggleOrch('${id}',1)"
+          title="Mở terminal cho session (đặt làm orchestrator của project — demote orch cũ cùng cwd)">💻</button>
+        ${vsBtn}
+      </div>
+      ${ctxGroup(`<button class="secondary act-txt" onclick="editSkill('${id}','${esc(s.name)}')"
+        title="Sửa SKILL của role (upsert vào .claude/skills trong cwd project)">Update</button>`)}
+      ${actGroup}
     </div>
   </div>`;
 }
@@ -605,21 +689,6 @@ const EDGE_DEFS = "<defs>" + Object.entries(EDGE_COLORS).map(([k, c]) =>
   `<marker id="ah-${k}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
      <path d="M0,0L8,4L0,8z" fill="${c}"/></marker>`).join("") + "</defs>";
 
-// Danh sách session Claude Code CLI (transcript ~/.claude/projects) theo cwd.
-// undefined = chưa tải, null = đang tải, [] / [...] = kết quả. Nguồn CHỌN orchestrator —
-// khác agent DB (agent do orchestrator spawn, đã là card trên canvas).
-let cvClaude = {};
-
-async function loadClaudeSessions(gi, force) {
-  const g = cvGroups[gi];
-  if (!g || (!force && cvClaude[g.cwd] !== undefined)) return;
-  cvClaude[g.cwd] = null;
-  try { cvClaude[g.cwd] = await api("/api/claude-sessions?cwd=" + encodeURIComponent(g.cwd)); }
-  catch (e) { console.error(e); cvClaude[g.cwd] = []; }
-  if (!cvInteracting) renderCanvas(cvLast.sessions, cvLast.signals);
-}
-window.loadClaudeSessions = loadClaudeSessions;
-
 // Toggle vai orchestrator cho 1 session DB (nguồn sự thật: cột is_orch backend — không còn
 // localStorage). Bật: backend tự demote orch cũ cùng cwd + seed director SKILL nếu thiếu.
 async function toggleOrch(id, on) {
@@ -629,174 +698,58 @@ async function toggleOrch(id, on) {
 }
 window.toggleOrch = toggleOrch;
 
-// ── Modal đăng ký CLI session làm agent (từ dropdown zone) ──────────────────
-let regCtx = null;   // {cwd, sid} session CLI đang đăng ký
-let regSel = "";     // template đang chọn ("__custom" = tự đặt role)
-
-function renderRegPicker() {
-  $("reg-template-cards").innerHTML = SP_TEMPLATES.map((t) =>
-    `<div class="pick-card${regSel === t.name ? " sel" : ""}" onclick="regPick('${esc(t.name)}')">` +
-    `<b>${esc(t.name)}</b><div class="pd">${esc(t.description || "")}</div></div>`)
-    .concat(`<div class="pick-card${regSel === "__custom" ? " sel" : ""}" onclick="regPick('__custom')">` +
-      `<b>Tùy chỉnh…</b><div class="pd">Tự đặt tên role + viết init prompt (lưu thành SKILL trong cwd)</div></div>`)
-    .join("");
-  const custom = regSel === "__custom";
-  $("reg-role-custom").hidden = !custom;
-  $("reg-init-label").hidden = !custom;
-  $("reg-init").hidden = !custom;
-}
-
-function regPick(v) {
-  regSel = v;
-  if (v === "__custom" && !$("reg-init").value.trim()) $("reg-init").value = CUSTOM_INIT_TEMPLATE;
-  renderRegPicker();
-  if (v === "__custom") { regRoleSlug(); $("reg-role").focus(); }
-}
-window.regPick = regPick;
-
-function regRoleSlug() {
-  const slug = slugRole($("reg-role").value);
-  $("reg-role-hint").innerHTML = slug
-    ? `Session/skill: <code>${esc(slug)}</code> → <code>&lt;cwd&gt;/.claude/skills/${esc(slug)}/SKILL.md</code>`
-    : `Tên được format kiểu folder: chữ thường, bỏ dấu, khoảng trắng thành "-".`;
-}
-window.regRoleSlug = regRoleSlug;
-
-async function openRegModal(gi, sid) {
-  const g = cvGroups[gi];
-  if (!g || !sid) return;
-  regCtx = { cwd: g.cwd, sid };
-  regSel = "";
-  $("reg-info").textContent = `Session ${sid.slice(0, 8)}… · ${g.cwd}`;
-  $("reg-msg").textContent = "";
-  $("reg-msg").className = "form-msg";
-  if (!SP_TEMPLATES.length) await loadTemplates();  // canvas có thể mở trước list view (nơi vẫn load templates)
-  renderRegPicker();
-  $("reg-modal").hidden = false;
-}
-window.openRegModal = openRegModal;
-
-function closeRegModal() { $("reg-modal").hidden = true; regCtx = null; }
-window.closeRegModal = closeRegModal;
-
-async function regConfirm() {
-  if (!regCtx) return;
-  let name = regSel;
-  const extra = {};
-  if (!name) return showMsg("reg-msg", "Cần chọn role", false);
-  if (name === "__custom") {
-    name = slugRole($("reg-role").value);
-    if (!name) return showMsg("reg-msg", "Cần nhập tên role tùy chỉnh", false);
-    if (!$("reg-init").value.trim())
-      return showMsg("reg-msg", "Role tùy chỉnh bắt buộc có init prompt (thành SKILL của role)", false);
-    extra.init_prompt = $("reg-init").value;
-  } else {
-    extra.template = name;  // backend seed SKILL từ TEMPLATES_DIR nếu cwd chưa có
-  }
-  try {
-    await api("/api/sessions", "POST",
-              { id: regCtx.sid, name, cwd: regCtx.cwd, workspace_id: currentWS, ...extra });
-  } catch (e) { return showMsg("reg-msg", "Lỗi: " + e, false); }
-  closeRegModal();
-  await refreshAll();
-}
-window.regConfirm = regConfirm;
-
-// ── MCP của project (claude mcp list/add tại cwd) ───────────────────────────
-let mcpCache = {};  // cwd → {out} | null (đang tải) | undefined (chưa tải)
-let mcpOpen = {};   // cwd → panel đang mở
-let mcpDraft = {};  // cwd → text đang gõ trong input add (sống qua re-render SSE)
-
-async function loadMcp(gi, force) {
-  const g = cvGroups[gi];
-  if (!g || (!force && mcpCache[g.cwd] !== undefined)) return;
-  mcpCache[g.cwd] = null;
-  if (!cvInteracting) renderCanvas(cvLast.sessions, cvLast.signals);
-  try { mcpCache[g.cwd] = await api("/api/mcp?cwd=" + encodeURIComponent(g.cwd)); }
-  catch (e) { console.error(e); mcpCache[g.cwd] = { out: "lỗi: " + e }; }
-  if (!cvInteracting) renderCanvas(cvLast.sessions, cvLast.signals);
-}
-window.loadMcp = loadMcp;
-
-function toggleMcp(gi) {
-  const g = cvGroups[gi];
-  if (!g) return;
-  mcpOpen[g.cwd] = !mcpOpen[g.cwd];
-  if (mcpOpen[g.cwd]) loadMcp(gi);
-  renderCanvas(cvLast.sessions, cvLast.signals);
-}
-window.toggleMcp = toggleMcp;
-
-function mcpDraftSet(gi, v) { const g = cvGroups[gi]; if (g) mcpDraft[g.cwd] = v; }
-window.mcpDraftSet = mcpDraftSet;
-
-// Add MCP: chạy `claude mcp add <args>` tại cwd, rồi reload list — output add hiển thị trên đầu panel.
-async function mcpAdd(gi) {
-  const g = cvGroups[gi];
-  if (!g) return;
-  const args = (mcpDraft[g.cwd] || "").trim();
-  if (!args) return;
-  mcpCache[g.cwd] = null;
-  renderCanvas(cvLast.sessions, cvLast.signals);
-  try {
-    const r = await api("/api/mcp", "POST", { cwd: g.cwd, args });
-    mcpDraft[g.cwd] = "";
-    const l = await api("/api/mcp?cwd=" + encodeURIComponent(g.cwd));
-    mcpCache[g.cwd] = { out: "$ claude mcp add " + args + "\n" + (r.out || "").trim() + "\n\n" + (l.out || "") };
-  } catch (e) { console.error(e); mcpCache[g.cwd] = { out: "lỗi add: " + e }; }
-  renderCanvas(cvLast.sessions, cvLast.signals);
-}
-window.mcpAdd = mcpAdd;
-
-function mcpPanelHtml(gi, cwd) {
-  if (!mcpOpen[cwd]) return "";
-  const m = mcpCache[cwd];
-  const body = (m === undefined || m === null) ? "đang tải…" : (m.out || "").trim() || "(chưa có MCP nào)";
-  return `<div class="zone-mcp">
-    <div class="mcp-head"><b>🔌 MCP của project</b><span class="spacer"></span>
-      <button class="secondary" onclick="loadMcp(${gi}, true)" title="Tải lại danh sách MCP">🔄</button>
-      <button class="secondary" onclick="toggleMcp(${gi})" title="Đóng panel">✕</button></div>
-    <pre class="mcp-list">${esc(body)}</pre>
-    <div class="mcp-add">
-      <span class="mcp-pre">claude mcp add</span>
-      <input class="mini" placeholder="vd: unity npx -y unity-mcp" value="${esc(mcpDraft[cwd] || "")}"
-        oninput="mcpDraftSet(${gi}, this.value)" onkeydown="if(event.key==='Enter')mcpAdd(${gi})">
-      <button onclick="mcpAdd(${gi})" title="Chạy claude mcp add tại cwd project">➕</button>
-    </div>
-  </div>`;
-}
-
-// Options cho dropdown đăng ký agent: session Claude CLI của cwd chưa nằm trong DB
-// (transcript của agent spawn nằm cùng thư mục — lọc ra để khỏi đăng ký trùng).
-function regOptions(cwd, agentList) {
-  let opts = `<option value="">— thêm CLI session làm agent —</option>`;
-  const claude = cvClaude[cwd];
-  if (claude === undefined || claude === null)
-    return opts + `<option disabled>đang tải sessions…</option>`;
-  const agentIds = new Set(agentList.map((s) => s.id));
-  const items = claude.filter((c) => !agentIds.has(c.id));
-  if (!items.length)
-    opts += `<option disabled>không còn session claude nào chưa đăng ký</option>`;
-  return opts + items.map((c) =>
-    `<option value="${esc(c.id)}" title="${esc(c.id)} · ${esc(c.mtime)}">` +
-    `${esc((c.title || "").slice(0, 48) || c.id.slice(0, 8))} · ${esc(c.id.slice(0, 8))}</option>`).join("");
-}
-
 function zoneHtml(gi, cwd, list) {
   const base = cwd.replace(/\/+$/, "").split("/").pop() || cwd;
   return `<div class="node group-zone" data-nid="g:${esc(cwd)}" data-gi="${gi}">
     <div class="zone-head">
       <div class="zone-title">📁 <b>${esc(base)}</b><span class="g-count">${list.length} agents</span>
         <span class="g-path" title="${esc(cwd)}">${esc(cwd)}</span></div>
-      <div class="zone-ctl">
-        <select class="mini" onchange="openRegModal(${gi}, this.value); this.value=''"
-          title="Đăng ký session Claude Code CLI của project (~/.claude/projects) làm agent — chọn role trong modal">${regOptions(cwd, list)}</select>
-        <button class="secondary" onclick="loadClaudeSessions(${gi}, true)" title="Tải lại danh sách session">🔄</button>
-        <button class="secondary" onclick="toggleMcp(${gi})" title="MCP của project (claude mcp list/add)">🔌 MCP</button>
-      </div>
-      ${mcpPanelHtml(gi, cwd)}
     </div>
   </div>`;
+}
+
+// ── Kéo giãn card trên canvas ────────────────────────────────────────────────
+// Kích thước lưu chung chỗ với vị trí (pos[nid] = {x, y, w, h}) → cùng workspace, cùng
+// localStorage, không thêm store thứ hai phải đồng bộ. Không có w/h = dùng size mặc định của CSS.
+// CHỈ card có "cửa sổ" bên trong mới kéo giãn được: card 👑 (terminal) và card VS Code (thư mục).
+// Card headless không có gì để giãn — nội dung là vài dòng meta, kéo to chỉ ra khoảng trống.
+// Guard theo data-rz thay vì chỉ ẩn tay nắm: session từng là 👑 rồi bị demote vẫn còn w/h trong
+// store, không chặn thì card headless bị kéo giãn theo size cũ.
+const RZ = `<div class="rz" title="Kéo để đổi kích thước card (double-click: về mặc định)"></div>`;
+const RZ_MIN = { w: 220, h: 130 };
+
+function applySize(el, p) {
+  if (p && p.w && p.h && el.dataset.rz) {
+    el.style.width = p.w + "px";
+    el.style.height = p.h + "px";
+    el.classList.add("sized");
+  } else {
+    el.style.width = el.style.height = "";
+    el.classList.remove("sized");
+  }
+}
+
+// Ghi vị trí + kích thước của 1 node vào store. MERGE chứ không ghi đè cả entry: kéo vị trí
+// không được xoá w/h, kéo giãn không được xoá x/y (cùng dùng chung pos[nid]).
+function saveNodeGeom(el, pos) {
+  const p = pos[el.dataset.nid] = { ...(pos[el.dataset.nid] || {}) };
+  p.x = parseFloat(el.style.left) || 0;
+  p.y = parseFloat(el.style.top) || 0;
+  // Node không kéo giãn được (card headless, zone): chỉ ghi vị trí. Xoá w/h ở đây thì size của
+  // card 👑 sẽ mất mỗi lần user kéo nó lúc đang headless — bật 👑 lại là về mặc định, không hiểu vì sao.
+  if (!el.dataset.rz) return p;
+  if (el.classList.contains("sized")) {
+    p.w = Math.round(parseFloat(el.style.width) || 0);
+    p.h = Math.round(parseFloat(el.style.height) || 0);
+  } else { delete p.w; delete p.h; }
+  return p;
+}
+
+// Terminal xterm KHÔNG tự biết khung đổi: phải fit lại, nếu không chữ giữ nguyên cols/rows cũ.
+function refitNode(el) {
+  const nid = el.dataset.nid || "";
+  const t = nid.startsWith("s:") && cvTerms[nid.slice(2)];
+  if (t) fitTerm(t);
 }
 
 // Zone tự bo quanh member: bbox các node member + header. Gọi sau mỗi lần đặt/kéo node.
@@ -878,7 +831,10 @@ function renderCanvas(sessions, signals) {
       zonesHtml += zoneHtml(gi, cwd, list);
     }
     for (const s of list) {
-      nodesHtml += `<div class="node" data-nid="s:${esc(s.id)}">${agentCard(s, needs.has(s.id), !!s.is_orch)}</div>`;
+      // Chỉ card 👑 (có terminal) mới gắn tay nắm + cờ data-rz; headless giữ size cố định của CSS.
+      const rz = s.is_orch ? ` data-rz="1"` : "";
+      nodesHtml += `<div class="node" data-nid="s:${esc(s.id)}"${rz}>`
+                 + agentCard(s, needs.has(s.id), !!s.is_orch) + (s.is_orch ? RZ : "") + `</div>`;
       nodeMeta.push({ sid: s.id, cwd, grouped, gi });
     }
   }
@@ -890,7 +846,7 @@ function renderCanvas(sessions, signals) {
   // Thứ tự vẽ: zone (dưới) → edges (giữa) → agent card (trên).
   // Card VS Code: 1 node độc lập (không thuộc session nào) — kéo thả/lưu vị trí như node khác.
   if (vscodeState.open)
-    nodesHtml += `<div class="node" data-nid="vscode">${vscodeCardHtml(vscodeState)}</div>`;
+    nodesHtml += `<div class="node" data-nid="vscode" data-rz="1">${vscodeCardHtml(vscodeState)}${RZ}</div>`;
   world.innerHTML = zonesHtml + `<svg id="edges" class="edges"></svg>` + nodesHtml;
 
   // Đặt vị trí agent: có lưu → dùng lại; mới → xếp cụm theo cwd (seed từ pos group cũ nếu có).
@@ -926,17 +882,17 @@ function renderCanvas(sessions, signals) {
     }
     el.style.left = pos[nid].x + "px";
     el.style.top = pos[nid].y + "px";
+    applySize(el, pos[nid]);
   });
   const vsEl = world.querySelector('.node[data-nid="vscode"]');
   if (vsEl) {
     if (!pos.vscode) pos.vscode = { x: 40, y: 40 };
     vsEl.style.left = pos.vscode.x + "px";
     vsEl.style.top = pos.vscode.y + "px";
+    applySize(vsEl, pos.vscode);
   }
   cvSave({ pos });
   layoutZones();
-  // Nạp danh sách session Claude CLI cho các cwd chưa có cache (async — về thì re-render).
-  cvGroups.forEach((g, gi) => { if (cvClaude[g.cwd] === undefined) loadClaudeSessions(gi); });
 
   // Mũi tên signal: CHỈ vẽ task ĐANG hoạt động (chạy/chờ) — done/failed ẩn, xem ở History.
   // Resolve from/to về session id (nhận cả id lẫn name), dedup theo cặp (chạy > chờ).
@@ -976,7 +932,19 @@ function cvInit() {
   let drag = null;  // {mode:'pan'|'node'|'group', ...}
   cv.addEventListener("pointerdown", (e) => {
     if (e.target.closest("button, select, input, textarea, option")) return;
-    if (e.target.closest(".zone-mcp, .cv-overlay")) return;  // panel MCP / overlay toolbar-hint: không pan/kéo
+    if (e.target.closest(".cv-overlay")) return;  // overlay toolbar-hint: không pan/kéo
+    // Tay nắm resize phải xét TRƯỚC .node-head: nó nằm ngoài header nên nhánh dưới sẽ coi là
+    // click nền rồi return, không kéo giãn được.
+    const rz = e.target.closest(".rz");
+    if (rz) {
+      const n = rz.closest(".node");
+      drag = { mode: "resize", el: n, sx: e.clientX, sy: e.clientY,
+               ow: n.offsetWidth, oh: n.offsetHeight };
+      cvInteracting = true;
+      cv.classList.add("grabbing");
+      cv.setPointerCapture(e.pointerId);
+      return;
+    }
     const head = e.target.closest(".node-head, .zone-head");
     const node = head && head.closest(".node");
     if (node && node.classList.contains("group-zone")) {
@@ -1000,6 +968,14 @@ function cvInit() {
     const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
     if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;  // phân biệt click vs kéo
     if (drag.mode === "pan") { CV.tx = drag.ox + dx; CV.ty = drag.oy + dy; applyView(); return; }
+    if (drag.mode === "resize") {
+      // chia CV.k: chuột đi 1px màn hình = 1/k px trong toạ độ world (canvas đang zoom)
+      applySize(drag.el, { w: Math.max(RZ_MIN.w, drag.ow + dx / CV.k),
+                           h: Math.max(RZ_MIN.h, drag.oh + dy / CV.k) });
+      refitNode(drag.el);
+      layoutZones(); redrawEdges();
+      return;
+    }
     if (drag.mode === "node") {
       drag.el.style.left = (drag.ox + dx / CV.k) + "px";
       drag.el.style.top = (drag.oy + dy / CV.k) + "px";
@@ -1013,12 +989,10 @@ function cvInit() {
   });
   const up = () => {
     if (!drag) return;
-    if (drag.mode === "node" || drag.mode === "group") {
+    if (drag.mode === "node" || drag.mode === "group" || drag.mode === "resize") {
       const pos = cvLoad().pos || {};
-      const save = (el) => {
-        pos[el.dataset.nid] = { x: parseFloat(el.style.left) || 0, y: parseFloat(el.style.top) || 0 };
-      };
-      if (drag.mode === "node") save(drag.el); else drag.parts.forEach((p) => save(p.el));
+      const save = (el) => saveNodeGeom(el, pos);
+      if (drag.mode === "group") drag.parts.forEach((p) => save(p.el)); else save(drag.el);
       cvSave({ pos });
     } else cvSave({ view: CV });
     // Click (không kéo) vào header card agent (kể cả card 👑) → mở drawer run mới nhất.
@@ -1032,18 +1006,29 @@ function cvInit() {
   };
   cv.addEventListener("pointerup", up);
   cv.addEventListener("pointercancel", up);
+  // Double-click tay nắm → bỏ size tùy chỉnh, về mặc định của CSS.
+  cv.addEventListener("dblclick", (e) => {
+    const rz = e.target.closest(".rz");
+    if (!rz) return;
+    const el = rz.closest(".node");
+    applySize(el, null);
+    const pos = cvLoad().pos || {};
+    if (pos[el.dataset.nid]) { delete pos[el.dataset.nid].w; delete pos[el.dataset.nid].h; }
+    cvSave({ pos });
+    refitNode(el); layoutZones(); redrawEdges();
+  });
   // Click vào THÂN card (ngoài header — header đi đường pointerup ở trên) → drawer run.
   // Card 👑: terminal (.term-slot) miễn trừ, nhưng overlay khóa (.term-lock) thì mở drawer
   // để xem run tự động đang chạy.
   cv.addEventListener("click", (e) => {
     const lock = e.target.closest(".term-lock");
     if (lock) { openSessionRun(lock.closest(".agent-card").dataset.sid); return; }
-    if (e.target.closest("button, select, input, textarea, option, .term-slot, .vscode-slot, .zone-mcp, .node-head, .zone-head")) return;
+    if (e.target.closest("button, select, input, textarea, option, .term-slot, .vscode-slot, .node-head, .zone-head")) return;
     const card = e.target.closest(".agent-card");
     if (card) openSessionRun(card.dataset.sid);
   });
   cv.addEventListener("wheel", (e) => {
-    if (e.target.closest(".term-slot, .vscode-slot, .zone-mcp, .cv-overlay")) return;  // wheel trong terminal/panel MCP/overlay = scroll, không zoom
+    if (e.target.closest(".term-slot, .vscode-slot, .cv-overlay")) return;  // wheel trong terminal/VS Code/overlay = scroll, không zoom
     e.preventDefault();  // wheel = zoom quanh con trỏ (không scroll trang)
     const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
     const k2 = Math.min(1.6, Math.max(0.35, CV.k * Math.exp(-e.deltaY * 0.0012)));
@@ -1086,19 +1071,34 @@ window.loadTools = loadTools;
 
 // ── Spawn form: picker dạng card (workspace / template / model) + duyệt thư mục ──
 
-const MODELS = [
-  { id: "", name: "Auto", desc: "Orchestrator / CLI tự chọn model mặc định" },
-  { id: "opus", name: "Opus · alias", desc: "Luôn trỏ bản Opus mới nhất" },
-  { id: "sonnet", name: "Sonnet · alias", desc: "Cân bằng chất lượng / tốc độ / giá" },
-  { id: "haiku", name: "Haiku · alias", desc: "Nhanh và rẻ — việc nhẹ, lặp nhiều" },
-  { id: "claude-fable-5", name: "Fable 5", desc: "Mạnh nhất (Claude 5) — reasoning + agentic dài hơi; đắt hơn Opus" },
-  { id: "claude-opus-4-8", name: "Opus 4.8", desc: "Opus mới nhất — agentic tự chủ dài hơi, mặc định tốt nhất" },
-  { id: "claude-sonnet-5", name: "Sonnet 5", desc: "Gần chất lượng Opus cho code/agentic, giá Sonnet" },
-  { id: "claude-haiku-4-5", name: "Haiku 4.5", desc: "Nhanh nhất, rẻ nhất — task đơn giản" },
-  { id: "__custom", name: "Tùy chỉnh…", desc: "Tự nhập model id / alias khác (bản cũ: opus-4-7/4-6, sonnet-4-6…)" },
+// Model chia theo engine — mỗi tab 1 engine.
+// Tiền tố 'codex:' = engine Codex CLI, chạy bằng tài khoản ChatGPT đã `codex login` (không tốn
+// API credits). BẮT BUỘC có tiền tố: 'gpt-5.6-terra' trơn cũng là tên model API hợp lệ, không
+// có tiền tố thì không phân biệt được ý người dùng.
+const MODEL_TABS = [
+  { engine: "claude", label: "Claude", note: "claude CLI · API credits Anthropic", models: [
+    { id: "", name: "Auto", desc: "Orchestrator / CLI tự chọn model mặc định" },
+    { id: "opus", name: "Opus · alias", desc: "Luôn trỏ bản Opus mới nhất" },
+    { id: "sonnet", name: "Sonnet · alias", desc: "Cân bằng chất lượng / tốc độ / giá" },
+    { id: "haiku", name: "Haiku · alias", desc: "Nhanh và rẻ — việc nhẹ, lặp nhiều" },
+    { id: "claude-fable-5", name: "Fable 5", desc: "Mạnh nhất (Claude 5) — reasoning + agentic dài hơi; đắt hơn Opus" },
+    { id: "claude-opus-4-8", name: "Opus 4.8", desc: "Opus mới nhất — agentic tự chủ dài hơi, mặc định tốt nhất" },
+    { id: "claude-sonnet-5", name: "Sonnet 5", desc: "Gần chất lượng Opus cho code/agentic, giá Sonnet" },
+    { id: "claude-haiku-4-5", name: "Haiku 4.5", desc: "Nhanh nhất, rẻ nhất — task đơn giản" },
+  ] },
+  { engine: "codex", label: "Codex", note: "codex CLI · gói ChatGPT, không tốn API credits", models: [
+    { id: "codex", name: "Auto", desc: "Model do CLI tự chọn theo ~/.codex/config.toml" },
+    { id: "codex:gpt-5.6-terra", name: "Terra 5.6", desc: "Cân bằng cho việc code hằng ngày (mặc định của Codex) · effort tới ultra" },
+    { id: "codex:gpt-5.6-luna", name: "Luna 5.6", desc: "Hạn mức rộng hơn Terra — việc lặp nhiều, chạy dài · effort tới max" },
+    { id: "codex:gpt-5.5", name: "GPT-5.5", desc: "Đời trước, ổn định · effort tới xhigh" },
+    { id: "codex:gpt-5.4-mini", name: "5.4 mini", desc: "Nhẹ và nhanh — task đơn giản, ít tốn hạn mức · effort tới xhigh" },
+  ] },
 ];
+const MODEL_CUSTOM = { id: "__custom", name: "Tùy chỉnh…",
+  desc: "Tự nhập model id / alias khác (claude: opus-4-7, opus-4-6…; codex: 'codex:<slug>')" };
 let SP_TEMPLATES = [];                          // cache /api/skills/templates
 let spSel = { ws: "", template: "", model: "" };  // lựa chọn hiện tại của form spawn
+let spTab = MODEL_TABS[0].engine;                 // tab engine đang mở ở picker Model
 
 // Mẫu init prompt cho role tùy chỉnh — prefill vào textarea khi user chọn card
 // "Tùy chỉnh…" (chỉ khi textarea đang rỗng, không đè bản user đã sửa).
@@ -1169,12 +1169,56 @@ function renderSpawnPickers() {
   $("sp-role-custom").hidden = !isCustomRole;
   $("sp-init-label").textContent = isCustomRole
     ? "Init prompt (bắt buộc — sửa template mẫu theo role)" : "Init prompt (optional)";
-  $("sp-model-cards").innerHTML = MODELS.map((m) => pickCard("model", m.id,
+  const tab = MODEL_TABS.find((t) => t.engine === spTab) || MODEL_TABS[0];
+  $("sp-model-tabs").innerHTML = MODEL_TABS.map((t) =>
+    `<button type="button" class="tab-btn${t.engine === tab.engine ? " sel" : ""}" ` +
+    `title="${esc(t.note)}" onclick="spTabPick('${t.engine}')">${esc(t.label)}</button>`).join("");
+  $("sp-model-tabs-note").textContent = tab.note;
+  $("sp-model-cards").innerHTML = tab.models.concat(MODEL_CUSTOM).map((m) => pickCard("model", m.id,
     `<b>${esc(m.name)}</b>` +
     (m.id && m.id !== "__custom" ? `<code>${esc(m.id)}</code>` : "") +
     `<div class="pd">${esc(m.desc)}</div>`)).join("");
   $("sp-model-custom").hidden = spSel.model !== "__custom";
+  renderSpawnEffort();
+  syncToolPicker();
 }
+
+// Model đang chọn ở form (ô custom tính cả text đang gõ) → dùng cho effort + hiện/ẩn tools.
+function spModel() {
+  return spSel.model === "__custom" ? $("sp-model").value.trim() : spSel.model;
+}
+
+function renderSpawnEffort() {
+  const sel = $("sp-effort"), cur = sel.value;
+  const opts = effortOptsFor(spModel());
+  sel.innerHTML = opts.map((e) =>
+    `<option value="${e}">${e || `default (${esc(DEFAULT_EFFORT)})`}</option>`).join("");
+  sel.value = opts.includes(cur) ? cur : "";   // mức cũ vượt trần model mới → về default
+}
+
+// codex KHÔNG có allowlist tool (chỉ shell + apply_patch, luôn bật) → allowed_tools bị bỏ qua.
+// Hiện picker ở đó là mời user tick thứ không có tác dụng.
+function syncToolPicker() {
+  const codex = engineOfModel(spModel()) === "codex";
+  $("sp-tools-wrap").hidden = codex;
+  $("sp-tools-codex").hidden = !codex;
+  if (codex) $("sp-tools").innerHTML = "";
+}
+
+function spTabPick(engine) {
+  spTab = engine;
+  const tab = MODEL_TABS.find((t) => t.engine === engine);
+  // Model đang chọn không thuộc tab vừa mở → về card đầu của tab (đỡ cảnh tab Codex mà đang chọn Opus).
+  if (spSel.model !== "__custom" && !tab.models.some((m) => m.id === spSel.model))
+    spSel.model = tab.models[0].id;
+  renderSpawnPickers();
+}
+window.spTabPick = spTabPick;
+
+// Gõ model tùy chỉnh: chỉ cập nhật 2 thứ phụ thuộc model, KHÔNG render lại cả picker
+// (re-render mỗi ký tự là phí, và ô đang gõ nằm ngoài vùng render nên cũng chẳng cần).
+function onModelCustomInput() { renderSpawnEffort(); syncToolPicker(); }
+window.onModelCustomInput = onModelCustomInput;
 
 function spPick(group, val) {
   const prev = spSel[group];
@@ -1223,6 +1267,33 @@ function pickDir() { $("sp-cwd").value = $("sp-dir").dataset.path || ""; closeDi
 function closeDirBrowse() { $("sp-dir").hidden = true; }
 window.browseDir = browseDir; window.pickDir = pickDir; window.closeDirBrowse = closeDirBrowse;
 
+// Gõ TÊN thư mục (không phải path) → tìm dưới $HOME. Nhận diện "đang gõ tên" = không có '/':
+// có '/' nghĩa là user đang gõ path thật, để yên cho họ gõ (và nút 📁 duyệt như cũ).
+async function searchDir(q) {
+  const box = $("sp-dir");
+  box.hidden = false;
+  box.dataset.path = "";
+  try {
+    const d = await api("/api/fs?q=" + encodeURIComponent(q));
+    const hits = d.matches || [];
+    box.innerHTML = `<div class="dir-crumb">🔎 "${esc(q)}" — ${hits.length} thư mục</div>
+      <div class="dir-list">${hits.map((p) => `<div class="dir-item" data-path="${esc(p)}" data-pick="1">📁 ${esc(p)}</div>`).join("")
+        || `<div class="hint">Không có thư mục nào tên chứa "${esc(q)}" (tìm sâu 4 cấp dưới $HOME)</div>`}</div>
+      <div class="dir-actions"><button type="button" class="secondary" onclick="closeDirBrowse()">Đóng</button></div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="dir-crumb" style="color:var(--red)">Lỗi tìm: ${esc(e)}</div>`;
+  }
+}
+
+let cwdTimer = null;
+function onCwdInput(v) {
+  clearTimeout(cwdTimer);
+  const q = v.trim();
+  if (q.includes("/") || q.length < 2) return closeDirBrowse();  // path gõ tay → không tìm
+  cwdTimer = setTimeout(() => searchDir(q), 250);   // gõ xong mới bắn, đỡ 1 request/ký tự
+}
+window.onCwdInput = onCwdInput;
+
 async function loadTemplates() {
   if (!$("sp-template-cards")) return;
   try {
@@ -1257,9 +1328,10 @@ async function spawnAgent() {
     const r = await api("/api/sessions/spawn", "POST", {
       name, cwd: $("sp-cwd").value.trim(),
       workspace_id: spSel.ws,               // "" = default; ≠ default thì cwd tự ghim
-      model: spSel.model === "__custom" ? $("sp-model").value.trim() : spSel.model,
+      model: spModel(),
       effort: $("sp-effort").value,
-      allowed_tools: collectTools("sp"),
+      // codex bỏ qua allowed_tools → gửi [] cho khớp sự thật, đừng lưu vào DB thứ không có hiệu lực.
+      allowed_tools: engineOfModel(spModel()) === "codex" ? [] : collectTools("sp"),
       init_prompt: $("sp-init").value.trim(),
     });
     showMsg("sp-msg", `Đã spawn '${r.name}' (${r.id})`, true);
@@ -1329,6 +1401,8 @@ function renderRuns(list) {
 
 // ── Transcript drawer ────────────────────────────────────────────────────────
 
+const EV_LABEL = { history_user: "user (history)", history_ai: "ai (history)" };
+
 function evRow(e) {
   const kind = e.kind || "text";
   const icon = EV_ICON[kind] || "•";
@@ -1344,7 +1418,7 @@ function evRow(e) {
     <span class="ev-ic">${icon}</span>
     <div class="ev-main">
       <div class="ev-meta">
-        <span class="k">${kind === "tool_use" ? "tool" : esc(kind)}</span>
+        <span class="k">${kind === "tool_use" ? "tool" : esc(EV_LABEL[kind] || kind)}</span>
         <span class="rep" ${n > 1 ? "" : "hidden"}>×${n}</span>
         <span class="t">${shortTime(e.ts)}</span>
       </div>
@@ -1391,9 +1465,9 @@ async function openRun(runId) {
   $("drawer").classList.add("open");
   $("drawer-overlay").classList.add("open");
   try {
-    const events = await api("/api/runs/" + runId + "/events");
-    $("dr-body").innerHTML = events.length
-      ? pairTools(coalesceEvents(events)).map(evRow).join("")
+    const steps = await api("/api/runs/" + runId + "/events");
+    $("dr-body").innerHTML = steps.length
+      ? pairTools(coalesceEvents(steps)).map(evRow).join("")
       : `<div class="empty">Chưa có bước nào (run có thể đang khởi động).</div>`;
     scrollDrawerBottom();
   } catch (e) {
@@ -1498,6 +1572,7 @@ async function refreshAll() {
   try {
     const [workspaces, health] = await Promise.all([api("/api/workspaces"), api("/health")]);
     if (health.daily_allow_step) DAILY_STEP = health.daily_allow_step;
+    if (health.default_effort) DEFAULT_EFFORT = health.default_effort;
     $("dry").hidden = !health.dry_run;
     // Workspace đang xem bị xóa/không còn → về màn list.
     if (currentWS && !workspaces.some((w) => w.id === currentWS)) currentWS = "";
@@ -1554,7 +1629,10 @@ cvInit();
 // Duyệt thư mục: click folder trong panel → đi sâu vào (path nằm ở data-path, không inline).
 $("sp-dir").addEventListener("click", (e) => {
   const it = e.target.closest(".dir-item");
-  if (it) browseDir(it.dataset.path);
+  if (!it) return;
+  // Kết quả tìm: click là CHỌN luôn (đã là thư mục đích). Duyệt cây: click là đi vào.
+  if (it.dataset.pick) { $("sp-cwd").value = it.dataset.path; closeDirBrowse(); }
+  else browseDir(it.dataset.path);
 });
 try { switchTab(localStorage.getItem("orch-tab") || "agents"); } catch { /* tab mặc định */ }
 refreshAll();

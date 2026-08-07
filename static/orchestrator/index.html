@@ -99,16 +99,17 @@
   .form-card .spawn-actions button { width: auto; margin-top: 0; padding: 8px 32px; }
   .form-card .spawn-actions button.secondary { background: var(--panel); border-color: var(--border);
     color: var(--text); font-weight: 500; }
-  /* Modal đăng ký CLI session làm agent */
-  .modal-back { position: fixed; inset: 0; background: rgba(12, 14, 18, .5); z-index: 60;
-    display: flex; align-items: center; justify-content: center; }
-  .modal-back[hidden] { display: none; }
-  .modal { width: min(600px, 92vw); max-height: 86vh; overflow: auto; background: var(--panel); }
-  #reg-init { min-height: 180px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .form-card .row { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
   .form-card .row label { margin: 0; display: flex; align-items: center; gap: 5px; }
   .form-card .row input[type=checkbox] { width: auto; }
   .form-card button { width: 100%; margin-top: 10px; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; padding: 7px; }
+  /* Tab engine cho picker Model (Claude / Codex) */
+  .tab-row { display: flex; gap: 6px; margin-top: 4px; }
+  .form-card .tab-row .tab-btn { width: auto; flex: 1; margin-top: 0; padding: 6px 10px;
+    background: var(--bg); border: 1px solid var(--border); color: var(--fg); font-weight: 600; }
+  .form-card .tab-row .tab-btn:hover { border-color: var(--accent); }
+  .form-card .tab-row .tab-btn.sel { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #sp-model-tabs-note { margin: 4px 0 2px; }
   /* Picker dạng card (workspace / template / model) trong form spawn */
   .pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 8px; margin-top: 4px; }
@@ -116,8 +117,8 @@
     cursor: pointer; background: var(--bg); transition: border-color .12s; }
   .pick-card:hover { border-color: var(--accent); }
   /* Khối nhập tên custom role (spawn form + modal register) — tách khỏi grid card phía trên */
-  #sp-role-custom, #reg-role-custom { margin: 12px 0 4px; }
-  #sp-role-custom .hint, #reg-role-custom .hint { margin-top: 5px; }
+  #sp-role-custom { margin: 12px 0 4px; }
+  #sp-role-custom .hint { margin-top: 5px; }
   .pick-card.sel { border-color: var(--accent); background: rgba(59,116,224,.08);
     box-shadow: 0 0 0 1px var(--accent); }
   .pick-card b { display: block; font-size: 12.5px; }
@@ -271,6 +272,18 @@
   .canvas.grabbing { cursor: grabbing; }
   .world { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
   .node { position: absolute; }
+  /* Kéo giãn card: node được set width/height (lưu vào localStorage) → card con phải giãn theo,
+     nếu không thì kéo xong khung to mà nội dung vẫn giữ width cứng của .agent-card. */
+  .node.sized > .agent-card, .node.sized > .vscode-card { width: 100%; height: 100%;
+    display: flex; flex-direction: column; }
+  .node.sized .agent-body, .node.sized .agent-actions { flex: none; }
+  .node.sized .vscode-slot { flex: 1; height: auto; max-height: none; }
+  .node.sized .term-slot { height: auto; }
+  /* Tay nắm góc dưới-phải. pointer-events tự bật (node cha không tắt) — cvInit bắt riêng. */
+  .rz { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize;
+    z-index: 3; background: linear-gradient(135deg, transparent 50%, var(--muted) 50%);
+    opacity: .35; border-bottom-right-radius: 10px; }
+  .rz:hover { opacity: .9; }
   .cv-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     color: var(--muted); font-style: italic; pointer-events: none; }
   .cv-empty[hidden] { display: none; }  /* display:flex đè attribute hidden nếu không có dòng này */
@@ -295,8 +308,18 @@
   .agent-body .rw { display: flex; align-items: center; gap: 6px; color: var(--muted); }
   .agent-body .rw .grow { flex: 1; }
   .agent-body input.model-in { width: 100%; }
-  .agent-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-top: 1px solid var(--border); }
+  .agent-actions { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
   .agent-actions button { padding: 2px 7px; font-size: 11px; }
+  /* Hàng nút icon (mở terminal / mở thư mục / điều khiển run) + các nhóm nút CHỮ có nhãn.
+     Nhãn để user không phải đoán icon nghĩa gì — nhóm nào đụng dữ liệu thì viết bằng chữ. */
+  .act-row { display: flex; flex-wrap: wrap; gap: 4px; }
+  .act-group { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .act-label { font-size: 9px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); flex: none; min-width: 46px; }
+  .act-txt { font-size: 11px; font-weight: 500; }
+  /* Cột nút của card 👑 hẹp → nhãn nằm trên, nút xuống dòng dưới */
+  .orch-side .act-group { flex-direction: column; align-items: stretch; gap: 3px; margin-top: 4px; }
+  .orch-side .act-label { min-width: 0; }
   /* Group ZONE: khung tự bo quanh các agent chung cwd (member là node tự do trên canvas).
      Thân zone pointer-events:none để pan xuyên qua; chỉ header bắt chuột (kéo cả cụm + panel MCP). */
   .group-zone { border: 1.5px dashed #a8b6d2; border-radius: 14px; background: rgba(76,141,255,.05);
@@ -308,21 +331,6 @@
   .g-count { font-size: 11px; color: var(--muted); flex: none; }
   .g-path { font-family: ui-monospace, monospace; font-size: 10px; color: var(--muted);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .zone-ctl { display: flex; gap: 6px; align-items: center; }
-  .zone-ctl select { max-width: 220px; }
-  .zone-ctl button { padding: 3px 10px; font-size: 12px; flex: none; }
-  /* Panel MCP của project: nằm trong zone-head (headH tự giãn, layoutZones bo theo) */
-  .zone-mcp { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border);
-    padding-top: 6px; cursor: default; width: 460px; max-width: 100%; }
-  .mcp-head { display: flex; gap: 6px; align-items: center; font-size: 12px; }
-  .mcp-head button { padding: 2px 7px; font-size: 11px; }
-  pre.mcp-list { margin: 0; max-height: 180px; overflow: auto; font-size: 11px; line-height: 1.5;
-    background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
-    white-space: pre-wrap; word-break: break-all; user-select: text; }
-  .mcp-add { display: flex; gap: 6px; align-items: center; }
-  .mcp-add .mcp-pre { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); flex: none; }
-  .mcp-add input { flex: 1; min-width: 0; }
-  .mcp-add button { flex: none; padding: 3px 10px; }
   .agent-card.is-orch { border-color: #d4a017; box-shadow: 0 0 0 1px #d4a017, 0 6px 18px rgba(16,24,40,.12); }
   /* Edges: mũi tên signal agent→agent (SVG nằm dưới node, trên zone) */
   svg.edges { position: absolute; top: 0; left: 0; width: 10px; height: 10px;
@@ -334,11 +342,22 @@
   /* Card orchestrator (👑): terminal THẬT (xterm.js ↔ PTY claude --resume) nhúng thẳng trong card,
      left bar dọc chứa action buttons. Element terminal được JS giữ bền qua các lần re-render. */
   .agent-card.orch-term { width: 680px; }
-  .orch-body { display: flex; min-height: 0; }
-  .orch-side { display: flex; flex-direction: column; gap: 4px; padding: 8px 6px;
-    border-right: 1px solid var(--border); flex: none; }
-  .orch-side button { font-size: 12px; padding: 3px 7px; }
-  .term-slot { flex: 1; height: 360px; min-width: 0; background: #0c0e12; position: relative; }
+  .orch-body { display: flex; min-height: 0; flex: 1; }
+  /* Cột nút GHIM hẹp: mọi thứ trong đó phải tự co, không được đẩy rộng ra ăn chỗ terminal.
+     min-width:0 để flex item không lấy content-width làm sàn (mặc định flex là auto). */
+  .orch-side { display: flex; flex-direction: column; gap: 4px; padding: 6px 5px;
+    border-right: 1px solid var(--border); flex: none; width: 74px; min-width: 0; }
+  .orch-side button, .orch-side select { width: 100%; min-width: 0; max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .orch-side button { font-size: 12px; padding: 3px 4px; }
+  /* Chọn CLI cho terminal (claude | codex) — xếp cùng cột với các nút bên trái card 👑 */
+  .cli-sel, .act-sel { width: 100%; max-width: 100%; min-width: 0; font-size: 11px; padding: 2px 4px;
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 5px;
+    overflow: hidden; text-overflow: ellipsis; }
+  /* Dropdown Action gom các thao tác phá hủy — viền đỏ để không nhầm với select thường */
+  .act-sel { border-color: var(--red); color: var(--red); }
+  .agent-actions .act-sel { max-width: 168px; }
+  .term-slot { flex: 1; height: 360px; min-width: 0; min-height: 0; background: #0c0e12; position: relative; }
   /* Khóa chat orch khi run tự động đang/đã chạy — overlay phủ terminal, chặn gõ/click */
   .term-lock { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center;
     justify-content: center; text-align: center; padding: 20px; background: rgba(12,14,18,.85);
@@ -405,27 +424,30 @@
           <div class="hint">Role name = template name. SKILL is written to <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/</code>.</div>
           <label>Working dir (cwd) — thư mục project của agent</label>
           <div class="dir-row">
-            <input id="sp-cwd" placeholder="/path/to/project">
+            <input id="sp-cwd" placeholder="gõ tên thư mục để tìm, hoặc /path/to/project"
+              oninput="onCwdInput(this.value)">
             <button type="button" onclick="browseDir(document.getElementById('sp-cwd').value.trim())"
               title="Duyệt thư mục trên máy chạy orchestrator">📁</button>
           </div>
           <div id="sp-dir" class="dir-browse" hidden></div>
           <label>Model</label>
+          <div id="sp-model-tabs" class="tab-row"></div>
+          <div class="hint" id="sp-model-tabs-note"></div>
           <div id="sp-model-cards" class="pick-grid"></div>
           <div id="sp-model-custom" hidden>
-            <input id="sp-model" list="model-list" placeholder="model id / alias tùy chỉnh">
+            <input id="sp-model" list="model-list" placeholder="model id / alias tùy chỉnh"
+              oninput="onModelCustomInput()">
           </div>
           <label>Effort (reasoning)</label>
-          <select id="sp-effort">
-            <option value="">default (high)</option>
-            <option value="low">low</option>
-            <option value="medium">medium</option>
-            <option value="high">high</option>
-            <option value="max">max</option>
-          </select>
-          <label>Allowed tools</label>
-          <button type="button" class="secondary" onclick="loadTools('sp')">🔧 Load tools from cwd</button>
-          <div id="sp-tools" class="toolpicker"></div>
+          <select id="sp-effort"></select>
+          <div id="sp-tools-wrap">
+            <label>Allowed tools</label>
+            <button type="button" class="secondary" onclick="loadTools('sp')">🔧 Load tools from cwd</button>
+            <div id="sp-tools" class="toolpicker"></div>
+          </div>
+          <div class="hint" id="sp-tools-codex" hidden>Codex không có allowlist tool — luôn có
+            <code>shell</code> + <code>apply_patch</code> (đọc/ghi/grep/bash). Phạm vi do
+            permission mode quyết định, không do danh sách tool.</div>
           <label id="sp-init-label">Init prompt (optional)</label><textarea id="sp-init" placeholder="You are an Artist Director agent..."></textarea>
           <div class="spawn-actions"><button onclick="spawnAgent()">🚀 Spawn</button></div>
           <div id="sp-msg" class="form-msg"></div>
@@ -523,26 +545,6 @@
   <option value="claude-haiku-4-5" label="Haiku 4.5">
 </datalist>
 
-<!-- Modal đăng ký CLI session làm agent (từ dropdown zone trên canvas) -->
-<div id="reg-modal" class="modal-back" hidden>
-  <div class="modal form-card">
-    <h3>➕ Đăng ký CLI session làm agent</h3>
-    <div class="hint" id="reg-info"></div>
-    <label>Role (template hoặc tùy chỉnh)</label>
-    <div id="reg-template-cards" class="pick-grid"></div>
-    <div id="reg-role-custom" hidden>
-      <input id="reg-role" placeholder="Tên role (vd: VFX Artist)" oninput="regRoleSlug()">
-      <div class="hint" id="reg-role-hint"></div>
-    </div>
-    <label id="reg-init-label" hidden>Init prompt (bắt buộc — sửa template mẫu theo role)</label>
-    <textarea id="reg-init" hidden></textarea>
-    <div class="spawn-actions">
-      <button type="button" class="secondary" onclick="closeRegModal()">Đóng</button>
-      <button type="button" onclick="regConfirm()">✔ Đăng ký</button>
-    </div>
-    <div id="reg-msg" class="form-msg"></div>
-  </div>
-</div>
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/xterm-addon-fit.js"></script>
 <script src="/app.js"></script>
