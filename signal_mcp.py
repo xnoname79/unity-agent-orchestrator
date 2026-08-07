@@ -56,6 +56,26 @@ def _sender_workspace(orch, from_role: str = "", workspace_id: str = ""):
     return None
 
 
+def _check_from_role(orch, from_role: str):
+    """from_role phải là TÊN VAI CÓ THẬT. Trả "" nếu hợp lệ, chuỗi lỗi nếu không.
+
+    from_role là chuỗi tự do do model tự điền — bịa một tên không tồn tại thì signal VẪN vào DB,
+    và hỏng âm thầm 2 chỗ:
+      1. canvas không vẽ được mũi tên (không có node nguồn để nối);
+      2. trần ping-pong (id=94) khoá theo TÊN cặp → mỗi tên bịa là một hạn mức mới, model chỉ cần
+         đổi from_role là lách được trần.
+    Tên rỗng/'human'/'user' là mốc NGƯỜI gửi (_HUMAN_SENDERS) — giữ nguyên, không kiểm.
+    """
+    if not from_role or from_role.strip().lower() in orch._HUMAN_SENDERS:
+        return ""
+    names = {s.get("name") for s in orch.list_sessions()}
+    if from_role in names:
+        return ""
+    return (f"⛔ from_role='{from_role}' không phải vai nào đang đăng ký. Điền ĐÚNG tên session "
+            f"của bạn (gọi list_agents để xem danh sách), đừng tự đặt tên — sai tên thì "
+            f"orchestrator không vẽ được luồng việc và không đếm đúng số lượt trao đổi.")
+
+
 async def _enqueue(to_role: str, message: str, from_role: str = "", requires_approval: int = 0,
                    workspace_id: str = ""):
     """Đẩy 1 signal vào orchestrator. In-process nếu chạy chung, ngược lại POST HTTP.
@@ -73,6 +93,9 @@ async def _enqueue(to_role: str, message: str, from_role: str = "", requires_app
         # Chỉ suy workspace từ tên khi tên đó KHÔNG trùng giữa các workspace (nếu trùng thì
         # không đoán bừa — để resolve toàn cục, tránh gửi nhầm tenant).
         sender_ws = _sender_workspace(orch, from_role, workspace_id)
+        err = _check_from_role(orch, from_role)
+        if err:
+            return False, err
         # from_role: alias 'orch' resolve theo người gửi (chọn orch cùng cwd khi workspace có nhiều project)
         target = orch.resolve_session_id(to_role, sender_ws, from_role)
         if not target:
@@ -119,7 +142,9 @@ async def send_signal(to_role: str, message: str, from_role: str = "", requires_
         to_role: Role/tên agent đích (vd "developer", "artist-director"). Phải khớp
                  name đã register với orchestrator.
         message: Nội dung yêu cầu/thông báo — sẽ trở thành user message cho agent đích.
-        from_role: Role của agent gửi (để audit, tùy chọn).
+        from_role: TÊN SESSION CỦA CHÍNH BẠN, đúng như orchestrator đăng ký (gọi list_agents
+                 nếu không chắc). ĐỪNG tự đặt tên mô tả nghề nghiệp — tên không có thật sẽ bị
+                 từ chối, vì orchestrator dựa vào nó để vẽ luồng việc và đếm số lượt trao đổi.
         requires_approval: True nếu là thao tác nhạy cảm cần con người duyệt trên dashboard.
         workspace_id: (đa tenant) workspace của agent gửi — orchestrator cấp cho bạn khi
                  spawn. Truyền vào để signal chỉ resolve trong đúng workspace này (bắt buộc
@@ -127,8 +152,8 @@ async def send_signal(to_role: str, message: str, from_role: str = "", requires_
     """
     ok, data = await _enqueue(to_role, message, from_role, 1 if requires_approval else 0, workspace_id)
     if not ok:
-        # Trần ping-pong (id=94) đã là câu chỉ dẫn hoàn chỉnh — trả nguyên văn, đừng bọc thêm chữ
-        # "Lỗi" khiến agent tưởng là trục trặc kỹ thuật rồi thử lại.
+        # Trần ping-pong (id=94) và from_role sai đều đã là câu chỉ dẫn hoàn chỉnh — trả nguyên
+        # văn, đừng bọc thêm chữ "Lỗi" khiến agent tưởng là trục trặc kỹ thuật rồi thử lại.
         return str(data) if str(data).startswith("⛔") else f"Lỗi gửi signal {data}"
     return f"Đã gửi signal #{data.get('id')} tới '{to_role}' (target: {data.get('to_session')})."
 
