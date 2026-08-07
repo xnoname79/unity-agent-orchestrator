@@ -1,0 +1,137 @@
+name: build binary
+
+# Đóng gói 1 file thực thi cho Linux + Windows để người dùng tải về chạy thẳng, không cần cài
+# Python. Chạy khi: push tag v* (kèm tạo release), push vào master/gamedev, PR, hoặc bấm tay.
+on:
+  push:
+    branches: [master, gamedev]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write        # cần để tạo release khi push tag
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false   # Windows hỏng thì vẫn muốn thấy bản Linux, và ngược lại
+      matrix:
+        include:
+          - os: ubuntu-22.04      # glibc cũ hơn = chạy được trên nhiều distro hơn
+            target: linux-x64
+            binary: agent-orch
+          - os: windows-2022      # Windows 10 chạy được binary build ở đây
+            target: windows-x64
+            binary: agent-orch.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Cài dependency
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller==6.11.1
+
+      - name: Đóng gói
+        run: pyinstaller build.spec --noconfirm --clean
+
+      # Kiểm binary THẬT SỰ chạy được, không chỉ build xong. Thiếu bước này thì lỗi hay gặp nhất
+      # của PyInstaller (thiếu hidden import của uvicorn) chỉ lộ ra ở máy người dùng.
+      - name: Kiểm binary chạy (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ./dist/${{ matrix.binary }} init
+          ORCH_PORT=8999 ORCH_HOST=127.0.0.1 ./dist/${{ matrix.binary }} serve &
+          for i in $(seq 40); do
+            curl -sf localhost:8999/health && break || sleep 0.5
+          done
+          curl -sf localhost:8999/health | grep -q '"status":"ok"'
+          curl -sf localhost:8999/openapi.json | grep -q '/v1/chat/completions'
+          curl -sf localhost:8999/ | grep -q '<title>'          # dashboard tĩnh có trong bundle
+          kill %1
+
+      - name: Kiểm binary chạy (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ./dist/${{ matrix.binary }} init
+          $env:ORCH_PORT = "8999"; $env:ORCH_HOST = "127.0.0.1"
+          $p = Start-Process -PassThru -FilePath ./dist/${{ matrix.binary }} -ArgumentList serve
+          $ok = $false
+          foreach ($i in 1..40) {
+            try { $r = Invoke-RestMethod http://127.0.0.1:8999/health; $ok = $r.status -eq "ok"; break }
+            catch { Start-Sleep -Milliseconds 500 }
+          }
+          $spec = Invoke-RestMethod http://127.0.0.1:8999/openapi.json
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { throw "binary không phục vụ được /health" }
+          if (-not $spec.paths.'/v1/chat/completions') { throw "thiếu /v1 trong openapi" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-orch-${{ matrix.target }}
+          path: dist/${{ matrix.binary }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist }
+
+      # Artifact tải về nằm trong thư mục con theo tên → gom phẳng và gắn hậu tố nền tảng để
+      # người dùng biết file nào của máy nào.
+      - name: Gom file
+        run: |
+          mkdir -p out
+          cp dist/agent-orch-linux-x64/agent-orch      out/agent-orch-linux-x64
+          cp dist/agent-orch-windows-x64/agent-orch.exe out/agent-orch-windows-x64.exe
+          chmod +x out/agent-orch-linux-x64
+          (cd out && sha256sum * > SHA256SUMS.txt)
+          ls -la out
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
+          body: |
+            ## Tải về
+
+            | Máy | File |
+            |---|---|
+            | Linux x64 | `agent-orch-linux-x64` |
+            | Windows 10/11 x64 | `agent-orch-windows-x64.exe` |
+
+            Kiểm tra toàn vẹn bằng `SHA256SUMS.txt`.
+
+            ## Chạy
+
+            ```bash
+            chmod +x agent-orch-linux-x64        # Linux
+            ./agent-orch-linux-x64 serve         # Windows: agent-orch-windows-x64.exe serve
+            ```
+
+            Mở `http://localhost:8992` (dashboard) hoặc `http://localhost:8992/docs` (API).
+
+            Cấu hình bằng biến môi trường, hoặc file `.env` đặt **cạnh file thực thi**. Đáng chú ý:
+            `ORCH_PORT`, `ORCH_HOST`, `ORCH_API_KEY` (bật xác thực cho `/api` + `/v1`),
+            `CLAUDE_BIN`, `ORCH_CODEX_BIN`.
+
+            ## Cần cài sẵn
+
+            Binary này là orchestrator, KHÔNG kèm agent. Muốn chạy agent thật thì máy phải có
+            `claude` CLI và/hoặc `codex` CLI, đã đăng nhập.
+
+            ## Hạn chế trên Windows
+
+            Terminal nhúng trong dashboard cần `pty` (module chỉ có trên Unix) nên **không chạy
+            trên Windows** — mở CLI bằng terminal của Windows. Mọi thứ còn lại (agent headless,
+            signal, API `/v1`, dashboard) hoạt động bình thường.

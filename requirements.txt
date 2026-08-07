@@ -1,3 +1,7 @@
 mcp
 httpx
 websockets
+# starlette + uvicorn tới theo mcp, nhưng khai tường minh vì code import THẲNG chúng —
+# mcp đổi dependency là build binary gãy mà không rõ vì sao.
+starlette
+uvicorn
