@@ -15,11 +15,22 @@ binaries, hiddenimports = [], [
     # 3 module MCP được import BÊN TRONG build_app() — PyInstaller vẫn thấy, khai thêm cho chắc.
     "signal_mcp", "unity_dev", "asset_fetch",
 ]
+# Bỏ qua khi quét submodule. `mcp.cli` import `typer` — dep TUỲ CHỌN (chỉ có nếu cài `mcp[cli]`).
+# Thiếu typer thì module đó gọi sys.exit(1), mà SystemExit KHÔNG phải Exception nên tham số
+# on_error của PyInstaller không đỡ được: cả build chết. Lọc từ đầu để nó không bị import.
+# Ta cũng không dùng CLI của mcp — chỉ dùng server.
+SKIP_SUBMODULES = ("mcp.cli",)
+
+
+def _keep(name):
+    return not name.startswith(SKIP_SUBMODULES)
+
+
 # uvicorn nạp protocol/loop/lifespan bằng chuỗi lúc chạy → phân tích tĩnh không thấy, thiếu là
 # binary chạy được tới lúc serve rồi chết "ModuleNotFoundError: uvicorn.protocols...".
 # mcp cũng nạp động theo transport.
 for pkg in ("uvicorn", "mcp"):
-    d, b, h = collect_all(pkg)
+    d, b, h = collect_all(pkg, filter_submodules=_keep)
     datas += d
     binaries += b
     hiddenimports += h

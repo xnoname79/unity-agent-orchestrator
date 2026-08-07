@@ -1,4 +1,9 @@
-mcp
+# GHIM mcp < 2: bản 2.0.0 BỎ `mcp.server.fastmcp`, mà cả 3 MCP server ở đây
+# (signal_mcp, unity_dev, asset_fetch) đều `from mcp.server.fastmcp import FastMCP`.
+# Không ghim thì CI cài 2.x, build vẫn qua nhưng binary chết ngay lúc serve với
+# "ModuleNotFoundError: No module named 'mcp.server.fastmcp'".
+# Muốn lên 2.x thì phải viết lại cả 3 server theo API mới, không phải đổi 1 dòng.
+mcp>=1.26,<2
 httpx
 websockets
 # starlette + uvicorn tới theo mcp, nhưng khai tường minh vì code import THẲNG chúng —

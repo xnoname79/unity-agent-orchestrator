@@ -38,6 +38,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller==6.11.1
 
+      # Rào SỚM: mcp 2.x bỏ `mcp.server.fastmcp` mà cả 3 MCP server đều dùng. Không có bước này
+      # thì build vẫn qua, binary vẫn ra, và chỉ chết lúc serve — mất 5 phút mới biết vì sao.
+      - name: Kiểm dependency dùng được
+        run: python -c "from mcp.server.fastmcp import FastMCP; import uvicorn, starlette, httpx"
+
       - name: Đóng gói
         run: pyinstaller build.spec --noconfirm --clean
 
@@ -47,11 +52,16 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           ./dist/${{ matrix.binary }} init
-          ORCH_PORT=8999 ORCH_HOST=127.0.0.1 ./dist/${{ matrix.binary }} serve &
+          # Giữ log của tiến trình con: serve chết vì thiếu module thì đây là chỗ DUY NHẤT nói lý
+          # do — không có nó thì chỉ thấy curl timeout rồi đoán mò.
+          ORCH_PORT=8999 ORCH_HOST=127.0.0.1 ./dist/${{ matrix.binary }} serve > serve.log 2>&1 &
+          SRV=$!
           for i in $(seq 40); do
-            curl -sf localhost:8999/health && break || sleep 0.5
+            curl -sf localhost:8999/health >/dev/null && break
+            kill -0 $SRV 2>/dev/null || { echo "::error::serve chết ngay khi khởi động"; cat serve.log; exit 1; }
+            sleep 0.5
           done
-          curl -sf localhost:8999/health | grep -q '"status":"ok"'
+          curl -sf localhost:8999/health | grep -q '"status":"ok"' || { cat serve.log; exit 1; }
           curl -sf localhost:8999/openapi.json | grep -q '/v1/chat/completions'
           curl -sf localhost:8999/ | grep -q '<title>'          # dashboard tĩnh có trong bundle
           kill %1
@@ -62,15 +72,20 @@ jobs:
         run: |
           & ./dist/${{ matrix.binary }} init
           $env:ORCH_PORT = "8999"; $env:ORCH_HOST = "127.0.0.1"
-          $p = Start-Process -PassThru -FilePath ./dist/${{ matrix.binary }} -ArgumentList serve
+          # Giữ log để biết LÝ DO khi serve chết, đừng chỉ báo "không kết nối được".
+          $p = Start-Process -PassThru -FilePath ./dist/${{ matrix.binary }} -ArgumentList serve `
+                 -RedirectStandardOutput serve.log -RedirectStandardError serve.err
           $ok = $false
           foreach ($i in 1..40) {
             try { $r = Invoke-RestMethod http://127.0.0.1:8999/health; $ok = $r.status -eq "ok"; break }
-            catch { Start-Sleep -Milliseconds 500 }
+            catch {
+              if ($p.HasExited) { Get-Content serve.log, serve.err; throw "serve chết ngay khi khởi động" }
+              Start-Sleep -Milliseconds 500
+            }
           }
+          if (-not $ok) { Get-Content serve.log, serve.err; throw "binary không phục vụ được /health" }
           $spec = Invoke-RestMethod http://127.0.0.1:8999/openapi.json
           Stop-Process -Id $p.Id -Force
-          if (-not $ok) { throw "binary không phục vụ được /health" }
           if (-not $spec.paths.'/v1/chat/completions') { throw "thiếu /v1 trong openapi" }
 
       - uses: actions/upload-artifact@v4
