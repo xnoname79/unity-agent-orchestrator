@@ -23,9 +23,10 @@ Env:
   ORCH_STREAM          "1" = stream transcript (thinking/tool_use/text) real-time (default 1)
   ORCH_STREAM_PARTIAL  "1" = thêm --include-partial-messages, text chảy từng token (default 0)
   ORCH_EVENT_TRUNC     số ký tự tối đa mỗi payload event (default 2000)
-  ORCH_DEFAULT_EFFORT  reasoning effort mặc định mọi session (default "high"; low|medium|high|max)
+  ORCH_DEFAULT_EFFORT  reasoning effort mặc định mọi session (default "high"; xem EFFORT_LADDER)
   ORCH_DEFAULT_PERMISSION_MODE  permission mode fallback khi session không set (default "bypassPermissions")
   CLAUDE_BIN           đường dẫn claude CLI (default "claude")
+  ORCH_CODEX_BIN       đường dẫn codex CLI (default "codex")
 
 Usage:
   python3 session_orchestrator.py init            # tạo DB
@@ -42,7 +43,6 @@ import json
 import os
 import re
 import secrets
-import shlex
 import sqlite3
 import sys
 from datetime import datetime, timedelta
@@ -52,11 +52,25 @@ import httpx
 
 
 # ── .env loader (stdlib, không thêm dep) ─────────────────────────────────────
-# Đọc file .env cạnh script NẾU có, chạy TRƯỚC mọi os.environ.get bên dưới.
+# ── Đường dẫn: chạy từ source hay từ BẢN ĐÓNG GÓI (PyInstaller) đều đúng ──────
+# Hai thư mục KHÁC NHAU khi đóng gói, lẫn là hỏng âm thầm:
+#   _bundle_dir: tài nguyên đi kèm (static/, template skill) — PyInstaller giải nén vào 1 thư mục
+#                TẠM (sys._MEIPASS) rồi XOÁ lúc thoát. Chỉ đọc, đừng ghi gì vào đây.
+#   _app_dir   : nơi NGƯỜI DÙNG để file của họ (.env, skill tự viết) — cạnh file thực thi, còn
+#                nguyên giữa các lần chạy.
+def _bundle_dir():
+    return Path(getattr(sys, "_MEIPASS", None) or Path(__file__).parent)
+
+
+def _app_dir():
+    return Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+
+
+# Đọc file .env cạnh chương trình NẾU có, chạy TRƯỚC mọi os.environ.get bên dưới.
 # setdefault → env thật (shell export / systemd EnvironmentFile) LUÔN thắng;
 # .env chỉ lấp biến còn trống. Dòng trống / bắt đầu '#' / không có '=' bị bỏ qua.
 def _load_dotenv(path=None):
-    path = path or Path(__file__).with_name(".env")
+    path = path or _app_dir() / ".env"
     if not path.exists():
         return
     for line in path.read_text().splitlines():
@@ -80,11 +94,19 @@ DRY_RUN = os.environ.get("ORCH_DRY_RUN", "0") == "1"
 POLL_INTERVAL = int(os.environ.get("ORCH_POLL_INTERVAL", "5"))
 MAX_CONCURRENT = int(os.environ.get("ORCH_MAX_CONCURRENT", "3"))
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
+CODEX_BIN = os.environ.get("ORCH_CODEX_BIN", "codex")
 ORCH_HOST = os.environ.get("ORCH_HOST", "0.0.0.0")
 ORCH_PORT = int(os.environ.get("ORCH_PORT", "8992"))
 # Service-to-service auth. Để TRỐNG = tắt (localhost/dev như cũ). Set = mọi /api/* yêu cầu
 # header 'X-API-Key' (hoặc query ?api_key= cho SSE) khớp. Web app backend giữ key này.
 ORCH_API_KEY = os.environ.get("ORCH_API_KEY", "")
+# CORS cho app chạy TRONG TRÌNH DUYỆT gọi /v1 (React/Vue…). Trình duyệt gửi preflight OPTIONS
+# trước mọi request có header lạ (Authorization, Content-Type: application/json) — không trả lời
+# preflight thì nó chặn, log hiện "OPTIONS ... 405".
+# Danh sách origin ngăn cách bằng dấu phẩy; '*' = mọi origin; để TRỐNG = tắt hẳn CORS.
+# CẢNH BÁO: '*' + ORCH_API_KEY trống nghĩa là BẤT KỲ trang web nào người dùng mở cũng sai khiến
+# được agent trên máy này (agent chạy shell với bypassPermissions). Xem cảnh báo lúc khởi động.
+CORS_ORIGINS = [o.strip() for o in os.environ.get("ORCH_CORS_ORIGINS", "*").split(",") if o.strip()]
 # Phase D — safety caps (0 = tắt/không giới hạn)
 MAX_RUNS_PER_SESSION = int(os.environ.get("ORCH_MAX_RUNS_PER_SESSION", "0"))
 # Trần số run/NGÀY cho mỗi session (reset mỗi ngày). Đạt trần → signal bị blocked, chờ người
@@ -104,10 +126,27 @@ EVENT_TRUNC = int(os.environ.get("ORCH_EVENT_TRUNC", "2000"))  # cắt payload e
 # (vd tool_result đọc file dài / output Bash đồ sộ) sẽ ném "Separator is not found,
 # and chunk exceed the limit". Nâng lên để chứa trọn dòng dài. (default 16MB)
 STREAM_LIMIT = int(os.environ.get("ORCH_STREAM_LIMIT", str(16 * 1024 * 1024)))
-# Reasoning effort mặc định cho mọi session (session có thể override). "" = không truyền (claude dùng 'high').
-# Lưu ý: các mức phải khớp với `claude --effort` của CLI đang cài (hiện chỉ: low|medium|high|max).
-EFFORT_LEVELS = ("low", "medium", "high", "max")
+# ── Reasoning effort: 1 THANG DÙNG CHUNG, clamp theo trần của từng engine/model ───
+# UI chỉ hiện thang này; mức nào engine không chịu nổi thì HẠ xuống trần của nó (clamp) chứ
+# không bỏ cờ âm thầm — hạ 1 nấc vẫn đúng ý "cố hết sức", còn bỏ cờ là rơi về default của CLI.
+EFFORT_LADDER = ("low", "medium", "high", "xhigh", "max", "ultra")
+# Trần ĐÃ ĐO: `claude --help` → "Effort level ... (low, medium, high, xhigh, max)".
+CLAUDE_MAX_EFFORT = "max"
+# Trần codex ĐO THEO TỪNG MODEL, không theo engine: `codex debug models` trả
+# supported_reasoning_levels. terra=ultra, luna=max, gpt-5.5 & gpt-5.4-mini CHỈ tới xhigh.
+# Model không có trong bảng (kể cả 'codex' auto — CLI tự chọn theo config.toml, không đoán được)
+# → lấy trần thấp nhất đã biết. Thà hạ nhầm 1 nấc còn hơn gửi mức model không có rồi hỏng run.
+CODEX_MAX_EFFORT = {"gpt-5.6-terra": "ultra", "gpt-5.6-luna": "max"}
+CODEX_MAX_EFFORT_DEFAULT = "xhigh"
 DEFAULT_EFFORT = os.environ.get("ORCH_DEFAULT_EFFORT", "high")  # high mặc định
+
+
+def clamp_effort(effort, ceiling):
+    """Hạ effort về mức cao nhất engine/model nhận. Trả '' nếu effort không thuộc thang (giá trị
+    lạ / DB cũ) → caller bỏ cờ để CLI dùng mặc định của nó thay vì thoát với mã 1."""
+    if effort not in EFFORT_LADDER:
+        return ""
+    return effort if EFFORT_LADDER.index(effort) <= EFFORT_LADDER.index(ceiling) else ceiling
 # Permission mode mặc định khi session KHÔNG set. CLI 2.1.200 đổi default 'default'→'Manual':
 # headless -p ở Manual sẽ CHẶN tool chờ user duyệt → agent kẹt (không ai ở terminal). Orchestrator
 # đã có lớp approval riêng qua signal (requires_approval) nên bypass an toàn. Set '' để tắt fallback này.
@@ -1117,10 +1156,9 @@ async def _run_claude(session, prompt, on_event=None, dry_run=False):
         cmd += ["--permission-mode", perm_mode]
     if session.get("model"):
         cmd += ["--model", session["model"]]
-    effort = session.get("effort") or DEFAULT_EFFORT
-    # Chỉ truyền --effort nếu CLI chấp nhận; effort lạ (vd 'xhigh' từ DB cũ) sẽ làm claude
-    # thoát ngay với returncode 1 → bỏ qua để không kéo cả run xuống fail.
-    if effort in EFFORT_LEVELS:
+    # Mức lạ (DB cũ) → clamp_effort trả '' → bỏ cờ, vì effort sai làm claude thoát ngay mã 1.
+    effort = clamp_effort(session.get("effort") or DEFAULT_EFFORT, CLAUDE_MAX_EFFORT)
+    if effort:
         cmd += ["--effort", effort]
 
     cwd = session.get("cwd") or None
@@ -1250,14 +1288,21 @@ def _parse_final(returncode, stdout, stderr, session_id):
     }
 
 
-def _skills_dir(cwd):
-    """Thư mục skills của project = <cwd>/.claude/skills. cwd rỗng → fallback cạnh file .py."""
-    base = Path(cwd) if cwd else Path(__file__).parent
-    return base / ".claude" / "skills"
+# Thư mục gốc mà CLI tự quét skill trong project. ĐÃ ĐO trên codex 0.147.0 (canary trong
+# <cwd>/.codex/skills hiện ra ở section '## Skills', canary trong .claude/skills thì không):
+# mỗi CLI CHỈ đọc thư mục của mình → phải ghi cả hai bản, không share được.
+# '.claude' đứng ĐẦU = bản canon để đọc lại (_role_skill / _prepend_role / drawer Context).
+CLI_SKILL_ROOTS = (".claude", ".codex")
 
 
-def _skill_path(cwd, name):
-    return _skills_dir(cwd) / name / "SKILL.md"
+def _skills_dir(cwd, root=CLI_SKILL_ROOTS[0]):
+    """Thư mục skills của project = <cwd>/<root>/skills. cwd rỗng → fallback cạnh chương trình."""
+    base = Path(cwd) if cwd else _app_dir()
+    return base / root / "skills"
+
+
+def _skill_path(cwd, name, root=CLI_SKILL_ROOTS[0]):
+    return _skills_dir(cwd, root) / name / "SKILL.md"
 
 
 def _role_skill(cwd, name):
@@ -1269,14 +1314,33 @@ def _role_skill(cwd, name):
         return ""
 
 
+def _skill_frontmatter(name, content):
+    """CẢ claude lẫn codex chỉ nhận SKILL.md có frontmatter YAML (name + description) — thiếu thì
+    file nằm đó mà CLI không đưa vào catalog, tức là im lặng vô hiệu. init_prompt gõ tay thường
+    không có → tự chèn. Description phải nói RÕ 'kích hoạt với mọi tin nhắn', vì skill là
+    progressive-disclosure: CLI chỉ đọc nội dung khi description khớp việc đang làm."""
+    if content.lstrip().startswith("---"):
+        return content
+    return (f"---\nname: {name}\ndescription: Playbook vai '{name}' trong hệ multi-agent do "
+            f"orchestrator điều phối. KÍCH HOẠT với MỌI tin nhắn tới session này (chat người dùng "
+            f"HOẶC signal từ agent khác).\n---\n\n{content}")
+
+
 def _write_role_skill(cwd, name, content):
-    """Ghi init_prompt thành SKILL của role (vật thể hoá → đọc lại mỗi signal, không trôi).
+    """Vật thể hoá init_prompt thành SKILL của role, ghi CHO CẢ HAI CLI (xem CLI_SKILL_ROOTS).
     Ghi đè nếu đã có. content rỗng → bỏ qua (không tạo SKILL rỗng)."""
+    # name đi thẳng vào path segment mà _validate_name không chặn ký tự nào → tự chặn escape ở đây,
+    # chỗ duy nhất mọi caller đi qua.
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        print(f"[orchestrator] ⚠ tên vai {name!r} không dùng làm thư mục được → bỏ ghi SKILL")
+        return
     if not content.strip():
         return
-    p = _skill_path(cwd, name)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
+    content = _skill_frontmatter(name, content)
+    for root in CLI_SKILL_ROOTS:
+        p = _skill_path(cwd, name, root)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
 
 
 # Playbook director nằm ở folder CỐ ĐỊNH (không theo tên session) → toggle orch sang session
@@ -1305,7 +1369,10 @@ def _prepend_role(cwd, name, message, is_orch=False):
 
 # ─── Skill templates (liệt kê vai/role cho dropdown spawn) ────────────────────
 
-TEMPLATES_DIR = Path(__file__).parent / ".claude" / "skills"
+# Template vai: ưu tiên thư mục CẠNH CHƯƠNG TRÌNH (người dùng bản đóng gói thêm vai của mình vào
+# đó được), không có thì dùng bộ đi kèm. Chạy từ source thì hai đường là một.
+TEMPLATES_DIR = (_app_dir() / ".claude" / "skills") if (_app_dir() / ".claude" / "skills").is_dir() \
+    else (_bundle_dir() / ".claude" / "skills")
 
 
 def _seed_director_skill(cwd):
@@ -1326,6 +1393,17 @@ def _safe_template_name(name):
     """Tên template/role dùng làm PATH SEGMENT dưới TEMPLATES_DIR — chặn traversal ('..', '/').
     Ký tự đầu alnum → loại '.' '..' và mọi biến thể ẩn; phần sau cho phép . _ - như tên skill thường."""
     return bool(name) and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name))
+
+
+def _template_skill(name):
+    """Playbook mà repo giữ sẵn cho vai `name` (TEMPLATES_DIR/<name>/SKILL.md), '' nếu không có.
+    Tên vai KHÔNG hợp lệ làm path segment → '' (chặn traversal, xem _safe_template_name)."""
+    if not _safe_template_name(name):
+        return ""
+    try:
+        return (TEMPLATES_DIR / name / "SKILL.md").read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def _list_skill_templates():
@@ -1396,8 +1474,8 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
         perm_mode = permission_mode or DEFAULT_PERMISSION_MODE
         if perm_mode:
             cmd += ["--permission-mode", perm_mode]  # CLI 2.1.200: Manual mặc định chặn tool headless
-        eff = effort or DEFAULT_EFFORT
-        if eff in EFFORT_LEVELS:
+        eff = clamp_effort(effort or DEFAULT_EFFORT, CLAUDE_MAX_EFFORT)
+        if eff:
             cmd += ["--effort", eff]
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -1443,51 +1521,6 @@ def _find_transcript(session_id):
         if f.exists():
             return f
     return None
-
-
-def _transcript_title(f):
-    """Tiêu đề ngắn cho 1 transcript: dòng 'summary' đầu tiên, không có thì text user đầu tiên.
-    Chỉ đọc tối đa 40 dòng đầu — đủ cho cả transcript đã compact nhiều lần."""
-    try:
-        with f.open(encoding="utf-8") as fh:
-            for _ in range(40):
-                line = fh.readline()
-                if not line:
-                    break
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                t = obj.get("type")
-                if t == "summary" and obj.get("summary"):
-                    return _trunc(str(obj["summary"]).replace("\n", " "), 80)
-                if t == "user":
-                    c = (obj.get("message") or {}).get("content")
-                    if isinstance(c, list):
-                        c = next((b.get("text") for b in c
-                                  if isinstance(b, dict) and b.get("type") == "text"), "")
-                    # bỏ message máy (<system-reminder>, <ide_opened_file>…) — không phải lời user
-                    if isinstance(c, str) and c.strip() and not c.strip().startswith("<"):
-                        return _trunc(c.strip().replace("\n", " "), 80)
-    except OSError:
-        pass
-    return ""
-
-
-def list_claude_sessions(cwd, limit=30):
-    """Session Claude Code CLI của 1 project cwd (file ~/.claude/projects/<cwd-mã-hoá>/*.jsonl) —
-    KHÁC bảng sessions DB (DB = agent do orchestrator spawn). UI dùng để chọn 1 session làm
-    orchestrator chính của project. Trả [{id, title, mtime}] mới nhất trước.
-    ponytail: mã hoá thư mục theo quy ước claude (ký tự ngoài [A-Za-z0-9] → '-'); 2 cwd khác nhau
-    munge trùng thì lẫn session — hiếm, verify bằng field cwd trong jsonl khi thành vấn đề thật."""
-    enc = re.sub(r"[^A-Za-z0-9]", "-", cwd or "")
-    d = CLAUDE_PROJECTS_DIR / enc
-    if not (enc and d.is_dir()):
-        return []
-    files = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
-    return [{"id": f.stem, "title": _transcript_title(f),
-             "mtime": datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds")}
-            for f in files]
 
 
 def _extract_compact(session_id):
@@ -1600,14 +1633,404 @@ class ClaudeEngine(AgentEngine):
         return _extract_compact(session_id)
 
 
-# Chỉ còn 1 engine: Claude CLI. Giữ engine_for() (cùng signature) để mọi caller
-# (process_signal, api_spawn, api_get_compact) chạy nguyên — luôn trả ClaudeEngine.
-_CLAUDE_ENGINE = ClaudeEngine()
+# ─── Codex CLI engine (chạy bằng TÀI KHOẢN ChatGPT, không tốn API credits) ────
+# `codex exec` = chế độ headless của Codex CLI: chạy 1 lượt tới hết, phát JSONL ra stdout
+# (--json), resume bằng `codex exec resume <thread_id>`. Auth do NGƯỜI DÙNG lo một lần
+# (`codex login` → ~/.codex/auth.json); orchestrator không đụng vào và không cầm token.
+#
+# KHÁC Claude ở 4 điểm phải nhớ:
+#  1. KHÔNG có --mcp-config per-session: MCP của codex khai trong ~/.codex/config.toml (toàn cục),
+#     bằng `codex mcp add signal --url http://127.0.0.1:<ORCH_PORT>/signal/mcp` — khai 1 lần, mọi
+#     session codex dùng chung. KÈM ĐIỀU KIỆN: xem _codex_mcp_ok — headless chỉ gọi được MCP khi
+#     bypass hết approval.
+#  2. `codex exec` đòi cwd là git repo → luôn truyền --skip-git-repo-check.
+#  3. Headless mà gặp approval prompt là FAIL NGAY → phải chốt sẵn chính sách sandbox/approval.
+#  4. Không ghi compact_boundary vào transcript → get_compact luôn found=False.
+#
+# CẢNH BÁO auth: ~/.codex/auth.json chứa access token tài khoản ChatGPT — coi như mật khẩu.
+# Không commit, không copy vào image Docker.
+
+# Model của codex là 'gpt-5.6-terra', 'gpt-5.5'… — TRÙNG không gian tên với model API của
+# OpenAI. Khai TƯỜNG MINH bằng tiền tố để không mơ hồ:
+#   'codex'                  → codex CLI, model do CLI tự chọn (không truyền --model)
+#   'codex:gpt-5.6-terra'    → codex CLI, model đó
+#   'gpt-5.6-terra'          → KHÔNG có engine chạy (nhánh này chỉ có claude + codex)
+CODEX_AUTO_MODEL = "codex"
+# Env phải GỠ khỏi tiến trình con. Đã đo bằng `codex doctor`: còn OPENAI_API_KEY thì codex chạy
+# "API-key mode" (tính tiền credits) dù đã `codex login`; gỡ đi thì "auth mode = chatgpt".
+CODEX_DROP_ENV = ("OPENAI_API_KEY", "OPENAI_BASE_URL")
+
+
+def _iter_codex_events(ev):
+    """Chuyển 1 event JSONL của `codex exec --json` thành list (kind, summary, payload).
+
+    Cùng bộ kind với _iter_display_events (system|thinking|text|tool_use|tool_result|result|
+    error) để timeline/SSE/run_events không cần biết engine nào đang chạy.
+    Tool 2 pha: item.started → tool_use, item.completed → tool_result (khớp cặp như Claude).
+    """
+    if not isinstance(ev, dict):
+        return [("text", _trunc(str(ev), 500), {"raw": _trunc(str(ev))})]
+    t = ev.get("type")
+    if t == "thread.started":
+        return [("system", f"session bắt đầu · thread={ev.get('thread_id', '?')}",
+                 {"subtype": "init", "thread_id": ev.get("thread_id")})]
+    if t == "turn.completed":
+        u = ev.get("usage") or {}
+        return [("result", f"xong · {u.get('output_tokens', '?')} output tokens",
+                 {"output_tokens": u.get("output_tokens"), "input_tokens": u.get("input_tokens"),
+                  "cached_input_tokens": u.get("cached_input_tokens")})]
+    if t == "turn.failed":
+        msg = (ev.get("error") or {}).get("message") or "turn failed"
+        return [("error", _trunc(msg, 500), {"error": msg})]
+    if t == "error":
+        msg = ev.get("message") or "lỗi không rõ"
+        return [("error", _trunc(msg, 500), {"error": msg})]
+    if t not in ("item.started", "item.completed"):
+        return []                      # turn.started, item.updated… = nhiễu
+    item = ev.get("item") or {}
+    it, done = item.get("type"), t == "item.completed"
+    if it == "command_execution":
+        if not done:
+            return [("tool_use", f"bash({_trunc(str(item.get('command') or ''), 300)})",
+                     {"name": "bash", "input": {"command": item.get("command")}})]
+        out = _trunc(str(item.get("aggregated_output") or ""), 400)
+        rc = item.get("exit_code")
+        is_err = rc not in (0, None)
+        return [("tool_result", ("⚠ " if is_err else "") + out,
+                 {"result": out, "exit_code": rc, "is_error": is_err})]
+    if it == "mcp_tool_call":
+        label = f"{item.get('server', '?')}.{item.get('tool', '?')}"
+        if not done:
+            args = _trunc(json.dumps(item.get("arguments") or {}, ensure_ascii=False), 300)
+            return [("tool_use", f"{label}({args})", {"name": label, "input": item.get("arguments")})]
+        err = item.get("error")
+        err = err.get("message") if isinstance(err, dict) else err
+        txt = _trunc(json.dumps(item.get("result") or {}, ensure_ascii=False), 400)
+        return [("tool_result", ("⚠ " + _trunc(str(err), 400)) if err else txt,
+                 {"result": txt, "is_error": bool(err)})]
+    if not done:
+        return []                      # các item còn lại chỉ có nội dung khi đã xong
+    if it == "agent_message":
+        tx = (item.get("text") or "").strip()
+        return [("text", _trunc(tx, 500), {"text": tx})] if tx else []
+    if it == "reasoning":
+        th = (item.get("text") or "").strip()
+        return [("thinking", _trunc(th, 500), {"thinking": _trunc(th)})] if th else []
+    if it == "file_change":
+        paths = [c.get("path") for c in (item.get("changes") or []) if isinstance(c, dict)]
+        return [("tool_use", f"edit({_trunc(', '.join(p for p in paths if p), 300)})",
+                 {"name": "edit", "input": {"changes": item.get("changes")}})]
+    if it == "web_search":
+        return [("tool_use", f"web_search({_trunc(str(item.get('query') or ''), 200)})",
+                 {"name": "web_search", "input": {"query": item.get("query")}})]
+    if it == "error":
+        msg = item.get("message") or "lỗi không rõ"
+        return [("error", _trunc(msg, 500), {"error": msg})]
+    return []
+
+
+def _codex_model(model):
+    """Model id thật để truyền --model. 'codex' → '' (để CLI tự chọn), 'codex:X' → 'X'."""
+    return (model or "").strip().split(":", 1)[1].strip() if ":" in (model or "") else ""
+
+
+def codex_effort_ceiling(model):
+    """Mức reasoning cao nhất model codex này nhận (xem CODEX_MAX_EFFORT)."""
+    return CODEX_MAX_EFFORT.get(_codex_model(model), CODEX_MAX_EFFORT_DEFAULT)
+
+
+def _codex_env():
+    """Env cho tiến trình con codex — GỠ key API để codex dùng tài khoản ChatGPT (xem
+    CODEX_DROP_ENV). Không đụng env của chính orchestrator."""
+    return {k: v for k, v in os.environ.items() if k not in CODEX_DROP_ENV}
+
+
+def terminal_argv(session, cli=""):
+    """Lệnh CLI interactive cho terminal của 1 session (nút 💻 trên dashboard).
+
+    cli rỗng/lạ → theo engine của session (suy từ model). User chọn được CLI khác qua ?cli=.
+    CHỈ resume được transcript do CHÍNH CLI đó tạo — session id của claude không phải thread của
+    codex và ngược lại → CLI khác engine thì mở PHIÊN MỚI trong cùng cwd (bỏ --resume) thay vì
+    cố resume rồi lỗi.
+    """
+    eng = engine_name_of_session(session)
+    sid = session["id"]
+    cli = (cli or "").strip().lower()
+    if cli not in ("claude", "codex"):
+        cli = "codex" if eng == "codex" else "claude"
+    if cli == "codex":
+        return [CODEX_BIN, "resume", sid] if eng == "codex" else [CODEX_BIN]
+    return [CLAUDE_BIN, "--resume", sid] if eng == "claude" else [CLAUDE_BIN]
+
+
+def _codex_mcp_ok(permission_mode=""):
+    """Session này có gọi được MCP tool (send_signal…) không.
+
+    ĐÃ ĐO trên 0.147.0: trong `codex exec` headless, MCP tool call CHỈ chạy khi
+    --dangerously-bypass-approvals-and-sandbox. Thử hết các đường khác đều trả
+    'user cancelled MCP tool call': approval_policy never / on-failure / untrusted (kể cả khi
+    project đã trust_level="trusted"), sandbox read-only lẫn workspace-write, có lẫn không
+    sandbox_workspace_write.network_access. Không có cờ nào bật riêng phần duyệt MCP.
+    → Session sandbox = agent KHÔNG signal được. Phải báo ra timeline, không để nó im lặng
+    (agent thấy tool báo cancelled rồi tự nghĩ đã bàn giao xong).
+    """
+    return (permission_mode or DEFAULT_PERMISSION_MODE) == "bypassPermissions"
+
+
+def _codex_flags(model="", permission_mode="", effort=""):
+    """Cờ dùng chung cho mọi lệnh `codex exec` (spawn lẫn resume).
+
+    CHỈ dùng cờ có ở CẢ `codex exec` LẪN `codex exec resume` (đã đối chiếu --help của 0.147.0):
+    `--full-auto` không tồn tại, và `-s/--sandbox` chỉ có ở `exec` → chính sách sandbox phải đi
+    qua `-c` (có ở cả hai). Giá trị hợp lệ cũng đã đo bằng `codex debug models -c ...`.
+    """
+    # --skip-git-repo-check: cwd session không nhất thiết là git repo (vd thư mục workspace).
+    flags = ["--json", "--skip-git-repo-check"]
+    # Approval trong headless = fail ngay → chốt sẵn. Map thẳng permission_mode của orchestrator:
+    # bypassPermissions (mặc định) = toàn quyền, y như claude --permission-mode bypassPermissions.
+    if _codex_mcp_ok(permission_mode):
+        flags.append("--dangerously-bypass-approvals-and-sandbox")
+    else:
+        # Ghi được trong workspace, chạy lệnh không hỏi, nhưng vẫn trong sandbox.
+        flags += ["-c", 'sandbox_mode="workspace-write"', "-c", 'approval_policy="never"']
+    real = _codex_model(model)
+    if real:
+        flags += ["--model", real]
+    eff = clamp_effort(effort or DEFAULT_EFFORT, codex_effort_ceiling(model))
+    if eff:
+        flags += ["-c", f'model_reasoning_effort="{eff}"']
+    return flags
+
+
+async def _codex_exec(cmd, cwd, session_id="", on_event=None):
+    """Chạy 1 lệnh codex exec, đọc JSONL stdout, trả dict kết quả theo contract AgentEngine.
+
+    Luôn --json nên không có nhánh "không stream" như Claude: on_event=None chỉ là không đẩy
+    event, phần parse vẫn chạy. session_id != "" thì đăng ký ACTIVE_PROCS cho nút 🛑 kill.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=cwd or None, env=_codex_env(), stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            limit=STREAM_LIMIT)          # aggregated_output có thể làm 1 dòng JSONL rất lớn
+    except (FileNotFoundError, NotADirectoryError, PermissionError) as e:
+        err = (f"không chạy được codex CLI ('{CODEX_BIN}'): {e}. "
+               "Cài `npm i -g @openai/codex` rồi `codex login` bằng tài khoản ChatGPT.")
+        if on_event:
+            await on_event("error", _trunc(err, 500), {"error": str(e)})
+        return {"ok": False, "result": err, "session_id": session_id, "tokens": 0,
+                "raw": {"engine": "codex", "error": "codex_not_found"}}
+    if session_id:
+        ACTIVE_PROCS[session_id] = proc
+
+    thread_id, text, tokens, failed = "", "", 0, ""
+    stderr_chunks: list[bytes] = []
+
+    async def _drain_stderr():
+        while True:
+            try:
+                raw = await proc.stderr.readline()
+            except (asyncio.LimitOverrunError, ValueError):
+                continue
+            if not raw:
+                break
+            stderr_chunks.append(raw)
+
+    stderr_task = asyncio.create_task(_drain_stderr())
+    try:
+        while True:
+            try:
+                raw = await proc.stdout.readline()
+            except (asyncio.LimitOverrunError, ValueError):
+                continue                 # dòng vượt STREAM_LIMIT → bỏ mảnh, đọc tiếp
+            if not raw:
+                break
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue                 # codex có thể in dòng người-đọc lẫn vào stdout
+            if not isinstance(ev, dict):
+                continue
+            t = ev.get("type")
+            if t == "thread.started":
+                thread_id = ev.get("thread_id") or thread_id
+            elif t == "turn.completed":
+                tokens = int((ev.get("usage") or {}).get("output_tokens", 0) or 0)
+            elif t == "turn.failed":
+                failed = (ev.get("error") or {}).get("message") or "turn failed"
+            elif t == "error":
+                failed = ev.get("message") or "lỗi không rõ"
+            elif t == "item.completed" and (ev.get("item") or {}).get("type") == "agent_message":
+                # Lượt có thể có nhiều agent_message; câu CUỐI là kết quả trả cho người gọi.
+                text = (ev["item"].get("text") or "").strip() or text
+            if on_event:
+                for kind, summary, payload in _iter_codex_events(ev):
+                    try:
+                        await on_event(kind, summary, payload)
+                    except Exception:  # noqa: BLE001 — lỗi UI không được giết run
+                        pass
+    finally:
+        await proc.wait()
+        await stderr_task
+        if session_id:
+            ACTIVE_PROCS.pop(session_id, None)
+
+    stderr_txt = b"".join(stderr_chunks).decode("utf-8", "replace").strip()[:2000]
+    ok = proc.returncode == 0 and not failed
+    if not ok and not text:
+        # codex chết trước khi phát event nào (vd chưa login, --model lạ): stderr là lý do thật.
+        text = failed or stderr_txt or f"codex exited với mã {proc.returncode}"
+        if on_event and not failed:      # failed đã được _iter_codex_events phát rồi
+            await on_event("error", _trunc(text, 500),
+                           {"stderr": stderr_txt, "returncode": proc.returncode})
+    return {"ok": ok, "result": text, "session_id": thread_id or session_id, "tokens": tokens,
+            "raw": {"engine": "codex", "returncode": proc.returncode, "thread_id": thread_id,
+                    "stderr": "" if ok else stderr_txt}}
+
+
+class CodexEngine(AgentEngine):
+    """Engine chạy qua `codex exec` (Codex CLI). session id = thread_id của codex."""
+
+    name = "codex"
+
+    async def spawn(self, name, project="", cwd="", allowed_tools=None, permission_mode="",
+                    init_prompt="", model="", effort="", workspace_id=DEFAULT_WORKSPACE):
+        # Ghim cwd theo workspace y hệt Claude (cwd truyền vào được tôn trọng).
+        if bool(workspace_id) and workspace_id != DEFAULT_WORKSPACE:
+            root = workspace_root(workspace_id)
+            if not root:
+                return {"error": f"workspace '{workspace_id}' không tồn tại"}
+            if not cwd:
+                cwd = root
+        # Vật thể hoá role thành SKILL: ghi cả .codex/skills (codex tự quét, ĐÃ ĐO) lẫn
+        # .claude/skills — bản .claude còn là nguồn _prepend_role đọc để nhồi vào từng signal.
+        _write_role_skill(cwd, name, init_prompt)
+        prompt = _build_init_prompt(name, init_prompt, workspace_id)
+        model = model or CODEX_AUTO_MODEL
+        if DRY_RUN:
+            sid = f"codex-dry-{name}-{datetime.now().strftime('%H%M%S%f')}"
+        else:
+            res = await _codex_exec(
+                [CODEX_BIN, "exec", *_codex_flags(model, permission_mode, effort), "--", prompt],
+                cwd)
+            sid = res["raw"].get("thread_id")
+            if not sid:
+                return {"error": res.get("result") or "codex không trả thread_id"}
+        register_session(sid, name, project, cwd, allowed_tools or [], permission_mode,
+                         model, effort, workspace_id, self.name)
+        return get_session(sid)
+
+    async def run(self, session, prompt, on_event=None, dry_run=False):
+        sid = session["id"]
+        if DRY_RUN or dry_run:
+            if on_event:
+                await on_event("text", f"[dry-run] would inject: {_trunc(prompt, 300)}", {"dry_run": True})
+            return {"ok": True, "result": f"[dry-run] would inject to {session['name']}: {prompt}",
+                    "session_id": sid, "tokens": 0, "raw": {"dry_run": True, "engine": "codex"}}
+        if on_event and not _codex_mcp_ok(session.get("permission_mode", "")):
+            await on_event("system",
+                           "⚠ session sandbox: codex sẽ HỦY mọi MCP tool call (kể cả send_signal). "
+                           "Cần signal thì spawn lại với permission_mode=bypassPermissions.",
+                           {"subtype": "codex_mcp_blocked"})
+        # Prompt là positional SAU '--' để prompt bắt đầu bằng '-' (vd frontmatter '---') không bị
+        # nuốt thành cờ — vai trò y như stdin bên _run_claude.
+        cmd = [CODEX_BIN, "exec", "resume", sid,
+               *_codex_flags(session.get("model", ""), session.get("permission_mode", ""),
+                             session.get("effort", "")),
+               "--", prompt]
+        res = await _codex_exec(cmd, session.get("cwd") or "", sid, on_event)
+        res["session_id"] = sid   # resume giữ nguyên thread → không để id trôi khỏi DB
+        return res
+
+    def get_compact(self, session_id):
+        # Codex tự nén context bên trong, KHÔNG ghi compact_boundary ra transcript như Claude →
+        # không trích được. Trả found=False để UI hiện "chưa có", không giả vờ có dữ liệu.
+        return {"found": False, "reason": "engine codex không expose compact summary"}
+
+
+# Registry engine + resolver. Thêm engine mới = thêm 1 dòng vào ENGINES.
+ENGINES = {
+    "claude": ClaudeEngine(),
+    "codex": CodexEngine(),
+}
+DEFAULT_ENGINE = "claude"
+
+
+def engine_from_model(model):
+    """Suy tên engine ('claude'|'codex') TỪ tên model. FE chỉ cần gửi 'model', không cần gửi
+    'engine' — service tự chọn. 'codex' hoặc 'codex:<model>' → codex CLI (tài khoản ChatGPT);
+    MỌI thứ còn lại (kể cả rỗng và model lạ) → claude CLI, vì nhánh này không có engine nào khác.
+
+    Tiền tố 'codex:' là BẮT BUỘC cho model cụ thể: slug của codex ('gpt-5.6-terra'…) cũng là tên
+    model API hợp lệ, không có tiền tố thì không phân biệt được ý người dùng."""
+    m = (model or "").strip().lower()
+    return "codex" if m == "codex" or m.startswith("codex:") else "claude"
+
+
+def resolve_engine_name(body):
+    """Chọn tên engine cho 1 request spawn/register. Ưu tiên 'engine' tường minh nếu client gửi
+    (tương thích ngược); nếu KHÔNG gửi engine → tự suy từ 'model' (engine_from_model)."""
+    explicit = (body.get("engine") or "").strip()
+    if explicit:
+        return explicit  # tôn trọng client; hợp lệ hay không sẽ được validate ở tầng API
+    return engine_from_model(body.get("model", ""))
+
+
+def engine_name_of_session(session):
+    """Tên engine của 1 session ĐÃ TỒN TẠI — LUÔN suy từ 'model' (model = nguồn sự thật duy nhất).
+    KHÔNG đọc cột 'engine' trong DB: cột đó có thể ghi cứng sai (vd session cũ spawn trước khi có
+    tự-suy-engine). Suy từ model đảm bảo nhất quán với /api/spawn (cũng tự suy từ model)."""
+    return engine_from_model(session.get("model", ""))
 
 
 def engine_for(session_or_name):
-    """Trả instance engine để CHẠY 1 session (dict) hoặc theo tên (str). Chỉ còn Claude."""
-    return _CLAUDE_ENGINE
+    """Trả instance engine để CHẠY 1 session (dict) hoặc theo tên engine (str).
+    - dict (session): LUÔN suy từ 'model' (engine_name_of_session) — model là nguồn sự thật duy
+      nhất, KHÔNG tin cột 'engine' (có thể ghi cứng sai).
+    - str (tên engine): tra thẳng ENGINES; tên lạ/rỗng → engine mặc định (claude)."""
+    name = engine_name_of_session(session_or_name) if isinstance(session_or_name, dict) \
+        else (session_or_name or DEFAULT_ENGINE)
+    return ENGINES.get(name, ENGINES[DEFAULT_ENGINE])
+
+
+# ─── Tìm thư mục theo tên (ô Working dir của form spawn) ─────────────────────
+
+# Thư mục KHÔNG bao giờ là cwd của agent nhưng chứa hàng vạn entry — bỏ qua để tìm kiếm khỏi
+# chết chìm trong node_modules. Thư mục ẩn (.git, .venv, .cache…) bỏ theo tiền tố '.'.
+FS_SKIP_DIRS = frozenset({"node_modules", "__pycache__", "venv", "env", "dist", "build",
+                          "target", "vendor", "Pods", "site-packages", "Library"})
+
+
+def _search_dirs(root, q, depth=4, cap=60, max_visit=8000):
+    """Tìm thư mục có TÊN chứa `q` (không phân biệt hoa thường), quét rộng-trước từ `root`.
+
+    Rộng-trước để kết quả gần root nổi lên trước — gõ 'alone' phải ra ~/alone chứ không phải
+    một thư mục con sâu 4 tầng trùng tên.
+    # ponytail: quét đồng bộ, chặn bằng depth/cap/max_visit. Cây lớn hơn thì đổi sang index
+    # (mlocate/fd) — đừng nới trần, vì handler này chạy trong event loop.
+    """
+    q = q.lower()
+    out, seen = [], 0
+    queue = [(root, 0)]
+    while queue and len(out) < cap and seen < max_visit:
+        cur, d = queue.pop(0)
+        try:
+            entries = sorted((e for e in os.scandir(cur) if e.is_dir(follow_symlinks=False)),
+                             key=lambda e: e.name.lower())
+        except (OSError, PermissionError):
+            continue
+        for e in entries:
+            seen += 1
+            if e.name.startswith(".") or e.name in FS_SKIP_DIRS:
+                continue
+            if q in e.name.lower() and len(out) < cap:
+                out.append(e.path)
+            if d + 1 < depth:
+                queue.append((e.path, d + 1))
+    return out
 
 
 # ─── Tool discovery (built-in + MCP servers của project) ──────────────────────
@@ -1826,7 +2249,8 @@ async def process_signal(signal):
             if res.get("ok"):
                 sig_ev["result"] = res.get("result", "")  # text agent full, chỉ khi done
             publish(sig_ev)
-            return {"signal": signal["id"], "status": final, "result": res.get("result", "")}
+            return {"signal": signal["id"], "status": final, "result": res.get("result", ""),
+                    "tokens": res.get("tokens", 0), "run_id": run_id}
 
 
 async def process_pending():
@@ -1867,6 +2291,333 @@ async def run_loop():
         except Exception as e:  # noqa: BLE001
             print(f"[orchestrator] loop error: {e}", file=sys.stderr)
         await asyncio.sleep(POLL_INTERVAL)
+
+
+# ─── Chat API tương thích OpenAI (/v1) ───────────────────────────────────────
+# Để app ngoài (SDK openai, LangChain, n8n…) chat thẳng với agent trong orchestrator mà không
+# phải học API riêng: chỉ đổi base_url + model là chạy.
+#
+# KHÁC OpenAI ở 2 chỗ PHẢI biết trước khi dùng, không phải chi tiết vặt:
+#  1. CÓ TRẠNG THÁI. OpenAI stateless (client gửi lại cả mảng messages mỗi lượt); ở đây ngữ cảnh
+#     nằm trong transcript của CLI phía server. Nên chỉ phần MỚI kể từ lượt assistant gần nhất
+#     được inject (xem _chat_prompt) — gửi lại cả lịch sử là nhân đôi, tốn token và làm agent rối.
+#  2. 1 LƯỢT = 1 RUN THẬT của agent: đi qua khoá session, trần run/ngày, audit, run_events. Hai
+#     request tới cùng agent XẾP HÀNG chứ không chạy song song. Lượt có thể kéo dài phút.
+CHAT_TIMEOUT = float(os.environ.get("ORCH_CHAT_TIMEOUT", "900"))  # trần 1 lượt chat (giây)
+# model = "<workspace_id>/<agent_alias>". SDK OpenAI chuẩn CHỈ gửi được 'model', nên đây là đường
+# duy nhất để client không-sửa-code chọn agent; agent_alias/workspace_id rời vẫn nhận (ưu tiên hơn).
+CHAT_MODEL_SEP = "/"
+
+
+def _msg_text(content):
+    """content của 1 message OpenAI → text. Nhận cả dạng chuỗi lẫn mảng block (vision format);
+    block không phải text (image_url…) bị bỏ vì agent CLI nhận prompt text."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text").strip()
+    return ""
+
+
+def _chat_prompt(messages):
+    """messages OpenAI → 1 prompt inject cho agent.
+
+    Lấy phần MỚI kể từ lượt 'assistant' gần nhất, không lấy cả mảng: session giữ ngữ cảnh phía
+    server rồi. Lượt đầu → gồm cả system + user (client muốn áp instruction thì nó tới được);
+    lượt sau → chỉ đúng tin nhắn mới. Không đoán mò, không lặp lịch sử."""
+    msgs = [m for m in (messages or []) if isinstance(m, dict)]
+    last_ai = max((i for i, m in enumerate(msgs) if m.get("role") == "assistant"), default=-1)
+    parts = []
+    for m in msgs[last_ai + 1:]:
+        text = _msg_text(m.get("content"))
+        if not text:
+            continue
+        role = m.get("role", "user")
+        parts.append(text if role == "user" else f"[{role}]\n{text}")
+    return "\n\n".join(parts).strip()
+
+
+def _chat_agent_ref(body, params=None):
+    """(agent_alias, workspace_id) lấy từ body → query → field 'model'. Trả workspace rỗng thì
+    caller tự áp DEFAULT_WORKSPACE."""
+    params = params or {}
+    alias = str(body.get("agent_alias") or params.get("agent_alias") or "").strip()
+    wsid = str(body.get("workspace_id") or params.get("workspace_id") or "").strip()
+    model = str(body.get("model") or "").strip()
+    if not alias and model:
+        head, sep, tail = model.partition(CHAT_MODEL_SEP)
+        alias, wsid = (tail.strip(), wsid or head.strip()) if sep else (model, wsid)
+    return alias, wsid
+
+
+def _chat_id():
+    return "chatcmpl-" + secrets.token_hex(12)
+
+
+def _chat_created():
+    return int(datetime.now().timestamp())
+
+
+def _chat_chunk(cid, model, created, delta=None, finish=None, usage=None):
+    """1 chunk SSE dạng chat.completion.chunk."""
+    out = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+           "choices": [{"index": 0, "delta": delta if delta is not None else {},
+                        "finish_reason": finish}]}
+    if usage is not None:
+        out["usage"] = usage
+    return out
+
+
+def _chat_usage(prompt, text, tokens):
+    """usage: completion_tokens là số THẬT engine báo; prompt_tokens ước lượng 4 ký tự/token —
+    orchestrator không đếm được prompt sau khi CLI ghép ngữ cảnh. Ghi rõ để đừng dùng để tính tiền."""
+    ptok = max(1, len(prompt) // 4)
+    ctok = int(tokens or 0) or max(1, len(text) // 4)
+    return {"prompt_tokens": ptok, "completion_tokens": ctok, "total_tokens": ptok + ctok,
+            "estimated": True}
+
+
+async def chat_run_stream(session, prompt, workspace_id):
+    """Chạy 1 lượt chat với agent, YIELD ('text', <mảnh>) theo tiến độ rồi ('end', <dict kết quả>).
+
+    Đi qua ĐÚNG đường signal của orchestrator (khoá session, trần run, audit, run_events) — không
+    gọi thẳng engine, để chat qua API và chat qua dashboard chịu chung một luật.
+    from_session='user' → được tính là NGƯỜI dùng chạm: mở vòng việc mới, không dính trần
+    ping-pong id=94 (trần đó để chặn agent nhắn lòng vòng với nhau, không phải chặn người).
+    """
+    try:
+        sig_id = enqueue_signal(session["id"], prompt, "user", 0, 0, workspace_id)
+    except SignalPairCapExceeded as e:
+        yield ("end", {"status": "blocked", "result": str(e), "tokens": 0})
+        return
+    # Ghi _inflight NGAY (không await xen giữa) để run_loop không nhặt trùng signal này.
+    _inflight.add(sig_id)
+    sig_row = {"id": sig_id, "to_session": session["id"], "message": prompt,
+               "workspace_id": workspace_id, "requires_approval": 0, "dry_run": 0}
+
+    async def _run():
+        try:
+            return await process_signal(sig_row)
+        finally:
+            _inflight.discard(sig_id)
+
+    q: asyncio.Queue = asyncio.Queue()
+    sub = (q, None)          # None = nhận mọi event; lọc theo run_id của chính lượt này bên dưới
+    _subscribers.add(sub)
+    task = asyncio.create_task(_run())
+    my_run, sent_any = None, False
+    try:
+        deadline = asyncio.get_running_loop().time() + CHAT_TIMEOUT
+        while True:
+            if task.done() and q.empty():
+                break
+            if asyncio.get_running_loop().time() > deadline:
+                task.cancel()
+                yield ("end", {"status": "timeout", "tokens": 0,
+                               "result": f"quá {CHAT_TIMEOUT:.0f}s chưa xong — agent vẫn chạy tiếp "
+                                         f"phía server, xem run #{my_run} trên dashboard."})
+                return
+            try:
+                ev = await asyncio.wait_for(q.get(), timeout=0.25)
+            except asyncio.TimeoutError:
+                continue
+            # run_event KHÔNG mang signal id → bám theo run_id lấy từ run_start của chính signal này.
+            # Thiếu bước này là hứng nhầm text của agent khác đang chạy song song.
+            if ev.get("type") == "run_start" and ev.get("signal") == sig_id:
+                my_run = ev.get("run_id")
+            elif (ev.get("type") == "run_event" and my_run is not None
+                  and ev.get("run_id") == my_run and ev.get("kind") == "text" and ev.get("result")):
+                sent_any = True
+                yield ("text", ev["result"])
+    finally:
+        _subscribers.discard(sub)
+
+    res = task.result() if not task.cancelled() else {"status": "failed", "result": "bị huỷ"}
+    res = res or {"status": "failed", "result": "không chạy được"}
+    # Chưa phát mảnh nào (engine không stream, hoặc lỗi) → trả nguyên kết quả cuối làm 1 mảnh.
+    if not sent_any and res.get("result"):
+        yield ("text", res["result"])
+    yield ("end", res)
+
+
+# ─── OpenAPI: mô tả /v1 cho app ngoài (GET /openapi.json, xem ở GET /docs) ────
+# CHỈ đặc tả /v1 + vài endpoint control cần để dựng/quản agent. KHÔNG đặc tả toàn bộ ~40 route
+# nội bộ của dashboard: chúng đổi theo UI, viết vào đây là cầm chắc tài liệu sai sự thật.
+# check_openapi.py đối chiếu mọi path ở đây với bảng route thật → spec lệch là test đỏ.
+
+_OA_MSG = {"type": "object", "properties": {
+    "role": {"type": "string", "enum": ["system", "user", "assistant"]},
+    "content": {"description": "Chuỗi, hoặc mảng block {type:'text',text:...} kiểu OpenAI"}},
+    "required": ["role", "content"]}
+_OA_ERR = {"type": "object", "properties": {"error": {"type": "object", "properties": {
+    "message": {"type": "string"}, "type": {"type": "string"}, "code": {"type": "string"}}}}}
+_OA_ERR_RESP = {"description": "Lỗi (shape OpenAI)",
+                "content": {"application/json": {"schema": _OA_ERR}}}
+
+
+def _oa_json(schema=None, desc=""):
+    return {"description": desc, "content": {"application/json": {"schema": schema or {"type": "object"}}}}
+
+
+def _oa_query(name, desc=""):
+    return {"name": name, "in": "query", "schema": {"type": "string"}, "description": desc}
+
+
+def _oa_intro():
+    """Phần mô tả ở đầu trang /docs — nơi ghi 2 điểm KHÁC OpenAI mà app ngoài phải biết trước."""
+    return (
+        "Chat với agent trong orchestrator bằng **API tương thích OpenAI** — app ngoài chỉ cần "
+        "đổi `base_url`.\n\n"
+        "```python\nfrom openai import OpenAI\n"
+        f"cli = OpenAI(base_url='http://{ORCH_HOST}:{ORCH_PORT}/v1', api_key='<ORCH_API_KEY>')\n"
+        "cli.chat.completions.create(\n"
+        "    model='<workspace_id>/<agent_alias>',\n"
+        "    messages=[{'role': 'user', 'content': 'chào'}], stream=True)\n```\n\n"
+        "### Hai điểm KHÁC OpenAI, phải biết trước khi build app\n"
+        "1. **Có trạng thái.** OpenAI stateless (client gửi lại cả `messages` mỗi lượt); ở đây ngữ "
+        "cảnh nằm trong transcript CLI phía server, nên chỉ phần **mới kể từ lượt `assistant` gần "
+        "nhất** được gửi cho agent. Gửi lại cả lịch sử = nhân đôi ngữ cảnh.\n"
+        "2. **1 request = 1 lượt chạy thật** của agent: qua khoá session, trần run/ngày, audit. "
+        "Hai request tới CÙNG agent **xếp hàng**, không chạy song song; một lượt có thể kéo dài "
+        f"phút (trần `ORCH_CHAT_TIMEOUT`, hiện {CHAT_TIMEOUT:.0f}s).\n\n"
+        "### Chọn agent\n"
+        "`agent_alias` + `workspace_id` nhận ở body, query, hoặc gói trong `model` dạng "
+        "`\"<workspace_id>/<agent_alias>\"` (SDK OpenAI chỉ gửi được `model`).\n\n"
+        "### Xác thực\n"
+        "Bật khi đặt biến môi trường `ORCH_API_KEY`. Gửi qua `Authorization: Bearer <key>`, "
+        "`X-API-Key`, hoặc `?api_key=`. Không đặt biến này = mở cho mọi client (chỉ nên dùng khi "
+        "bind localhost).\n\n"
+        "### Ngoài phạm vi tài liệu này\n"
+        "Dashboard còn nhiều route `/api/*` (signals, runs, terminal…) phục vụ UI, đổi theo UI nên "
+        "không đặc tả ở đây.")
+
+
+def _oa_chat_body():
+    return {"type": "object", "required": ["messages"], "properties": {
+        "model": {"type": "string", "examples": ["ws_ab12/game-artist", "game-artist"],
+                  "description": "`<workspace_id>/<agent_alias>`, hoặc chỉ alias"},
+        "agent_alias": {"type": "string", "description": "Ưu tiên hơn `model`"},
+        "workspace_id": {"type": "string", "description": "Bỏ trống = 'default'"},
+        "messages": {"type": "array", "minItems": 1, "items": _OA_MSG},
+        "stream": {"type": "boolean", "default": False},
+        "stream_options": {"type": "object",
+                           "properties": {"include_usage": {"type": "boolean"}}}}}
+
+
+def _oa_spawn_body():
+    return {"type": "object", "required": ["name"], "properties": {
+        "name": {"type": "string", "description": "alias của agent"},
+        "workspace_id": {"type": "string"},
+        "cwd": {"type": "string", "description": "thư mục project agent làm việc"},
+        "model": {"type": "string",
+                  "description": "'' hoặc opus/sonnet/haiku… → Claude CLI; "
+                                 "'codex' / 'codex:<slug>' → Codex CLI"},
+        "effort": {"type": "string", "enum": list(EFFORT_LADDER),
+                   "description": "mức vượt trần engine/model sẽ tự hạ xuống"},
+        "init_prompt": {"type": "string",
+                        "description": "playbook vai, lưu thành SKILL.md trong cwd"},
+        "permission_mode": {"type": "string",
+                            "description": "bypassPermissions (mặc định) = toàn quyền"}}}
+
+
+def _oa_usage_schema():
+    return {"type": "object", "properties": {
+        "prompt_tokens": {"type": "integer"},
+        "completion_tokens": {"type": "integer", "description": "số THẬT engine báo"},
+        "estimated": {"const": True,
+                      "description": "prompt_tokens là ƯỚC LƯỢNG (4 ký tự/token) — "
+                                     "đừng dùng để tính tiền"}}}
+
+
+def _oa_completion_schema():
+    return {"type": "object", "properties": {
+        "id": {"type": "string"}, "object": {"const": "chat.completion"},
+        "created": {"type": "integer"}, "model": {"type": "string"},
+        "choices": {"type": "array", "items": {"type": "object"}},
+        "usage": _oa_usage_schema()}}
+
+
+def _oa_path_chat():
+    ok = _oa_json(_oa_completion_schema(), "Trả lời của agent")
+    ok["content"]["text/event-stream"] = {
+        "schema": {"type": "string"},
+        "example": 'data: {"object":"chat.completion.chunk",...}\n\ndata: [DONE]\n\n'}
+    return {"post": {
+        "tags": ["chat"], "summary": "Chat với 1 agent (stream hoặc không)",
+        "description": "Mỗi request chạy agent 1 lượt thật. `stream:true` → SSE khung "
+                       "`chat.completion.chunk`, kết bằng `data: [DONE]`.",
+        "parameters": [_oa_query("agent_alias", "Thay cho field trong body"),
+                       _oa_query("workspace_id")],
+        "requestBody": {"required": True,
+                        "content": {"application/json": {"schema": _oa_chat_body()}}},
+        "responses": {"200": ok,
+                      "400": _OA_ERR_RESP, "401": _OA_ERR_RESP, "404": _OA_ERR_RESP,
+                      "409": dict(_OA_ERR_RESP, description="Agent paused/stopped hoặc "
+                                                            "workspace bị suspend"),
+                      "502": dict(_OA_ERR_RESP, description="Agent chạy lỗi")}}}
+
+
+def openapi_spec():
+    """Đặc tả OpenAPI 3.1. Dựng trong hàm để hằng runtime (host/port/timeout) luôn khớp thực tế."""
+    return {
+        "openapi": "3.1.0",
+        "info": {"title": "Session Orchestrator API", "version": "1.0.0",
+                 "description": _oa_intro()},
+        "servers": [{"url": f"http://{ORCH_HOST}:{ORCH_PORT}"}],
+        "security": [{"bearerAuth": []}, {"apiKeyHeader": []}],
+        "components": {"securitySchemes": {
+            "bearerAuth": {"type": "http", "scheme": "bearer"},
+            "apiKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key"}}},
+        "tags": [{"name": "chat", "description": "Tương thích OpenAI"},
+                 {"name": "agents", "description": "Dựng và xem agent"}],
+        "paths": {
+            "/v1/chat/completions": _oa_path_chat(),
+            "/v1/models": {"get": {
+                "tags": ["chat"], "summary": "Danh sách agent dưới dạng 'model'",
+                "parameters": [_oa_query("workspace_id", "Bỏ trống = mọi workspace")],
+                "responses": {"200": _oa_json(desc="id = `<workspace_id>/<agent_alias>`")}}},
+            "/api/sessions": {"get": {
+                "tags": ["agents"], "summary": "Liệt kê agent (dạng gốc, đầy đủ trường)",
+                "parameters": [_oa_query("workspace_id")],
+                "responses": {"200": _oa_json({"type": "array"}, "Mảng session")}}},
+            "/api/sessions/spawn": {"post": {
+                "tags": ["agents"], "summary": "Tạo agent mới (chạy CLI để lấy session id)",
+                "requestBody": {"required": True,
+                                "content": {"application/json": {"schema": _oa_spawn_body()}}},
+                "responses": {"200": _oa_json(desc="Session vừa tạo"),
+                              "400": _oa_json(desc="Thiếu name / engine không hỗ trợ"),
+                              "500": _oa_json(desc="CLI không trả session id")}}},
+            "/api/workspaces": {
+                "get": {"tags": ["agents"], "summary": "Liệt kê workspace",
+                        "responses": {"200": _oa_json({"type": "array"}, "Mảng workspace")}},
+                "post": {"tags": ["agents"], "summary": "Tạo workspace",
+                         "requestBody": {"content": {"application/json": {"schema": {
+                             "type": "object",
+                             "properties": {"name": {"type": "string"}}}}}},
+                         "responses": {"200": _oa_json(desc="Workspace vừa tạo")}}},
+            "/health": {"get": {"summary": "Kiểm tra sống + cấu hình đang chạy", "security": [],
+                                "responses": {"200": _oa_json(desc="ok")}}},
+        },
+    }
+
+
+
+# Không có mạng thì trang báo rõ và chỉ sang /openapi.json (import được vào Postman/Insomnia).
+_DOCS_HTML = """<!doctype html><html lang="vi"><head><meta charset="utf-8">
+<title>Session Orchestrator — API</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+<style>body{margin:0}#off{display:none;font:14px/1.6 system-ui;padding:32px;max-width:640px}
+code{background:#eee;padding:2px 5px;border-radius:4px}</style></head><body>
+<div id="swagger"></div>
+<div id="off"><h2>Không tải được Swagger UI</h2><p>Trang này lấy Swagger UI từ CDN nên cần mạng.
+Máy đang offline thì dùng thẳng đặc tả: <a href="/openapi.json"><code>/openapi.json</code></a>
+— import được vào Postman, Insomnia hay <code>editor.swagger.io</code>.</p></div>
+<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"
+        onerror="document.getElementById('off').style.display='block'"></script>
+<script>window.onload=function(){ if(!window.SwaggerUIBundle) return;
+  SwaggerUIBundle({url:"/openapi.json",dom_id:"#swagger",deepLinking:true}); };</script>
+</body></html>"""
 
 
 # ─── Control API (Phase B: REST + SSE) ────────────────────────────────────────
@@ -2109,14 +2860,9 @@ def build_app():
         # Register CLI session làm worker: ghi SKILL role vào cwd nếu CHƯA có (không đè bản
         # chỉnh tay). `template` = seed từ TEMPLATES_DIR; `init_prompt` = nội dung custom role.
         if cwd and not _skill_path(cwd, name).exists():
-            if _safe_template_name(body.get("template", "")):
-                try:
-                    _write_role_skill(cwd, name,
-                                      (TEMPLATES_DIR / body["template"] / "SKILL.md").read_text(encoding="utf-8"))
-                except OSError:
-                    pass  # thiếu template → session vẫn đăng ký, chỉ không có playbook
-            elif body.get("init_prompt"):
-                _write_role_skill(cwd, name, body["init_prompt"])
+            # Thiếu template → session vẫn đăng ký, chỉ không có playbook.
+            _write_role_skill(cwd, name,
+                              _template_skill(body.get("template", "")) or body.get("init_prompt", ""))
         publish({"type": "session", "id": body["id"], "status": "idle", "workspace_id": wid})
         return JSONResponse(get_session(body["id"]))
 
@@ -2147,14 +2893,15 @@ def build_app():
             return err
         # Role template không kèm init prompt → seed playbook từ TEMPLATES_DIR (đồng bộ flow
         # register; custom role thì FE đã bắt buộc init_prompt).
-        init_prompt = body.get("init_prompt", "")
-        if not init_prompt and _safe_template_name(body["name"].strip()):
-            try:
-                init_prompt = (TEMPLATES_DIR / body["name"] / "SKILL.md").read_text(encoding="utf-8")
-            except OSError:
-                pass  # không phải tên template → giữ init prompt rỗng như cũ
+        # Không phải tên template → giữ init prompt rỗng như cũ.
+        init_prompt = body.get("init_prompt", "") or _template_skill(body["name"].strip())
+        # Engine suy TỪ MODEL (model 'codex'/'codex:<slug>' → Codex CLI, còn lại → Claude CLI).
+        eng_name = resolve_engine_name(body)
+        if eng_name not in ENGINES:
+            return JSONResponse({"error": f"engine '{eng_name}' không hỗ trợ (có: {', '.join(ENGINES)})"},
+                                status_code=400)
         # engine.spawn: cwd truyền vào giữ nguyên; rỗng thì tự về thư mục workspace (≠ default).
-        res = await engine_for("claude").spawn(
+        res = await engine_for(eng_name).spawn(
             body["name"], project=body.get("project", ""), cwd=body.get("cwd", ""),
             allowed_tools=body.get("allowed_tools", []), permission_mode=body.get("permission_mode", ""),
             init_prompt=init_prompt, model=body.get("model", ""),
@@ -2177,30 +2924,18 @@ def build_app():
         cwd = request.query_params.get("cwd", "")
         return JSONResponse(await discover_tools(cwd))
 
-    async def api_claude_sessions(request: Request):
-        """Session Claude Code CLI (transcript ~/.claude/projects) của 1 cwd — cho UI chọn
-        orchestrator của project. Không đụng DB sessions."""
-        cwd = (request.query_params.get("cwd") or "").strip()
-        if not cwd:
-            return JSONResponse({"error": "cwd bắt buộc"}, status_code=400)
-        return JSONResponse(list_claude_sessions(cwd))
-
-    async def _claude_mcp(args: list[str], cwd: str) -> str:
-        """Chạy `claude mcp <args>` tại cwd, trả stdout+stderr gộp (raw text cho UI)."""
-        proc = await asyncio.create_subprocess_exec(
-            CLAUDE_BIN, "mcp", *args, cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-        try:
-            out, _ = await asyncio.wait_for(proc.communicate(), 120)
-        except asyncio.TimeoutError:
-            proc.kill()
-            return "timeout (120s): claude mcp " + " ".join(args)
-        return out.decode("utf-8", errors="replace")
-
     async def api_fs_list(request: Request):
         """Duyệt thư mục server-side cho picker Working dir (form spawn).
-        Chỉ liệt kê THƯ MỤC (không file), bỏ hidden. Mặc định: $HOME."""
+        Chỉ liệt kê THƯ MỤC (không file), bỏ hidden. Mặc định: $HOME.
+        `q` → tìm theo TÊN thư mục thay vì liệt kê 1 cấp (xem _search_dirs)."""
         raw = (request.query_params.get("path") or "").strip() or str(Path.home())
+        q = (request.query_params.get("q") or "").strip()
+        if q:
+            base = Path(raw).expanduser()
+            if not base.is_dir():
+                base = Path.home()
+            return JSONResponse({"path": str(base), "parent": None, "dirs": [],
+                                 "matches": _search_dirs(base, q)})
         p = Path(raw).expanduser()
         try:
             p = p.resolve()
@@ -2214,35 +2949,14 @@ def build_app():
                              "parent": str(p.parent) if p != p.parent else None,
                              "dirs": dirs})
 
-    async def api_mcp_list(request: Request):
-        """MCP đã đăng ký cho project (`claude mcp list` tại cwd)."""
-        cwd = (request.query_params.get("cwd") or "").strip()
-        if not cwd or not os.path.isdir(cwd):
-            return JSONResponse({"error": "cwd không hợp lệ"}, status_code=400)
-        return JSONResponse({"out": await _claude_mcp(["list"], cwd)})
-
-    async def api_mcp_add(request: Request):
-        """Add MCP cho project: `claude mcp add <args người dùng nhập>` tại cwd."""
-        body = await request.json()
-        cwd = (body.get("cwd") or "").strip()
-        args = (body.get("args") or "").strip()
-        if not cwd or not os.path.isdir(cwd):
-            return JSONResponse({"error": "cwd không hợp lệ"}, status_code=400)
-        if not args:
-            return JSONResponse({"error": "args bắt buộc (phần sau 'claude mcp add')"}, status_code=400)
-        try:
-            argv = shlex.split(args)
-        except ValueError as e:
-            return JSONResponse({"error": f"args không parse được: {e}"}, status_code=400)
-        return JSONResponse({"out": await _claude_mcp(["add", *argv], cwd)})
-
     async def api_get_skill(request: Request):
         """SKILL hiện tại của role + path đích (<cwd>/.claude/skills/<name>/SKILL.md)."""
         s = get_session(request.path_params["sid"])
         if not s:
             return JSONResponse({"error": "not found"}, status_code=404)
         cwd, name = s.get("cwd") or "", s.get("name") or ""
-        return JSONResponse({"skill": _role_skill(cwd, name), "path": str(_skill_path(cwd, name))})
+        return JSONResponse({"skill": _role_skill(cwd, name), "path": str(_skill_path(cwd, name)),
+                             "paths": [str(_skill_path(cwd, name, r)) for r in CLI_SKILL_ROOTS]})
 
     async def api_put_skill(request: Request):
         """Upsert SKILL của role vào project cwd: tạo thư mục nếu chưa có, đè nếu đã có."""
@@ -2255,13 +2969,27 @@ def build_app():
             return JSONResponse({"error": "content rỗng — không ghi"}, status_code=400)
         cwd, name = s.get("cwd") or "", s.get("name") or ""
         _write_role_skill(cwd, name, content)
-        return JSONResponse({"path": str(_skill_path(cwd, name)), "bytes": len(content.encode("utf-8"))})
+        return JSONResponse({"path": str(_skill_path(cwd, name)),
+                             "paths": [str(_skill_path(cwd, name, r)) for r in CLI_SKILL_ROOTS],
+                             "bytes": len(content.encode("utf-8"))})
 
     async def ws_terminal(websocket):
-        """Terminal thật trong browser (xterm.js): spawn `claude --resume <sid>` trong PTY tại cwd
-        của session, bơm 2 chiều qua WebSocket. Client gửi JSON {t:'i', d:<keys>} (input) và
-        {t:'r', c, r} (resize); server gửi bytes thô cho xterm ghi thẳng.
-        Mỗi kết nối 1 PTY + 1 thread đọc (os.read blocking); đóng WS là giết child."""
+        """Terminal thật trong browser (xterm.js): spawn CLI interactive (claude/codex, xem
+        terminal_argv) trong PTY tại cwd của session, bơm 2 chiều qua WebSocket.
+        Client gửi JSON {t:'i', d:<keys>} (input) và {t:'r', c, r} (resize); server gửi bytes thô.
+        Mỗi kết nối 1 PTY + 1 thread đọc (os.read blocking); đóng WS là giết child.
+
+        CHỈ CHẠY TRÊN POSIX: pty/termios/fcntl là module Unix, Windows không có. Bản Windows vẫn
+        dùng được mọi thứ còn lại (headless agent, signal, /v1 chat) — chỉ terminal nhúng là không.
+        Báo thẳng ra màn hình xterm thay vì để import lỗi rồi WS đứt câm."""
+        if os.name != "posix":
+            await websocket.accept()
+            await websocket.send_text(
+                "\r\n\x1b[33mTerminal nhúng chỉ chạy trên Linux/macOS\x1b[0m (cần pty — Windows "
+                "không có).\r\nMở CLI bằng terminal của Windows trong thư mục project; phần còn "
+                "lại của orchestrator (agent headless, signal, API /v1) vẫn dùng bình thường.\r\n")
+            await websocket.close(code=4403)
+            return
         import fcntl
         import pty
         import struct
@@ -2279,15 +3007,21 @@ def build_app():
             return
         await websocket.accept()
         cwd = (s.get("cwd") or "").strip() or str(Path.home())
+        argv = terminal_argv(s, websocket.query_params.get("cli", ""))
         pid, fd = pty.fork()
-        if pid == 0:  # child: chạy claude interactive trong PTY
+        if pid == 0:  # child: chạy CLI interactive trong PTY
             try:
                 os.chdir(cwd)
             except OSError:
                 pass
             os.environ["TERM"] = "xterm-256color"
+            # codex mở từ terminal PHẢI gỡ key API y như đường headless (_codex_env), nếu không
+            # nó chạy "API-key mode" và đốt credits trong khi đường signal dùng gói ChatGPT.
+            if argv[0] == CODEX_BIN:
+                for k in CODEX_DROP_ENV:
+                    os.environ.pop(k, None)
             try:
-                os.execvp(CLAUDE_BIN, [CLAUDE_BIN, "--resume", sid])
+                os.execvp(argv[0], argv)
             finally:
                 os._exit(1)  # execvp fail — không được rơi ngược vào event loop của cha
 
@@ -2350,13 +3084,24 @@ def build_app():
     async def api_set_model(request: Request):
         """Đổi model của 1 session ngay trên bảng Sessions (không cần re-register)."""
         sid = request.path_params["sid"]
-        if not get_session(sid):
+        s = get_session(sid)
+        if not s:
             return JSONResponse({"error": "not found"}, status_code=404)
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001
             body = {}
-        set_session_model(sid, (body.get("model") or "").strip())
+        model = (body.get("model") or "").strip()
+        # Engine suy TỪ model, mà session id gắn chặt với engine đã tạo ra nó (uuid của claude
+        # không resume được bằng codex và ngược lại). Cho đổi xuyên engine = biến session thành
+        # xác: mọi lần resume sau đó đều lỗi. Chặn ở đây, muốn đổi thì spawn session mới.
+        old, new = engine_name_of_session(s), engine_from_model(model)
+        if old != new:
+            return JSONResponse(
+                {"error": f"không đổi model qua lại giữa '{new}' và '{old}' được — session id của "
+                          f"engine này CLI kia không resume được. Hãy spawn session mới."},
+                status_code=400)
+        set_session_model(sid, model)
         s = get_session(sid)
         publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": s.get("workspace_id")})
         return JSONResponse(s)
@@ -2371,8 +3116,10 @@ def build_app():
         except Exception:  # noqa: BLE001
             body = {}
         eff = (body.get("effort") or "").strip()
-        if eff and eff not in EFFORT_LEVELS:
-            return JSONResponse({"error": f"effort không hợp lệ; dùng: {', '.join(EFFORT_LEVELS)}"}, status_code=400)
+        # Nhận cả thang chung; mức vượt trần engine/model sẽ được clamp lúc chạy (clamp_effort),
+        # không chặn ở đây — đổi model sau đó là mức cũ lại dùng được.
+        if eff and eff not in EFFORT_LADDER:
+            return JSONResponse({"error": f"effort không hợp lệ; dùng: {', '.join(EFFORT_LADDER)}"}, status_code=400)
         set_session_effort(sid, eff)
         s = get_session(sid)
         publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": s.get("workspace_id")})
@@ -2579,6 +3326,116 @@ def build_app():
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
+    # ── /v1: chat tương thích OpenAI (xem block "Chat API tương thích OpenAI") ──
+
+    def _oa_err(msg, status=400, typ="invalid_request_error", code=None):
+        """Lỗi ĐÚNG shape OpenAI — SDK client bóc e.message/e.code, trả shape khác là nó nuốt."""
+        return JSONResponse({"error": {"message": msg, "type": typ, "param": None, "code": code}},
+                            status_code=status)
+
+    async def _chat_resolve(request):
+        """(session, workspace_id, prompt, body) hoặc (None, response lỗi). Gom mọi kiểm tra đầu
+        vào vào 1 chỗ để stream và non-stream không lệch luật nhau."""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return None, _oa_err("body phải là JSON")
+        if not isinstance(body, dict):
+            return None, _oa_err("body phải là JSON object")
+        alias, wsid = _chat_agent_ref(body, request.query_params)
+        if not alias:
+            return None, _oa_err("thiếu agent: truyền 'agent_alias' (hoặc model="
+                                 "'<workspace_id>/<agent_alias>')", code="agent_alias_required")
+        wsid = wsid or DEFAULT_WORKSPACE
+        if not get_workspace(wsid):
+            return None, _oa_err(f"workspace '{wsid}' không tồn tại", 404, code="workspace_not_found")
+        blocked, why = workspace_blocked(wsid)
+        if blocked:
+            return None, _oa_err(f"workspace '{wsid}': {why}", 409, code="workspace_blocked")
+        sid = resolve_session_id(alias, wsid)
+        session = get_session(sid) if sid else None
+        if not session:
+            return None, _oa_err(f"không có agent '{alias}' trong workspace '{wsid}'", 404,
+                                 typ="model_not_found", code="agent_not_found")
+        if session["status"] in ("paused", "stopped"):
+            return None, _oa_err(f"agent '{alias}' đang {session['status']} — resume trên dashboard "
+                                 f"rồi gọi lại", 409, code="agent_" + session["status"])
+        prompt = _chat_prompt(body.get("messages"))
+        if not prompt:
+            return None, _oa_err("'messages' phải có ít nhất 1 message còn nội dung text")
+        return (session, wsid, prompt, body), None
+
+    async def api_chat_completions(request: Request):
+        """POST /v1/chat/completions — 1 request = 1 lượt chạy thật của agent."""
+        ok, err = await _chat_resolve(request)
+        if err:
+            return err
+        session, wsid, prompt, body = ok
+        model = str(body.get("model") or "").strip() or f"{wsid}{CHAT_MODEL_SEP}{session['name']}"
+        cid, created = _chat_id(), _chat_created()
+        want_usage = bool((body.get("stream_options") or {}).get("include_usage"))
+
+        if not body.get("stream"):
+            parts, res = [], {}
+            async for kind, data in chat_run_stream(session, prompt, wsid):
+                (parts.append(data) if kind == "text" else res.update(data))
+            text = "\n\n".join(parts)
+            if res.get("status") not in ("done", None):
+                return _oa_err(text or res.get("result") or "agent chạy lỗi", 502,
+                               typ="upstream_error", code=res.get("status"))
+            return JSONResponse({
+                "id": cid, "object": "chat.completion", "created": created, "model": model,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
+                             "finish_reason": "stop"}],
+                "usage": _chat_usage(prompt, text, res.get("tokens")),
+            })
+
+        async def gen():
+            sse = lambda d: f"data: {json.dumps(d, ensure_ascii=False)}\n\n"  # noqa: E731
+            yield sse(_chat_chunk(cid, model, created, {"role": "assistant", "content": ""}))
+            text, res = "", {}
+            try:
+                async for kind, data in chat_run_stream(session, prompt, wsid):
+                    if kind == "text":
+                        # Agent phát từng MESSAGE (không phải từng token) → chèn ngăn cách như
+                        # lúc gộp ở nhánh non-stream, để 2 chế độ ra cùng một nội dung.
+                        chunk = ("\n\n" + data) if text else data
+                        text += chunk
+                        yield sse(_chat_chunk(cid, model, created, {"content": chunk}))
+                    else:
+                        res = data
+            except Exception as e:  # noqa: BLE001 — stream đã mở, không trả HTTP status được nữa
+                yield sse({"error": {"message": f"lỗi khi chạy agent: {e}", "type": "upstream_error"}})
+            # Lỗi giữa chừng: KHÔNG im lặng đóng stream (client sẽ tưởng agent trả lời xong).
+            if res.get("status") not in ("done", None):
+                yield sse({"error": {"message": res.get("result") or "agent chạy lỗi",
+                                     "type": "upstream_error", "code": res.get("status")}})
+            yield sse(_chat_chunk(cid, model, created, {}, finish="stop"))
+            if want_usage:
+                yield sse(_chat_chunk(cid, model, created, usage=_chat_usage(prompt, text, res.get("tokens"))))
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    async def api_openapi(request: Request):
+        return JSONResponse(openapi_spec())
+
+    async def api_docs(request: Request):
+        from starlette.responses import HTMLResponse
+        return HTMLResponse(_DOCS_HTML)
+
+    async def api_chat_models(request: Request):
+        """GET /v1/models — mỗi agent là 1 'model' id '<workspace_id>/<name>' để SDK chọn được."""
+        wsf = request.query_params.get("workspace_id") or None
+        items = [s for s in list_sessions() if not wsf or s.get("workspace_id") == wsf]
+        return JSONResponse({"object": "list", "data": [
+            {"id": f"{s.get('workspace_id') or DEFAULT_WORKSPACE}{CHAT_MODEL_SEP}{s['name']}",
+             "object": "model", "created": _chat_created(), "owned_by": "orchestrator",
+             "agent_alias": s["name"], "workspace_id": s.get("workspace_id") or DEFAULT_WORKSPACE,
+             "engine": engine_name_of_session(s), "status": s["status"]}
+            for s in items]})
+
     @asynccontextmanager
     async def lifespan(app):
         init_db()  # idempotent — cũng migrate bảng/cột mới cho DB cũ (vd run_events)
@@ -2589,20 +3446,39 @@ def build_app():
             await stack.enter_async_context(asset_app.router.lifespan_context(app))
             task = asyncio.create_task(run_loop())
             print(f"[orchestrator] API on http://{ORCH_HOST}:{ORCH_PORT} (dry_run={DRY_RUN})")
+            print(f"[orchestrator] tài liệu API: http://{ORCH_HOST}:{ORCH_PORT}/docs")
             print("[orchestrator] MCP mounted: /signal/mcp, /unity/mcp")
+            # Agent chạy shell với bypassPermissions. CORS mở + không có key = bất kỳ trang web
+            # nào người dùng mở cũng POST được /v1/chat/completions và sai khiến agent trên máy này.
+            if CORS_ORIGINS == ["*"] and not ORCH_API_KEY:
+                print("[orchestrator] ⚠ CORS mở cho MỌI origin và KHÔNG có ORCH_API_KEY — trang web "
+                      "bất kỳ có thể sai khiến agent trên máy này. Đặt ORCH_API_KEY, hoặc giới hạn "
+                      "ORCH_CORS_ORIGINS=http://localhost:3000", file=sys.stderr)
             try:
                 yield
             finally:
                 task.cancel()
 
     class ApiKeyMiddleware(BaseHTTPMiddleware):
-        """Chặn /api/* nếu thiếu/sai API key. Chỉ bật khi ORCH_API_KEY được set (mặc định tắt
-        để dev localhost như cũ). Key nhận qua header 'X-API-Key' hoặc query '?api_key=' (cho
-        EventSource/SSE không gắn được custom header). Không đụng dashboard tĩnh, /health, MCP mount."""
+        """Chặn /api/* và /v1/* nếu thiếu/sai API key. Chỉ bật khi ORCH_API_KEY được set (mặc định
+        tắt để dev localhost như cũ). Key nhận qua header 'X-API-Key', 'Authorization: Bearer <key>'
+        (SDK OpenAI chỉ gửi được kiểu này), hoặc query '?api_key=' (cho EventSource/SSE không gắn
+        được custom header). Không đụng dashboard tĩnh, /health, MCP mount."""
         async def dispatch(self, request, call_next):
-            if ORCH_API_KEY and request.url.path.startswith("/api/"):
-                key = request.headers.get("x-api-key") or request.query_params.get("api_key", "")
+            path = request.url.path
+            # OPTIONS = preflight, chuẩn CORS cấm gửi kèm Authorization → không đòi key ở đây
+            # (CORSMiddleware ở ngoài đã trả lời trước, đây chỉ là rào phòng khi tắt CORS).
+            if ORCH_API_KEY and request.method != "OPTIONS" and path.startswith(("/api/", "/v1/")):
+                bearer = request.headers.get("authorization", "")
+                bearer = bearer[7:].strip() if bearer[:7].lower() == "bearer " else ""
+                key = (request.headers.get("x-api-key") or bearer
+                       or request.query_params.get("api_key", ""))
                 if not secrets.compare_digest(key, ORCH_API_KEY):
+                    # Shape lỗi của OpenAI cho /v1 (SDK bóc e.message), shape cũ cho /api.
+                    if path.startswith("/v1/"):
+                        return JSONResponse({"error": {"message": "sai hoặc thiếu API key",
+                                                       "type": "invalid_request_error",
+                                                       "code": "invalid_api_key"}}, status_code=401)
                     return JSONResponse({"error": "unauthorized"}, status_code=401)
             return await call_next(request)
 
@@ -2620,10 +3496,7 @@ def build_app():
         Route("/api/sessions", api_register, methods=["POST"]),
         Route("/api/sessions/spawn", api_spawn, methods=["POST"]),
         Route("/api/available-tools", api_available_tools),
-        Route("/api/claude-sessions", api_claude_sessions),
         Route("/api/fs", api_fs_list),
-        Route("/api/mcp", api_mcp_list),
-        Route("/api/mcp", api_mcp_add, methods=["POST"]),
         WebSocketRoute("/ws/terminal", ws_terminal),
         Route("/api/skills/templates", api_skill_templates),
         Route("/api/sessions/{sid}", api_session_detail),
@@ -2654,6 +3527,13 @@ def build_app():
         Route("/api/runs/{rid}/events", api_run_events),
         Route("/api/stats", api_stats),
         Route("/api/events", api_events),
+        # Chat tương thích OpenAI cho app ngoài (base_url = http://<host>:<port>/v1)
+        Route("/v1/chat/completions", api_chat_completions, methods=["POST"]),
+        Route("/v1/models", api_chat_models),
+        # Tài liệu: /docs xem bằng Swagger UI, /openapi.json để import vào Postman/codegen.
+        # KHÔNG nằm sau ApiKeyMiddleware (chỉ chặn /api/ + /v1/) — đọc tài liệu không cần key.
+        Route("/openapi.json", api_openapi),
+        Route("/docs", api_docs),
         # MCP server nội bộ mount chung port (đặt trước static "/"): /signal/mcp, /unity/mcp.
         Mount("/signal", app=signal_app),
         Mount("/unity", app=unity_app),
@@ -2661,11 +3541,25 @@ def build_app():
     ]
 
     # Dashboard (Phase C): serve static UI at "/" (must be last — catches the rest).
-    static_dir = Path(__file__).parent / "static" / "orchestrator"
+    static_dir = _bundle_dir() / "static" / "orchestrator"
     if static_dir.exists():
         routes.append(Mount("/", app=StaticFiles(directory=str(static_dir), html=True)))
 
-    middleware = [Middleware(ApiKeyMiddleware)] if ORCH_API_KEY else []
+    # THỨ TỰ QUAN TRỌNG: CORS phải NGOÀI CÙNG. Preflight OPTIONS của trình duyệt KHÔNG mang
+    # Authorization (theo chuẩn), nên nếu ApiKeyMiddleware chạy trước thì preflight ăn 401 và
+    # request thật không bao giờ được gửi.
+    middleware = []
+    if CORS_ORIGINS:
+        from starlette.middleware.cors import CORSMiddleware
+        middleware.append(Middleware(
+            CORSMiddleware, allow_origins=CORS_ORIGINS,
+            allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+            allow_headers=["authorization", "content-type", "x-api-key"],
+            # False: dùng '*' kèm credentials là trình duyệt tự chặn, và API này xác thực bằng
+            # header tường minh chứ không bằng cookie.
+            allow_credentials=False, max_age=600))
+    if ORCH_API_KEY:
+        middleware.append(Middleware(ApiKeyMiddleware))
     return Starlette(routes=routes, lifespan=lifespan, middleware=middleware)
 
 
