@@ -1,128 +1,301 @@
-# Unity Game Dev — Multi-Agent Orchestrator
+# Agent Orchestrator
 
-A toolkit for building **Unity 3D games with a team of headless Claude agents**.
-A Session Orchestrator coordinates multiple Claude sessions (e.g. `game-developer`,
-`artist-director`, `director`) that signal each other, hand off work, and pause for
-human approval — while an MCP server keeps the game's story, scenes, and assets
-planned and in sync.
+A harness that puts **agents from different providers on one canvas** and lets them work
+together. Claude Code and Codex CLI sessions run side by side, signal each other, hand off
+work, and stream their output into a single web UI — while an OpenAI-compatible API lets your
+own applications talk to any of them.
 
-Three MCP servers work together:
+The orchestrator does not reimplement an agent. It drives the CLIs you already have installed
+and logged in, so each provider keeps its own subscription, its own auth, and its own tools.
 
-| Server | Role | Port |
-|--------|------|------|
-| **session-orchestrator** | Coordinates headless Claude sessions: signal routing, human-in-the-loop approval, audit log, web dashboard | `8992` |
-| **signal** | Agent-to-agent signaling (`send_signal`, `compact_context`, `list_agents`) — mounted in-process by the orchestrator | `8992/signal` |
-| **unity-dev** | Game-dev planning: story, scenes, assets, GDD, C# script templates | `8990` |
-
-Plus **[Coplay unity-mcp](https://github.com/CoplayDev/unity-mcp)** (external) to drive the
-Unity Editor directly — GameObjects, lighting, materials, screenshots.
+![Orchestrator dashboard](images/image-4.jpg)
 
 ---
 
-## Showcase — *THE LAST SIGNAL (ALONE)* (built by the agent team)
+## What it does
 
-A sci-fi survival game built end-to-end by orchestrated Claude agents.
+**1 · One canvas, many agents.** Every agent is a card you can drag, resize, and open a live
+terminal inside. Arrows animate between cards as signals flow, so you see the hand-offs
+happening rather than reading them out of a log.
 
-| | |
-|---|---|
-| ![Cabin interior scene in Unity 6](images/image-1.jpeg) | **Playable scene** — the `Cabin_Interior` of *THE LAST SIGNAL (ALONE)*, lit and dressed in Unity 6. |
-| ![Radar signal-detection UI](images/image-2.jpg) | **In-game UI** — the radar signal-detection panel driven by the narrative database. |
-| ![ADA dialogue in the DeadShip_Medical scene](images/image-3.jpg) | **Narrative** — the AI companion *ADA* speaking inside `DeadShip_Medical`. |
-| ![Session Orchestrator dashboard](images/image-4.jpg) | **The orchestrator at work** — `game-developer`, `artist-director`, and `director` agents exchanging signals, with a live audit log of runs + token usage. |
+**2 · Agents talk to each other, in parallel.** An agent calls `send_signal(to_role="...")` and
+the orchestrator resolves the role, injects the message into that session, and records the run.
+Agents on different projects run concurrently; two messages to the *same* agent queue behind a
+per-session lock so transcripts never interleave.
 
-The last shot is the point: the game above was produced by agents talking to **each
-other** through the orchestrator, not by one session working alone.
+**3 · Claude Code and Codex, together.** Mix providers in one workspace and chat with both at
+the same time from the same UI. A `director` agent on Claude can hand a task to a `backend`
+agent on Codex and get a report back — the signal path is identical for both.
+
+**4 · OpenAI-compatible API.** Point any OpenAI client at `/v1` and chat with an agent as if it
+were a model. Streaming included. Your app never learns a bespoke protocol.
+
+---
+
+## Prerequisites
+
+You need the provider CLIs installed and logged in **before** the orchestrator is useful — it
+drives them, it does not replace them.
+
+### 1. Claude Code
+
+```bash
+npm install -g @anthropic-ai/claude-code
+claude          # log in once, interactively
+claude --version
+```
+
+### 2. Codex CLI
+
+```bash
+npm install -g @openai/codex
+codex login     # log in with your ChatGPT account
+codex --version
+```
+
+> Codex runs on your **ChatGPT subscription**. If `OPENAI_API_KEY` is present in the
+> environment, Codex silently switches to API-key mode and bills credits instead. The
+> orchestrator strips that variable from every Codex process it starts (headless *and*
+> terminal), so the subscription is used either way — but check `codex doctor` if you are
+> unsure which mode you are in.
+
+### 3. Python 3.10+ (only if running from source)
+
+```bash
+pip install -r requirements.txt
+```
+
+Skip this if you use a prebuilt binary from [Releases](../../releases).
 
 ---
 
 ## Setup
 
-```bash
-# 1. Python deps (orchestrator + unity-dev + signal)
-pip install -r requirements.txt
+### Start the orchestrator
 
-# 2. Claude CLI must be installed and on PATH (the orchestrator drives it)
-claude --version
+```bash
+python3 session_orchestrator.py serve        # from source
+./agent-orch serve                           # or the prebuilt binary
 ```
 
-That's it — the servers create their own SQLite DBs on first run
-(`~/.session_orch_db/`, `~/.unity_dev_db/`).
+| URL | What |
+|---|---|
+| `http://localhost:8992/` | Canvas dashboard |
+| `http://localhost:8992/docs` | API documentation (Swagger UI) |
+| `http://localhost:8992/openapi.json` | OpenAPI spec — import into Postman, Insomnia, codegen |
+
+Databases are created on first run under `~/.session_orch_db/`.
+
+### Register the signal MCP — once, for every session
+
+This is what lets agents reach each other. Do it **once per CLI**; every session afterwards
+picks it up automatically.
+
+```bash
+# Claude Code — user scope applies to every project, not just the current one
+claude mcp add --transport http --scope user signal http://127.0.0.1:8992/signal/mcp
+
+# Codex CLI — writes to ~/.codex/config.toml, which is global by nature
+codex mcp add signal --url http://127.0.0.1:8992/signal/mcp
+```
+
+Verify:
+
+```bash
+claude mcp list          # expect: signal
+codex mcp list           # expect: signal
+```
+
+The signal server runs **in-process** with the orchestrator, so there is no second service to
+start and no port to open. It exposes three tools:
+
+| Tool | Purpose |
+|---|---|
+| `send_signal(to_role, message, from_role)` | Hand work to another agent |
+| `list_agents(from_role)` | See who is online in your workspace |
+| `compact_context(role, focus)` | Compact a long transcript |
+
+> `from_role` must be your **own registered session name**. A made-up name is rejected: the
+> orchestrator uses it to draw the flow on the canvas and to count exchanges between a pair of
+> agents.
 
 ---
 
-## Run
+## Creating agents
 
-### 1. Start the orchestrator (bundles signal + unity-dev on one port)
+Use **Spawn agent** on the dashboard. Three fields matter:
 
-```bash
-python3 session_orchestrator.py serve        # dashboard + API + MCP on :8992
+- **Working dir** — the project the agent operates in. Type a folder name to search for it.
+- **Model** — a tab per provider:
+
+  | Tab | Values | Runs on |
+  |---|---|---|
+  | Claude | `opus`, `sonnet`, `haiku`, `claude-opus-4-8`, … | Claude Code CLI |
+  | Codex | `codex` (auto), `codex:gpt-5.6-terra`, `codex:gpt-5.6-luna`, … | Codex CLI |
+
+  The `codex:` prefix is required. Codex model slugs such as `gpt-5.6-terra` are also valid
+  OpenAI API model names, so without the prefix there is no way to tell which you meant.
+
+- **Init prompt** — the agent's playbook. It is written to `SKILL.md` inside the project so the
+  role survives long transcripts and context compaction.
+
+### Reasoning effort
+
+One ladder is shared across providers, and each model gets clamped to what it actually
+supports rather than failing:
+
+| Model | Ceiling |
+|---|---|
+| Claude (any) | `max` |
+| `codex:gpt-5.6-terra` | `ultra` |
+| `codex:gpt-5.6-luna` | `max` |
+| `codex:gpt-5.5`, `codex:gpt-5.4-mini` | `xhigh` |
+
+Asking for `ultra` on a model that stops at `xhigh` runs at `xhigh` instead of erroring out.
+
+---
+
+## OpenAI-compatible API
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8992/v1", api_key="<ORCH_API_KEY>")
+
+stream = client.chat.completions.create(
+    model="<workspace_id>/<agent_alias>",          # e.g. "ws_3b99a7/backend"
+    messages=[{"role": "user", "content": "Summarise today's changes"}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
-Open **http://localhost:8992/** for the dashboard (sessions, signals, approvals,
-audit log). Safe dry-run without calling Claude:
+`agent_alias` and `workspace_id` can also be sent as separate fields in the body or as query
+parameters. `GET /v1/models` lists every agent as a selectable model id.
+
+### Two ways this differs from OpenAI
+
+**It is stateful.** OpenAI is stateless — the client resends the whole `messages` array every
+turn. Here the conversation lives in the CLI's own transcript on the server, so only the part
+**new since the last `assistant` message** is sent to the agent. Resending history would
+duplicate context, not restore it.
+
+**One request is one real agent run.** It goes through the session lock, the daily run cap, and
+the audit log. Two requests to the same agent queue rather than run in parallel, and a single
+turn can take minutes (`ORCH_CHAT_TIMEOUT`, default 900s).
+
+### Browser clients
+
+CORS is enabled by default (`ORCH_CORS_ORIGINS`, default `*`). Combined with an unset
+`ORCH_API_KEY` this means any web page you visit can drive the agents on your machine — agents
+that run shell commands. Set one of these before exposing the port to a browser:
 
 ```bash
-ORCH_DRY_RUN=1 python3 session_orchestrator.py serve
-```
-
-Register the bundled MCP servers with your Claude sessions:
-
-```bash
-claude mcp add --transport http signal    http://localhost:8992/signal/mcp
-claude mcp add --transport http unity-dev http://localhost:8992/unity/mcp
-```
-
-> `signal` runs **in-process** — agents call `send_signal(to_role="artist-director",
-> message="...")` and the orchestrator resolves the role and injects it into that
-> session via `claude -p --resume`.
-
-### 2. Or run unity-dev standalone
-
-```bash
-python3 unity_dev.py                          # :8990
-claude mcp add --transport http unity-dev http://localhost:8990/mcp
-```
-
-### CLI (no server)
-
-```bash
-python3 session_orchestrator.py init            # create DB
-python3 session_orchestrator.py once            # poll & process signals once
-python3 session_orchestrator.py loop            # run as a polling daemon
-python3 session_orchestrator.py list-sessions   # list-signals / list-runs
+ORCH_API_KEY=$(openssl rand -hex 24)          # require Authorization: Bearer <key>
+ORCH_CORS_ORIGINS=http://localhost:3000       # or restrict to your app's origin
 ```
 
 ---
 
 ## Safety
 
-The orchestrator is built to run many Claude agents unattended without runaway loops:
+Built to run many agents unattended without runaway loops:
 
 - **Approval gate** — signals marked `requires_approval` wait for a human on the dashboard.
-- **Daily cap** — `ORCH_MAX_RUNS_PER_DAY` (default 10) blocks a session's next run until
-  you hit **Allow +10** (resets at midnight).
-- **Kill switch** — global + per-workspace stop, from the dashboard.
-- **Per-session lock** — one prompt in-flight per session (no transcript mixing).
-- **Audit log** — every injection recorded in `runs` with status + token count.
-- **Workspaces** — each tenant gets an isolated folder; every session's `cwd` is pinned
-  into it. Set `ORCH_API_KEY` to require `X-API-Key` on `/api/*`.
+- **Ping-pong cap** — a pair of agents gets a bounded number of exchanges per task; the budget
+  reopens when a human gives new work. Stops two agents chatting forever.
+- **Daily cap** — `ORCH_MAX_RUNS_PER_DAY` blocks a session until you press **Allow +N**.
+- **Kill switch** — global and per-workspace, from the dashboard.
+- **Per-session lock** — one prompt in flight per session, so transcripts never mix.
+- **Audit log** — every injection recorded with status, token count, and the full event stream.
+- **Workspaces** — each tenant gets an isolated folder; every session's `cwd` is pinned inside
+  it, and signals never cross a workspace boundary.
 
-Key env vars: `ORCH_PORT` (8992), `ORCH_DB`, `ORCH_MAX_CONCURRENT` (3),
-`ORCH_DEFAULT_EFFORT` (high), `ORCH_DRY_RUN`. Full list in the header of
-[session_orchestrator.py](session_orchestrator.py).
+### Codex sandbox and MCP
+
+Measured on Codex CLI 0.147.0: in headless `codex exec`, MCP tool calls only run under
+`--dangerously-bypass-approvals-and-sandbox`. Every other approval and sandbox combination
+returns *"user cancelled MCP tool call"*.
+
+So a sandboxed Codex agent **cannot signal**. The orchestrator maps `permission_mode` directly:
+`bypassPermissions` (the default) gives full access and working signals; anything else gives
+`workspace-write` plus no network — and prints a warning to the timeline so the agent's failed
+hand-off is visible rather than silent.
+
+Note that the sandbox restricts **writes and network, not reads**. A sandboxed agent can still
+read any file your user account can. Directory boundaries between agents are a convention in
+their prompts, not a kernel-enforced wall.
 
 ---
 
-## unity-dev tools
+## Configuration
 
-Planning "brain" for the game — unity-dev plans, unity-mcp (Coplay) executes in the Editor.
-DB per game project at `~/.unity_dev_db/<project>.db`.
+| Variable | Default | Purpose |
+|---|---|---|
+| `ORCH_PORT` / `ORCH_HOST` | `8992` / `0.0.0.0` | Where to listen |
+| `ORCH_API_KEY` | *(unset)* | Require a key on `/api/*` and `/v1/*` |
+| `ORCH_CORS_ORIGINS` | `*` | Allowed browser origins; empty disables CORS |
+| `CLAUDE_BIN` / `ORCH_CODEX_BIN` | `claude` / `codex` | Paths to the provider CLIs |
+| `ORCH_DEFAULT_EFFORT` | `high` | Reasoning effort when a session sets none |
+| `ORCH_MAX_CONCURRENT` | `3` | Agent runs in flight at once |
+| `ORCH_CHAT_TIMEOUT` | `900` | Seconds one `/v1` turn may take |
+| `ORCH_DRY_RUN` | `0` | Simulate runs without calling any CLI |
 
-- **Story** — `add_story_element`, `list_story_elements`, `update_story_element`, `export_narrative_json`
-- **Scenes** — `add_scene`, `list_scenes`, `update_scene`
-- **Assets** — `add_asset`, `list_assets`, `update_asset`
-- **GDD** — `get_gdd`, `update_gdd`
-- **Scripts** — `generate_script`, `list_templates`
+Values can also live in a `.env` file placed **next to the executable**. Full list in the header
+of [session_orchestrator.py](session_orchestrator.py).
 
-See **[docs/unity-mcp.md](docs/unity-mcp.md)** for Editor setup and
-**[memory/unity-mcp/CLAUDE.md](memory/unity-mcp/CLAUDE.md)** for art-direction rules.
+---
+
+## Command line
+
+```bash
+python3 session_orchestrator.py init            # create the database
+python3 session_orchestrator.py serve           # dashboard + API + MCP
+python3 session_orchestrator.py once            # process pending signals once
+python3 session_orchestrator.py loop            # polling daemon, no web server
+python3 session_orchestrator.py list-sessions   # also: list-signals, list-runs
+```
+
+---
+
+## Prebuilt binaries
+
+Single-file executables for Linux and Windows are published on every tagged release, built and
+smoke-tested by [GitHub Actions](.github/workflows/build.yml).
+
+```bash
+chmod +x agent-orch-linux-x64
+./agent-orch-linux-x64 serve
+```
+
+Build one yourself:
+
+```bash
+pip install pyinstaller
+pyinstaller build.spec --noconfirm
+```
+
+**Windows limitation:** the embedded terminal needs `pty`, which is Unix-only. Everything else —
+headless agents, signalling, the `/v1` API, the dashboard — works normally; open the CLIs in a
+regular Windows terminal instead.
+
+---
+
+## Case study — *THE LAST SIGNAL (ALONE)*
+
+A sci-fi survival game in Unity 6, produced end to end by an orchestrated agent team rather
+than a single session: a director split the work, a programmer wrote the C# systems, an artist
+directed lighting and mood, a level designer blocked out the spaces, and a sound engineer wired
+the audio — handing off to each other through signals the whole way.
+
+The repo still ships the tooling that team used: a `unity-dev` MCP server for story, scenes,
+assets and GDD state, plus role templates for each of those roles. It is one example workload,
+not the purpose of the project.
+
+```bash
+python3 unity_dev.py                          # standalone on :8990
+claude mcp add --transport http unity-dev http://127.0.0.1:8992/unity/mcp
+```
+
+See [docs/unity-mcp.md](docs/unity-mcp.md) for Unity Editor setup.
