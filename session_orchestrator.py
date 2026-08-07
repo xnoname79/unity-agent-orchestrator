@@ -50,6 +50,18 @@ from pathlib import Path
 
 import httpx
 
+# ── Console UTF-8: PHẢI chạy trước mọi print ─────────────────────────────────
+# Console Windows mặc định cp1252. Mọi thông báo có dấu tiếng Việt sẽ ném
+# UnicodeEncodeError và GIẾT cả tiến trình — đã đo trên runner: `init` chết ở dòng "DB tạo tại",
+# `serve` chết giữa lifespan sau khi đã mở 3 MCP session manager.
+# errors="replace" là lưới thứ hai: console lạ đến mấy cũng không được phép giết tiến trình chỉ
+# vì một ký tự không in nổi.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass  # stream bị thay bằng thứ không reconfigure được (pytest capture, pipe lạ)
+
 
 # ── .env loader (stdlib, không thêm dep) ─────────────────────────────────────
 # ── Đường dẫn: chạy từ source hay từ BẢN ĐÓNG GÓI (PyInstaller) đều đúng ──────

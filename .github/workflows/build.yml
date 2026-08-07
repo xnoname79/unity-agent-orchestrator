@@ -51,6 +51,10 @@ jobs:
       - name: Kiểm binary chạy (Linux)
         if: runner.os == 'Linux'
         run: |
+          # PYTHONIOENCODING=cp1252 GIẢ LẬP console Windows ngay trên runner Linux (rẻ, chạy
+          # trước): mọi print có dấu tiếng Việt sẽ ném UnicodeEncodeError và giết tiến trình nếu
+          # quên ép UTF-8 cho stdout/stderr. Bắt ở đây thay vì đợi job Windows.
+          export PYTHONIOENCODING=cp1252
           ./dist/${{ matrix.binary }} init
           # Giữ log của tiến trình con: serve chết vì thiếu module thì đây là chỗ DUY NHẤT nói lý
           # do — không có nó thì chỉ thấy curl timeout rồi đoán mò.
@@ -70,7 +74,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # pwsh KHÔNG dừng khi lệnh native thoát khác 0 → phải tự kiểm. Không có dòng này thì
+          # `init` chết mà job vẫn chạy tiếp, lỗi thật bị đẩy xuống tận bước sau.
           & ./dist/${{ matrix.binary }} init
+          if ($LASTEXITCODE -ne 0) { throw "init thoát với mã $LASTEXITCODE" }
           $env:ORCH_PORT = "8999"; $env:ORCH_HOST = "127.0.0.1"
           # Giữ log để biết LÝ DO khi serve chết, đừng chỉ báo "không kết nối được".
           $p = Start-Process -PassThru -FilePath ./dist/${{ matrix.binary }} -ArgumentList serve `
