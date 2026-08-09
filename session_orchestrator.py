@@ -452,13 +452,12 @@ def get_session_by_name(name, workspace_id=None):
     return dict(row) if row else None
 
 
-# Alias dành riêng: worker gửi to_role="orch" → resolve về session đang bật is_orch.
-# Routing không phụ thuộc tên session → toggle orch sang session khác không gãy [BÁO CÁO].
-ORCH_ALIAS = "orch"
-
-
 def set_session_orch(session_id, on):
-    """Bật/tắt vai orchestrator. Bật: demote mọi orch cũ CÙNG cwd (ràng buộc 1 orch/cwd)."""
+    """Bật/tắt cờ terminal cho 1 session. Bật: tắt cờ ở mọi session CÙNG cwd (1 terminal/project).
+
+    is_orch KHÔNG còn liên quan routing signal (alias 'orch' đã bỏ — đích báo cáo là người gửi,
+    xem _reply_rule). Giờ nó chỉ nói: card này mở terminal nhúng và được kéo giãn. Backend không
+    đọc nó trên đường prompt nữa; giữ tên cột để khỏi migration."""
     _ensure_db()
     conn = _conn()
     if on:
@@ -471,37 +470,15 @@ def set_session_orch(session_id, on):
     conn.close()
 
 
-def _resolve_orch(workspace_id=None, from_ref=None):
-    """Resolve alias 'orch' → session_id đang is_orch. Workspace default có thể chứa nhiều cwd
-    (nhiều project → nhiều orch): ưu tiên orch CÙNG cwd với sender; còn mơ hồ lấy last_active."""
-    _ensure_db()
-    conn = _conn()
-    q, args = "SELECT id, cwd FROM sessions WHERE is_orch = 1", []
-    if workspace_id is not None:
-        q += " AND workspace_id = ?"
-        args.append(workspace_id)
-    rows = [dict(r) for r in conn.execute(q + " ORDER BY last_active DESC", args).fetchall()]
-    conn.close()
-    if len(rows) > 1 and from_ref:
-        sender = get_session(from_ref) or get_session_by_name(from_ref, workspace_id)
-        if sender:
-            same = [r for r in rows if r["cwd"] == sender.get("cwd")]
-            if same:
-                rows = same
-    return rows[0]["id"] if rows else None
-
-
 def resolve_session_id(ref, workspace_id=None, from_ref=None):
     """ref = session_id (exact match) HOẶC role/name → trả session_id, None nếu không thấy.
-    ref == 'orch' (alias dành riêng) → session đang is_orch (xem _resolve_orch).
 
     workspace_id != None: chỉ resolve trong phạm vi workspace đó (chống signal đi nhầm tenant
     khi hai workspace trùng role). Nếu ref là session_id thì cũng phải thuộc đúng workspace.
-    from_ref: id/name người gửi — chỉ dùng để chọn đúng orch khi 1 workspace có nhiều cwd."""
+    from_ref: GIỮ cho tương thích chữ ký (mọi caller đang truyền) — không còn ảnh hưởng kết quả
+    từ khi bỏ alias; đích signal luôn là một tên vai/session id có thật."""
     if not ref:
         return None
-    if ref == ORCH_ALIAS:
-        return _resolve_orch(workspace_id, from_ref)
     s = get_session(ref)
     if s:
         if workspace_id is not None and s.get("workspace_id") != workspace_id:
@@ -1372,10 +1349,6 @@ def _write_role_skill(cwd, name, content):
         p.write_text(content, encoding="utf-8")
 
 
-# Playbook director nằm ở folder CỐ ĐỊNH (không theo tên session) → toggle orch sang session
-# khác không phải ghi/xoá file; session demote tự hết vai director ngay signal kế.
-DIRECTOR_SKILL = "director"
-
 # Roster peer đổi liên tục (agent được spawn/gỡ bất cứ lúc nào) → KHÔNG nướng danh sách vai vào
 # SKILL: đó là cache của dữ liệu động, sai ngay lần đầu có agent rời đi và không ai đi sửa lại.
 # Thay bằng đúng một dòng ghim vào MỌI signal, bảo agent tự hỏi roster sống. Không bao giờ cũ,
@@ -1388,9 +1361,9 @@ _PEER_RULE = ('[Peers] Cần gửi signal cho một vai mà bạn chưa chắc c
 def _reply_rule(name, from_role):
     """Đích báo cáo = NGƯỜI GỬI signal này, không phải một vai cố định.
 
-    Trước đây playbook dạy báo cáo về alias 'orch'. Alias đó vẫn resolve (xem ORCH_ALIAS) nhưng
-    CHỈ khi có session bật is_orch — không bật thì mọi báo cáo chết lặng. Lấy from_role của chính
-    signal thì luôn có đích thật, và chuỗi A→B→C tự báo cáo ngược đúng mắt xích."""
+    Playbook cũ dạy báo cáo về một alias cố định; alias đó chỉ resolve khi có session được đánh
+    dấu orchestrator, không có thì mọi báo cáo chết lặng. Lấy from_role của chính signal thì luôn
+    có đích thật, và chuỗi A→B→C tự báo cáo ngược đúng mắt xích."""
     if not from_role or from_role.strip().lower() in _HUMAN_SENDERS:
         return ("[Báo cáo] Signal này do NGƯỜI DÙNG gửi, không phải agent. Trả lời bằng text ngay "
                 "trong lượt này — KHÔNG gọi send_signal để 'báo cáo' (không có agent nào để nhận).")
@@ -1402,24 +1375,17 @@ def _reply_rule(name, from_role):
             f'KHÔNG gửi signal về chính mình.')
 
 
-def _prepend_role(cwd, name, message, is_orch=False, from_role=""):
+def _prepend_role(cwd, name, message, from_role=""):
     """Ghim role + playbook vào MỖI signal inject → role không trôi khi history dài/compact.
-    Lazy-load: chỉ SKILL của role này, không nhồi mọi skill. Không có SKILL → chỉ prepend tên role.
-    is_orch: session kiêm orchestrator → nhồi CẢ playbook director (folder cố định) LẪN SKILL
-    role riêng — orch vừa điều phối vừa làm việc chuyên môn theo skill của nó."""
+    Lazy-load: chỉ SKILL của role này, không nhồi mọi skill. Không có SKILL → chỉ prepend tên role."""
     parts = []
-    if is_orch:
-        d = _role_skill(cwd, DIRECTOR_SKILL)
-        if d:
-            parts.append(d)
     skill = _role_skill(cwd, name)
     if skill:
         parts.append(skill)
     # Luôn có, kể cả vai không có SKILL riêng.
     parts.append(_PEER_RULE)
     parts.append(_reply_rule(name, from_role))
-    label = f"{name} (orchestrator)" if is_orch else name
-    return (f"[Role: {label}]\n[Signal from: {from_role or 'user'}]\n"
+    return (f"[Role: {name}]\n[Signal from: {from_role or 'user'}]\n"
             + "\n\n---\n\n".join(parts) + f"\n\n---\n\n{message}")
 
 
@@ -1429,20 +1395,6 @@ def _prepend_role(cwd, name, message, is_orch=False, from_role=""):
 # đó được), không có thì dùng bộ đi kèm. Chạy từ source thì hai đường là một.
 TEMPLATES_DIR = (_app_dir() / ".claude" / "skills") if (_app_dir() / ".claude" / "skills").is_dir() \
     else (_bundle_dir() / ".claude" / "skills")
-
-
-def _seed_director_skill(cwd):
-    """Seed playbook director vào <cwd>/.claude/skills/director/ nếu CHƯA có (không đè bản
-    chỉnh tay). Gọi lúc toggle-on orch. Seed từ template 'director' GENERIC (đa domain);
-    bản chuyên môn hoá (vd game-director) là role template pick riêng hoặc chép tay vào
-    director/ của cwd. Worker báo cáo về alias 'orch' — không phụ thuộc tên session."""
-    if not cwd or _skill_path(cwd, DIRECTOR_SKILL).exists():
-        return
-    try:
-        tpl = (TEMPLATES_DIR / DIRECTOR_SKILL / "SKILL.md").read_text(encoding="utf-8")
-        _write_role_skill(cwd, DIRECTOR_SKILL, tpl)
-    except OSError:
-        pass  # thiếu template → orch vẫn chạy, chỉ không có playbook director
 
 
 def _safe_template_name(name):
@@ -2313,7 +2265,6 @@ async def process_signal(signal):
             # from_session lưu TÊN VAI người gửi (xem enqueue_signal) → đưa thẳng vào prompt để
             # agent biết báo cáo ngược cho ai. Rỗng/'user' = người dùng chat, không phải agent.
             inject_msg = _prepend_role(target.get("cwd", ""), target["name"], signal["message"],
-                                       bool(target.get("is_orch")),
                                        signal.get("from_session", ""))
             while True:
                 try:
@@ -2928,11 +2879,8 @@ def build_app():
         return wid, None
 
     def _validate_name(name, wid, session_id=None):
-        """'orch' là alias dành riêng; tên role phải unique trong workspace (routing theo tên
-        — trùng là signal đi nhầm session). session_id: bỏ qua chính nó khi re-register."""
-        if name == ORCH_ALIAS:
-            return JSONResponse({"error": f"'{ORCH_ALIAS}' là alias dành riêng cho orchestrator"},
-                                status_code=400)
+        """Tên role phải unique trong workspace (routing theo tên — trùng là signal đi nhầm
+        session). session_id: bỏ qua chính nó khi re-register."""
         dup = get_session_by_name(name, wid)
         if dup and dup["id"] != session_id:
             return JSONResponse({"error": f"role '{name}' đã tồn tại trong workspace"}, status_code=409)
@@ -2966,8 +2914,8 @@ def build_app():
         return JSONResponse(get_session(body["id"]))
 
     async def api_orch_toggle(request: Request):
-        """Toggle vai orchestrator cho 1 session DB. Bật: demote orch cũ cùng cwd (1 orch/cwd)
-        + seed playbook director (.claude/skills/director/) nếu cwd chưa có. Tắt: về headless."""
+        """Bật/tắt terminal nhúng cho 1 session DB. Bật: tắt terminal của session khác cùng cwd
+        (1 terminal/project). Tắt: card về dạng headless. Xem set_session_orch."""
         sid = request.path_params["sid"]
         s = get_session(sid)
         if not s:
@@ -2975,8 +2923,6 @@ def build_app():
         body = await request.json()
         on = bool(body.get("on", True))
         set_session_orch(sid, on)
-        if on:
-            _seed_director_skill(s.get("cwd", ""))
         publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": s.get("workspace_id")})
         return JSONResponse(get_session(sid))
 

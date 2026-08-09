@@ -338,7 +338,7 @@ window.cvFit = cvFit;
 // Element terminal sống NGOÀI chu trình innerHTML của canvas: tạo 1 lần per session,
 // sau mỗi render chỉ re-attach vào .term-slot của card orchestrator → SSE refresh không giết PTY.
 let cvTerms = {};  // sid → {sid, host, started, term, fit, ws}
-// Khóa terminal orch: run tự động (signal [BÁO CÁO] từ worker) đang/đã chạy trên session
+// Khóa terminal: run tự động (signal [REPORT] từ agent khác) đang/đã chạy trên session
 // → PTY cũ hết ngữ cảnh, 2 claude cùng ghi 1 transcript sẽ xung đột. Key theo NAME
 // (bền qua xoay session id); chỉ mở lại khi user bấm 🔄.
 let termLock = {};  // session name → true
@@ -647,7 +647,7 @@ function agentCard(s, needsYou, isOrch) {
           <button onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')" title="Reload session/terminal (chạy lại CLI đang chọn)">🔄</button>
           <button class="secondary" onclick="termEsc('${esc(s.id)}')"
                   title="Gửi phím Esc vào terminal — dùng khi bấm Esc trên bàn phím không ăn (bộ gõ tiếng Việt / trình duyệt nuốt mất). Tương đương Ctrl+[">⎋</button>
-          <button class="secondary" onclick="if(confirm('Đóng terminal của ${esc(s.name)}? Session về headless worker (bỏ vai orchestrator).'))toggleOrch('${id}',0)"
+          <button class="secondary" onclick="if(confirm('Đóng terminal của ${esc(s.name)}? Session về dạng headless.'))toggleOrch('${id}',0)"
             title="Đóng terminal — session về headless worker, bỏ vai orchestrator">💻</button>
           ${ctxGroup()}${actGroup}
         </div>
@@ -668,7 +668,7 @@ function agentCard(s, needsYou, isOrch) {
       <div class="act-row">
         ${ctrl}${killBtn}${allow}
         <button class="secondary" onclick="toggleOrch('${id}',1)"
-          title="Mở terminal cho session (đặt làm orchestrator của project — demote orch cũ cùng cwd)">💻</button>
+          title="Mở terminal cho session (1 terminal mỗi project — đóng terminal đang mở cùng cwd)">💻</button>
         ${vsBtn}
       </div>
       ${ctxGroup(`<button class="secondary act-txt" onclick="editSkill('${id}','${esc(s.name)}')"
@@ -690,7 +690,7 @@ const EDGE_DEFS = "<defs>" + Object.entries(EDGE_COLORS).map(([k, c]) =>
      <path d="M0,0L8,4L0,8z" fill="${c}"/></marker>`).join("") + "</defs>";
 
 // Toggle vai orchestrator cho 1 session DB (nguồn sự thật: cột is_orch backend — không còn
-// localStorage). Bật: backend tự demote orch cũ cùng cwd + seed director SKILL nếu thiếu.
+// localStorage). Bật: backend tự đóng terminal của session khác cùng cwd (1 terminal/project).
 async function toggleOrch(id, on) {
   try { await api("/api/sessions/" + id + "/orch", "POST", { on: !!on }); }
   catch (e) { console.error(e); alert("Lỗi toggle orchestrator: " + e); return; }
