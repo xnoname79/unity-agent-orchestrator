@@ -1158,7 +1158,7 @@ function renderSpawnEffort() {
   const sel = $("sp-effort"), cur = sel.value;
   const opts = effortOptsFor(spModel());
   sel.innerHTML = opts.map((e) =>
-    `<option value="${e}">${e || `default (${esc(DEFAULT_EFFORT)})`}</option>`).join("");
+    `<option value="${e}">${e || `— select — (server default: ${esc(DEFAULT_EFFORT)})`}</option>`).join("");
   sel.value = opts.includes(cur) ? cur : "";   // mức cũ vượt trần model mới → về default
 }
 
@@ -1273,15 +1273,25 @@ async function spawnAgent() {
   // Tên vai và template là HAI thứ khác nhau: template chỉ là playbook NGUỒN (nhiều agent dùng
   // chung một template được), tên vai là danh tính để signal — phải unique trong workspace.
   const name = slugRole($("sp-role").value);
-  if (!name) return showMsg("sp-msg", "Cần nhập tên role", false);
-  if (!spSel.template) return showMsg("sp-msg", "Cần chọn playbook template", false);
-  showMsg("sp-msg", "Đang spawn…", true);
+  const cwd = $("sp-cwd").value.trim();
+  const model = spModel();
+  const effort = $("sp-effort").value;
+  // Mọi field phải có giá trị: agent thiếu cấu hình chỉ lộ ra ở run đầu tiên, lúc đó sửa đã tốn
+  // một session. Chặn ở đây rẻ hơn nhiều. (Workspace luôn có card 'default' được chọn sẵn;
+  // allowed tools để trống là CÓ nghĩa — bỏ cờ --allowedTools = CLI cho phép mọi tool.)
+  const missing = !name ? "Role name is required"
+    : !spSel.template ? "Pick a playbook template"
+    : !cwd ? "Working dir is required"
+    : !model ? (spSel.model === "__custom" ? "Type a custom model id" : "Pick a model")
+    : !effort ? "Pick a reasoning effort level" : "";
+  if (missing) return showMsg("sp-msg", missing, false);
+  showMsg("sp-msg", "Spawning…", true);
   try {
     const r = await api("/api/sessions/spawn", "POST", {
-      name, cwd: $("sp-cwd").value.trim(),
+      name, cwd,
       workspace_id: spSel.ws,               // "" = default; ≠ default thì cwd tự ghim
-      model: spModel(),
-      effort: $("sp-effort").value,
+      model,
+      effort,
       // codex bỏ qua allowed_tools → gửi [] cho khớp sự thật, đừng lưu vào DB thứ không có hiệu lực.
       allowed_tools: engineOfModel(spModel()) === "codex" ? [] : collectTools("sp"),
       template: spSel.template,
