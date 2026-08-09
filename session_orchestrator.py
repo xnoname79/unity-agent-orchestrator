@@ -1444,8 +1444,11 @@ Playbook vai '{name}' của bạn còn placeholder dạng <VIẾT_HOA> chưa đi
    sát. Giữ nguyên frontmatter YAML đầu file (--- name/description ---) và mọi mục có sẵn — chỉ
    điền chỗ trống. Không được còn placeholder nào sót lại: đó là dấu hiệu bootstrap đã xong, còn
    sót thì lần spawn sau sẽ chạy lại lượt này.
-4. Ghi nội dung Y HỆT NHAU vào CẢ HAI file: {paths}
+4. Ghi nội dung Y HỆT NHAU vào CẢ HAI file bằng công cụ ghi file (Write/Edit), MỖI FILE MỘT LẦN:
+   {paths}
    (Claude đọc .claude, Codex đọc .codex — lệch nhau là hai CLI chạy hai playbook khác nhau.)
+   ĐỪNG copy bằng lệnh shell: `cp` không có trên Windows, agent ở đó sẽ ghi hụt file thứ hai
+   mà không ai biết.
 
 KHÔNG gọi send_signal trong lượt này — lượt này không do agent nào giao, không có ai để báo cáo.
 KHÔNG sửa file nào khác ngoài hai file SKILL trên. Xong thì trả lời ngắn gọn: đã điền những
@@ -1487,7 +1490,7 @@ def _build_init_prompt(name, init_prompt, workspace_id):
 
 
 async def spawn_session(name, project="", cwd="", allowed_tools=None, permission_mode="", init_prompt="",
-                        model="", effort="", workspace_id=DEFAULT_WORKSPACE, engine="claude"):
+                        model="", effort="", workspace_id=DEFAULT_WORKSPACE, engine="claude", skill=""):
     """Tạo một headless session mới bằng `claude -p`, lấy session_id, rồi register.
 
     model: '' = auto (claude tự chọn); hoặc alias 'opus'/'sonnet'/'haiku' / model id cụ thể.
@@ -1508,7 +1511,7 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
             cwd = root
     # Vật thể hoá init_prompt thành SKILL của role (<cwd>/.claude/skills/<name>/SKILL.md) → mỗi
     # signal sau prepend lại từ file này, role không trôi. Rỗng → bỏ qua. Ghi TRƯỚC khi seed generic.
-    _write_role_skill(cwd, name, init_prompt)
+    _write_role_skill(cwd, name, skill or init_prompt)
     # Seed init/system prompt: init_prompt của FE nếu có, else generic 'ready'.
     init_prompt = _build_init_prompt(name, init_prompt, workspace_id)
 
@@ -1651,7 +1654,7 @@ class AgentEngine:
     name = "base"
 
     async def spawn(self, name, project="", cwd="", allowed_tools=None, permission_mode="",
-                    init_prompt="", model="", effort="", workspace_id=DEFAULT_WORKSPACE):
+                    init_prompt="", model="", effort="", workspace_id=DEFAULT_WORKSPACE, skill=""):
         raise NotImplementedError
 
     async def run(self, session, prompt, on_event=None, dry_run=False):
@@ -1668,9 +1671,9 @@ class ClaudeEngine(AgentEngine):
     name = "claude"
 
     async def spawn(self, name, project="", cwd="", allowed_tools=None, permission_mode="",
-                    init_prompt="", model="", effort="", workspace_id=DEFAULT_WORKSPACE):
+                    init_prompt="", model="", effort="", workspace_id=DEFAULT_WORKSPACE, skill=""):
         return await spawn_session(name, project=project, cwd=cwd, allowed_tools=allowed_tools,
-                                   permission_mode=permission_mode, init_prompt=init_prompt,
+                                   permission_mode=permission_mode, init_prompt=init_prompt, skill=skill,
                                    model=model, effort=effort, workspace_id=workspace_id,
                                    engine=self.name)
 
@@ -2032,7 +2035,7 @@ class CodexEngine(AgentEngine):
     name = "codex"
 
     async def spawn(self, name, project="", cwd="", allowed_tools=None, permission_mode="",
-                    init_prompt="", model="", effort="", workspace_id=DEFAULT_WORKSPACE):
+                    init_prompt="", model="", effort="", workspace_id=DEFAULT_WORKSPACE, skill=""):
         # Ghim cwd theo workspace y hệt Claude (cwd truyền vào được tôn trọng).
         if bool(workspace_id) and workspace_id != DEFAULT_WORKSPACE:
             root = workspace_root(workspace_id)
@@ -2042,7 +2045,7 @@ class CodexEngine(AgentEngine):
                 cwd = root
         # Vật thể hoá role thành SKILL: ghi cả .codex/skills (codex tự quét, ĐÃ ĐO) lẫn
         # .claude/skills — bản .claude còn là nguồn _prepend_role đọc để nhồi vào từng signal.
-        _write_role_skill(cwd, name, init_prompt)
+        _write_role_skill(cwd, name, skill or init_prompt)
         prompt = _build_init_prompt(name, init_prompt, workspace_id)
         model = model or CODEX_AUTO_MODEL
         if DRY_RUN:
@@ -3038,9 +3041,18 @@ def build_app():
             return err
         # Playbook nguồn = field 'template' (dashboard gửi; tên vai và template là hai thứ khác
         # nhau — nhiều agent dùng chung một template được). Fallback về tên vai cho client cũ vốn
-        # đặt tên vai trùng tên template. init_prompt tường minh vẫn được tôn trọng (đường API).
-        # Không khớp template nào → init prompt rỗng, agent ra đời không playbook.
-        init_prompt = body.get("init_prompt", "") or _template_skill(
+        # đặt tên vai trùng tên template.
+        #
+        # SKILL và prompt đầu tiên là HAI thứ khác nhau — trước đây gộp làm một và nội dung
+        # template bị gửi thẳng vào `claude -p`. Template có câu mô tả cách placeholder được điền,
+        # model đọc thành mệnh lệnh và tự khảo sát + ghi SKILL NGAY trong lượt init: việc xong
+        # nhưng không có run nào để xem lại, không vào audit, không chịu trần run/ngày, và
+        # _maybe_bootstrap_skill sau đó thấy file đã sạch placeholder nên bỏ qua.
+        #   skill        → nội dung ghi ra SKILL.md
+        #   init_prompt  → tin nhắn đầu tiên; rỗng thì _build_init_prompt seed generic 'ready'
+        # Client gửi init_prompt tường minh (đường API) vẫn giữ nguyên hành vi cũ: dùng cho cả hai.
+        fe_prompt = body.get("init_prompt", "")
+        skill = fe_prompt or _template_skill(
             (body.get("template") or "").strip() or body["name"].strip())
         # Engine suy TỪ MODEL (model 'codex'/'codex:<slug>' → Codex CLI, còn lại → Claude CLI).
         eng_name = resolve_engine_name(body)
@@ -3051,7 +3063,7 @@ def build_app():
         res = await engine_for(eng_name).spawn(
             body["name"], project=body.get("project", ""), cwd=body.get("cwd", ""),
             allowed_tools=body.get("allowed_tools", []), permission_mode=body.get("permission_mode", ""),
-            init_prompt=init_prompt, model=body.get("model", ""),
+            init_prompt=fe_prompt, skill=skill, model=body.get("model", ""),
             effort=body.get("effort", ""), workspace_id=wid)
         if res and res.get("error"):
             return JSONResponse(res, status_code=500)

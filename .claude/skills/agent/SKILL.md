@@ -9,11 +9,6 @@ description: >
 
 # <ROLE_NAME>
 
-> Placeholders below are filled in automatically on first run: the orchestrator asks
-> this agent to survey its working directory and replace every `<UPPERCASE>` blank
-> with what is actually true of this project. Until they are gone, treat them as
-> unanswered questions rather than instructions.
-
 ## Scope
 
 <SCOPE>
