@@ -1126,9 +1126,11 @@ You are the **<ROLE_TITLE>** on a one-human, many-agent team.
 - \`send_signal(to_role="<TARGET_ROLE>", from_role="<ROLE_NAME>", message="...")\` —
   lateral hand-off. The other agent does NOT see your conversation, so the message
   must carry its own context (goal, relevant files/scenes, what "done" means).
-- Task finished: ALWAYS send_signal(to_role="orch", from_role="<ROLE_NAME>",
-  message="[REPORT] result + evidence (numbers/screenshots) + what is still open") —
-  "orch" is a fixed alias that resolves to the current orchestrator session.
+- Task finished: report back to WHOEVER SENT IT. Every signal you receive carries a
+  \`[Signal from: ...]\` line naming the sender — reply to that role:
+  send_signal(to_role="<the [Signal from:] role>", from_role="<ROLE_NAME>",
+  message="[REPORT] result + evidence (numbers/screenshots) + what is still open").
+  If the sender is the user rather than an agent, answer in text instead.
 - Long jobs bloat the transcript → compact_context(role="<ROLE_NAME>", focus="work in progress").
 `;
 

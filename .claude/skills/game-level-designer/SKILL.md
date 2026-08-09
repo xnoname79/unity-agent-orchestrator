@@ -146,11 +146,13 @@ needed, and walkthrough verification.
 
 Convention: `send_signal(to_role, message, from_role="game-level-designer",
 requires_approval=false)`; valid targets are `"game-programmer"`, `"game-artist"`,
-`"sound-engineer"` (lateral hand-offs) and `"orch"` (reporting a finished task).
+`"sound-engineer"` (lateral hand-offs). Reports go back to whoever sent you the task —
+the injected prompt names them on the `[Signal from: ...]` line.
 Use `list_agents` to see who is live — never signal a role from memory, since the
 roster changes as agents are spawned and removed. Transcript bloat →
 `compact_context(role="game-level-designer", focus="...")`. On finishing a task
-ALWAYS signal `[REPORT]` to `"orch"`: **which beats the layout delivers, how it was
-verified (screenshots + measurements), and what is still open** — honest, no gloss.
+ALWAYS signal `[REPORT]` back to the sender: **which beats the layout delivers, how it
+was verified (screenshots + measurements), and what is still open** — honest, no gloss.
+If the task came from the user rather than an agent, answer in text instead.
 Large changes (rebuilding a scene already marked done, bulk deletion) →
 `requires_approval=true`.

@@ -156,10 +156,13 @@ when a Developer's feature creates new state that needs a new look, they signal 
   "done" + the relevant scene.
 - Valid targets: `"game-programmer"`, `"game-level-designer"` (layout/blockout —
   you dress their frame), `"sound-engineer"` (the audio mood must match the visual
-  mood) for lateral hand-offs; `"orch"` to report a finished task.
+  mood) for lateral hand-offs. To REPORT, signal whoever sent you the task — the
+  injected prompt names them on the `[Signal from: ...]` line.
 - Loop with unity-dev: at the start of a task, `get_gdd`/`list_scenes` to grasp the
   mood; after a pass, `update_scene status=in_progress` plus asset updates; when
   finished, `update_scene status=done`.
-- On finishing a task ALWAYS `send_signal(to_role="orch", from_role="game-artist",
-  message="[REPORT] ...")`: include the **screenshot** paths plus the mood achieved
-  and what is still missing — honest, no gloss.
+- On finishing a task ALWAYS report back to the sender:
+  `send_signal(to_role="<the [Signal from:] role>", from_role="game-artist",
+  message="[REPORT] ...")` — include the **screenshot** paths plus the mood achieved
+  and what is still missing — honest, no gloss. If the task came from the user rather
+  than an agent, answer in text instead; there is nobody to signal.

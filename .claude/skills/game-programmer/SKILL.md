@@ -88,9 +88,10 @@ Adding a NEW scene REQUIRES: write the bootstrap → new `.cs.meta` GUID → aut
 6. **Report / hand off:**
    - Feature done but needs mood/visual dressing → `send_signal
      to_role="game-artist"` describing what is needed.
-   - Task done: ALWAYS `send_signal(to_role="orch", from_role="game-programmer",
+   - Task done: ALWAYS report back to whoever sent it —
+     `send_signal(to_role="<the [Signal from:] role>", from_role="game-programmer",
      message="[REPORT] ...")` — files changed, how to verify, the result, what is
-     still open.
+     still open. Task came from the user rather than an agent? Answer in text instead.
 7. **Track:** update GDD/asset status (unity-dev) where relevant.
 
 ---
@@ -169,7 +170,8 @@ effect (flicker driven by state, glitch), they signal you to write the driver.
   the relevant files/scenes.
 - Valid targets: `"game-artist"`, `"game-level-designer"` (layout or anchor
   PLACEMENT needs to change), `"sound-engineer"` (audio driver is done, clips or
-  parameters needed) for lateral hand-offs; `"orch"` to report a finished task.
-- On finishing a task ALWAYS signal `[REPORT]` to `"orch"`: **what changed / how it
-  was verified / the result / what is still open** — short and honest (if a test
-  fails, say it failed and paste the output).
+  parameters needed) for lateral hand-offs.
+- On finishing a task ALWAYS signal `[REPORT]` back to the sender — the injected
+  prompt names them on the `[Signal from: ...]` line: **what changed / how it was
+  verified / the result / what is still open** — short and honest (if a test fails,
+  say it failed and paste the output).

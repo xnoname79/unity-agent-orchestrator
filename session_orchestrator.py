@@ -1380,7 +1380,24 @@ _PEER_RULE = ('[Peers] Cần gửi signal cho một vai mà bạn chưa chắc c
               'workspace. ĐỪNG nhớ tên vai từ lượt trước — danh sách trong đầu bạn là bản cũ.')
 
 
-def _prepend_role(cwd, name, message, is_orch=False):
+def _reply_rule(name, from_role):
+    """Đích báo cáo = NGƯỜI GỬI signal này, không phải một vai cố định.
+
+    Trước đây playbook dạy báo cáo về alias 'orch'. Alias đó vẫn resolve (xem ORCH_ALIAS) nhưng
+    CHỈ khi có session bật is_orch — không bật thì mọi báo cáo chết lặng. Lấy from_role của chính
+    signal thì luôn có đích thật, và chuỗi A→B→C tự báo cáo ngược đúng mắt xích."""
+    if not from_role or from_role.strip().lower() in _HUMAN_SENDERS:
+        return ("[Báo cáo] Signal này do NGƯỜI DÙNG gửi, không phải agent. Trả lời bằng text ngay "
+                "trong lượt này — KHÔNG gọi send_signal để 'báo cáo' (không có agent nào để nhận).")
+    return (f'[Báo cáo] Signal này do vai "{from_role}" giao. Xong việc: '
+            f'send_signal(to_role="{from_role}", from_role="{name}", '
+            f'message="[REPORT] <kết quả> + <bằng chứng: path/số liệu/test> + <còn hở gì>"). '
+            f'Đích báo cáo LUÔN là người giao việc — không phải một vai cố định nào. '
+            f'Cần bàn giao bước kế cho vai khác thì đó là signal RIÊNG, không thay cho báo cáo. '
+            f'KHÔNG gửi signal về chính mình.')
+
+
+def _prepend_role(cwd, name, message, is_orch=False, from_role=""):
     """Ghim role + playbook vào MỖI signal inject → role không trôi khi history dài/compact.
     Lazy-load: chỉ SKILL của role này, không nhồi mọi skill. Không có SKILL → chỉ prepend tên role.
     is_orch: session kiêm orchestrator → nhồi CẢ playbook director (folder cố định) LẪN SKILL
@@ -1393,9 +1410,12 @@ def _prepend_role(cwd, name, message, is_orch=False):
     skill = _role_skill(cwd, name)
     if skill:
         parts.append(skill)
-    parts.append(_PEER_RULE)  # luôn có, kể cả vai không có SKILL riêng
+    # Luôn có, kể cả vai không có SKILL riêng.
+    parts.append(_PEER_RULE)
+    parts.append(_reply_rule(name, from_role))
     label = f"{name} (orchestrator)" if is_orch else name
-    return f"[Role: {label}]\n" + "\n\n---\n\n".join(parts) + f"\n\n---\n\n{message}"
+    return (f"[Role: {label}]\n[Signal from: {from_role or 'user'}]\n"
+            + "\n\n---\n\n".join(parts) + f"\n\n---\n\n{message}")
 
 
 # ─── Skill templates (liệt kê vai/role cho dropdown spawn) ────────────────────
@@ -2285,8 +2305,11 @@ async def process_signal(signal):
             attempts = 0
             engine = engine_for(target)  # chọn engine theo session (default claude)
             # Prepend role + SKILL vào MỖI inject → role không trôi khi history dài (xem _prepend_role).
+            # from_session lưu TÊN VAI người gửi (xem enqueue_signal) → đưa thẳng vào prompt để
+            # agent biết báo cáo ngược cho ai. Rỗng/'user' = người dùng chat, không phải agent.
             inject_msg = _prepend_role(target.get("cwd", ""), target["name"], signal["message"],
-                                       bool(target.get("is_orch")))
+                                       bool(target.get("is_orch")),
+                                       signal.get("from_session", ""))
             while True:
                 try:
                     res = await engine.run(target, inject_msg, on_event=on_event, dry_run=dry)
