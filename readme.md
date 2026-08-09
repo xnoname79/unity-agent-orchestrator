@@ -75,7 +75,7 @@ Skip this if you use a prebuilt binary from [Releases](../../releases).
 
 ```bash
 python3 session_orchestrator.py serve        # from source
-./agent-orch serve                           # or the prebuilt binary
+./agent-orch                                 # or the prebuilt binary — no argument = serve
 ```
 
 | URL | What |
@@ -299,6 +299,10 @@ chmod +x agent-orch-linux-x64
 ./agent-orch-linux-x64 serve
 ```
 
+Running with **no arguments starts `serve`**, so on Windows you can just double-click
+`agent-orch-windows-x64.exe`. A console window opens and stays with the server; closing it stops
+the orchestrator. If startup fails there, the window waits for Enter so you can read the error.
+
 Build one yourself:
 
 ```bash
@@ -314,6 +318,12 @@ pip install pywinpty
 ```
 
 `GET /health` reports `embedded_terminal` — if it is `false`, `embedded_terminal_reason` says why.
+
+> **Before exposing it beyond your own machine:** `ORCH_CORS_ORIGINS` defaults to `*` and there
+> is no API key unless you set one. Agents here run shell commands with permissions bypassed, so
+> that combination lets *any* website you visit drive them. The server prints a banner about it
+> on every start. Set `ORCH_API_KEY`, or narrow `ORCH_CORS_ORIGINS`, in a `.env` next to the
+> executable.
 
 ---
 

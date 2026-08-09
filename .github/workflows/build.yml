@@ -107,6 +107,22 @@ jobs:
           if (-not $spec.paths.'/v1/chat/completions') { throw "/v1 missing from openapi" }
           if (-not $h.embedded_terminal) { throw "embedded terminal unavailable: $($h.embedded_terminal_reason)" }
 
+          # Double-click path: Explorer launches the .exe with NO arguments. Started life as an
+          # argparse usage error that exited(2) and closed the window instantly, so guard it.
+          $env:ORCH_PORT = "8998"
+          $d = Start-Process -PassThru -FilePath ./dist/${{ matrix.binary }} `
+                 -RedirectStandardOutput dbl.log -RedirectStandardError dbl.err
+          $dblOk = $false
+          foreach ($i in 1..40) {
+            try { $dblOk = (Invoke-RestMethod http://127.0.0.1:8998/health).status -eq "ok"; break }
+            catch {
+              if ($d.HasExited) { Get-Content dbl.log, dbl.err; throw "no-argument launch exited immediately" }
+              Start-Sleep -Milliseconds 500
+            }
+          }
+          Stop-Process -Id $d.Id -Force
+          if (-not $dblOk) { Get-Content dbl.log, dbl.err; throw "no-argument launch did not serve" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: agent-orch-${{ matrix.target }}
@@ -149,11 +165,19 @@ jobs:
             ## Run
 
             ```bash
-            chmod +x agent-orch-linux-x64        # Linux
-            ./agent-orch-linux-x64 serve         # Windows: agent-orch-windows-x64.exe serve
+            chmod +x agent-orch-linux-x64
+            ./agent-orch-linux-x64                # no argument = serve
             ```
 
+            On Windows, **double-click `agent-orch-windows-x64.exe`** — no arguments needed. The
+            console window that opens is the server; close it to stop.
+
             Open `http://localhost:8992` (dashboard) or `http://localhost:8992/docs` (API).
+
+            > **Security:** `ORCH_CORS_ORIGINS` defaults to `*` and there is no API key unless you
+            > set one. Agents run shell commands with permissions bypassed, so that combination
+            > lets any website you visit drive them. Set `ORCH_API_KEY` in a `.env` next to the
+            > executable before using this on a shared or untrusted network.
 
             Configure via environment variables, or a `.env` file placed **next to the
             executable**. Notable ones: `ORCH_PORT`, `ORCH_HOST`, `ORCH_API_KEY` (enables auth on

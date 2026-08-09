@@ -3564,15 +3564,23 @@ def build_app():
             await stack.enter_async_context(unity_app.router.lifespan_context(app))
             await stack.enter_async_context(asset_app.router.lifespan_context(app))
             task = asyncio.create_task(run_loop())
-            print(f"[orchestrator] API on http://{ORCH_HOST}:{ORCH_PORT} (dry_run={DRY_RUN})")
-            print(f"[orchestrator] tài liệu API: http://{ORCH_HOST}:{ORCH_PORT}/docs")
+            print(f"[orchestrator] Dashboard: http://{ORCH_HOST}:{ORCH_PORT}")
+            print(f"[orchestrator] API docs:  http://{ORCH_HOST}:{ORCH_PORT}/docs"
+                  + (f"  (dry_run={DRY_RUN})" if DRY_RUN else ""))
             print("[orchestrator] MCP mounted: /signal/mcp, /unity/mcp")
             # Agent chạy shell với bypassPermissions. CORS mở + không có key = bất kỳ trang web
             # nào người dùng mở cũng POST được /v1/chat/completions và sai khiến agent trên máy này.
+            # In thành KHỐI có viền: người double-click .exe chỉ thấy console vài giây trước khi
+            # log uvicorn đẩy trôi, một dòng lẫn giữa log khác là không ai đọc.
             if CORS_ORIGINS == ["*"] and not ORCH_API_KEY:
-                print("[orchestrator] ⚠ CORS mở cho MỌI origin và KHÔNG có ORCH_API_KEY — trang web "
-                      "bất kỳ có thể sai khiến agent trên máy này. Đặt ORCH_API_KEY, hoặc giới hạn "
-                      "ORCH_CORS_ORIGINS=http://localhost:3000", file=sys.stderr)
+                bar = "!" * 78
+                print(f"\n{bar}\n"
+                      "!! SECURITY: CORS is open to ANY origin and ORCH_API_KEY is not set.\n"
+                      "!! Agents here run shell commands with permissions bypassed, so ANY website\n"
+                      "!! you visit can drive them and read/write files on this machine.\n"
+                      "!! Fix: set ORCH_API_KEY=<secret>, or ORCH_CORS_ORIGINS=http://localhost:3000\n"
+                      "!! in a .env file next to the executable.\n"
+                      f"{bar}\n", file=sys.stderr)
             try:
                 yield
             finally:
@@ -3710,7 +3718,10 @@ def _print(obj):
 
 def main():
     p = argparse.ArgumentParser(description="Session Orchestrator (Phase A)")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    # KHÔNG required: chạy không tham số = `serve`. Người dùng Windows double-click file .exe
+    # không truyền được argv — argparse required=True sẽ in usage rồi exit(2), cửa sổ console
+    # nháy một cái là mất, không kịp đọc gì. 'serve' cũng là lệnh thực tế 99% người dùng cần.
+    sub = p.add_subparsers(dest="cmd")
     sub.add_parser("init")
     sub.add_parser("once")
     sub.add_parser("loop")
@@ -3720,22 +3731,44 @@ def main():
     sub.add_parser("list-runs")
 
     args = p.parse_args()
-    if args.cmd == "init":
+    cmd = args.cmd or "serve"
+    if cmd == "init":
         init_db()
         print(f"DB tạo tại {_db_path()}")
-    elif args.cmd == "once":
+    elif cmd == "once":
         _print(asyncio.run(process_pending()))
-    elif args.cmd == "loop":
+    elif cmd == "loop":
         asyncio.run(run_loop())
-    elif args.cmd == "serve":
+    elif cmd == "serve":
         serve()
-    elif args.cmd == "list-sessions":
+    elif cmd == "list-sessions":
         _print(list_sessions())
-    elif args.cmd == "list-signals":
+    elif cmd == "list-signals":
         _print(list_signals()[0])   # (items, has_more) → chỉ in items
-    elif args.cmd == "list-runs":
+    elif cmd == "list-runs":
         _print(list_runs()[0])
 
 
+def _keep_console_open(err):
+    """Double-click trên Windows: tiến trình chết là cửa sổ console đóng ngay, người dùng không
+    đọc được lỗi (cổng bận, thiếu quyền…). Giữ cửa sổ lại cho tới khi họ bấm Enter.
+
+    CHỈ khi: binary đóng gói + Windows + chạy KHÔNG tham số (double-click). Chạy từ terminal có
+    gõ lệnh thì đừng chặn — script/CI sẽ treo."""
+    if not (getattr(sys, "frozen", False) and os.name == "nt" and len(sys.argv) == 1):
+        return
+    print(f"\n{err}", file=sys.stderr)
+    try:
+        input("\nNhấn Enter để đóng cửa sổ…")
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:  # noqa: BLE001 — chỉ để KỊP HIỆN lỗi trước khi console đóng
+        _keep_console_open(f"LỖI: {e}")
+        raise
