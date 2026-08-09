@@ -1,7 +1,8 @@
 name: build binary
 
-# Đóng gói 1 file thực thi cho Linux + Windows để người dùng tải về chạy thẳng, không cần cài
-# Python. Chạy khi: push tag v* (kèm tạo release), push vào master/gamedev, PR, hoặc bấm tay.
+# Package a single executable for Linux + Windows so users can download and run it directly,
+# with no Python install. Runs on: push of a v* tag (also cuts a release), push to
+# master/gamedev, pull requests, or manual dispatch.
 on:
   push:
     branches: [master, gamedev]
@@ -10,18 +11,18 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write        # cần để tạo release khi push tag
+  contents: write        # required to create the release on a tag push
 
 jobs:
   build:
     strategy:
-      fail-fast: false   # Windows hỏng thì vẫn muốn thấy bản Linux, và ngược lại
+      fail-fast: false   # if Windows breaks we still want to see the Linux build, and vice versa
       matrix:
         include:
-          - os: ubuntu-22.04      # glibc cũ hơn = chạy được trên nhiều distro hơn
+          - os: ubuntu-22.04      # older glibc = runs on more distros
             target: linux-x64
             binary: agent-orch
-          - os: windows-2022      # Windows 10 chạy được binary build ở đây
+          - os: windows-2022      # Windows 10 can run a binary built here
             target: windows-x64
             binary: agent-orch.exe
     runs-on: ${{ matrix.os }}
@@ -33,67 +34,70 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Cài dependency
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller==6.11.1
 
-      # Rào SỚM: mcp 2.x bỏ `mcp.server.fastmcp` mà cả 3 MCP server đều dùng. Không có bước này
-      # thì build vẫn qua, binary vẫn ra, và chỉ chết lúc serve — mất 5 phút mới biết vì sao.
-      - name: Kiểm dependency dùng được
+      # Fail EARLY: mcp 2.x dropped `mcp.server.fastmcp`, which every MCP server here imports.
+      # Without this step the build still passes, the binary still ships, and it only dies at
+      # serve time — five wasted minutes before you learn why.
+      - name: Verify dependencies are usable
         run: python -c "from mcp.server.fastmcp import FastMCP; import uvicorn, starlette, httpx"
 
-      - name: Đóng gói
+      - name: Package
         run: pyinstaller build.spec --noconfirm --clean
 
-      # Kiểm binary THẬT SỰ chạy được, không chỉ build xong. Thiếu bước này thì lỗi hay gặp nhất
-      # của PyInstaller (thiếu hidden import của uvicorn) chỉ lộ ra ở máy người dùng.
-      - name: Kiểm binary chạy (Linux)
+      # Check the binary ACTUALLY runs, not just that it built. Without this, PyInstaller's most
+      # common failure (a missing uvicorn hidden import) only shows up on a user's machine.
+      - name: Smoke test binary (Linux)
         if: runner.os == 'Linux'
         run: |
-          # PYTHONIOENCODING=cp1252 GIẢ LẬP console Windows ngay trên runner Linux (rẻ, chạy
-          # trước): mọi print có dấu tiếng Việt sẽ ném UnicodeEncodeError và giết tiến trình nếu
-          # quên ép UTF-8 cho stdout/stderr. Bắt ở đây thay vì đợi job Windows.
+          # PYTHONIOENCODING=cp1252 SIMULATES a Windows console on the Linux runner (cheap, and it
+          # runs first): any print with non-ASCII characters raises UnicodeEncodeError and kills
+          # the process if stdout/stderr were not forced to UTF-8. Caught here instead of waiting
+          # for the Windows job.
           export PYTHONIOENCODING=cp1252
           ./dist/${{ matrix.binary }} init
-          # Giữ log của tiến trình con: serve chết vì thiếu module thì đây là chỗ DUY NHẤT nói lý
-          # do — không có nó thì chỉ thấy curl timeout rồi đoán mò.
+          # Keep the child process log: if serve dies from a missing module this is the ONLY place
+          # that says why — without it you just see a curl timeout and start guessing.
           ORCH_PORT=8999 ORCH_HOST=127.0.0.1 ./dist/${{ matrix.binary }} serve > serve.log 2>&1 &
           SRV=$!
           for i in $(seq 40); do
             curl -sf localhost:8999/health >/dev/null && break
-            kill -0 $SRV 2>/dev/null || { echo "::error::serve chết ngay khi khởi động"; cat serve.log; exit 1; }
+            kill -0 $SRV 2>/dev/null || { echo "::error::serve died on startup"; cat serve.log; exit 1; }
             sleep 0.5
           done
           curl -sf localhost:8999/health | grep -q '"status":"ok"' || { cat serve.log; exit 1; }
           curl -sf localhost:8999/openapi.json | grep -q '/v1/chat/completions'
-          curl -sf localhost:8999/ | grep -q '<title>'          # dashboard tĩnh có trong bundle
+          curl -sf localhost:8999/ | grep -q '<title>'          # static dashboard is in the bundle
           kill %1
 
-      - name: Kiểm binary chạy (Windows)
+      - name: Smoke test binary (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # pwsh KHÔNG dừng khi lệnh native thoát khác 0 → phải tự kiểm. Không có dòng này thì
-          # `init` chết mà job vẫn chạy tiếp, lỗi thật bị đẩy xuống tận bước sau.
+          # pwsh does NOT stop when a native command exits non-zero, so check it explicitly.
+          # Without this line, a failing `init` lets the job continue and the real error surfaces
+          # several steps later.
           & ./dist/${{ matrix.binary }} init
-          if ($LASTEXITCODE -ne 0) { throw "init thoát với mã $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "init exited with code $LASTEXITCODE" }
           $env:ORCH_PORT = "8999"; $env:ORCH_HOST = "127.0.0.1"
-          # Giữ log để biết LÝ DO khi serve chết, đừng chỉ báo "không kết nối được".
+          # Keep the logs so a dead serve says WHY, instead of just "could not connect".
           $p = Start-Process -PassThru -FilePath ./dist/${{ matrix.binary }} -ArgumentList serve `
                  -RedirectStandardOutput serve.log -RedirectStandardError serve.err
           $ok = $false
           foreach ($i in 1..40) {
             try { $r = Invoke-RestMethod http://127.0.0.1:8999/health; $ok = $r.status -eq "ok"; break }
             catch {
-              if ($p.HasExited) { Get-Content serve.log, serve.err; throw "serve chết ngay khi khởi động" }
+              if ($p.HasExited) { Get-Content serve.log, serve.err; throw "serve died on startup" }
               Start-Sleep -Milliseconds 500
             }
           }
-          if (-not $ok) { Get-Content serve.log, serve.err; throw "binary không phục vụ được /health" }
+          if (-not $ok) { Get-Content serve.log, serve.err; throw "binary did not serve /health" }
           $spec = Invoke-RestMethod http://127.0.0.1:8999/openapi.json
           Stop-Process -Id $p.Id -Force
-          if (-not $spec.paths.'/v1/chat/completions') { throw "thiếu /v1 trong openapi" }
+          if (-not $spec.paths.'/v1/chat/completions') { throw "/v1 missing from openapi" }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -109,9 +113,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { path: dist }
 
-      # Artifact tải về nằm trong thư mục con theo tên → gom phẳng và gắn hậu tố nền tảng để
-      # người dùng biết file nào của máy nào.
-      - name: Gom file
+      # Downloaded artifacts land in a subdirectory named after the artifact, so flatten them and
+      # add a platform suffix to make it obvious which file belongs to which machine.
+      - name: Collect files
         run: |
           mkdir -p out
           cp dist/agent-orch-linux-x64/agent-orch      out/agent-orch-linux-x64
@@ -125,35 +129,35 @@ jobs:
           files: out/*
           generate_release_notes: true
           body: |
-            ## Tải về
+            ## Download
 
-            | Máy | File |
+            | Machine | File |
             |---|---|
             | Linux x64 | `agent-orch-linux-x64` |
             | Windows 10/11 x64 | `agent-orch-windows-x64.exe` |
 
-            Kiểm tra toàn vẹn bằng `SHA256SUMS.txt`.
+            Verify integrity with `SHA256SUMS.txt`.
 
-            ## Chạy
+            ## Run
 
             ```bash
             chmod +x agent-orch-linux-x64        # Linux
             ./agent-orch-linux-x64 serve         # Windows: agent-orch-windows-x64.exe serve
             ```
 
-            Mở `http://localhost:8992` (dashboard) hoặc `http://localhost:8992/docs` (API).
+            Open `http://localhost:8992` (dashboard) or `http://localhost:8992/docs` (API).
 
-            Cấu hình bằng biến môi trường, hoặc file `.env` đặt **cạnh file thực thi**. Đáng chú ý:
-            `ORCH_PORT`, `ORCH_HOST`, `ORCH_API_KEY` (bật xác thực cho `/api` + `/v1`),
-            `CLAUDE_BIN`, `ORCH_CODEX_BIN`.
+            Configure via environment variables, or a `.env` file placed **next to the
+            executable**. Notable ones: `ORCH_PORT`, `ORCH_HOST`, `ORCH_API_KEY` (enables auth on
+            `/api` + `/v1`), `CLAUDE_BIN`, `ORCH_CODEX_BIN`.
 
-            ## Cần cài sẵn
+            ## Prerequisites
 
-            Binary này là orchestrator, KHÔNG kèm agent. Muốn chạy agent thật thì máy phải có
-            `claude` CLI và/hoặc `codex` CLI, đã đăng nhập.
+            This binary is the orchestrator only — no agent is bundled. To run real agents the
+            machine needs the `claude` CLI and/or the `codex` CLI, already logged in.
 
-            ## Hạn chế trên Windows
+            ## Windows limitation
 
-            Terminal nhúng trong dashboard cần `pty` (module chỉ có trên Unix) nên **không chạy
-            trên Windows** — mở CLI bằng terminal của Windows. Mọi thứ còn lại (agent headless,
-            signal, API `/v1`, dashboard) hoạt động bình thường.
+            The dashboard's embedded terminal needs `pty` (a Unix-only module), so it **does not
+            work on Windows** — open the CLI in a Windows terminal instead. Everything else
+            (headless agents, signalling, the `/v1` API, the dashboard) works normally.
