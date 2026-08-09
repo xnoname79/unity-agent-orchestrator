@@ -87,13 +87,13 @@ window.act = act;
 
 // Nén context 1 session: hỏi focus (tùy chọn), enqueue /compact qua endpoint.
 async function compactSession(id, name) {
-  const focus = prompt(`Compact context cho '${name}'.\nFocus cần giữ lại (bỏ trống nếu không):`, "");
+  const focus = prompt(`Compact context for '${name}'.\nWhat to keep in focus (leave blank for none):`, "");
   if (focus === null) return;  // huỷ
   try {
     const r = await api(`/api/sessions/${id}/compact`, "POST", { focus: focus.trim() });
     console.log("compact enqueued", r);
     await refreshAll();
-  } catch (e) { console.error(e); alert("Lỗi compact: " + e); }
+  } catch (e) { console.error(e); alert("Compact failed: " + e); }
 }
 window.compactSession = compactSession;
 
@@ -102,20 +102,20 @@ async function viewCompact(id, name) {
   openRunId = null;  // rời chế độ xem run-transcript để live-event không chèn nhầm vào đây
   $("dr-title").textContent = `Compact context · ${name}`;
   $("dr-badge").innerHTML = "";
-  $("dr-body").innerHTML = `<div class="empty">Đang đọc transcript…</div>`;
+  $("dr-body").innerHTML = `<div class="empty">Reading transcript…</div>`;
   $("drawer").classList.add("open");
   $("drawer-overlay").classList.add("open");
   try {
     const c = await api(`/api/sessions/${id}/compact`);
     // SKILL của role (playbook nhồi mỗi signal) — luôn hiện, không phụ thuộc đã compact hay chưa.
     const skill = c.skill
-      ? `<div class="ev text"><div class="k">🧩 SKILL (${c.skill.length.toLocaleString()} ký tự)</div>
+      ? `<div class="ev text"><div class="k">🧩 SKILL (${c.skill.length.toLocaleString()} chars)</div>
           <div class="s">${esc(c.skill)}</div></div>`
-      : `<div class="ev system"><div class="k">🧩 SKILL</div><div class="s">Session chưa có SKILL.</div></div>`;
+      : `<div class="ev system"><div class="k">🧩 SKILL</div><div class="s">This session has no SKILL yet.</div></div>`;
     if (!c.found) {
-      $("dr-badge").innerHTML = badge("chưa compact", "b-gray");
+      $("dr-badge").innerHTML = badge("never compacted", "b-gray");
       $("dr-body").innerHTML = skill +
-        `<div class="empty">${esc(c.reason || "Session chưa từng compact.")}</div>`;
+        `<div class="empty">${esc(c.reason || "This session has never been compacted.")}</div>`;
       $("dr-body").scrollTop = 0;
       return;
     }
@@ -123,16 +123,16 @@ async function viewCompact(id, name) {
     $("dr-badge").innerHTML = badge(b.trigger || "compact", b.trigger === "auto" ? "b-amber" : "b-blue");
     const meta = `<div class="ev system">
       <div class="k">⚙️ metadata</div>
-      <div class="s">Compact gần nhất: <b>${esc(shortDateTime(b.timestamp) || "?")}</b> · trigger <b>${esc(b.trigger || "?")}</b>
+      <div class="s">Last compact: <b>${esc(shortDateTime(b.timestamp) || "?")}</b> · trigger <b>${esc(b.trigger || "?")}</b>
         · pre-tokens <b>${b.pre_tokens != null ? b.pre_tokens.toLocaleString() : "?"}</b>
-        · tổng ${c.compact_count} lần compact
-        · cập nhật transcript ${esc(shortDateTime(c.mtime))}</div></div>`;
-    const summary = `<div class="ev text"><div class="k">📄 summary (${c.summary.length.toLocaleString()} ký tự)</div>
+        · ${c.compact_count} compacts total
+        · transcript updated ${esc(shortDateTime(c.mtime))}</div></div>`;
+    const summary = `<div class="ev text"><div class="k">📄 summary (${c.summary.length.toLocaleString()} chars)</div>
       <div class="s">${esc(c.summary)}</div></div>`;
     $("dr-body").innerHTML = skill + meta + summary;
     $("dr-body").scrollTop = 0;
   } catch (e) {
-    $("dr-body").innerHTML = `<div class="empty" style="color:var(--red)">Lỗi đọc compact: ${esc(e)}</div>`;
+    $("dr-body").innerHTML = `<div class="empty" style="color:var(--red)">Could not read compact state: ${esc(e)}</div>`;
   }
 }
 window.viewCompact = viewCompact;
@@ -143,7 +143,7 @@ async function editSkill(id, name) {
   openRunId = null;
   $("dr-title").textContent = `SKILL · ${name}`;
   $("dr-badge").innerHTML = "";
-  $("dr-body").innerHTML = `<div class="empty">Đang đọc SKILL…</div>`;
+  $("dr-body").innerHTML = `<div class="empty">Reading SKILL…</div>`;
   $("drawer").classList.add("open");
   $("drawer-overlay").classList.add("open");
   try {
@@ -151,14 +151,14 @@ async function editSkill(id, name) {
     $("dr-body").innerHTML = `
       <div class="ev system"><div class="k">📘 path</div><div class="s">${esc(r.path)}</div></div>
       <textarea id="skill-ta" class="skill-ta" spellcheck="false"
-        placeholder="Chưa có SKILL — dán nội dung SKILL.md vào đây rồi bấm Upsert."></textarea>
+        placeholder="No SKILL yet — paste SKILL.md content here and press Upsert."></textarea>
       <div class="skill-save">
         <button onclick="saveSkill('${id}')">💾 Upsert SKILL</button>
         <span id="skill-msg" class="hint"></span>
       </div>`;
     $("skill-ta").value = r.skill || "";
   } catch (e) {
-    $("dr-body").innerHTML = `<div class="empty" style="color:var(--red)">Lỗi đọc SKILL: ${esc(e)}</div>`;
+    $("dr-body").innerHTML = `<div class="empty" style="color:var(--red)">Could not read SKILL: ${esc(e)}</div>`;
   }
 }
 window.editSkill = editSkill;
@@ -166,38 +166,38 @@ window.editSkill = editSkill;
 async function saveSkill(id) {
   const content = $("skill-ta").value;
   const msg = $("skill-msg");
-  if (!content.trim()) { msg.textContent = "SKILL rỗng — không ghi."; return; }
-  msg.textContent = "Đang ghi…";
+  if (!content.trim()) { msg.textContent = "SKILL is empty — nothing written."; return; }
+  msg.textContent = "Writing…";
   try {
     const r = await api(`/api/sessions/${id}/skill`, "POST", { content });
-    msg.textContent = `✔ Đã ghi ${r.bytes.toLocaleString()} bytes → ${r.path}`;
-  } catch (e) { console.error(e); msg.textContent = "Lỗi ghi: " + e; }
+    msg.textContent = `✔ Wrote ${r.bytes.toLocaleString()} bytes → ${r.path}`;
+  } catch (e) { console.error(e); msg.textContent = "Write failed: " + e; }
 }
 window.saveSkill = saveSkill;
 
 // Xóa 1 signal đã kết thúc + audit log (runs/run_events) của nó. Có confirm vì phá hủy.
 async function deleteSignal(id) {
-  if (!confirm(`Xóa signal #${id} và toàn bộ audit log của nó? Không thể hoàn tác.`)) return;
+  if (!confirm(`Delete signal #${id} and its entire audit log? This cannot be undone.`)) return;
   try {
     const r = await api(`/api/signals/${id}`, "DELETE");
     console.log("deleted signal", r);
     if (openRunId != null) closeDrawer();  // drawer có thể đang xem run vừa bị xóa
     await refreshAll();
-  } catch (e) { console.error(e); alert("Lỗi xóa signal: " + e); }
+  } catch (e) { console.error(e); alert("Could not delete signal: " + e); }
 }
 window.deleteSignal = deleteSignal;
 
 // Đổi model 1 session ngay trên bảng (áp dụng cho các lượt sau).
 async function setModel(id, model) {
   try { await api(`/api/sessions/${id}/model`, "POST", { model }); await refreshAll(); }
-  catch (e) { console.error(e); alert("Lỗi đổi model: " + e); }
+  catch (e) { console.error(e); alert("Could not change model: " + e); }
 }
 window.setModel = setModel;
 
 // Đổi reasoning effort 1 session ngay trên bảng (áp dụng cho các lượt sau).
 async function setEffort(id, effort) {
   try { await api(`/api/sessions/${id}/effort`, "POST", { effort }); await refreshAll(); }
-  catch (e) { console.error(e); alert("Lỗi đổi effort: " + e); }
+  catch (e) { console.error(e); alert("Could not change effort: " + e); }
 }
 window.setEffort = setEffort;
 
@@ -207,9 +207,9 @@ async function allowMore(id, name) {
   try {
     const r = await api(`/api/sessions/${id}/allow`, "POST", {});
     const n = (r.requeued || []).length;
-    console.log(`allow ${name}: hạn mức ngày = ${r.daily_limit}, re-queue ${n} signal`);
+    console.log(`allow ${name}: daily limit = ${r.daily_limit}, re-queued ${n} signal(s)`);
     await refreshAll();
-  } catch (e) { console.error(e); alert("Lỗi Allow: " + e); }
+  } catch (e) { console.error(e); alert("Allow failed: " + e); }
 }
 window.allowMore = allowMore;
 
@@ -217,14 +217,14 @@ window.allowMore = allowMore;
 
 // Tạo workspace mới (orchestrator sinh id + mkdir thư mục). Hỏi tên hiển thị.
 async function newWorkspace() {
-  const name = prompt("Tên workspace mới (nhãn hiển thị):", "");
+  const name = prompt("New workspace name (display label):", "");
   if (name === null) return;
   try {
     const w = await api("/api/workspaces", "POST", { name: name.trim() });
     currentWS = w.id;                 // nhảy vào workspace vừa tạo
     await refreshAll();
-    alert(`Đã tạo workspace '${w.name}'\nid: ${w.id}\nthư mục: ${w.root_dir}`);
-  } catch (e) { console.error(e); alert("Lỗi tạo workspace: " + e); }
+    alert(`Created workspace '${w.name}'\nid: ${w.id}\nfolder: ${w.root_dir}`);
+  } catch (e) { console.error(e); alert("Could not create workspace: " + e); }
 }
 window.newWorkspace = newWorkspace;
 
@@ -373,7 +373,7 @@ function startTerm(t) {
   t.ws.binaryType = "arraybuffer";
   t.ws.onopen = () => fitTerm(t);
   t.ws.onmessage = (e) => t.term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
-  t.ws.onclose = () => { if (t.term) t.term.write("\r\n\x1b[31m[đã ngắt — bấm 🔄 reload]\x1b[0m\r\n"); };
+  t.ws.onclose = () => { if (t.term) t.term.write("\r\n\x1b[31m[disconnected — press 🔄 to reload]\x1b[0m\r\n"); };
   t.term.onData((d) => { if (t.ws.readyState === 1) t.ws.send(JSON.stringify({ t: "i", d })); });
 }
 
@@ -434,19 +434,19 @@ function vscodeUrl(st) {
 
 async function openVscode(sid, name) {
   if (vscodeState.open && vscodeState.session !== sid
-      && !confirm(`VS Code đang mở cho '${vscodeState.name}'.\n\nMở cho '${name}' sẽ ĐÓNG HẲN cái cũ (thoát tiến trình). Tiếp tục?`))
+      && !confirm(`VS Code is already open for '${vscodeState.name}'.\n\nOpening it for '${name}' will SHUT THAT ONE DOWN (the process exits). Continue?`))
     return;
   try {
     vscodeState = await api("/api/vscode/open", "POST", { session: sid });
     await refreshAll();
-  } catch (e) { alert("Không mở được VS Code: " + e); }
+  } catch (e) { alert("Could not open VS Code: " + e); }
 }
 window.openVscode = openVscode;
 
 async function closeVscode() {
-  if (!confirm("Đóng VS Code? Tiến trình serve-web sẽ thoát hẳn.")) return;
+  if (!confirm("Close VS Code? The serve-web process will exit.")) return;
   try { await api("/api/vscode/close", "POST"); vscodeState = { open: false }; await refreshAll(); }
-  catch (e) { alert("Lỗi đóng VS Code: " + e); }
+  catch (e) { alert("Could not close VS Code: " + e); }
 }
 window.closeVscode = closeVscode;
 
@@ -462,8 +462,8 @@ function vscodeCardHtml(st) {
       <span>💻 VS Code</span><b>${esc(st.name || "")}</b>
       <span class="cwd" title="${esc(st.cwd || "")}">${esc(st.cwd || "")}</span>
       <span class="spacer"></span>
-      <button class="secondary" onclick="reloadVscode()" title="Nạp lại iframe (dùng khi lần đầu còn đang tải server)">🔄</button>
-      <button class="danger" onclick="closeVscode()" title="Đóng VS Code (thoát tiến trình)">✕</button>
+      <button class="secondary" onclick="reloadVscode()" title="Reload the iframe — useful while the server is still starting">🔄</button>
+      <button class="danger" onclick="closeVscode()" title="Close VS Code (exits the process)">✕</button>
     </div>
     <div class="vscode-slot"></div>
   </div>`;
@@ -504,10 +504,10 @@ function attachTerms() {
 
 // Gửi signal nhanh tới 1 agent ngay trên card.
 async function sendSignalTo(id, name) {
-  const msg = prompt(`Signal tới '${name}':`, "");
+  const msg = prompt(`Signal to '${name}':`, "");
   if (!msg || !msg.trim()) return;
   try { await api("/api/signals", "POST", { to_session: id, message: msg.trim() }); await refreshAll(); }
-  catch (e) { console.error(e); alert("Lỗi gửi signal: " + e); }
+  catch (e) { console.error(e); alert("Could not send signal: " + e); }
 }
 window.sendSignalTo = sendSignalTo;
 
@@ -518,7 +518,7 @@ async function runAction(id, name, sel) {
   const action = sel.value;
   sel.value = "";
   if (action === "unregister") {
-    if (confirm(`Gỡ session '${name}' khỏi orchestrator?\n\nRuns/signals/audit vẫn giữ lại.`))
+    if (confirm(`Remove session '${name}' from the orchestrator?\n\nRuns, signals and audit records are kept.`))
       await act(`/api/sessions/${id}/unregister`);
   }
 }
@@ -538,7 +538,7 @@ function fillSignalForm(sessions) {
 async function sendSignal() {
   const to = $("sg-to").value;
   const msg = $("sg-msg").value.trim();
-  if (!to || !msg) { alert("Chọn role đích và nhập message."); return; }
+  if (!to || !msg) { alert("Pick a target role and type a message."); return; }
   try {
     await api("/api/signals", "POST", {
       to_role: to, message: msg, from_role: "human",
@@ -548,7 +548,7 @@ async function sendSignal() {
     });
     $("sg-msg").value = "";
     await refreshAll();
-  } catch (e) { console.error(e); alert("Lỗi gửi signal: " + e); }
+  } catch (e) { console.error(e); alert("Could not send signal: " + e); }
 }
 window.sendSignal = sendSignal;
 
@@ -563,7 +563,7 @@ function agentCard(s, needsYou, isOrch) {
   const allow = s.daily_blocked
     ? `<button class="warn" onclick="allowMore('${id}','${esc(s.name)}')">Allow +${DAILY_STEP}</button>` : "";
   const today = s.daily_limit
-    ? `<span class="${s.daily_blocked ? "day-hit" : "day-ok"}" title="run hôm nay / hạn mức">${s.used_today}/${s.daily_limit}</span>`
+    ? `<span class="${s.daily_blocked ? "day-hit" : "day-ok"}" title="runs today / daily limit">${s.used_today}/${s.daily_limit}</span>`
     : "";
   // Mức hiện ra bám theo model của CHÍNH session này — gpt-5.5 không có 'max', đừng mời chọn.
   const effortSel = `<select class="mini" onchange="setEffort('${id}', this.value)">` +
@@ -571,7 +571,7 @@ function agentCard(s, needsYou, isOrch) {
     `</select>`;
   const head = `<div class="node-head">
       <span class="status-dot dot-${esc(s.status)}"></span>
-      ${isOrch ? `<span title="Orchestrator của project này">👑</span>` : ""}
+      ${isOrch ? `<span title="This session owns the project terminal">👑</span>` : ""}
       <b title="${esc(s.name)}">${esc(s.name)}</b>
       ${needsYou ? `<span class="needs-badge">NEEDS YOU</span>` : ""}
       <span class="spacer"></span>
@@ -582,24 +582,24 @@ function agentCard(s, needsYou, isOrch) {
   // Nút chữ = thao tác trên dữ liệu session → gom theo nhãn Context / Action ở dưới.
   const vsBtn = (s.cwd || "").trim()
     ? `<button class="secondary" onclick="openVscode('${id}','${esc(s.name)}')"
-        title="Mở thư mục project của session bằng VS Code (1 card duy nhất — mở cái mới sẽ đóng cái cũ)">📁</button>`
+        title="Open this session's project folder in VS Code (one card only — opening another closes this one)">📁</button>`
     : "";
   const killBtn = s.status === "running"
-    ? `<button class="danger" onclick="if(confirm('Kill run đang chạy của ${esc(s.name)}? Run sẽ bị đánh failed, không retry.'))act('/api/sessions/${id}/kill')" title="Kill run đang chạy (chặn chạy mãi)">🛑</button>`
+    ? `<button class="danger" onclick="if(confirm('Kill the running job on ${esc(s.name)}? The run is marked failed and is not retried.'))act('/api/sessions/${id}/kill')" title="Kill the running job (stops a runaway)">🛑</button>`
     : "";
   const ctxGroup = (extra = "") => `<div class="act-group"><span class="act-label">Context</span>
     <button class="secondary act-txt" onclick="viewCompact('${id}','${esc(s.name)}')"
-      title="Xem context/SKILL hiện tại của session">Xem</button>${extra}</div>`;
+      title="View this session's current context / SKILL">Xem</button>${extra}</div>`;
   // Action đều là thao tác PHÁ HỦY → giấu sau dropdown, không để bấm nhầm khi rê chuột trên card.
   // KHÔNG có "Xóa vĩnh viễn": transcript do CLI (claude/codex) giữ, orchestrator không xóa được
   // — bày ra là mời user chọn thứ chắc chắn lỗi. Gỡ session thì dùng Unregister.
   // Nhãn NGẮN: select đóng chỉ hiện 1 dòng và không ellipsis được text option — nhãn dài sẽ
   // đẩy rộng cả cột nút, ăn chỗ terminal. Giải thích đầy đủ để ở title (hover).
-  const actOpts = [["unregister", "Unregister", "Gỡ session khỏi orchestrator — runs/signals/audit vẫn giữ"]];
+  const actOpts = [["unregister", "Unregister", "Remove the session from the orchestrator — runs, signals and audit are kept"]];
   const actGroup = `<div class="act-group"><span class="act-label">Action</span>
-    <select class="mini act-sel" title="Thao tác phá hủy — chọn rồi xác nhận"
+    <select class="mini act-sel" title="Destructive actions — pick one, then confirm"
       onchange="runAction('${id}','${esc(s.name)}', this)">
-      <option value="">Chọn…</option>
+      <option value="">Choose…</option>
       ${actOpts.map(([v, label, hint]) =>
         `<option value="${v}" title="${esc(hint)}">${esc(label)}</option>`).join("")}
     </select></div>`;
@@ -626,17 +626,17 @@ function agentCard(s, needsYou, isOrch) {
     // phiên MỚI trong cùng cwd (nhãn nói rõ để không tưởng mất ngữ cảnh vì lỗi).
     const eng = engineOfModel(s.model);
     const cli = termCli[s.name] || eng;
-    const cliSel = `<select class="mini cli-sel" title="CLI chạy trong terminal (engine session: ${eng}) — ✦ = khác engine, mở phiên MỚI trong cùng cwd"
+    const cliSel = `<select class="mini cli-sel" title="Which CLI runs in the terminal (session engine: ${eng}) — ✦ = a different engine, opens a NEW session in the same cwd"
       onchange="setTermCli('${esc(s.id)}','${esc(s.name)}', this.value)">
       ${["claude", "codex"].map((c) => `<option value="${c}"${c === cli ? " selected" : ""}
         >${c === "claude" ? "🅒" : "🅞"} ${c}${c === eng ? "" : " ✦"}</option>`).join("")}
     </select>`;
     const lock = busy
-      ? `<div class="term-lock">⏳ Orch đang chạy run tự động (xử lý báo cáo từ agent)…<br>
-           Click để xem run · xong sẽ mở lại chat bằng nút 🔄</div>`
+      ? `<div class="term-lock">⏳ An automatic run is in progress (handling a report from another agent)…<br>
+           Click to watch it · when it finishes, press 🔄 to chat again</div>`
       : locked
-        ? `<div class="term-lock">✅ Run tự động đã xong — bấm 🔄 để nạp ngữ cảnh mới và chat tiếp.<br>
-           Click để xem run vừa chạy.</div>`
+        ? `<div class="term-lock">✅ The automatic run finished — press 🔄 to load the new context and keep chatting.<br>
+           Click to review that run.</div>`
         : "";
     return `<div class="agent-card orch-term is-orch ${cls}" data-sid="${esc(s.id)}">
       ${head}
@@ -644,11 +644,11 @@ function agentCard(s, needsYou, isOrch) {
         <div class="orch-side">
           ${ctrl}${killBtn}${allow}${vsBtn}
           ${cliSel}
-          <button onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')" title="Reload session/terminal (chạy lại CLI đang chọn)">🔄</button>
+          <button onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')" title="Reload the session/terminal (restarts the selected CLI)">🔄</button>
           <button class="secondary" onclick="termEsc('${esc(s.id)}')"
-                  title="Gửi phím Esc vào terminal — dùng khi bấm Esc trên bàn phím không ăn (bộ gõ tiếng Việt / trình duyệt nuốt mất). Tương đương Ctrl+[">⎋</button>
-          <button class="secondary" onclick="if(confirm('Đóng terminal của ${esc(s.name)}? Session về dạng headless.'))toggleOrch('${id}',0)"
-            title="Đóng terminal — session về headless worker, bỏ vai orchestrator">💻</button>
+                  title="Send an Esc keypress to the terminal — for when the keyboard Esc is swallowed by an input method or the browser. Same as Ctrl+[">⎋</button>
+          <button class="secondary" onclick="if(confirm('Close the terminal on ${esc(s.name)}? The session goes back to headless.'))toggleOrch('${id}',0)"
+            title="Close the terminal — the session goes back to a headless worker">💻</button>
           ${ctxGroup()}${actGroup}
         </div>
         <div class="term-slot" data-sid="${esc(s.id)}" data-cli="${cli}"${locked ? ` data-lock="1"` : ""}>${lock}</div>
@@ -661,18 +661,18 @@ function agentCard(s, needsYou, isOrch) {
     <div class="agent-body">
       <div class="rw"><input class="mini model-in grow" list="model-list" value="${esc(s.model || "")}"
         placeholder="model: auto" onchange="setModel('${id}', this.value.trim())">${effortSel}</div>
-      <div class="rw"><span title="${esc(tools.join(", ") || "full quyền")}">🔧 ${tools.length ? tools.length + " tools" : "all tools"}</span>
+      <div class="rw"><span title="${esc(tools.join(", ") || "every tool allowed")}">🔧 ${tools.length ? tools.length + " tools" : "all tools"}</span>
         <span class="spacer"></span>${today}</div>
     </div>
     <div class="agent-actions">
       <div class="act-row">
         ${ctrl}${killBtn}${allow}
         <button class="secondary" onclick="toggleOrch('${id}',1)"
-          title="Mở terminal cho session (1 terminal mỗi project — đóng terminal đang mở cùng cwd)">💻</button>
+          title="Open a terminal for this session (one per project — closes any other terminal in the same cwd)">💻</button>
         ${vsBtn}
       </div>
       ${ctxGroup(`<button class="secondary act-txt" onclick="editSkill('${id}','${esc(s.name)}')"
-        title="Sửa SKILL của role (upsert vào .claude/skills trong cwd project)">Update</button>`)}
+        title="Edit this role's SKILL (upserts into .claude/skills in the project cwd)">Update</button>`)}
       ${actGroup}
     </div>
   </div>`;
@@ -693,7 +693,7 @@ const EDGE_DEFS = "<defs>" + Object.entries(EDGE_COLORS).map(([k, c]) =>
 // localStorage). Bật: backend tự đóng terminal của session khác cùng cwd (1 terminal/project).
 async function toggleOrch(id, on) {
   try { await api("/api/sessions/" + id + "/orch", "POST", { on: !!on }); }
-  catch (e) { console.error(e); alert("Lỗi toggle orchestrator: " + e); return; }
+  catch (e) { console.error(e); alert("Could not toggle the terminal: " + e); return; }
   await refreshAll();
 }
 window.toggleOrch = toggleOrch;
@@ -715,7 +715,7 @@ function zoneHtml(gi, cwd, list) {
 // Card headless không có gì để giãn — nội dung là vài dòng meta, kéo to chỉ ra khoảng trống.
 // Guard theo data-rz thay vì chỉ ẩn tay nắm: session từng là 👑 rồi bị demote vẫn còn w/h trong
 // store, không chặn thì card headless bị kéo giãn theo size cũ.
-const RZ = `<div class="rz" title="Kéo để đổi kích thước card (double-click: về mặc định)"></div>`;
+const RZ = `<div class="rz" title="Drag to resize the card (double-click to reset)"></div>`;
 const RZ_MIN = { w: 220, h: 130 };
 
 function applySize(el, p) {
@@ -1059,12 +1059,12 @@ function renderTools(data) {
 async function loadTools(prefix) {
   const cwd = $(prefix + "-cwd").value.trim();
   const box = $(prefix + "-tools");
-  box.innerHTML = `<div class="tool-group">Đang tải…</div>`;
+  box.innerHTML = `<div class="tool-group">Loading…</div>`;
   try {
     const data = await api("/api/available-tools?cwd=" + encodeURIComponent(cwd));
     box.innerHTML = renderTools(data);
   } catch (e) {
-    box.innerHTML = `<div class="tool-group" style="color:var(--red)">Lỗi tải tools: ${esc(e)}</div>`;
+    box.innerHTML = `<div class="tool-group" style="color:var(--red)">Could not load tools: ${esc(e)}</div>`;
   }
 }
 window.loadTools = loadTools;
@@ -1077,25 +1077,25 @@ window.loadTools = loadTools;
 // có tiền tố thì không phân biệt được ý người dùng.
 const MODEL_TABS = [
   { engine: "claude", label: "Claude", note: "claude CLI · API credits Anthropic", models: [
-    { id: "", name: "Auto", desc: "Orchestrator / CLI tự chọn model mặc định" },
-    { id: "opus", name: "Opus · alias", desc: "Luôn trỏ bản Opus mới nhất" },
-    { id: "sonnet", name: "Sonnet · alias", desc: "Cân bằng chất lượng / tốc độ / giá" },
-    { id: "haiku", name: "Haiku · alias", desc: "Nhanh và rẻ — việc nhẹ, lặp nhiều" },
-    { id: "claude-fable-5", name: "Fable 5", desc: "Mạnh nhất (Claude 5) — reasoning + agentic dài hơi; đắt hơn Opus" },
-    { id: "claude-opus-4-8", name: "Opus 4.8", desc: "Opus mới nhất — agentic tự chủ dài hơi, mặc định tốt nhất" },
-    { id: "claude-sonnet-5", name: "Sonnet 5", desc: "Gần chất lượng Opus cho code/agentic, giá Sonnet" },
-    { id: "claude-haiku-4-5", name: "Haiku 4.5", desc: "Nhanh nhất, rẻ nhất — task đơn giản" },
+    { id: "", name: "Auto", desc: "Let the CLI pick its own default model" },
+    { id: "opus", name: "Opus · alias", desc: "Always points at the latest Opus" },
+    { id: "sonnet", name: "Sonnet · alias", desc: "Balanced on quality, speed and price" },
+    { id: "haiku", name: "Haiku · alias", desc: "Fast and cheap — light, repetitive work" },
+    { id: "claude-fable-5", name: "Fable 5", desc: "Most capable (Claude 5) — deep reasoning and long agentic runs; pricier than Opus" },
+    { id: "claude-opus-4-8", name: "Opus 4.8", desc: "Latest Opus — long autonomous agentic work, the best default" },
+    { id: "claude-sonnet-5", name: "Sonnet 5", desc: "Close to Opus on code and agentic work, at Sonnet pricing" },
+    { id: "claude-haiku-4-5", name: "Haiku 4.5", desc: "Fastest and cheapest — simple tasks" },
   ] },
-  { engine: "codex", label: "Codex", note: "codex CLI · gói ChatGPT, không tốn API credits", models: [
-    { id: "codex", name: "Auto", desc: "Model do CLI tự chọn theo ~/.codex/config.toml" },
-    { id: "codex:gpt-5.6-terra", name: "Terra 5.6", desc: "Cân bằng cho việc code hằng ngày (mặc định của Codex) · effort tới ultra" },
-    { id: "codex:gpt-5.6-luna", name: "Luna 5.6", desc: "Hạn mức rộng hơn Terra — việc lặp nhiều, chạy dài · effort tới max" },
-    { id: "codex:gpt-5.5", name: "GPT-5.5", desc: "Đời trước, ổn định · effort tới xhigh" },
-    { id: "codex:gpt-5.4-mini", name: "5.4 mini", desc: "Nhẹ và nhanh — task đơn giản, ít tốn hạn mức · effort tới xhigh" },
+  { engine: "codex", label: "Codex", note: "codex CLI · runs on your ChatGPT plan, spends no API credits", models: [
+    { id: "codex", name: "Auto", desc: "Whatever the CLI picks from ~/.codex/config.toml" },
+    { id: "codex:gpt-5.6-terra", name: "Terra 5.6", desc: "Balanced for everyday coding (Codex default) · effort up to ultra" },
+    { id: "codex:gpt-5.6-luna", name: "Luna 5.6", desc: "Roomier limits than Terra — repetitive, long-running work · effort up to max" },
+    { id: "codex:gpt-5.5", name: "GPT-5.5", desc: "Previous generation, stable · effort up to xhigh" },
+    { id: "codex:gpt-5.4-mini", name: "5.4 mini", desc: "Light and fast — simple tasks, easy on your limits · effort up to xhigh" },
   ] },
 ];
-const MODEL_CUSTOM = { id: "__custom", name: "Tùy chỉnh…",
-  desc: "Tự nhập model id / alias khác (claude: opus-4-7, opus-4-6…; codex: 'codex:<slug>')" };
+const MODEL_CUSTOM = { id: "__custom", name: "Custom…",
+  desc: "Type another model id / alias (claude: opus-4-7, opus-4-6…; codex: 'codex:<slug>')" };
 let SP_TEMPLATES = [];                          // cache /api/skills/templates
 let spSel = { ws: "", template: "", model: "" };  // lựa chọn hiện tại của form spawn
 let spTab = MODEL_TABS[0].engine;                 // tab engine đang mở ở picker Model
@@ -1110,7 +1110,7 @@ function spRoleSlug() {
   const slug = slugRole($("sp-role").value);
   $("sp-role-hint").innerHTML = slug
     ? `Session/skill: <code>${esc(slug)}</code> → <code>&lt;cwd&gt;/.claude/skills/${esc(slug)}/SKILL.md</code>`
-    : `Tên được format kiểu folder: chữ thường, bỏ dấu, khoảng trắng thành "-".`;
+    : `Formatted like a folder name: lowercase, accents stripped, spaces become "-".`;
 }
 window.spRoleSlug = spRoleSlug;
 
@@ -1122,7 +1122,7 @@ function pickCard(group, val, inner, title) {
 function renderSpawnPickers() {
   const wsBox = $("sp-ws-cards");
   if (!wsBox) return;
-  const wsItems = [{ id: "", name: "default", note: "workspace chung — cwd tự chọn bên dưới" }]
+  const wsItems = [{ id: "", name: "default", note: "shared workspace — pick the cwd below" }]
     .concat(WORKSPACES.filter((w) => w.id !== "default").map((w) => ({
       id: w.id, name: w.name || w.id,
       note: w.id + (w.status !== "active" ? " · " + w.status : ""),
@@ -1133,8 +1133,8 @@ function renderSpawnPickers() {
     ? SP_TEMPLATES.map((t) => pickCard("template", t.name,
         `<b>${esc(t.name)}</b><div class="pd">${esc(t.description || "")}</div>`, t.description)).join("")
     // Init prompt gõ tay đã bỏ → hết template là hết đường spawn. Nói thẳng thay vì để form câm.
-    : `<div class="hint">Không có template nào trong <code>.claude/skills/</code> cạnh chương
-       trình — thêm thư mục <code>&lt;tên&gt;/SKILL.md</code> rồi tải lại trang.</div>`;
+    : `<div class="hint">No templates found in <code>.claude/skills/</code> next to the program —
+       add a <code>&lt;name&gt;/SKILL.md</code> folder there and reload this page.</div>`;
   const tab = MODEL_TABS.find((t) => t.engine === spTab) || MODEL_TABS[0];
   $("sp-model-tabs").innerHTML = MODEL_TABS.map((t) =>
     `<button type="button" class="tab-btn${t.engine === tab.engine ? " sel" : ""}" ` +
@@ -1197,7 +1197,7 @@ window.spPick = spPick;
 async function browseDir(start) {
   const box = $("sp-dir");
   box.hidden = false;
-  box.innerHTML = `<div class="dir-crumb">Đang tải…</div>`;
+  box.innerHTML = `<div class="dir-crumb">Loading…</div>`;
   try {
     const d = await api("/api/fs" + (start ? "?path=" + encodeURIComponent(start) : ""));
     box.dataset.path = d.path;
@@ -1207,15 +1207,15 @@ async function browseDir(start) {
        <div class="dir-list">
          ${d.parent ? item(d.parent, "⬆ ..") : ""}
          ${d.dirs.map((n) => item(d.path.endsWith("/") ? d.path + n : d.path + "/" + n,
-                                  "📁 " + esc(n))).join("") || `<div class="hint">(không có thư mục con)</div>`}
+                                  "📁 " + esc(n))).join("") || `<div class="hint">(no subfolders)</div>`}
        </div>
        <div class="dir-actions">
-         <button type="button" onclick="pickDir()">✔ Chọn thư mục này</button>
-         <button type="button" class="secondary" onclick="closeDirBrowse()">Đóng</button>
+         <button type="button" onclick="pickDir()">✔ Use this folder</button>
+         <button type="button" class="secondary" onclick="closeDirBrowse()">Close</button>
        </div>`;
   } catch (e) {
     if (start) return browseDir("");   // path gõ tay sai → fallback về $HOME
-    box.innerHTML = `<div class="dir-crumb" style="color:var(--red)">Lỗi: ${esc(e)}</div>`;
+    box.innerHTML = `<div class="dir-crumb" style="color:var(--red)">Error: ${esc(e)}</div>`;
   }
 }
 function pickDir() { $("sp-cwd").value = $("sp-dir").dataset.path || ""; closeDirBrowse(); }
@@ -1231,12 +1231,12 @@ async function searchDir(q) {
   try {
     const d = await api("/api/fs?q=" + encodeURIComponent(q));
     const hits = d.matches || [];
-    box.innerHTML = `<div class="dir-crumb">🔎 "${esc(q)}" — ${hits.length} thư mục</div>
+    box.innerHTML = `<div class="dir-crumb">🔎 "${esc(q)}" — ${hits.length} folder(s)</div>
       <div class="dir-list">${hits.map((p) => `<div class="dir-item" data-path="${esc(p)}" data-pick="1">📁 ${esc(p)}</div>`).join("")
-        || `<div class="hint">Không có thư mục nào tên chứa "${esc(q)}" (tìm sâu 4 cấp dưới $HOME)</div>`}</div>
-      <div class="dir-actions"><button type="button" class="secondary" onclick="closeDirBrowse()">Đóng</button></div>`;
+        || `<div class="hint">No folder name contains "${esc(q)}" (searched 4 levels under $HOME)</div>`}</div>
+      <div class="dir-actions"><button type="button" class="secondary" onclick="closeDirBrowse()">Close</button></div>`;
   } catch (e) {
-    box.innerHTML = `<div class="dir-crumb" style="color:var(--red)">Lỗi tìm: ${esc(e)}</div>`;
+    box.innerHTML = `<div class="dir-crumb" style="color:var(--red)">Search failed: ${esc(e)}</div>`;
   }
 }
 
@@ -1296,12 +1296,12 @@ async function spawnAgent() {
       allowed_tools: engineOfModel(spModel()) === "codex" ? [] : collectTools("sp"),
       template: spSel.template,
     });
-    showMsg("sp-msg", `Đã spawn '${r.name}' (${r.id})`, true);
+    showMsg("sp-msg", `Spawned '${r.name}' (${r.id})`, true);
     $("sp-role").value = "";
     spRoleSlug();
     $("sp-tools").innerHTML = "";
     refreshAll();
-  } catch (e) { showMsg("sp-msg", "Lỗi: " + e, false); }
+  } catch (e) { showMsg("sp-msg", "Error: " + e, false); }
 }
 
 window.spawnAgent = spawnAgent;
@@ -1311,11 +1311,11 @@ function moreRow(which, cols, hasMore, shown) {
   if (!hasMore) {
     // Chỉ hiện dòng "đã hết" khi đang xem nhiều hơn 1 trang (đỡ rối khi ít record).
     if (shown <= PAGE) return "";
-    return `<tr class="more-row"><td colspan="${cols}"><span class="more-done">— hết —</span></td></tr>`;
+    return `<tr class="more-row"><td colspan="${cols}"><span class="more-done">— end —</span></td></tr>`;
   }
   return `<tr class="more-row"><td colspan="${cols}">
-    <button class="more-btn" onclick="showMore('${which}')">+ ${PAGE} cũ hơn</button>
-    <span class="more-count">đang xem ${shown}</span></td></tr>`;
+    <button class="more-btn" onclick="showMore('${which}')">+ ${PAGE} older</button>
+    <span class="more-count">showing ${shown}</span></td></tr>`;
 }
 
 function renderSignals(list) {
@@ -1423,17 +1423,17 @@ async function openRun(runId) {
   openRunId = runId;
   $("dr-title").textContent = "Run #" + runId;
   $("dr-badge").innerHTML = "";
-  $("dr-body").innerHTML = `<div class="empty">Đang tải transcript…</div>`;
+  $("dr-body").innerHTML = `<div class="empty">Loading transcript…</div>`;
   $("drawer").classList.add("open");
   $("drawer-overlay").classList.add("open");
   try {
     const steps = await api("/api/runs/" + runId + "/events");
     $("dr-body").innerHTML = steps.length
       ? pairTools(coalesceEvents(steps)).map(evRow).join("")
-      : `<div class="empty">Chưa có bước nào (run có thể đang khởi động).</div>`;
+      : `<div class="empty">No steps yet — the run may still be starting.</div>`;
     scrollDrawerBottom();
   } catch (e) {
-    $("dr-body").innerHTML = `<div class="empty" style="color:var(--red)">Lỗi tải: ${esc(e)}</div>`;
+    $("dr-body").innerHTML = `<div class="empty" style="color:var(--red)">Load failed: ${esc(e)}</div>`;
   }
 }
 window.openRun = openRun;
@@ -1452,20 +1452,20 @@ async function openSessionRun(sid) {
   openRunId = null;
   $("dr-title").textContent = `Run · ${s ? s.name : sid}`;
   $("dr-badge").innerHTML = "";
-  $("dr-body").innerHTML = `<div class="empty">Đang tìm run…</div>`;
+  $("dr-body").innerHTML = `<div class="empty">Looking for a run…</div>`;
   $("drawer").classList.add("open");
   $("drawer-overlay").classList.add("open");
   try {
     const runs = await api(`/api/sessions/${encodeURIComponent(sid)}/runs`);
     if (!runs.length) {
-      $("dr-body").innerHTML = `<div class="empty">Session chưa có run nào.</div>`;
+      $("dr-body").innerHTML = `<div class="empty">This session has no runs yet.</div>`;
       return;
     }
     await openRun(runs[0].id);
     $("dr-title").textContent = `Run #${runs[0].id} · ${s ? s.name : ""}`;
     $("dr-badge").innerHTML = badge(runs[0].status, RUN_BADGE[runs[0].status]);
   } catch (e) {
-    $("dr-body").innerHTML = `<div class="empty" style="color:var(--red)">Lỗi: ${esc(e)}</div>`;
+    $("dr-body").innerHTML = `<div class="empty" style="color:var(--red)">Error: ${esc(e)}</div>`;
   }
 }
 window.openSessionRun = openSessionRun;

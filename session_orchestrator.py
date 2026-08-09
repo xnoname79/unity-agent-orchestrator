@@ -1199,7 +1199,7 @@ async def _run_claude(session, prompt, on_event=None, dry_run=False):
                 if not oversized:
                     oversized = True
                     try:
-                        await on_event("error", f"dòng output quá lớn (> {STREAM_LIMIT // (1024*1024)}MB), bỏ qua",
+                        await on_event("error", f"output line too large (> {STREAM_LIMIT // (1024*1024)}MB), skipped",
                                        {"error": str(e)})
                     except Exception:  # noqa: BLE001
                         pass
@@ -1220,7 +1220,7 @@ async def _run_claude(session, prompt, on_event=None, dry_run=False):
             try:
                 display = _iter_display_events(ev)
             except Exception as e:  # noqa: BLE001
-                display = [("error", f"parse event lỗi: {e}", {"line": _trunc(line, 500)})]
+                display = [("error", f"could not parse event: {e}", {"line": _trunc(line, 500)})]
             for kind, summary, payload in display:
                 try:
                     await on_event(kind, summary, payload)
@@ -1243,8 +1243,8 @@ async def _run_claude(session, prompt, on_event=None, dry_run=False):
     if final is None:
         err = stderr_txt.strip()[:2000]
         if on_event:
-            await on_event("error", "không nhận được event 'result' từ claude", {"stderr": err})
-        return {"ok": False, "result": "không nhận được event 'result' từ claude.",
+            await on_event("error", "no 'result' event received from claude", {"stderr": err})
+        return {"ok": False, "result": "No 'result' event received from claude.",
                 "session_id": session_id, "tokens": 0, "raw": {"stderr": err}}
     usage = final.get("usage") or {}
     return {
@@ -1503,7 +1503,7 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
     if is_tenant:
         root = workspace_root(workspace_id)
         if not root:
-            return {"error": f"workspace '{workspace_id}' không tồn tại"}
+            return {"error": f"workspace '{workspace_id}' does not exist"}
         if not cwd:
             cwd = root
     # Vật thể hoá init_prompt thành SKILL của role (<cwd>/.claude/skills/<name>/SKILL.md) → mỗi
@@ -1532,16 +1532,16 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
             )
             stdout, stderr = await proc.communicate(input=init_prompt.encode("utf-8"))
         except Exception as e:  # noqa: BLE001
-            return {"error": f"không chạy được claude: {e}"}
+            return {"error": f"could not run claude: {e}"}
         if proc.returncode != 0:
             return {"error": (stderr or b"").decode("utf-8", "replace")[:500]}
         try:
             data = json.loads((stdout or b"").decode("utf-8", "replace"))
         except json.JSONDecodeError:
-            return {"error": "không parse được output từ claude"}
+            return {"error": "could not parse claude output"}
         sid = data.get("session_id")
         if not sid:
-            return {"error": "claude không trả session_id"}
+            return {"error": "claude returned no session_id"}
     register_session(sid, name, project, cwd, allowed_tools or [], permission_mode, model, effort, workspace_id, engine or "claude")
     return get_session(sid)
 
@@ -1731,7 +1731,7 @@ def _iter_codex_events(ev):
         msg = (ev.get("error") or {}).get("message") or "turn failed"
         return [("error", _trunc(msg, 500), {"error": msg})]
     if t == "error":
-        msg = ev.get("message") or "lỗi không rõ"
+        msg = ev.get("message") or "unknown error"
         return [("error", _trunc(msg, 500), {"error": msg})]
     if t not in ("item.started", "item.completed"):
         return []                      # turn.started, item.updated… = nhiễu
@@ -1772,7 +1772,7 @@ def _iter_codex_events(ev):
         return [("tool_use", f"web_search({_trunc(str(item.get('query') or ''), 200)})",
                  {"name": "web_search", "input": {"query": item.get("query")}})]
     if it == "error":
-        msg = item.get("message") or "lỗi không rõ"
+        msg = item.get("message") or "unknown error"
         return [("error", _trunc(msg, 500), {"error": msg})]
     return []
 
@@ -1910,7 +1910,7 @@ async def _codex_exec(cmd, cwd, session_id="", on_event=None):
             elif t == "turn.failed":
                 failed = (ev.get("error") or {}).get("message") or "turn failed"
             elif t == "error":
-                failed = ev.get("message") or "lỗi không rõ"
+                failed = ev.get("message") or "unknown error"
             elif t == "item.completed" and (ev.get("item") or {}).get("type") == "agent_message":
                 # Lượt có thể có nhiều agent_message; câu CUỐI là kết quả trả cho người gọi.
                 text = (ev["item"].get("text") or "").strip() or text
@@ -1950,7 +1950,7 @@ class CodexEngine(AgentEngine):
         if bool(workspace_id) and workspace_id != DEFAULT_WORKSPACE:
             root = workspace_root(workspace_id)
             if not root:
-                return {"error": f"workspace '{workspace_id}' không tồn tại"}
+                return {"error": f"workspace '{workspace_id}' does not exist"}
             if not cwd:
                 cwd = root
         # Vật thể hoá role thành SKILL: ghi cả .codex/skills (codex tự quét, ĐÃ ĐO) lẫn
@@ -1966,7 +1966,7 @@ class CodexEngine(AgentEngine):
                 cwd)
             sid = res["raw"].get("thread_id")
             if not sid:
-                return {"error": res.get("result") or "codex không trả thread_id"}
+                return {"error": res.get("result") or "codex returned no thread_id"}
         register_session(sid, name, project, cwd, allowed_tools or [], permission_mode,
                          model, effort, workspace_id, self.name)
         return get_session(sid)
@@ -2203,7 +2203,7 @@ async def process_signal(signal):
     if not target:
         set_signal_status(signal["id"], "failed", "session không tồn tại")
         record_run(signal["to_session"], signal["id"], signal["message"],
-                   {"error": "session không tồn tại"}, "error", 0, _now(), _now(), wsid)
+                   {"error": "session does not exist"}, "error", 0, _now(), _now(), wsid)
         publish({"type": "signal", "id": signal["id"], "status": "failed", "reason": "no session", "workspace_id": wsid})
         return {"signal": signal["id"], "status": "failed", "reason": "no session"}
 
@@ -2276,7 +2276,7 @@ async def process_signal(signal):
                 if res.get("ok") or attempts >= MAX_RETRIES or target["id"] in KILLED_SESSIONS:
                     break
                 attempts += 1
-                await on_event("error", f"retry {attempts}/{MAX_RETRIES} sau lỗi", {"attempt": attempts})
+                await on_event("error", f"retry {attempts}/{MAX_RETRIES} after failure", {"attempt": attempts})
                 await asyncio.sleep(RETRY_BACKOFF * attempts)
             ended = _now()
 
@@ -2498,11 +2498,11 @@ async def chat_run_stream(session, prompt, workspace_id):
 
 _OA_MSG = {"type": "object", "properties": {
     "role": {"type": "string", "enum": ["system", "user", "assistant"]},
-    "content": {"description": "Chuỗi, hoặc mảng block {type:'text',text:...} kiểu OpenAI"}},
+    "content": {"description": "A string, or an OpenAI-style array of {type:'text',text:...} blocks"}},
     "required": ["role", "content"]}
 _OA_ERR = {"type": "object", "properties": {"error": {"type": "object", "properties": {
     "message": {"type": "string"}, "type": {"type": "string"}, "code": {"type": "string"}}}}}
-_OA_ERR_RESP = {"description": "Lỗi (shape OpenAI)",
+_OA_ERR_RESP = {"description": "Error (OpenAI shape)",
                 "content": {"application/json": {"schema": _OA_ERR}}}
 
 
@@ -2517,38 +2517,41 @@ def _oa_query(name, desc=""):
 def _oa_intro():
     """Phần mô tả ở đầu trang /docs — nơi ghi 2 điểm KHÁC OpenAI mà app ngoài phải biết trước."""
     return (
-        "Chat với agent trong orchestrator bằng **API tương thích OpenAI** — app ngoài chỉ cần "
-        "đổi `base_url`.\n\n"
+        "Talk to an orchestrated agent through an **OpenAI-compatible API** — an existing app "
+        "only has to change its `base_url`.\n\n"
         "```python\nfrom openai import OpenAI\n"
         f"cli = OpenAI(base_url='http://{ORCH_HOST}:{ORCH_PORT}/v1', api_key='<ORCH_API_KEY>')\n"
         "cli.chat.completions.create(\n"
         "    model='<workspace_id>/<agent_alias>',\n"
-        "    messages=[{'role': 'user', 'content': 'chào'}], stream=True)\n```\n\n"
-        "### Hai điểm KHÁC OpenAI, phải biết trước khi build app\n"
-        "1. **Có trạng thái.** OpenAI stateless (client gửi lại cả `messages` mỗi lượt); ở đây ngữ "
-        "cảnh nằm trong transcript CLI phía server, nên chỉ phần **mới kể từ lượt `assistant` gần "
-        "nhất** được gửi cho agent. Gửi lại cả lịch sử = nhân đôi ngữ cảnh.\n"
-        "2. **1 request = 1 lượt chạy thật** của agent: qua khoá session, trần run/ngày, audit. "
-        "Hai request tới CÙNG agent **xếp hàng**, không chạy song song; một lượt có thể kéo dài "
-        f"phút (trần `ORCH_CHAT_TIMEOUT`, hiện {CHAT_TIMEOUT:.0f}s).\n\n"
-        "### Chọn agent\n"
-        "`agent_alias` + `workspace_id` nhận ở body, query, hoặc gói trong `model` dạng "
-        "`\"<workspace_id>/<agent_alias>\"` (SDK OpenAI chỉ gửi được `model`).\n\n"
-        "### Xác thực\n"
-        "Bật khi đặt biến môi trường `ORCH_API_KEY`. Gửi qua `Authorization: Bearer <key>`, "
-        "`X-API-Key`, hoặc `?api_key=`. Không đặt biến này = mở cho mọi client (chỉ nên dùng khi "
-        "bind localhost).\n\n"
-        "### Ngoài phạm vi tài liệu này\n"
-        "Dashboard còn nhiều route `/api/*` (signals, runs, terminal…) phục vụ UI, đổi theo UI nên "
-        "không đặc tả ở đây.")
+        "    messages=[{'role': 'user', 'content': 'hello'}], stream=True)\n```\n\n"
+        "### Two ways this differs from OpenAI — know these before you build\n"
+        "1. **It is stateful.** OpenAI is stateless: the client resends the whole `messages` array "
+        "every turn. Here the conversation lives in the CLI's own transcript on the server, so only "
+        "the part **new since the last `assistant` message** is sent to the agent. Resending the "
+        "history duplicates context rather than restoring it.\n"
+        "2. **One request is one real agent run**: it goes through the session lock, the daily run "
+        "cap and the audit log. Two requests to the SAME agent **queue** rather than run in "
+        "parallel, and a single turn can take minutes "
+        f"(`ORCH_CHAT_TIMEOUT`, currently {CHAT_TIMEOUT:.0f}s).\n\n"
+        "### Choosing an agent\n"
+        "`agent_alias` and `workspace_id` are accepted in the body, as query parameters, or packed "
+        "into `model` as `\"<workspace_id>/<agent_alias>\"` (the OpenAI SDKs can only send "
+        "`model`).\n\n"
+        "### Authentication\n"
+        "Enabled by setting the `ORCH_API_KEY` environment variable. Send it as "
+        "`Authorization: Bearer <key>`, `X-API-Key`, or `?api_key=`. Leaving it unset means any "
+        "client can drive your agents — only reasonable when bound to localhost.\n\n"
+        "### Out of scope here\n"
+        "The dashboard uses many more `/api/*` routes (signals, runs, terminal…). They change with "
+        "the UI and are deliberately not specified.")
 
 
 def _oa_chat_body():
     return {"type": "object", "required": ["messages"], "properties": {
         "model": {"type": "string", "examples": ["ws_ab12/game-artist", "game-artist"],
-                  "description": "`<workspace_id>/<agent_alias>`, hoặc chỉ alias"},
-        "agent_alias": {"type": "string", "description": "Ưu tiên hơn `model`"},
-        "workspace_id": {"type": "string", "description": "Bỏ trống = 'default'"},
+                  "description": "`<workspace_id>/<agent_alias>`, or just the alias"},
+        "agent_alias": {"type": "string", "description": "Takes precedence over `model`"},
+        "workspace_id": {"type": "string", "description": "Empty means 'default'"},
         "messages": {"type": "array", "minItems": 1, "items": _OA_MSG},
         "stream": {"type": "boolean", "default": False},
         "stream_options": {"type": "object",
@@ -2557,31 +2560,31 @@ def _oa_chat_body():
 
 def _oa_spawn_body():
     return {"type": "object", "required": ["name"], "properties": {
-        "name": {"type": "string", "description": "alias của agent"},
+        "name": {"type": "string", "description": "the agent's alias"},
         "workspace_id": {"type": "string"},
-        "cwd": {"type": "string", "description": "thư mục project agent làm việc"},
+        "cwd": {"type": "string", "description": "project folder the agent works in"},
         "model": {"type": "string",
-                  "description": "'' hoặc opus/sonnet/haiku… → Claude CLI; "
+                  "description": "'' or opus/sonnet/haiku… → Claude CLI; "
                                  "'codex' / 'codex:<slug>' → Codex CLI"},
         "effort": {"type": "string", "enum": list(EFFORT_LADDER),
-                   "description": "mức vượt trần engine/model sẽ tự hạ xuống"},
+                   "description": "a level above the engine/model ceiling is clamped down automatically"},
         "template": {"type": "string",
-                     "description": "tên template trong .claude/skills/ dùng làm playbook nguồn "
-                                    "(xem GET /api/skills/templates); bỏ trống → thử theo 'name'"},
+                     "description": "template under .claude/skills/ to seed the playbook from "
+                                    "(see GET /api/skills/templates); empty falls back to 'name'"},
         "init_prompt": {"type": "string",
-                        "description": "playbook vai viết thẳng, lưu thành SKILL.md trong cwd. "
-                                       "Ưu tiên hơn 'template'"},
+                        "description": "playbook written out in full, saved as SKILL.md in cwd. "
+                                       "Takes precedence over 'template'"},
         "permission_mode": {"type": "string",
-                            "description": "bypassPermissions (mặc định) = toàn quyền"}}}
+                            "description": "bypassPermissions (the default) grants full access"}}}
 
 
 def _oa_usage_schema():
     return {"type": "object", "properties": {
         "prompt_tokens": {"type": "integer"},
-        "completion_tokens": {"type": "integer", "description": "số THẬT engine báo"},
+        "completion_tokens": {"type": "integer", "description": "the REAL count reported by the engine"},
         "estimated": {"const": True,
-                      "description": "prompt_tokens là ƯỚC LƯỢNG (4 ký tự/token) — "
-                                     "đừng dùng để tính tiền"}}}
+                      "description": "prompt_tokens is an ESTIMATE (4 chars/token) — "
+                                     "do not bill from it"}}}
 
 
 def _oa_completion_schema():
@@ -2593,23 +2596,23 @@ def _oa_completion_schema():
 
 
 def _oa_path_chat():
-    ok = _oa_json(_oa_completion_schema(), "Trả lời của agent")
+    ok = _oa_json(_oa_completion_schema(), "The agent's reply")
     ok["content"]["text/event-stream"] = {
         "schema": {"type": "string"},
         "example": 'data: {"object":"chat.completion.chunk",...}\n\ndata: [DONE]\n\n'}
     return {"post": {
-        "tags": ["chat"], "summary": "Chat với 1 agent (stream hoặc không)",
-        "description": "Mỗi request chạy agent 1 lượt thật. `stream:true` → SSE khung "
-                       "`chat.completion.chunk`, kết bằng `data: [DONE]`.",
-        "parameters": [_oa_query("agent_alias", "Thay cho field trong body"),
+        "tags": ["chat"], "summary": "Chat with one agent (streaming or not)",
+        "description": "Every request is one real agent run. `stream:true` yields SSE "
+                       "`chat.completion.chunk` frames, ending with `data: [DONE]`.",
+        "parameters": [_oa_query("agent_alias", "Alternative to the body field"),
                        _oa_query("workspace_id")],
         "requestBody": {"required": True,
                         "content": {"application/json": {"schema": _oa_chat_body()}}},
         "responses": {"200": ok,
                       "400": _OA_ERR_RESP, "401": _OA_ERR_RESP, "404": _OA_ERR_RESP,
-                      "409": dict(_OA_ERR_RESP, description="Agent paused/stopped hoặc "
-                                                            "workspace bị suspend"),
-                      "502": dict(_OA_ERR_RESP, description="Agent chạy lỗi")}}}
+                      "409": dict(_OA_ERR_RESP, description="Agent is paused/stopped, or the "
+                                                            "workspace is suspended"),
+                      "502": dict(_OA_ERR_RESP, description="The agent run failed")}}}
 
 
 def openapi_spec():
@@ -2623,34 +2626,34 @@ def openapi_spec():
         "components": {"securitySchemes": {
             "bearerAuth": {"type": "http", "scheme": "bearer"},
             "apiKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key"}}},
-        "tags": [{"name": "chat", "description": "Tương thích OpenAI"},
-                 {"name": "agents", "description": "Dựng và xem agent"}],
+        "tags": [{"name": "chat", "description": "OpenAI-compatible"},
+                 {"name": "agents", "description": "Create and inspect agents"}],
         "paths": {
             "/v1/chat/completions": _oa_path_chat(),
             "/v1/models": {"get": {
-                "tags": ["chat"], "summary": "Danh sách agent dưới dạng 'model'",
-                "parameters": [_oa_query("workspace_id", "Bỏ trống = mọi workspace")],
+                "tags": ["chat"], "summary": "List agents as OpenAI models",
+                "parameters": [_oa_query("workspace_id", "Empty means every workspace")],
                 "responses": {"200": _oa_json(desc="id = `<workspace_id>/<agent_alias>`")}}},
             "/api/sessions": {"get": {
-                "tags": ["agents"], "summary": "Liệt kê agent (dạng gốc, đầy đủ trường)",
+                "tags": ["agents"], "summary": "List agents (native shape, all fields)",
                 "parameters": [_oa_query("workspace_id")],
-                "responses": {"200": _oa_json({"type": "array"}, "Mảng session")}}},
+                "responses": {"200": _oa_json({"type": "array"}, "Array of sessions")}}},
             "/api/sessions/spawn": {"post": {
-                "tags": ["agents"], "summary": "Tạo agent mới (chạy CLI để lấy session id)",
+                "tags": ["agents"], "summary": "Create an agent (runs the CLI to obtain a session id)",
                 "requestBody": {"required": True,
                                 "content": {"application/json": {"schema": _oa_spawn_body()}}},
-                "responses": {"200": _oa_json(desc="Session vừa tạo"),
-                              "400": _oa_json(desc="Thiếu name / engine không hỗ trợ"),
-                              "500": _oa_json(desc="CLI không trả session id")}}},
+                "responses": {"200": _oa_json(desc="The session just created"),
+                              "400": _oa_json(desc="Missing name, or unsupported engine"),
+                              "500": _oa_json(desc="The CLI returned no session id")}}},
             "/api/workspaces": {
-                "get": {"tags": ["agents"], "summary": "Liệt kê workspace",
-                        "responses": {"200": _oa_json({"type": "array"}, "Mảng workspace")}},
-                "post": {"tags": ["agents"], "summary": "Tạo workspace",
+                "get": {"tags": ["agents"], "summary": "List workspaces",
+                        "responses": {"200": _oa_json({"type": "array"}, "Array of workspaces")}},
+                "post": {"tags": ["agents"], "summary": "Create a workspace",
                          "requestBody": {"content": {"application/json": {"schema": {
                              "type": "object",
                              "properties": {"name": {"type": "string"}}}}}},
-                         "responses": {"200": _oa_json(desc="Workspace vừa tạo")}}},
-            "/health": {"get": {"summary": "Kiểm tra sống + cấu hình đang chạy", "security": [],
+                         "responses": {"200": _oa_json(desc="The workspace just created")}}},
+            "/health": {"get": {"summary": "Liveness check plus the running configuration", "security": [],
                                 "responses": {"200": _oa_json(desc="ok")}}},
         },
     }
@@ -2664,9 +2667,10 @@ _DOCS_HTML = """<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <style>body{margin:0}#off{display:none;font:14px/1.6 system-ui;padding:32px;max-width:640px}
 code{background:#eee;padding:2px 5px;border-radius:4px}</style></head><body>
 <div id="swagger"></div>
-<div id="off"><h2>Không tải được Swagger UI</h2><p>Trang này lấy Swagger UI từ CDN nên cần mạng.
-Máy đang offline thì dùng thẳng đặc tả: <a href="/openapi.json"><code>/openapi.json</code></a>
-— import được vào Postman, Insomnia hay <code>editor.swagger.io</code>.</p></div>
+<div id="off"><h2>Swagger UI could not load</h2><p>This page pulls Swagger UI from a CDN, so it
+needs network access. Offline, use the spec directly:
+<a href="/openapi.json"><code>/openapi.json</code></a> — it imports into Postman, Insomnia or
+<code>editor.swagger.io</code>.</p></div>
 <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"
         onerror="document.getElementById('off').style.display='block'"></script>
 <script>window.onload=function(){ if(!window.SwaggerUIBundle) return;
@@ -2765,7 +2769,7 @@ def build_app():
             body = {}
         name = (body.get("name") or "").strip()
         if not name:
-            return JSONResponse({"error": "name bắt buộc"}, status_code=400)
+            return JSONResponse({"error": "name is required"}, status_code=400)
         mrpd = body.get("max_runs_per_day")
         ws, created = lookup_or_create_workspace(name, int(mrpd) if mrpd is not None else None)
         if created:
@@ -2845,14 +2849,14 @@ def build_app():
         body = await request.json()
         s = get_session(body.get("session") or "")
         if not s:
-            return JSONResponse({"error": "session không tồn tại"}, status_code=404)
+            return JSONResponse({"error": "session does not exist"}, status_code=404)
         if not (s.get("cwd") or "").strip():
-            return JSONResponse({"error": "session chưa có cwd để mở"}, status_code=400)
+            return JSONResponse({"error": "session has no cwd to open"}, status_code=400)
         try:
             return JSONResponse(await vscode_start(s))
         except FileNotFoundError:
-            return JSONResponse({"error": f"không tìm thấy lệnh '{VSCODE_BIN}' (cài VS Code CLI "
-                                          f"hoặc set ORCH_VSCODE_BIN)"}, status_code=500)
+            return JSONResponse({"error": f"command '{VSCODE_BIN}' not found — install the VS Code "
+                                          f"CLI or set ORCH_VSCODE_BIN"}, status_code=500)
 
     async def api_vscode_close(request: Request):
         return JSONResponse({"ok": True, "was_open": await vscode_stop()})
@@ -2863,7 +2867,7 @@ def build_app():
         sid = request.path_params["sid"]
         proc = ACTIVE_PROCS.get(sid)
         if not proc or proc.returncode is not None:
-            return JSONResponse({"error": "không có run đang chạy cho session này"}, status_code=409)
+            return JSONResponse({"error": "no run is currently active on this session"}, status_code=409)
         KILLED_SESSIONS.add(sid)
         try:
             proc.kill()
@@ -2877,9 +2881,9 @@ def build_app():
         wid = body.get("workspace_id") or DEFAULT_WORKSPACE
         ws = get_workspace(wid)
         if not ws:
-            return wid, JSONResponse({"error": f"workspace '{wid}' không tồn tại"}, status_code=404)
+            return wid, JSONResponse({"error": f"workspace '{wid}' does not exist"}, status_code=404)
         if ws["status"] != "active":
-            return wid, JSONResponse({"error": f"workspace '{wid}' đang {ws['status']}"}, status_code=409)
+            return wid, JSONResponse({"error": f"workspace '{wid}' is {ws['status']}"}, status_code=409)
         return wid, None
 
     def _validate_name(name, wid, session_id=None):
@@ -2887,13 +2891,13 @@ def build_app():
         session). session_id: bỏ qua chính nó khi re-register."""
         dup = get_session_by_name(name, wid)
         if dup and dup["id"] != session_id:
-            return JSONResponse({"error": f"role '{name}' đã tồn tại trong workspace"}, status_code=409)
+            return JSONResponse({"error": f"role '{name}' already exists in this workspace"}, status_code=409)
         return None
 
     async def api_register(request: Request):
         body = await request.json()
         if not body.get("id") or not body.get("name"):
-            return JSONResponse({"error": "id và name bắt buộc"}, status_code=400)
+            return JSONResponse({"error": "id and name are required"}, status_code=400)
         wid, err = _validate_workspace(body)
         if err:
             return err
@@ -2933,7 +2937,7 @@ def build_app():
     async def api_spawn(request: Request):
         body = await request.json()
         if not body.get("name"):
-            return JSONResponse({"error": "name bắt buộc"}, status_code=400)
+            return JSONResponse({"error": "name is required"}, status_code=400)
         wid, err = _validate_workspace(body)
         if err:
             return err
@@ -2949,7 +2953,7 @@ def build_app():
         # Engine suy TỪ MODEL (model 'codex'/'codex:<slug>' → Codex CLI, còn lại → Claude CLI).
         eng_name = resolve_engine_name(body)
         if eng_name not in ENGINES:
-            return JSONResponse({"error": f"engine '{eng_name}' không hỗ trợ (có: {', '.join(ENGINES)})"},
+            return JSONResponse({"error": f"engine '{eng_name}' is not supported (available: {', '.join(ENGINES)})"},
                                 status_code=400)
         # engine.spawn: cwd truyền vào giữ nguyên; rỗng thì tự về thư mục workspace (≠ default).
         res = await engine_for(eng_name).spawn(
@@ -2994,11 +2998,11 @@ def build_app():
         try:
             p = p.resolve()
             if not p.is_dir():
-                return JSONResponse({"error": f"không phải thư mục: {p}"}, status_code=400)
+                return JSONResponse({"error": f"not a directory: {p}"}, status_code=400)
             dirs = sorted((d.name for d in p.iterdir()
                            if d.is_dir() and not d.name.startswith(".")), key=str.lower)[:300]
         except PermissionError:
-            return JSONResponse({"error": f"không có quyền đọc: {p}"}, status_code=403)
+            return JSONResponse({"error": f"permission denied: {p}"}, status_code=403)
         return JSONResponse({"path": str(p),
                              "parent": str(p.parent) if p != p.parent else None,
                              "dirs": dirs})
@@ -3020,7 +3024,7 @@ def build_app():
         body = await request.json()
         content = body.get("content") or ""
         if not content.strip():
-            return JSONResponse({"error": "content rỗng — không ghi"}, status_code=400)
+            return JSONResponse({"error": "content is empty — nothing written"}, status_code=400)
         cwd, name = s.get("cwd") or "", s.get("name") or ""
         _write_role_skill(cwd, name, content)
         return JSONResponse({"path": str(_skill_path(cwd, name)),
@@ -3152,8 +3156,8 @@ def build_app():
         old, new = engine_name_of_session(s), engine_from_model(model)
         if old != new:
             return JSONResponse(
-                {"error": f"không đổi model qua lại giữa '{new}' và '{old}' được — session id của "
-                          f"engine này CLI kia không resume được. Hãy spawn session mới."},
+                {"error": f"cannot switch between '{new}' and '{old}' — one CLI cannot resume the "
+                          f"other's session id. Spawn a new session instead."},
                 status_code=400)
         set_session_model(sid, model)
         s = get_session(sid)
@@ -3173,7 +3177,7 @@ def build_app():
         # Nhận cả thang chung; mức vượt trần engine/model sẽ được clamp lúc chạy (clamp_effort),
         # không chặn ở đây — đổi model sau đó là mức cũ lại dùng được.
         if eff and eff not in EFFORT_LADDER:
-            return JSONResponse({"error": f"effort không hợp lệ; dùng: {', '.join(EFFORT_LADDER)}"}, status_code=400)
+            return JSONResponse({"error": f"invalid effort; use one of: {', '.join(EFFORT_LADDER)}"}, status_code=400)
         set_session_effort(sid, eff)
         s = get_session(sid)
         publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": s.get("workspace_id")})
@@ -3254,14 +3258,13 @@ def build_app():
         body = await request.json()
         ref = body.get("to_session") or body.get("to_role")
         if not ref or not body.get("message"):
-            return JSONResponse({"error": "to_session/to_role và message bắt buộc"}, status_code=400)
+            return JSONResponse({"error": "to_session/to_role and message are required"}, status_code=400)
         # Resolve trong phạm vi workspace nếu có (chống signal đi nhầm tenant khi trùng role).
-        # from_ref: alias 'orch' cần biết người gửi để chọn đúng orch khi workspace có nhiều cwd.
         wid = body.get("workspace_id") or None
         target = resolve_session_id(ref, wid, body.get("from_session") or body.get("from_role"))
         if not target:
             scope = f" trong workspace '{wid}'" if wid else ""
-            return JSONResponse({"error": f"không tìm thấy session cho '{ref}'{scope}"}, status_code=404)
+            return JSONResponse({"error": f"no session found for '{ref}'{scope}"}, status_code=404)
         # Signal thừa hưởng workspace của session đích (nguồn sự thật là session).
         target_ws = get_session(target).get("workspace_id") or DEFAULT_WORKSPACE
         # id=14/Q1: nếu message mang 'ticket' của 1 ask_user_choice đang chờ → service TỰ đóng signal
@@ -3316,8 +3319,8 @@ def build_app():
             return JSONResponse({"error": "not found"}, status_code=404)
         if row["status"] not in RERUNNABLE:
             return JSONResponse(
-                {"error": f"chỉ re-run được signal ở trạng thái {', '.join(RERUNNABLE)}; "
-                          f"signal #{sig_id} đang '{row['status']}'"}, status_code=409)
+                {"error": f"only signals in {', '.join(RERUNNABLE)} can be re-run; "
+                          f"signal #{sig_id} is '{row['status']}'"}, status_code=409)
         set_signal_status(sig_id, "pending")
         publish({"type": "signal", "id": sig_id, "status": "pending", "session": row["to_session"], "workspace_id": row["workspace_id"]})
         return JSONResponse({"id": sig_id, "status": "pending", "rerun": True})
@@ -3335,8 +3338,8 @@ def build_app():
             return JSONResponse({"error": "not found"}, status_code=404)
         if row["status"] not in DELETABLE:
             return JSONResponse(
-                {"error": f"chỉ xóa được signal ở trạng thái {', '.join(DELETABLE)}; "
-                          f"signal #{sig_id} đang '{row['status']}'"}, status_code=409)
+                {"error": f"only signals in {', '.join(DELETABLE)} can be deleted; "
+                          f"signal #{sig_id} is '{row['status']}'"}, status_code=409)
         deleted = delete_signal(sig_id)
         publish({"type": "signal", "id": sig_id, "status": "removed", "session": row["to_session"], "workspace_id": row["workspace_id"]})
         return JSONResponse({"id": sig_id, "removed": True, "deleted": deleted})
@@ -3359,7 +3362,7 @@ def build_app():
         # Bỏ trống = admin view, nhận mọi event. Tồn tại thì mới lọc; không thì trả 404.
         ws_filter = request.query_params.get("workspace_id") or None
         if ws_filter is not None and not get_workspace(ws_filter):
-            return JSONResponse({"error": f"workspace '{ws_filter}' không tồn tại"}, status_code=404)
+            return JSONResponse({"error": f"workspace '{ws_filter}' does not exist"}, status_code=404)
         q: asyncio.Queue = asyncio.Queue()
         sub = (q, ws_filter)
         _subscribers.add(sub)
@@ -3459,10 +3462,10 @@ def build_app():
                     else:
                         res = data
             except Exception as e:  # noqa: BLE001 — stream đã mở, không trả HTTP status được nữa
-                yield sse({"error": {"message": f"lỗi khi chạy agent: {e}", "type": "upstream_error"}})
+                yield sse({"error": {"message": f"agent run failed: {e}", "type": "upstream_error"}})
             # Lỗi giữa chừng: KHÔNG im lặng đóng stream (client sẽ tưởng agent trả lời xong).
             if res.get("status") not in ("done", None):
-                yield sse({"error": {"message": res.get("result") or "agent chạy lỗi",
+                yield sse({"error": {"message": res.get("result") or "agent run failed",
                                      "type": "upstream_error", "code": res.get("status")}})
             yield sse(_chat_chunk(cid, model, created, {}, finish="stop"))
             if want_usage:
@@ -3530,7 +3533,7 @@ def build_app():
                 if not secrets.compare_digest(key, ORCH_API_KEY):
                     # Shape lỗi của OpenAI cho /v1 (SDK bóc e.message), shape cũ cho /api.
                     if path.startswith("/v1/"):
-                        return JSONResponse({"error": {"message": "sai hoặc thiếu API key",
+                        return JSONResponse({"error": {"message": "invalid or missing API key",
                                                        "type": "invalid_request_error",
                                                        "code": "invalid_api_key"}}, status_code=401)
                     return JSONResponse({"error": "unauthorized"}, status_code=401)

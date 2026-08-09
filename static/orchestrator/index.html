@@ -411,21 +411,22 @@
           <div class="hint">Orchestrator runs <code>claude -p</code> to create a new session.</div>
           <label>Workspace</label>
           <div id="sp-ws-cards" class="pick-grid"></div>
-          <div class="hint">Working dir bỏ trống + workspace ≠ default → agent chạy trong thư mục workspace.</div>
+          <div class="hint">Leave Working dir empty on a non-default workspace and the agent runs in that workspace's folder.</div>
           <label>Role name</label>
-          <input id="sp-role" placeholder="Tên role (vd: Backend Dev)" oninput="spRoleSlug()">
+          <input id="sp-role" placeholder="Role name (e.g. Backend Dev)" oninput="spRoleSlug()">
           <div class="hint" id="sp-role-hint"></div>
           <label>Playbook template</label>
           <div id="sp-template-cards" class="pick-grid"></div>
-          <div class="hint">Template được ghi thành <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/SKILL.md</code>
-            (và bản <code>.codex</code>). Chỗ trống <code>&lt;VIẾT_HOA&gt;</code> do chính agent điền
-            ở lượt chạy đầu, sau khi nó khảo sát thư mục project — chính xác hơn gõ tay.</div>
-          <label>Working dir (cwd) — thư mục project của agent</label>
+          <div class="hint">The template is written to <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/SKILL.md</code>
+            (plus a <code>.codex</code> copy). Its <code>&lt;UPPERCASE&gt;</code> blanks are filled in by
+            the agent itself on its first run, after it has surveyed the project — more accurate than
+            typing them blind.</div>
+          <label>Working dir (cwd) — the project this agent works in</label>
           <div class="dir-row">
-            <input id="sp-cwd" placeholder="gõ tên thư mục để tìm, hoặc /path/to/project"
+            <input id="sp-cwd" placeholder="type a folder name to search, or /path/to/project"
               oninput="onCwdInput(this.value)">
             <button type="button" onclick="browseDir(document.getElementById('sp-cwd').value.trim())"
-              title="Duyệt thư mục trên máy chạy orchestrator">📁</button>
+              title="Browse folders on the machine running the orchestrator">📁</button>
           </div>
           <div id="sp-dir" class="dir-browse" hidden></div>
           <label>Model</label>
@@ -433,7 +434,7 @@
           <div class="hint" id="sp-model-tabs-note"></div>
           <div id="sp-model-cards" class="pick-grid"></div>
           <div id="sp-model-custom" hidden>
-            <input id="sp-model" list="model-list" placeholder="model id / alias tùy chỉnh"
+            <input id="sp-model" list="model-list" placeholder="custom model id / alias"
               oninput="onModelCustomInput()">
           </div>
           <label>Effort (reasoning)</label>
@@ -443,9 +444,9 @@
             <button type="button" class="secondary" onclick="loadTools('sp')">🔧 Load tools from cwd</button>
             <div id="sp-tools" class="toolpicker"></div>
           </div>
-          <div class="hint" id="sp-tools-codex" hidden>Codex không có allowlist tool — luôn có
-            <code>shell</code> + <code>apply_patch</code> (đọc/ghi/grep/bash). Phạm vi do
-            permission mode quyết định, không do danh sách tool.</div>
+          <div class="hint" id="sp-tools-codex" hidden>Codex has no tool allowlist — it always has
+            <code>shell</code> + <code>apply_patch</code> (read/write/grep/bash). Scope is decided by
+            the permission mode, not by a list of tools.</div>
           <div class="spawn-actions"><button onclick="spawnAgent()">🚀 Spawn</button></div>
           <div id="sp-msg" class="form-msg"></div>
         </div>
@@ -458,23 +459,23 @@
   <div id="tab-agents">
     <div id="canvas" class="canvas">
       <div id="world" class="world"></div>
-      <div id="cv-empty" class="cv-empty" hidden>Chưa có agent nào trong workspace này.</div>
+      <div id="cv-empty" class="cv-empty" hidden>No agents in this workspace yet.</div>
       <div class="cv-overlay cv-toolbar">
         <button onclick="cvZoom(1/1.2)" title="Zoom out">−</button>
         <span id="cv-zoom">100%</span>
         <button onclick="cvZoom(1.2)" title="Zoom in">+</button>
         <span class="cv-sep"></span>
-        <button onclick="cvFit()" title="Fit toàn bộ agent vào khung">⤢</button>
+        <button onclick="cvFit()" title="Fit every agent into view">⤢</button>
       </div>
-      <button class="cv-overlay cv-help" title="Hướng dẫn canvas"
+      <button class="cv-overlay cv-help" title="Canvas help"
         onclick="const h = document.getElementById('cv-hint'); h.hidden = !h.hidden">?</button>
       <div id="cv-hint" class="cv-overlay cv-hint" hidden>
-        <b>Điều khiển:</b> kéo nền = pan · lăn chuột = zoom · kéo header card = di chuyển agent ·
-        kéo header 📁 = di chuyển cả cụm · click card = xem run mới nhất (live).<br>
-        <b>Mũi tên</b> = task ĐANG hoạt động giữa các agent: vàng chờ · xanh chạy —
-        xong/lỗi thì ẩn (xem tab History).<br>
-        <b>Trong card 📁:</b> mở 💻 terminal cho 1 session (giao việc trực tiếp trong card đó) ·
-        🔌 MCP để xem/add MCP cho project.
+        <b>Controls:</b> drag the background = pan · scroll = zoom · drag a card header = move that
+        agent · drag a 📁 header = move the whole group · click a card = watch its latest run live.<br>
+        <b>Arrows</b> = tasks currently in flight between agents: amber waiting · green running.
+        Finished or failed ones disappear — see the History tab.<br>
+        <b>Inside a 📁 card:</b> 💻 opens a terminal for one session (talk to it directly in the
+        card) · 🔌 MCP lists and adds MCP servers for the project.
       </div>
     </div>
   </div><!-- /tab-agents -->
@@ -484,9 +485,9 @@
     <h2>Send signal</h2>
     <div class="sg-form">
       <select id="sg-to"></select>
-      <input id="sg-msg" placeholder="Message (string hoặc JSON tự do)">
-      <label class="sg-chk" title="Signal chờ Approve trên queue mới chạy"><input type="checkbox" id="sg-approval"> approval</label>
-      <label class="sg-chk" title="Không gọi claude thật — test pipeline"><input type="checkbox" id="sg-dry"> dry-run</label>
+      <input id="sg-msg" placeholder="Message (plain string or any JSON)">
+      <label class="sg-chk" title="Signal waits for Approve in the queue before it runs"><input type="checkbox" id="sg-approval"> approval</label>
+      <label class="sg-chk" title="Do not call the real CLI — exercises the pipeline only"><input type="checkbox" id="sg-dry"> dry-run</label>
       <button onclick="sendSignal()">Send</button>
     </div>
   </section>
@@ -533,8 +534,8 @@
   <option value="opus" label="alias — latest Opus">
   <option value="sonnet" label="alias — latest Sonnet">
   <option value="haiku" label="alias — latest Haiku">
-  <option value="claude-fable-5" label="Fable 5 — mạnh nhất (Claude 5)">
-  <option value="claude-opus-4-8" label="Opus 4.8 (Opus mới nhất)">
+  <option value="claude-fable-5" label="Fable 5 — most capable (Claude 5)">
+  <option value="claude-opus-4-8" label="Opus 4.8 (latest Opus)">
   <option value="claude-opus-4-7" label="Opus 4.7">
   <option value="claude-opus-4-6" label="Opus 4.6">
   <option value="claude-sonnet-5" label="Sonnet 5">
