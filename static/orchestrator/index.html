@@ -92,7 +92,6 @@
     width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
     border-radius: 6px; padding: 6px 9px; font: inherit; font-size: 13px; }
   .form-card textarea { resize: vertical; min-height: 46px; }
-  #sp-init { min-height: 200px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   /* Nút Spawn tách riêng khỏi các control khác (divider + canh phải) — tránh click nhầm */
   .form-card .spawn-actions { border-top: 1px solid var(--border); margin-top: 18px; padding-top: 14px;
     display: flex; justify-content: flex-end; gap: 10px; }
@@ -117,8 +116,6 @@
     cursor: pointer; background: var(--bg); transition: border-color .12s; }
   .pick-card:hover { border-color: var(--accent); }
   /* Khối nhập tên custom role (spawn form + modal register) — tách khỏi grid card phía trên */
-  #sp-role-custom { margin: 12px 0 4px; }
-  #sp-role-custom .hint { margin-top: 5px; }
   .pick-card.sel { border-color: var(--accent); background: rgba(59,116,224,.08);
     box-shadow: 0 0 0 1px var(--accent); }
   .pick-card b { display: block; font-size: 12.5px; }
@@ -415,13 +412,14 @@
           <label>Workspace</label>
           <div id="sp-ws-cards" class="pick-grid"></div>
           <div class="hint">Working dir bỏ trống + workspace ≠ default → agent chạy trong thư mục workspace.</div>
-          <label>Role (pick a template)</label>
+          <label>Role name</label>
+          <input id="sp-role" placeholder="Tên role (vd: Backend Dev)" oninput="spRoleSlug()">
+          <div class="hint" id="sp-role-hint"></div>
+          <label>Playbook template</label>
           <div id="sp-template-cards" class="pick-grid"></div>
-          <div id="sp-role-custom" hidden>
-            <input id="sp-role" placeholder="Tên role (vd: VFX Artist)" oninput="spRoleSlug()">
-            <div class="hint" id="sp-role-hint"></div>
-          </div>
-          <div class="hint">Role name = template name. SKILL is written to <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/</code>.</div>
+          <div class="hint">Template được ghi thành <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/SKILL.md</code>
+            (và bản <code>.codex</code>). Chỗ trống <code>&lt;VIẾT_HOA&gt;</code> do chính agent điền
+            ở lượt chạy đầu, sau khi nó khảo sát thư mục project — chính xác hơn gõ tay.</div>
           <label>Working dir (cwd) — thư mục project của agent</label>
           <div class="dir-row">
             <input id="sp-cwd" placeholder="gõ tên thư mục để tìm, hoặc /path/to/project"
@@ -448,7 +446,6 @@
           <div class="hint" id="sp-tools-codex" hidden>Codex không có allowlist tool — luôn có
             <code>shell</code> + <code>apply_patch</code> (đọc/ghi/grep/bash). Phạm vi do
             permission mode quyết định, không do danh sách tool.</div>
-          <label id="sp-init-label">Init prompt (optional)</label><textarea id="sp-init" placeholder="You are an Artist Director agent..."></textarea>
           <div class="spawn-actions"><button onclick="spawnAgent()">🚀 Spawn</button></div>
           <div id="sp-msg" class="form-msg"></div>
         </div>

@@ -1100,40 +1100,6 @@ let SP_TEMPLATES = [];                          // cache /api/skills/templates
 let spSel = { ws: "", template: "", model: "" };  // lựa chọn hiện tại của form spawn
 let spTab = MODEL_TABS[0].engine;                 // tab engine đang mở ở picker Model
 
-// Mẫu init prompt cho role tùy chỉnh — prefill vào textarea khi user chọn card
-// "Tùy chỉnh…" (chỉ khi textarea đang rỗng, không đè bản user đã sửa).
-const CUSTOM_INIT_TEMPLATE = `---
-name: <ROLE_NAME>
-description: >
-  The <ROLE_TITLE> role for this project. ACTIVATE on any signal with
-  to_role="<ROLE_NAME>", or whenever the work falls in this speciality:
-  <SPECIALITY_LIST>. Do NOT do another role's work — hand it off via send_signal.
----
-
-# <ROLE_TITLE> — <PROJECT_NAME>
-
-You are the **<ROLE_TITLE>** on a one-human, many-agent team.
-
-## Role & boundaries
-
-**You DO:** <MAIN_TASK_1>, <MAIN_TASK_2>, <MAIN_TASK_3>.
-**You do NOT:** <OTHER_ROLE_WORK> → send_signal(to_role="<OWNING_ROLE>").
-
-## Talking to the team over MCP signal
-
-- \`list_agents\` — see who is live before handing anything off. Never signal a role
-  from memory: the roster changes as agents are spawned and removed.
-- \`send_signal(to_role="<TARGET_ROLE>", from_role="<ROLE_NAME>", message="...")\` —
-  lateral hand-off. The other agent does NOT see your conversation, so the message
-  must carry its own context (goal, relevant files/scenes, what "done" means).
-- Task finished: report back to WHOEVER SENT IT. Every signal you receive carries a
-  \`[Signal from: ...]\` line naming the sender — reply to that role:
-  send_signal(to_role="<the [Signal from:] role>", from_role="<ROLE_NAME>",
-  message="[REPORT] result + evidence (numbers/screenshots) + what is still open").
-  If the sender is the user rather than an agent, answer in text instead.
-- Long jobs bloat the transcript → compact_context(role="<ROLE_NAME>", focus="work in progress").
-`;
-
 // Format tên role thành slug kiểu folder: bỏ dấu tiếng Việt, chữ thường, [a-z0-9-].
 function slugRole(s) {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/gi, "d")
@@ -1163,15 +1129,12 @@ function renderSpawnPickers() {
     })));
   wsBox.innerHTML = wsItems.map((w) =>
     pickCard("ws", w.id, `<b>${esc(w.name)}</b><div class="pd">${esc(w.note)}</div>`)).join("");
-  $("sp-template-cards").innerHTML = SP_TEMPLATES.map((t) => pickCard("template", t.name,
-      `<b>${esc(t.name)}</b><div class="pd">${esc(t.description || "")}</div>`, t.description))
-    .concat(pickCard("template", "__custom",
-      `<b>Tùy chỉnh…</b><div class="pd">Tự đặt tên role + viết init prompt (lưu thành SKILL trong cwd)</div>`))
-    .join("");
-  const isCustomRole = spSel.template === "__custom";
-  $("sp-role-custom").hidden = !isCustomRole;
-  $("sp-init-label").textContent = isCustomRole
-    ? "Init prompt (bắt buộc — sửa template mẫu theo role)" : "Init prompt (optional)";
+  $("sp-template-cards").innerHTML = SP_TEMPLATES.length
+    ? SP_TEMPLATES.map((t) => pickCard("template", t.name,
+        `<b>${esc(t.name)}</b><div class="pd">${esc(t.description || "")}</div>`, t.description)).join("")
+    // Init prompt gõ tay đã bỏ → hết template là hết đường spawn. Nói thẳng thay vì để form câm.
+    : `<div class="hint">Không có template nào trong <code>.claude/skills/</code> cạnh chương
+       trình — thêm thư mục <code>&lt;tên&gt;/SKILL.md</code> rồi tải lại trang.</div>`;
   const tab = MODEL_TABS.find((t) => t.engine === spTab) || MODEL_TABS[0];
   $("sp-model-tabs").innerHTML = MODEL_TABS.map((t) =>
     `<button type="button" class="tab-btn${t.engine === tab.engine ? " sel" : ""}" ` +
@@ -1224,19 +1187,8 @@ function onModelCustomInput() { renderSpawnEffort(); syncToolPicker(); }
 window.onModelCustomInput = onModelCustomInput;
 
 function spPick(group, val) {
-  const prev = spSel[group];
   spSel[group] = val;
-  if (group === "template") {
-    const box = $("sp-init");
-    if (val === "__custom") {
-      if (!box.value.trim()) box.value = CUSTOM_INIT_TEMPLATE;
-      spRoleSlug();
-    } else if (prev === "__custom" && box.value === CUSTOM_INIT_TEMPLATE) {
-      box.value = "";   // mẫu chưa sửa gì thì dọn — kẻo bị ghi đè SKILL của template thật
-    }
-  }
   renderSpawnPickers();
-  if (group === "template" && val === "__custom") $("sp-role").focus();
 }
 window.spPick = spPick;
 
@@ -1318,14 +1270,11 @@ function showMsg(id, text, ok) {
 }
 
 async function spawnAgent() {
-  let name = spSel.template;
-  if (!name) return showMsg("sp-msg", "Cần chọn vai/template", false);
-  if (name === "__custom") {
-    name = slugRole($("sp-role").value);
-    if (!name) return showMsg("sp-msg", "Cần nhập tên role tùy chỉnh", false);
-    if (!$("sp-init").value.trim())
-      return showMsg("sp-msg", "Role tùy chỉnh bắt buộc có init prompt (thành SKILL của role)", false);
-  }
+  // Tên vai và template là HAI thứ khác nhau: template chỉ là playbook NGUỒN (nhiều agent dùng
+  // chung một template được), tên vai là danh tính để signal — phải unique trong workspace.
+  const name = slugRole($("sp-role").value);
+  if (!name) return showMsg("sp-msg", "Cần nhập tên role", false);
+  if (!spSel.template) return showMsg("sp-msg", "Cần chọn playbook template", false);
   showMsg("sp-msg", "Đang spawn…", true);
   try {
     const r = await api("/api/sessions/spawn", "POST", {
@@ -1335,11 +1284,11 @@ async function spawnAgent() {
       effort: $("sp-effort").value,
       // codex bỏ qua allowed_tools → gửi [] cho khớp sự thật, đừng lưu vào DB thứ không có hiệu lực.
       allowed_tools: engineOfModel(spModel()) === "codex" ? [] : collectTools("sp"),
-      init_prompt: $("sp-init").value.trim(),
+      template: spSel.template,
     });
     showMsg("sp-msg", `Đã spawn '${r.name}' (${r.id})`, true);
-    $("sp-init").value = "";
     $("sp-role").value = "";
+    spRoleSlug();
     $("sp-tools").innerHTML = "";
     refreshAll();
   } catch (e) { showMsg("sp-msg", "Lỗi: " + e, false); }

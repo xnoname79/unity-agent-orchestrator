@@ -2565,8 +2565,12 @@ def _oa_spawn_body():
                                  "'codex' / 'codex:<slug>' → Codex CLI"},
         "effort": {"type": "string", "enum": list(EFFORT_LADDER),
                    "description": "mức vượt trần engine/model sẽ tự hạ xuống"},
+        "template": {"type": "string",
+                     "description": "tên template trong .claude/skills/ dùng làm playbook nguồn "
+                                    "(xem GET /api/skills/templates); bỏ trống → thử theo 'name'"},
         "init_prompt": {"type": "string",
-                        "description": "playbook vai, lưu thành SKILL.md trong cwd"},
+                        "description": "playbook vai viết thẳng, lưu thành SKILL.md trong cwd. "
+                                       "Ưu tiên hơn 'template'"},
         "permission_mode": {"type": "string",
                             "description": "bypassPermissions (mặc định) = toàn quyền"}}}
 
@@ -2936,10 +2940,12 @@ def build_app():
         err = _validate_name(body["name"].strip(), wid)
         if err:
             return err
-        # Role template không kèm init prompt → seed playbook từ TEMPLATES_DIR (đồng bộ flow
-        # register; custom role thì FE đã bắt buộc init_prompt).
-        # Không phải tên template → giữ init prompt rỗng như cũ.
-        init_prompt = body.get("init_prompt", "") or _template_skill(body["name"].strip())
+        # Playbook nguồn = field 'template' (dashboard gửi; tên vai và template là hai thứ khác
+        # nhau — nhiều agent dùng chung một template được). Fallback về tên vai cho client cũ vốn
+        # đặt tên vai trùng tên template. init_prompt tường minh vẫn được tôn trọng (đường API).
+        # Không khớp template nào → init prompt rỗng, agent ra đời không playbook.
+        init_prompt = body.get("init_prompt", "") or _template_skill(
+            (body.get("template") or "").strip() or body["name"].strip())
         # Engine suy TỪ MODEL (model 'codex'/'codex:<slug>' → Codex CLI, còn lại → Claude CLI).
         eng_name = resolve_engine_name(body)
         if eng_name not in ENGINES:

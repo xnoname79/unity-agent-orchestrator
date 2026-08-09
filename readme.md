@@ -123,8 +123,14 @@ start and no port to open. It exposes three tools:
 
 ## Creating agents
 
-Use **Spawn agent** on the dashboard. Three fields matter:
+Use **Spawn agent** on the dashboard. Four fields matter:
 
+- **Role name** — the agent's identity. Signals are routed by it, so it must be unique within
+  the workspace. It also names the skill directory the playbook is written to.
+- **Playbook template** — which bundled template under `.claude/skills/` seeds the role. Several
+  agents can share one template; they differ by role name, not by playbook source. There is no
+  free-text init prompt on the dashboard: a playbook written by the agent after it has read the
+  actual project beats one typed blind into a textarea.
 - **Working dir** — the project the agent operates in. Type a folder name to search for it.
 - **Model** — a tab per provider:
 
@@ -136,8 +142,12 @@ Use **Spawn agent** on the dashboard. Three fields matter:
   The `codex:` prefix is required. Codex model slugs such as `gpt-5.6-terra` are also valid
   OpenAI API model names, so without the prefix there is no way to tell which you meant.
 
-- **Init prompt** — the agent's playbook. It is written to `SKILL.md` inside the project so the
-  role survives long transcripts and context compaction.
+The playbook is written to `SKILL.md` inside the project — under both `.claude/skills/` and
+`.codex/skills/`, since each CLI only reads its own — so the role survives long transcripts and
+context compaction.
+
+`POST /api/sessions/spawn` still accepts a raw `init_prompt` for programmatic callers; it takes
+precedence over `template`.
 
 ### Self-filling playbooks
 
