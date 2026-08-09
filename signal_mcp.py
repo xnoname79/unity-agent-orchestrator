@@ -139,8 +139,8 @@ async def send_signal(to_role: str, message: str, from_role: str = "", requires_
     → Developer để code, Developer → Artist Director để review).
 
     Args:
-        to_role: Role/tên agent đích (vd "developer", "artist-director"). Phải khớp
-                 name đã register với orchestrator.
+        to_role: Role/tên agent đích (vd "backend", "reviewer"). Phải khớp name đã register
+                 với orchestrator — gọi list_agents nếu không chắc, roster đổi liên tục.
         message: Nội dung yêu cầu/thông báo — sẽ trở thành user message cho agent đích.
         from_role: TÊN SESSION CỦA CHÍNH BẠN, đúng như orchestrator đăng ký (gọi list_agents
                  nếu không chắc). ĐỪNG tự đặt tên mô tả nghề nghiệp — tên không có thật sẽ bị

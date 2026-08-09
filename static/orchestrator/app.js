@@ -552,8 +552,8 @@ async function sendSignal() {
 }
 window.sendSignal = sendSignal;
 
-// 1 card agent. needsYou = có signal chờ duyệt tới nó; isOrch = s.is_orch (backend, toggle 👑
-// — session vừa là director điều phối vừa làm việc theo SKILL role riêng của nó).
+// 1 card agent. needsYou = có signal chờ duyệt tới nó; isOrch = s.is_orch (backend, toggle 💻
+// — card này mở terminal nhúng, 1 terminal mỗi project; không còn ý nghĩa gì với routing signal).
 function agentCard(s, needsYou, isOrch) {
   const id = encodeURIComponent(s.id);
   const tools = JSON.parse(s.allowed_tools || "[]") || [];
