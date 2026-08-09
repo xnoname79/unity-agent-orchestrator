@@ -139,6 +139,22 @@ Use **Spawn agent** on the dashboard. Three fields matter:
 - **Init prompt** — the agent's playbook. It is written to `SKILL.md` inside the project so the
   role survives long transcripts and context compaction.
 
+### Self-filling playbooks
+
+A role template can leave blanks as `<UPPERCASE>` placeholders — the bundled templates do this
+for things like `<PROJECT_NAME>` and `<CORE_LOOP>`. When a spawned agent's `SKILL.md` still
+contains one, the orchestrator queues a single bootstrap run asking that agent to survey its
+working directory and fill the blanks in itself, writing the result to both `.claude/skills/`
+and `.codex/skills/`.
+
+The placeholders are the one-time flag: once they are gone the bootstrap never fires again, so
+nothing overwrites a playbook the agent (or you) has since edited. A hand-written init prompt
+with no placeholders skips the whole thing.
+
+Peer routing is deliberately *not* baked into any playbook — the roster changes as agents come
+and go, so every signal carries a reminder to call `list_agents` instead of trusting a
+remembered role name.
+
 ### Reasoning effort
 
 One ladder is shared across providers, and each model gets clamped to what it actually

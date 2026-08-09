@@ -1326,6 +1326,18 @@ def _role_skill(cwd, name):
         return ""
 
 
+# Placeholder của template SKILL chưa điền, vd <MUC_TIEU>. Vừa là điều kiện nhận template hợp lệ
+# (_list_skill_templates) vừa là CỜ ONE-TIME của bootstrap: còn placeholder = chưa điền → chạy;
+# agent điền xong = không khớp nữa → không bao giờ chạy lại. Không cần cột DB / file cờ, sống qua
+# restart orchestrator.
+_PLACEHOLDER_RE = re.compile(r"<[A-Z_]+>")
+
+
+def _skill_has_placeholder(cwd, name):
+    """SKILL của role còn placeholder chưa điền. File không có → False (không có gì để điền)."""
+    return bool(_PLACEHOLDER_RE.search(_role_skill(cwd, name)))
+
+
 def _skill_frontmatter(name, content):
     """CẢ claude lẫn codex chỉ nhận SKILL.md có frontmatter YAML (name + description) — thiếu thì
     file nằm đó mà CLI không đưa vào catalog, tức là im lặng vô hiệu. init_prompt gõ tay thường
@@ -1359,6 +1371,14 @@ def _write_role_skill(cwd, name, content):
 # khác không phải ghi/xoá file; session demote tự hết vai director ngay signal kế.
 DIRECTOR_SKILL = "director"
 
+# Roster peer đổi liên tục (agent được spawn/gỡ bất cứ lúc nào) → KHÔNG nướng danh sách vai vào
+# SKILL: đó là cache của dữ liệu động, sai ngay lần đầu có agent rời đi và không ai đi sửa lại.
+# Thay bằng đúng một dòng ghim vào MỌI signal, bảo agent tự hỏi roster sống. Không bao giờ cũ,
+# không cần đồng bộ chéo giữa các agent.
+_PEER_RULE = ('[Peers] Cần gửi signal cho một vai mà bạn chưa chắc có thật? Gọi '
+              'list_agents(from_role="<vai của bạn>") để lấy danh sách agent đang sống trong '
+              'workspace. ĐỪNG nhớ tên vai từ lượt trước — danh sách trong đầu bạn là bản cũ.')
+
 
 def _prepend_role(cwd, name, message, is_orch=False):
     """Ghim role + playbook vào MỖI signal inject → role không trôi khi history dài/compact.
@@ -1373,10 +1393,9 @@ def _prepend_role(cwd, name, message, is_orch=False):
     skill = _role_skill(cwd, name)
     if skill:
         parts.append(skill)
+    parts.append(_PEER_RULE)  # luôn có, kể cả vai không có SKILL riêng
     label = f"{name} (orchestrator)" if is_orch else name
-    if parts:
-        return f"[Role: {label}]\n" + "\n\n---\n\n".join(parts) + f"\n\n---\n\n{message}"
-    return f"[Role: {label}]\n{message}"
+    return f"[Role: {label}]\n" + "\n\n---\n\n".join(parts) + f"\n\n---\n\n{message}"
 
 
 # ─── Skill templates (liệt kê vai/role cho dropdown spawn) ────────────────────
@@ -1428,11 +1447,51 @@ def _list_skill_templates():
             text = f.read_text(encoding="utf-8")
         except OSError:
             continue
-        if not re.search(r"<[A-Z_]+>", text):
+        if not _PLACEHOLDER_RE.search(text):
             continue
         m = re.search(r"description:\s*>?\s*\n?\s*(.+)", text)
         out.append({"name": d.name.rstrip("/"), "description": (m.group(1).strip()[:200] if m else "")})
     return out
+
+
+def _bootstrap_skill_msg(name, cwd):
+    """Prompt one-time nhờ chính agent điền placeholder trong SKILL của nó từ nội dung cwd thật."""
+    paths = " và ".join(str(_skill_path(cwd, name, r)) for r in CLI_SKILL_ROOTS)
+    return f"""[BOOTSTRAP SKILL — chạy MỘT LẦN duy nhất, không phải việc của người dùng]
+Playbook vai '{name}' của bạn còn placeholder dạng <VIẾT_HOA> chưa điền. Việc DUY NHẤT của lượt này:
+
+1. Đọc SKILL hiện tại: {_skill_path(cwd, name)}
+2. Khảo sát thư mục làm việc {cwd or '.'} vừa đủ để hiểu project: README, cấu trúc thư mục, file
+   config, ngôn ngữ/framework, lệnh build/test. Không đọc tràn lan cả repo.
+3. Thay MỌI placeholder <VIẾT_HOA> bằng nội dung THẬT, đúng với vai '{name}' và project vừa khảo
+   sát. Giữ nguyên frontmatter YAML đầu file (--- name/description ---) và mọi mục có sẵn — chỉ
+   điền chỗ trống. Không được còn placeholder nào sót lại: đó là dấu hiệu bootstrap đã xong, còn
+   sót thì lần spawn sau sẽ chạy lại lượt này.
+4. Ghi nội dung Y HỆT NHAU vào CẢ HAI file: {paths}
+   (Claude đọc .claude, Codex đọc .codex — lệch nhau là hai CLI chạy hai playbook khác nhau.)
+
+KHÔNG gọi send_signal trong lượt này — lượt này không do agent nào giao, không có ai để báo cáo.
+KHÔNG sửa file nào khác ngoài hai file SKILL trên. Xong thì trả lời ngắn gọn: đã điền những
+placeholder nào."""
+
+
+def _maybe_bootstrap_skill(session, eng_name):
+    """Sau spawn: SKILL vừa ghi còn placeholder → xếp hàng signal nhờ agent tự điền từ cwd.
+
+    CHỈ engine chạy CLI có quyền đọc/ghi file (claude, codex). Engine chỉ-API (nội dung role do
+    client gửi qua init_prompt, agent không đọc được file cục bộ) phải bị loại — nó không tự điền
+    được và signal sẽ đốt một run vô ích.
+    One-time do chính placeholder bảo đảm (xem _PLACEHOLDER_RE) — không cần cờ riêng.
+    """
+    cwd = (session or {}).get("cwd") or ""
+    name = (session or {}).get("name") or ""
+    if eng_name not in ("claude", "codex") or not _skill_has_placeholder(cwd, name):
+        return
+    # from_session rỗng = người gửi (_HUMAN_SENDERS): không ăn quota PAIR_SIGNAL_CAP của cặp agent
+    # nào, và mở vòng việc mới cho vai này thay vì thừa hưởng vòng của ai đó.
+    enqueue_signal(session["id"], _bootstrap_skill_msg(name, cwd),
+                   workspace_id=session.get("workspace_id") or DEFAULT_WORKSPACE)
+    print(f"[orchestrator] bootstrap SKILL vai '{name}' (cwd={cwd}) → đã xếp hàng signal", flush=True)
 
 
 def _build_init_prompt(name, init_prompt, workspace_id):
@@ -2921,6 +2980,9 @@ def build_app():
         if res and res.get("error"):
             return JSONResponse(res, status_code=500)
         publish({"type": "session", "id": res["id"], "status": "idle", "workspace_id": wid})
+        # Signal one-time nhờ agent tự điền SKILL từ cwd. Chỉ XẾP HÀNG — run_loop nhặt chạy nền,
+        # spawn trả về ngay (bootstrap là một run CLI đầy đủ, chặn ở đây là treo cả UI).
+        _maybe_bootstrap_skill(res, eng_name)
         return JSONResponse(res)
 
     async def api_unregister(request: Request):
