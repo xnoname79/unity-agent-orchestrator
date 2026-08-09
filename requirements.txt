@@ -10,3 +10,7 @@ websockets
 # mcp đổi dependency là build binary gãy mà không rõ vì sao.
 starlette
 uvicorn
+# Terminal nhúng trên Windows: stdlib KHÔNG bọc ConPTY, pty/termios/fcntl là module Unix.
+# pywinpty là bindings ConPTY (cùng thứ Jupyter/terminado dùng). Chỉ cài trên Windows —
+# Linux/macOS đã có pty trong stdlib, kéo thêm dep ở đó là thừa và build sẽ hỏng.
+pywinpty>=2.0; sys_platform == "win32"

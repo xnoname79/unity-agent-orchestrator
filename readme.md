@@ -306,9 +306,14 @@ pip install pyinstaller
 pyinstaller build.spec --noconfirm
 ```
 
-**Windows limitation:** the embedded terminal needs `pty`, which is Unix-only. Everything else —
-headless agents, signalling, the `/v1` API, the dashboard — works normally; open the CLIs in a
-regular Windows terminal instead.
+**Windows:** the embedded terminal runs on ConPTY, which needs Windows 10 1809 or newer. The
+prebuilt `.exe` bundles it. From source, install the dependency for it:
+
+```bash
+pip install pywinpty
+```
+
+`GET /health` reports `embedded_terminal` — if it is `false`, `embedded_terminal_reason` says why.
 
 ---
 

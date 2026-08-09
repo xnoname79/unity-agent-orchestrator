@@ -1811,6 +1811,93 @@ def terminal_argv(session, cli=""):
     return [CLAUDE_BIN, "--resume", sid] if eng == "claude" else [CLAUDE_BIN]
 
 
+# ─── PTY cho terminal nhúng (xterm.js ↔ CLI interactive) ──────────────────────
+# claude/codex là TUI toàn màn hình: không có PTY thì chúng không nhận phím tắt, không vẽ đúng,
+# và nhiều CLI còn tự tắt chế độ tương tác khi thấy stdout không phải tty. Nên phải là PTY thật,
+# không thay bằng subprocess + pipe được.
+#   POSIX  → pty.fork() (stdlib).
+#   Windows→ ConPTY qua pywinpty (stdlib KHÔNG bọc ConPTY). Cần Windows 10 1809+.
+# Hai lớp dưới đây phơi cùng 4 hàm để ws_terminal không phải rẽ nhánh theo OS.
+
+
+class _PosixPty:
+    """PTY qua pty.fork(). read() trả bytes, write() nhận bytes."""
+
+    def __init__(self, argv, cwd, env):
+        import pty
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:  # child: thành CLI interactive
+            try:
+                os.chdir(cwd)
+            except OSError:
+                pass
+            try:
+                os.execvpe(argv[0], argv, env)
+            finally:
+                os._exit(1)  # execvpe fail — không được rơi ngược vào event loop của cha
+
+    def read(self):
+        try:
+            return os.read(self.fd, 65536)
+        except OSError:  # EIO khi child thoát — coi như EOF
+            return b""
+
+    def write(self, data):
+        os.write(self.fd, data)
+
+    def resize(self, rows, cols):
+        import fcntl
+        import struct
+        import termios
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+    def close(self):
+        for fn in (lambda: os.kill(self.pid, 15), lambda: os.close(self.fd),
+                   lambda: os.waitpid(self.pid, os.WNOHANG)):
+            try:
+                fn()
+            except OSError:
+                pass
+
+
+class _WinPty:
+    """PTY qua ConPTY (pywinpty). API của nó nói chuyện bằng str nên đổi mã ở biên."""
+
+    def __init__(self, argv, cwd, env):
+        from winpty import PtyProcess
+        self.p = PtyProcess.spawn(argv, cwd=cwd, env=env, dimensions=(24, 80))
+
+    def read(self):
+        try:
+            return (self.p.read(65536) or "").encode("utf-8", "replace")
+        except EOFError:  # tiến trình con đã thoát
+            return b""
+
+    def write(self, data):
+        self.p.write(data.decode("utf-8", "replace"))
+
+    def resize(self, rows, cols):
+        self.p.setwinsize(rows, cols)
+
+    def close(self):
+        try:
+            self.p.terminate(force=True)
+        except Exception:  # noqa: BLE001 — đã chết rồi thì thôi
+            pass
+
+
+def pty_backend():
+    """Lớp PTY dùng được trên máy này, hoặc None kèm lý do (để /health và UI nói thật)."""
+    if os.name == "posix":
+        return _PosixPty, ""
+    try:
+        import winpty  # noqa: F401
+    except ImportError:
+        return None, ("pywinpty chưa có — terminal nhúng cần ConPTY. "
+                      "Cài bằng `pip install pywinpty` rồi khởi động lại.")
+    return _WinPty, ""
+
+
 def _codex_mcp_ok(permission_mode=""):
     """Session này có gọi được MCP tool (send_signal…) không.
 
@@ -2714,8 +2801,13 @@ def build_app():
     asset_app = asset_fetch.mcp.streamable_http_app()
 
     async def health(request: Request):
+        # embedded_terminal: CI Windows kiểm tra cờ này để bắt trường hợp pywinpty không được
+        # đóng gói vào binary — lỗi đó chỉ lộ ra khi user bấm 💻, quá muộn.
+        _pty, _pty_why = pty_backend()
         return JSONResponse({"status": "ok", "server": "Session-Orchestrator",
                              "dry_run": DRY_RUN,
+                             "embedded_terminal": _pty is not None,
+                             "embedded_terminal_reason": _pty_why,
                              "default_effort": DEFAULT_EFFORT,
                              "daily_allow_step": DAILY_ALLOW_STEP,
                              "limits": {"max_runs_per_session": MAX_RUNS_PER_SESSION,
@@ -3035,24 +3127,10 @@ def build_app():
         """Terminal thật trong browser (xterm.js): spawn CLI interactive (claude/codex, xem
         terminal_argv) trong PTY tại cwd của session, bơm 2 chiều qua WebSocket.
         Client gửi JSON {t:'i', d:<keys>} (input) và {t:'r', c, r} (resize); server gửi bytes thô.
-        Mỗi kết nối 1 PTY + 1 thread đọc (os.read blocking); đóng WS là giết child.
+        Mỗi kết nối 1 PTY + 1 thread đọc (read blocking); đóng WS là giết child.
 
-        CHỈ CHẠY TRÊN POSIX: pty/termios/fcntl là module Unix, Windows không có. Bản Windows vẫn
-        dùng được mọi thứ còn lại (headless agent, signal, /v1 chat) — chỉ terminal nhúng là không.
-        Báo thẳng ra màn hình xterm thay vì để import lỗi rồi WS đứt câm."""
-        if os.name != "posix":
-            await websocket.accept()
-            await websocket.send_text(
-                "\r\n\x1b[33mTerminal nhúng chỉ chạy trên Linux/macOS\x1b[0m (cần pty — Windows "
-                "không có).\r\nMở CLI bằng terminal của Windows trong thư mục project; phần còn "
-                "lại của orchestrator (agent headless, signal, API /v1) vẫn dùng bình thường.\r\n")
-            await websocket.close(code=4403)
-            return
-        import fcntl
-        import pty
-        import struct
-        import termios
-
+        PTY lấy từ pty_backend(): pty.fork() trên POSIX, ConPTY trên Windows. Thiếu backend thì
+        BÁO THẲNG ra màn hình xterm — để import lỗi rồi WS đứt câm là kiểu hỏng khó đoán nhất."""
         # Cùng chính sách auth với /api/*: ORCH_API_KEY set thì bắt ?api_key= khớp.
         if ORCH_API_KEY and not secrets.compare_digest(
                 websocket.query_params.get("api_key", ""), ORCH_API_KEY):
@@ -3064,36 +3142,32 @@ def build_app():
             await websocket.close(code=4404)
             return
         await websocket.accept()
+        Pty, why = pty_backend()
+        if Pty is None:
+            await websocket.send_text(f"\r\n\x1b[33mEmbedded terminal unavailable\x1b[0m — {why}\r\n")
+            await websocket.close(code=4403)
+            return
         cwd = (s.get("cwd") or "").strip() or str(Path.home())
         argv = terminal_argv(s, websocket.query_params.get("cli", ""))
-        pid, fd = pty.fork()
-        if pid == 0:  # child: chạy CLI interactive trong PTY
-            try:
-                os.chdir(cwd)
-            except OSError:
-                pass
-            os.environ["TERM"] = "xterm-256color"
-            # codex mở từ terminal PHẢI gỡ key API y như đường headless (_codex_env), nếu không
-            # nó chạy "API-key mode" và đốt credits trong khi đường signal dùng gói ChatGPT.
-            if argv[0] == CODEX_BIN:
-                for k in CODEX_DROP_ENV:
-                    os.environ.pop(k, None)
-            try:
-                os.execvp(argv[0], argv)
-            finally:
-                os._exit(1)  # execvp fail — không được rơi ngược vào event loop của cha
+        env = dict(os.environ, TERM="xterm-256color")
+        # codex mở từ terminal PHẢI gỡ key API y như đường headless (_codex_env), nếu không nó
+        # chạy "API-key mode" và đốt credits trong khi đường signal dùng gói ChatGPT.
+        if argv[0] == CODEX_BIN:
+            for k in CODEX_DROP_ENV:
+                env.pop(k, None)
+        try:
+            term = Pty(argv, cwd, env)
+        except Exception as e:  # noqa: BLE001 — CLI thiếu / ConPTY từ chối / cwd sai
+            await websocket.send_text(
+                f"\r\n\x1b[31mCould not start {argv[0]}\x1b[0m: {e}\r\n")
+            await websocket.close(code=4500)
+            return
 
         loop = asyncio.get_running_loop()
 
-        def _read():
-            try:
-                return os.read(fd, 65536)
-            except OSError:  # EIO khi child thoát — coi như EOF
-                return b""
-
         async def pump_out():
             while True:
-                data = await loop.run_in_executor(None, _read)
+                data = await loop.run_in_executor(None, term.read)
                 if not data:
                     break
                 await websocket.send_bytes(data)
@@ -3112,29 +3186,17 @@ def build_app():
                     # ping-pong. Vai điều phối nhận việc qua terminal chứ không qua signal, không
                     # đánh dấu ở đây thì bộ đếm của chúng không bao giờ về 0.
                     note_human_touch(s.get("name"), s.get("workspace_id"))
-                    os.write(fd, str(msg.get("d", "")).encode("utf-8"))
+                    term.write(str(msg.get("d", "")).encode("utf-8"))
                 elif msg.get("t") == "r":
                     try:
-                        fcntl.ioctl(fd, termios.TIOCSWINSZ,
-                                    struct.pack("HHHH", int(msg.get("r", 24)), int(msg.get("c", 80)), 0, 0))
+                        term.resize(int(msg.get("r", 24)), int(msg.get("c", 80)))
                     except (OSError, ValueError):
                         pass
         except Exception:  # noqa: BLE001 — WS đóng/lỗi đều đi đường dọn dẹp chung
             pass
         finally:
             out_task.cancel()
-            try:
-                os.kill(pid, 15)
-            except ProcessLookupError:
-                pass
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            try:
-                os.waitpid(pid, os.WNOHANG)
-            except ChildProcessError:
-                pass
+            term.close()
 
     async def api_skill_templates(request: Request):
         return JSONResponse(_list_skill_templates())

@@ -69,6 +69,10 @@ jobs:
             sleep 0.5
           done
           curl -sf localhost:8999/health | grep -q '"status":"ok"' || { cat serve.log; exit 1; }
+          # Embedded terminal must be usable in the packaged binary. On Linux this only proves
+          # the flag is wired; the Windows job is where it actually catches a missing pywinpty.
+          curl -sf localhost:8999/health | grep -q '"embedded_terminal":true' \
+            || { echo "::error::embedded terminal unavailable"; curl -s localhost:8999/health; exit 1; }
           curl -sf localhost:8999/openapi.json | grep -q '/v1/chat/completions'
           curl -sf localhost:8999/ | grep -q '<title>'          # static dashboard is in the bundle
           kill %1
@@ -96,8 +100,12 @@ jobs:
           }
           if (-not $ok) { Get-Content serve.log, serve.err; throw "binary did not serve /health" }
           $spec = Invoke-RestMethod http://127.0.0.1:8999/openapi.json
+          # The ConPTY backend (pywinpty) is imported lazily inside the request handler, so a
+          # missing bundle would otherwise only surface when a user opens a terminal.
+          $h = Invoke-RestMethod http://127.0.0.1:8999/health
           Stop-Process -Id $p.Id -Force
           if (-not $spec.paths.'/v1/chat/completions') { throw "/v1 missing from openapi" }
+          if (-not $h.embedded_terminal) { throw "embedded terminal unavailable: $($h.embedded_terminal_reason)" }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -156,8 +164,8 @@ jobs:
             This binary is the orchestrator only — no agent is bundled. To run real agents the
             machine needs the `claude` CLI and/or the `codex` CLI, already logged in.
 
-            ## Windows limitation
+            ## Windows notes
 
-            The dashboard's embedded terminal needs `pty` (a Unix-only module), so it **does not
-            work on Windows** — open the CLI in a Windows terminal instead. Everything else
-            (headless agents, signalling, the `/v1` API, the dashboard) works normally.
+            The dashboard's embedded terminal runs on ConPTY and needs Windows 10 1809 or newer;
+            the bindings for it are bundled in the `.exe`. `GET /health` reports
+            `embedded_terminal`, with `embedded_terminal_reason` when it is unavailable.

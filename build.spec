@@ -35,6 +35,16 @@ for pkg in ("uvicorn", "mcp"):
     binaries += b
     hiddenimports += h
 
+# Terminal nhúng trên Windows chạy qua ConPTY (pywinpty). Gói này có extension biên dịch sẵn +
+# DLL đi kèm, và session_orchestrator import nó BÊN TRONG hàm (chỉ khi thực sự mở terminal) nên
+# phân tích tĩnh không thấy → phải gom tay. Thiếu bước này thì binary Windows vẫn build, vẫn
+# chạy, và chỉ chết đúng lúc user bấm 💻.
+if sys.platform == "win32":
+    d, b, h = collect_all("winpty")
+    datas += d
+    binaries += b
+    hiddenimports += h
+
 a = Analysis(
     ["session_orchestrator.py"],
     pathex=["."],
