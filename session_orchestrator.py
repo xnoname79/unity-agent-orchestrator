@@ -1360,6 +1360,11 @@ def _write_role_skill(cwd, name, content):
         return
     if not content.strip():
         return
+    # <ROLE_NAME> là placeholder DUY NHẤT orchestrator tự điền: template dùng chung được ghi vào
+    # .claude/skills/<vai>/ nên tên trong frontmatter phải là tên VAI (id skill = tên thư mục),
+    # và mọi ví dụ send_signal/list_agents trong playbook phải mang đúng vai đó. Điền ở đây thì
+    # SKILL hợp lệ ngay từ giây đầu, không phải chờ bootstrap.
+    content = content.replace("<ROLE_NAME>", name)
     content = _skill_frontmatter(name, content)
     for root in CLI_SKILL_ROOTS:
         p = _skill_path(cwd, name, root)
