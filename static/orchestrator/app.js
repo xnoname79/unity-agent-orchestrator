@@ -377,21 +377,6 @@ function startTerm(t) {
   t.term.onData((d) => { if (t.ws.readyState === 1) t.ws.send(JSON.stringify({ t: "i", d })); });
 }
 
-// Gửi thẳng 1 chuỗi phím vào PTY qua WS, KHÔNG đi qua bàn phím/xterm. Dùng cho phím hay bị
-// nuốt trước khi tới trang: Esc bị bộ gõ tiếng Việt (Unikey/ibus) ăn để đóng bảng gợi ý, bị
-// trình duyệt ăn khi đang fullscreen, hoặc terminal vừa mất focus sau một lần SSE re-render.
-// Phím thường (chữ, Enter) không dính vì bộ gõ nhả chúng ra; Esc thì không.
-function termSend(sid, seq) {
-  const t = cvTerms[sid];
-  if (!t || !t.ws || t.ws.readyState !== 1) return;
-  t.ws.send(JSON.stringify({ t: "i", d: seq }));
-  if (t.term) t.term.focus();   // trả focus để gõ tiếp ngay
-}
-window.termSend = termSend;
-
-function termEsc(sid) { termSend(sid, "\x1b"); }
-window.termEsc = termEsc;
-
 function fitTerm(t) {
   if (!t.term || !t.fit || !t.host.isConnected) return;
   try { t.fit.fit(); } catch { return; }
@@ -645,8 +630,6 @@ function agentCard(s, needsYou, isOrch) {
           ${ctrl}${killBtn}${allow}${vsBtn}
           ${cliSel}
           <button onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')" title="Reload the session/terminal (restarts the selected CLI)">🔄</button>
-          <button class="secondary" onclick="termEsc('${esc(s.id)}')"
-                  title="Send an Esc keypress to the terminal — for when the keyboard Esc is swallowed by an input method or the browser. Same as Ctrl+[">⎋</button>
           <button class="secondary" onclick="if(confirm('Close the terminal on ${esc(s.name)}? The session goes back to headless.'))toggleOrch('${id}',0)"
             title="Close the terminal — the session goes back to a headless worker">💻</button>
           ${ctxGroup()}${actGroup}

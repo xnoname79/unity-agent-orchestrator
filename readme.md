@@ -35,22 +35,56 @@ were a model. Streaming included. Your app never learns a bespoke protocol.
 ## Prerequisites
 
 You need the provider CLIs installed and logged in **before** the orchestrator is useful — it
-drives them, it does not replace them.
+drives them, it does not replace them. Both ship a native installer, so **you do not need
+Node.js** — prefer these over `npm install -g`.
 
 ### 1. Claude Code
 
-```bash
-npm install -g @anthropic-ai/claude-code
-claude          # log in once, interactively
-claude --version
+**Windows (PowerShell):**
+
+```powershell
+irm https://claude.ai/install.ps1 | iex
 ```
+
+**macOS / Linux / WSL:**
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash
+```
+
+Also available as `winget install Anthropic.ClaudeCode` and `brew install --cask claude-code`.
+See the [quickstart](https://code.claude.com/docs/en/quickstart#native-install-recommended) for
+Windows CMD and Linux package managers.
+
+Then log in once — running `claude` with no arguments prompts for it:
+
+```bash
+claude --version     # prints a version followed by (Claude Code)
+claude               # first run asks you to authenticate in the browser
+```
+
+> On native Windows, installing [Git for Windows](https://git-scm.com/downloads/win) is
+> recommended: without it Claude Code falls back to PowerShell for its shell tool. WSL setups do
+> not need it.
 
 ### 2. Codex CLI
 
+**macOS / Linux:**
+
 ```bash
-npm install -g @openai/codex
-codex login     # log in with your ChatGPT account
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+```
+
+**Windows:** open the [Codex CLI docs](https://learn.chatgpt.com/docs/codex/cli#getting-started)
+and pick the **Windows** tab — that page also has npm and Homebrew alternatives. The Windows
+installer puts the binary under
+`%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe`.
+
+Then sign in with your ChatGPT account:
+
+```bash
 codex --version
+codex                # first run: choose "Sign in with ChatGPT"
 ```
 
 > Codex runs on your **ChatGPT subscription**. If `OPENAI_API_KEY` is present in the
@@ -58,6 +92,23 @@ codex --version
 > orchestrator strips that variable from every Codex process it starts (headless *and*
 > terminal), so the subscription is used either way — but check `codex doctor` if you are
 > unsure which mode you are in.
+
+### Make sure the orchestrator can find them
+
+The orchestrator resolves `claude` and `codex` through the **PATH of its own process**, which is
+not always the PATH of the terminal you tested in. Two things follow:
+
+- Installing a CLI while the orchestrator is running does nothing until you **restart the
+  orchestrator**. On Windows a program started from Explorer keeps the PATH from when you logged
+  in, so a fresh terminal window is not enough either.
+- If `where.exe claude` (Windows) or `which claude` (macOS/Linux) prints a path but the
+  dashboard still says the command was not found, skip PATH entirely and point at the files in a
+  `.env` next to the orchestrator:
+
+```ini
+CLAUDE_BIN=C:\Users\you\AppData\Local\Programs\Claude\claude.exe
+ORCH_CODEX_BIN=C:\Users\you\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe
+```
 
 ### 3. Python 3.10+ (only if running from source)
 
