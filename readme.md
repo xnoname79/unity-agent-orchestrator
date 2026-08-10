@@ -320,7 +320,7 @@ not yet to reuse. A `LICENSE` file will settle this.
 
 ## Contact
 
-Project link: [github.com/xnoname79/my-mcp](https://github.com/xnoname79/my-mcp) ·
+Project link: [https://github.com/xnoname79/unity-agent-orchestrator](https://github.com/xnoname79/unity-agent-orchestrator) ·
 [open an issue](../../issues)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
