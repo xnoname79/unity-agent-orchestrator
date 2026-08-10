@@ -22,7 +22,9 @@ and logged in, so each provider keeps its own subscription, its own auth, and it
 
 **1 · One canvas, many agents.** Every agent is a card you can drag, resize, and open a live
 terminal inside. Arrows animate between cards as signals flow, so you see the hand-offs
-happening rather than reading them out of a log.
+happening rather than reading them out of a log. A card shows only what the agent *is* — role,
+provider, model, status; select it and everything you can *do* to it opens in a side panel, so
+ten agents do not mean ninety buttons. A minimap appears once the canvas outgrows the window.
 
 **2 · Agents talk to each other, in parallel.** An agent calls `send_signal(to_role="...")` and
 the orchestrator resolves the role, injects the message into that session, and records the run.
@@ -33,8 +35,15 @@ per-session lock so transcripts never interleave.
 the same time from the same UI. A `director` agent on Claude can hand a task to a `backend`
 agent on Codex and get a report back — the signal path is identical for both.
 
-**4 · OpenAI-compatible API.** Point any OpenAI client at `/v1` and chat with an agent as if it
+**4 · Two workspaces side by side.** Open a second workspace as a tab and split the window
+between them, browser-style, with a divider you can drag. Both canvases stay live — terminals
+included — so you can watch one team while steering another.
+
+**5 · OpenAI-compatible API.** Point any OpenAI client at `/v1` and chat with an agent as if it
 were a model. Streaming included. Your app never learns a bespoke protocol.
+
+The dashboard follows your system light/dark setting, and a button in the header pins it either
+way.
 
 ---
 

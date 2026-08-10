@@ -3,518 +3,725 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Session Orchestrator</title>
+<title>Agent Orchestrator</title>
+<link rel="icon" href="/logo.png">
 <link rel="stylesheet" href="/vendor/xterm.css">
+<script>
+  // Theme phải set TRƯỚC khi paint, nếu không màn hình chớp trắng rồi mới sang tối.
+  // 'auto' không ghi data-theme mà đọc prefers-color-scheme ngay tại đây → CSS chỉ cần
+  // MỘT khối [data-theme="dark"], không phải nhân đôi cho media query.
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem("orch-theme"); } catch (e) { /* private mode */ }
+    if (!t || t === "auto")
+      t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    document.documentElement.dataset.theme = t;
+    // Vai pane phải quyết định TRƯỚC khi paint: app.js chạy cuối body, đặt class ở đó thì
+    // người dùng kịp thấy màn Home nháy lên bên trong iframe rồi mới biến mất.
+    if (new URLSearchParams(location.search).has("pane"))
+      document.documentElement.classList.add("pane");
+  })();
+</script>
 <style>
-  :root {
-    --bg: #f3f5f8; --panel: #ffffff; --panel2: #eef1f6; --border: #d8dee8;
-    --text: #1d2433; --muted: #647082; --accent: #3b74e0;
-    --gray: #6b7280; --blue: #3b74e0; --amber: #b45309; --red: #d92d20; --green: #1a7f4e;
+  /* ── Design tokens ────────────────────────────────────────────────────────
+     Mọi màu đi qua đây. Thêm màu hardcode vào rule bên dưới là làm hỏng dark mode
+     một cách âm thầm — chỉ phát hiện khi ai đó bật theme tối. */
+  :root, :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f6f7f9; --panel: #ffffff; --panel2: #f0f2f5;
+    --canvas: #eceff3; --dot: #cfd6e0;
+    --border: #dfe3ea; --border-strong: #c3cad6;
+    --text: #161d2b; --muted: #616c80; --faint: #8c95a5;
+    --accent: #3b74e0; --accent-fg: #ffffff; --accent-soft: rgba(59,116,224,.10);
+    --gray: #6b7280; --blue: #3b74e0; --amber: #b06f0a; --red: #d92d20; --green: #1a7f4e;
+    --gray-soft: rgba(107,114,128,.14); --blue-soft: rgba(59,116,224,.12);
+    --amber-soft: rgba(176,111,10,.14); --red-soft: rgba(217,45,32,.12);
+    --green-soft: rgba(26,127,78,.13);
+    --crown: #c98a04; --edge-wait: #e0930c; --edge-run: #3b74e0;
+    --zone-line: #b9c4d6; --zone-fill: rgba(59,116,224,.045);
+    --term-bg: #0c0e12; --scrim: rgba(16,24,40,.45);
+    --sh-1: 0 1px 2px rgba(16,24,40,.07);
+    --sh-2: 0 4px 14px rgba(16,24,40,.10);
+    --sh-3: 0 14px 40px rgba(16,24,40,.16);
+    --ring: 0 0 0 3px rgba(59,116,224,.28);
+    --r-card: 12px; --r-ctl: 8px;
   }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0e1117; --panel: #161b22; --panel2: #1d232d;
+    --canvas: #0a0d13; --dot: #222a36;
+    --border: #262d39; --border-strong: #3a4351;
+    --text: #e6e9ef; --muted: #98a2b3; --faint: #6b7484;
+    --accent: #4d8bff; --accent-fg: #0a0d13; --accent-soft: rgba(77,139,255,.16);
+    --gray: #8b93a1; --blue: #4d8bff; --amber: #e8a33d; --red: #ff6b5e; --green: #3ecf8e;
+    --gray-soft: rgba(139,147,161,.16); --blue-soft: rgba(77,139,255,.18);
+    --amber-soft: rgba(232,163,61,.16); --red-soft: rgba(255,107,94,.15);
+    --green-soft: rgba(62,207,142,.15);
+    --crown: #e0b341; --edge-wait: #e8a33d; --edge-run: #4d8bff;
+    --zone-line: #35415a; --zone-fill: rgba(77,139,255,.05);
+    --term-bg: #0a0d13; --scrim: rgba(0,0,0,.62);
+    --sh-1: 0 1px 2px rgba(0,0,0,.5);
+    --sh-2: 0 4px 14px rgba(0,0,0,.45);
+    --sh-3: 0 16px 44px rgba(0,0,0,.6);
+    --ring: 0 0 0 3px rgba(77,139,255,.32);
+  }
+
   * { box-sizing: border-box; }
   /* App shell: header mảnh cố định, main chiếm phần còn lại (canvas full-bleed bên trong) */
   body { margin: 0; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden;
     display: flex; flex-direction: column;
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  header { display: flex; align-items: center; gap: 12px; padding: 0 16px; height: 52px; flex: none;
+    font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  /* Pane mode (?pane=1): document chạy TRONG iframe của shell → không có chrome riêng,
+     không có màn Home, không có pane lồng pane. */
+  .pane header, .pane #ws-list-view, .pane #panes { display: none; }
+  main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+  /* Icon sprite: <svg class="ic"><use href="#i-play"/></svg> */
+  #sprite { display: none; }
+  .ic { width: 15px; height: 15px; flex: none; stroke: currentColor; fill: none;
+    stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; vertical-align: -3px; }
+  .ic.sm { width: 13px; height: 13px; }
+  .ic.fill { fill: currentColor; stroke: none; }
+
+  /* ── Header ───────────────────────────────────────────────────────────── */
+  header { display: flex; align-items: center; gap: 10px; padding: 0 12px; height: 48px; flex: none;
     background: var(--panel); border-bottom: 1px solid var(--border); z-index: 5; }
-  header h1 { font-size: 15px; margin: 0; font-weight: 650; cursor: pointer; white-space: nowrap; }
-  header h1:hover { color: var(--accent); }
-  /* Breadcrumb workspace (chỉ hiện trong detail view) */
-  #hdr-ws { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  #hdr-ws[hidden] { display: none; }
-  .crumb-sep { color: var(--border); font-size: 18px; font-weight: 300; user-select: none; }
-  #ws-detail-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; display: flex; align-items: center; gap: 8px; }
-  #ws-banner-actions { display: flex; gap: 6px; }
-  #ws-banner-actions button { padding: 3px 10px; font-size: 12px; }
+  .brand { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border: none;
+    background: transparent; color: var(--text); font-size: 13.5px; font-weight: 650;
+    white-space: nowrap; border-radius: var(--r-ctl); }
+  .brand:hover { background: var(--panel2); }
+  .brand img { width: 18px; height: 18px; display: block; }
   .spacer { flex: 1; }
-  .pill { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
-  .pill.live { color: var(--green); border-color: var(--green); }
-  .pill.dead { color: var(--red); border-color: var(--red); }
-  .pill.dry { color: var(--amber); border-color: var(--amber); }
+
+  /* Workspace tabs (kiểu browser) — tối đa 2, quá đó phải đóng bớt */
+  .ws-tabs { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+  .ws-tab { display: flex; align-items: center; gap: 7px; max-width: 220px; padding: 5px 6px 5px 11px;
+    border: 1px solid transparent; background: transparent; color: var(--muted);
+    border-radius: var(--r-ctl); font-size: 12.5px; }
+  .ws-tab:hover { background: var(--panel2); border-color: transparent; }
+  .ws-tab.active { background: var(--panel2); border-color: var(--border); color: var(--text);
+    font-weight: 600; }
+  .ws-tab.split-on { border-color: var(--accent); }
+  .ws-tab .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-tab .x { display: flex; padding: 2px; border-radius: 5px; color: var(--faint); }
+  .ws-tab .x:hover { background: var(--red-soft); color: var(--red); }
+  .tab-add { display: flex; padding: 5px; border: 1px dashed var(--border); background: transparent;
+    color: var(--muted); border-radius: var(--r-ctl); }
+  .tab-add:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* ── Controls ─────────────────────────────────────────────────────────── */
   button { font: inherit; cursor: pointer; border: 1px solid var(--border); background: var(--panel2);
-    color: var(--text); padding: 4px 10px; border-radius: 6px; }
-  button:hover { border-color: var(--accent); }
-  button.danger { border-color: var(--red); color: var(--red); }
-  button.warn { border-color: var(--amber, #f0a020); color: var(--amber, #f0a020); font-weight: 600; }
-  /* "Today" cell: runs done today / daily limit. Red when cap hit. */
+    color: var(--text); padding: 4px 10px; border-radius: var(--r-ctl); }
+  button:hover { border-color: var(--border-strong); }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: none; box-shadow: var(--ring); border-color: var(--accent); }
+  button.danger { border-color: var(--red); color: var(--red); background: transparent; }
+  button.danger:hover { background: var(--red-soft); }
+  button.warn { border-color: var(--amber); color: var(--amber); background: transparent; font-weight: 600; }
+  button.warn:hover { background: var(--amber-soft); }
+  button.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); font-weight: 500; }
+  button.secondary:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+  button.primary:hover { filter: brightness(1.08); border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  /* Nút chỉ có icon — vuông, không nhãn */
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+    padding: 0; border-color: transparent; background: transparent; color: var(--muted); }
+  .icon-btn:hover { background: var(--panel2); color: var(--text); border-color: var(--border); }
+  .icon-btn.on { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+  .pill { font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border);
+    color: var(--muted); white-space: nowrap; }
+  .pill.live { color: var(--green); border-color: var(--green); background: var(--green-soft); }
+  .pill.dead { color: var(--red); border-color: var(--red); background: var(--red-soft); }
+  .pill.dry { color: var(--amber); border-color: var(--amber); background: var(--amber-soft); }
+  .badge { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+    text-transform: uppercase; letter-spacing: .03em; }
+  .badge.has-tip { cursor: help; text-decoration: underline dotted var(--faint); text-underline-offset: 2px; }
+  .b-gray { background: var(--gray-soft); color: var(--muted); }
+  .b-blue { background: var(--blue-soft); color: var(--blue); }
+  .b-amber { background: var(--amber-soft); color: var(--amber); }
+  .b-red { background: var(--red-soft); color: var(--red); }
+  .b-green { background: var(--green-soft); color: var(--green); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--muted); }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
+  .empty { padding: 16px; color: var(--muted); font-style: italic; }
   .day-cell { font-variant-numeric: tabular-nums; text-align: center; }
   .day-ok { color: var(--muted); }
   .day-hit { color: var(--red); font-weight: 600; }
-  main { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
-  /* Master view (list workspace): container giữa trang, form spawn full-width nằm DƯỚI grid */
-  #ws-list-view { width: 100%; max-width: 1200px; margin: 0 auto; padding: 24px; }
-  .spawn-panel { margin-top: 24px; }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-  .panel > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
-    margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-  /* Horizontal scroll for wide tables (Sessions has many columns) — keep Actions button visible */
+
+  /* ── Home (workspace list + spawn) ────────────────────────────────────── */
+  #ws-list-view { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 26px 24px 60px; }
+  #ws-list-view[hidden] { display: none; }
+  .home-wrap { max-width: 1280px; margin: 0 auto; display: grid; gap: 26px;
+    grid-template-columns: minmax(0, 1fr) 400px; align-items: start; }
+  @media (max-width: 1080px) { .home-wrap { grid-template-columns: minmax(0, 1fr); } }
+  .sec-head { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; }
+  .sec-head h2 { margin: 0; font-size: 17px; font-weight: 640; letter-spacing: -.01em; }
+  .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .ws-card { position: relative; background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--r-card); padding: 15px; cursor: pointer; box-shadow: var(--sh-1);
+    transition: border-color .12s, box-shadow .12s, transform .12s; }
+  .ws-card:hover { border-color: var(--accent); box-shadow: var(--sh-2); transform: translateY(-2px); }
+  .ws-card.open { border-color: var(--accent); }
+  .ws-card h3 { margin: 0 0 3px; font-size: 14.5px; font-weight: 620; }
+  .ws-card .ws-id { font-size: 10.5px; color: var(--faint); font-family: ui-monospace, monospace; }
+  .ws-card .ws-meta { margin-top: 13px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    font-size: 11.5px; color: var(--muted); }
+  .ws-card .ws-root { margin-top: 8px; font-size: 10.5px; color: var(--faint);
+    font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-count { font-size: 21px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+  .ws-card .open-tag { position: absolute; top: 12px; right: 12px; font-size: 9.5px; font-weight: 700;
+    letter-spacing: .06em; color: var(--accent); }
+
+  /* ── Panels / tables ──────────────────────────────────────────────────── */
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-card);
+    overflow: hidden; box-shadow: var(--sh-1); }
+  .panel > h2 { display: flex; align-items: center; gap: 10px; font-size: 11.5px; text-transform: uppercase;
+    letter-spacing: .05em; color: var(--muted); margin: 0; padding: 11px 15px;
+    border-bottom: 1px solid var(--border); font-weight: 600; }
   .table-scroll { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; }
-  /* Sessions table: min-width keeps columns readable; overflow scrolls horizontally */
   table.wide { min-width: 1080px; }
-  th, td { text-align: left; padding: 9px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
-  th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 500; }
+  th, td { text-align: left; padding: 9px 15px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); font-weight: 600; }
   tr:last-child td { border-bottom: none; }
   td.msg { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
-  .empty { padding: 16px; color: var(--muted); font-style: italic; }
-  /* "Load more" row at the bottom of signal/audit tables — button loads 10 older records */
-  tr.more-row td { text-align: center; padding: 10px 16px; }
+  tr.more-row td { text-align: center; padding: 10px 15px; }
   tr.more-row:hover td { background: transparent; }
-  .more-btn { font-size: 12px; padding: 4px 14px; color: var(--accent); border-color: var(--border); }
-  .more-btn:hover { border-color: var(--accent); background: var(--panel2); }
-  .more-count { font-size: 11px; color: var(--muted); margin-left: 10px; }
-  .more-done { font-size: 11px; color: var(--muted); letter-spacing: .05em; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
-  .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
-    text-transform: uppercase; letter-spacing: .03em; }
-  /* badge with a reason (hover to see): dotted underline hint + help cursor */
-  .badge.has-tip { cursor: help; text-decoration: underline dotted rgba(0,0,0,.35); text-underline-offset: 2px; }
-  .b-gray { background: rgba(107,114,128,.14); color: #4b5563; }
-  .b-blue { background: rgba(59,116,224,.12); color: #2d5fc0; }
-  .b-amber { background: rgba(240,160,32,.16); color: #92600a; }
-  .b-red { background: rgba(217,45,32,.12); color: #b42318; }
-  .b-green { background: rgba(26,127,78,.13); color: #17714a; }
+  .more-btn { font-size: 11.5px; padding: 4px 14px; color: var(--accent); }
+  .more-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .more-count, .more-done { font-size: 10.5px; color: var(--faint); margin-left: 10px; }
   .actions { display: flex; gap: 6px; flex-wrap: nowrap; }
-  .actions button { white-space: nowrap; }
-  .actions button { padding: 3px 9px; font-size: 12px; }
-  .tools { color: var(--muted); font-size: 12px; }
-  /* session cwd: truncate if long (e.g. workspace folder), hover to see full */
+  .actions button { white-space: nowrap; padding: 3px 9px; font-size: 11.5px; }
+  .tools { color: var(--muted); font-size: 11.5px; }
   code.cwd { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; vertical-align: bottom; cursor: help; }
-  .cwd-none { color: var(--muted); }
-  .forms { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; padding: 16px; }
-  .form-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
-  .form-card h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
-  .form-card label { display: block; font-size: 11px; color: var(--muted); margin: 14px 0 5px; }
-  .form-card input, .form-card textarea, .form-card select {
-    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
-    border-radius: 6px; padding: 6px 9px; font: inherit; font-size: 13px; }
-  .form-card textarea { resize: vertical; min-height: 46px; }
-  /* Nút Spawn tách riêng khỏi các control khác (divider + canh phải) — tránh click nhầm */
-  .form-card .spawn-actions { border-top: 1px solid var(--border); margin-top: 18px; padding-top: 14px;
-    display: flex; justify-content: flex-end; gap: 10px; }
-  .form-card .spawn-actions button { width: auto; margin-top: 0; padding: 8px 32px; }
-  .form-card .spawn-actions button.secondary { background: var(--panel); border-color: var(--border);
-    color: var(--text); font-weight: 500; }
-  .form-card .row { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
-  .form-card .row label { margin: 0; display: flex; align-items: center; gap: 5px; }
-  .form-card .row input[type=checkbox] { width: auto; }
-  .form-card button { width: 100%; margin-top: 10px; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; padding: 7px; }
-  /* Tab engine cho picker Model (Claude / Codex) */
-  .tab-row { display: flex; gap: 6px; margin-top: 4px; }
-  .form-card .tab-row .tab-btn { width: auto; flex: 1; margin-top: 0; padding: 6px 10px;
-    background: var(--bg); border: 1px solid var(--border); color: var(--fg); font-weight: 600; }
-  .form-card .tab-row .tab-btn:hover { border-color: var(--accent); }
-  .form-card .tab-row .tab-btn.sel { background: var(--accent); border-color: var(--accent); color: #fff; }
-  #sp-model-tabs-note { margin: 4px 0 2px; }
-  /* Picker dạng card (workspace / template / model) trong form spawn */
-  .pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 8px; margin-top: 4px; }
-  .pick-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
-    cursor: pointer; background: var(--bg); transition: border-color .12s; }
-  .pick-card:hover { border-color: var(--accent); }
-  /* Khối nhập tên custom role (spawn form + modal register) — tách khỏi grid card phía trên */
-  .pick-card.sel { border-color: var(--accent); background: rgba(59,116,224,.08);
-    box-shadow: 0 0 0 1px var(--accent); }
-  .pick-card b { display: block; font-size: 12.5px; }
-  .pick-card code { font-size: 10px; }
-  .pick-card .pd { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.45; }
-  /* Duyệt thư mục server-side cho Working dir */
-  .dir-row { display: flex; gap: 6px; }
-  .dir-row input { flex: 1; }
-  .form-card .dir-row button { width: auto; margin-top: 0; padding: 6px 12px;
-    background: var(--panel); border-color: var(--border); color: var(--text); font-weight: 500; }
-  .dir-browse { margin-top: 6px; border: 1px solid var(--border); border-radius: 8px;
-    background: var(--bg); padding: 8px; font-size: 12px; }
-  .dir-crumb { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted);
-    margin-bottom: 6px; word-break: break-all; }
-  .dir-list { max-height: 180px; overflow-y: auto; display: grid; gap: 2px; }
-  .dir-item { padding: 3px 8px; border-radius: 6px; cursor: pointer; }
-  .dir-item:hover { background: var(--panel2); }
-  .dir-actions { display: flex; gap: 8px; margin-top: 8px; }
-  .form-card .dir-actions button { width: auto; margin-top: 0; padding: 4px 12px; font-size: 12px;
-    background: var(--panel); border-color: var(--accent); color: var(--accent); font-weight: 600; }
-  .form-card .dir-actions button.secondary { border-color: var(--border); color: var(--text); font-weight: 500; }
-  .form-msg { font-size: 12px; margin-top: 8px; min-height: 16px; }
-  .form-msg.ok { color: var(--green); } .form-msg.err { color: var(--red); }
-  .hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
-  button.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); font-weight: 500; }
-  button.secondary:hover { border-color: var(--accent); }
-  .toolpicker { margin-top: 8px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border);
-    border-radius: 6px; padding: 4px; background: var(--bg); font-size: 12px; }
-  .toolpicker:empty { display: none; }
-  .tool-group { padding: 4px 2px; }
-  .tool-group > b { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase;
-    letter-spacing: .03em; margin: 4px 4px 2px; }
-  .tool-item { display: flex; align-items: center; gap: 6px; padding: 2px 6px; border-radius: 4px; cursor: pointer; }
-  .tool-item:hover { background: var(--panel2); }
-  .tool-item input { width: auto; }
-  .tool-item.wild { color: var(--amber); }
-  select.mini, input.mini { background: var(--bg); border: 1px solid var(--border); color: var(--text);
-    border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 12px; }
-  select.mini:hover, input.mini:hover, input.mini:focus { border-color: var(--accent); }
-  input.model-in { width: 160px; }
+  .cwd-none { color: var(--faint); }
   tr.run-row { cursor: pointer; }
   tr.run-row:hover td { background: var(--panel2); }
   tr.run-row.live td:first-child::before { content: "● "; color: var(--blue); animation: pulse 1.2s infinite; }
   @keyframes pulse { 50% { opacity: .3; } }
-  /* Transcript drawer */
-  .drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 20; display: none; }
-  .drawer-overlay.open { display: block; }
-  .drawer { position: fixed; top: 0; right: 0; height: 100%; width: min(640px, 100%);
-    background: var(--panel); border-left: 1px solid var(--border); z-index: 21;
-    box-shadow: -12px 0 40px rgba(16,24,40,.14);
-    transform: translateX(100%); transition: transform .18s ease; display: flex; flex-direction: column; }
-  .drawer.open { transform: translateX(0); }
-  .drawer-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px;
-    border-bottom: 1px solid var(--border); }
-  .drawer-head h3 { margin: 0; font-size: 14px; }
-  .drawer-head .spacer { flex: 1; }
-  .drawer-body { flex: 1; overflow-y: auto; padding: 12px 16px; background: var(--bg); }
-  /* Timeline event: icon | (kind ×N time / nội dung). Row dài clamp 3 dòng, click mở. */
-  .ev { display: flex; gap: 9px; padding: 7px 10px; margin: 5px 0; background: var(--panel);
-    border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 8px; }
-  .ev-ic { flex: none; font-size: 13px; line-height: 1.5; }
-  .ev-main { flex: 1; min-width: 0; }
-  .ev-meta { display: flex; align-items: center; gap: 8px; }
-  .ev .k { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
-    font-weight: 600; }
-  .ev .rep { font-size: 10px; font-weight: 700; color: var(--accent);
-    background: rgba(59,116,224,.10); border-radius: 999px; padding: 0 7px; }
-  .ev .t { margin-left: auto; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .ev .s { white-space: pre-wrap; word-break: break-word; font-size: 12.5px; margin-top: 2px; }
-  .ev.thinking .s, .ev.tool_use .s, .ev.tool_result .s { display: -webkit-box;
-    -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
-  .ev.open .s { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
-  /* Phần kết quả gộp trong card tool: ngăn cách nét đứt, mono, clamp như .s */
-  .ev .tr { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border);
-    font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--muted);
-    white-space: pre-wrap; word-break: break-word; display: -webkit-box;
-    -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
-  .ev.open .tr { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
-  .ev .tr.pend { font-style: italic; border-top-style: dotted; }
-  .ev .tr.err { color: var(--red); }
-  .ev.thinking { border-left-color: var(--amber); } .ev.thinking .s { color: #8a6d1f; font-style: italic; }
-  .ev.tool_use { border-left-color: var(--blue); } .ev.tool_use .s { font-family: ui-monospace, monospace; font-size: 12px; }
-  .ev.tool_result { border-left-color: var(--gray); } .ev.tool_result .s { color: var(--muted); font-size: 12px; }
-  .ev.text { border-left-color: var(--green); }
-  .ev.system, .ev.result { border-left-color: var(--border); border-style: solid; opacity: .85; }
-  .ev.system .s, .ev.result .s { color: var(--muted); font-size: 12px; }
-  .ev.error { border-left-color: var(--red); } .ev.error .s { color: var(--red); }
-  /* Workspace list (master view) — grid cards, click into details */
-  .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
-  .ws-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px;
-    cursor: pointer; transition: border-color .12s, transform .12s; }
-  .ws-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-  .ws-card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
-  .ws-card .ws-id { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
-  .ws-card .ws-meta { margin-top: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
-  .ws-card .ws-root { margin-top: 8px; font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ws-count { font-size: 22px; font-weight: 700; color: var(--text); }
-  /* Back button to workspace list from the details view */
-  .back-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
-  .back-bar h2 { margin: 0; font-size: 18px; }
-  .back-btn { font-size: 13px; }
-  /* Detail view: flex column chiếm hết main → tab Agents (canvas) giãn full */
-  #ws-detail-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-  #ws-detail-view[hidden] { display: none; }  /* keep hidden working (display:flex overrides hidden) */
 
-  /* ── Agents canvas (nodeterm-style): pan/zoom, mỗi agent 1 card, chung cwd → group card ── */
-  .panel > h2 { display: flex; align-items: center; gap: 10px; }
-  /* Tabs Agents / History — segmented control trong header */
+  /* ── Forms ────────────────────────────────────────────────────────────── */
+  .form-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-card);
+    padding: 18px; box-shadow: var(--sh-1); }
+  .form-card h3 { margin: 0 0 4px; font-size: 14px; font-weight: 620; display: flex; align-items: center; gap: 8px; }
+  .form-card label { display: block; font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--faint); margin: 16px 0 6px; }
+  .form-card input, .form-card textarea, .form-card select {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--r-ctl); padding: 7px 10px; font: inherit; font-size: 12.5px; }
+  .form-card textarea { resize: vertical; min-height: 46px; }
+  .form-card .spawn-actions { border-top: 1px solid var(--border); margin-top: 20px; padding-top: 15px;
+    display: flex; justify-content: flex-end; gap: 10px; }
+  .form-card .spawn-actions button { width: auto; margin-top: 0; padding: 8px 28px; }
+  .form-card .row { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
+  .form-card .row label { margin: 0; display: flex; align-items: center; gap: 5px; }
+  .form-card .row input[type=checkbox] { width: auto; }
+  .form-card > button { width: 100%; margin-top: 10px; }
+  .tab-row { display: flex; gap: 6px; margin-top: 4px; }
+  .form-card .tab-row .tab-btn { width: auto; flex: 1; margin-top: 0; padding: 6px 10px;
+    background: var(--bg); border: 1px solid var(--border); color: var(--text); font-weight: 600; }
+  .form-card .tab-row .tab-btn:hover { border-color: var(--accent); }
+  .form-card .tab-row .tab-btn.sel { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  #sp-model-tabs-note { margin: 5px 0 2px; }
+  .pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 8px; margin-top: 4px; }
+  .pick-card { border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 9px 10px;
+    cursor: pointer; background: var(--bg); transition: border-color .12s, background .12s; }
+  .pick-card:hover { border-color: var(--accent); }
+  .pick-card.sel { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent); }
+  .pick-card b { display: block; font-size: 12.5px; }
+  .pick-card code { font-size: 10px; }
+  .pick-card .pd { font-size: 10.5px; color: var(--muted); margin-top: 3px; line-height: 1.45; }
+  .dir-row { display: flex; gap: 6px; }
+  .dir-row input { flex: 1; }
+  .form-card .dir-row button { width: auto; margin-top: 0; padding: 6px 11px;
+    background: var(--panel2); border-color: var(--border); color: var(--text); font-weight: 500; }
+  .dir-browse { margin-top: 6px; border: 1px solid var(--border); border-radius: var(--r-ctl);
+    background: var(--bg); padding: 8px; font-size: 12px; }
+  .dir-crumb { font-family: ui-monospace, monospace; font-size: 10.5px; color: var(--muted);
+    margin-bottom: 6px; word-break: break-all; }
+  .dir-list { max-height: 180px; overflow-y: auto; display: grid; gap: 2px; }
+  .dir-item { padding: 4px 8px; border-radius: 6px; cursor: pointer; }
+  .dir-item:hover { background: var(--panel2); }
+  .dir-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .form-card .dir-actions button { width: auto; margin-top: 0; padding: 4px 12px; font-size: 11.5px;
+    background: var(--panel); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .form-card .dir-actions button.secondary { border-color: var(--border); color: var(--text); font-weight: 500; }
+  .form-msg { font-size: 11.5px; margin-top: 8px; min-height: 16px; }
+  .form-msg.ok { color: var(--green); } .form-msg.err { color: var(--red); }
+  .toolpicker { margin-top: 8px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border);
+    border-radius: var(--r-ctl); padding: 4px; background: var(--bg); font-size: 11.5px; }
+  .toolpicker:empty { display: none; }
+  .tool-group { padding: 4px 2px; }
+  .tool-group > b { display: block; font-size: 10.5px; color: var(--faint); text-transform: uppercase;
+    letter-spacing: .04em; margin: 4px 4px 2px; }
+  .tool-item { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 5px; cursor: pointer; }
+  .tool-item:hover { background: var(--panel2); }
+  .tool-item input { width: auto; }
+  .tool-item.wild { color: var(--amber); }
+  select.mini, input.mini { background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 4px 7px; font: inherit; font-size: 11.5px; }
+  select.mini:hover, input.mini:hover { border-color: var(--border-strong); }
+  input.model-in { width: 160px; }
+
+  /* ── Pane (một workspace) ─────────────────────────────────────────────── */
+  #panes { flex: 1; min-height: 0; display: flex; }
+  #panes[hidden] { display: none; }
+  .pane { flex: 1; min-width: 0; border: 0; display: block; background: var(--canvas); }
+  .pane[hidden] { display: none; }
+  .pane-split { flex: none; width: 6px; cursor: col-resize; background: var(--border);
+    position: relative; flex-shrink: 0; }
+  .pane-split::after { content: ""; position: absolute; inset: 0 -4px; }
+  .pane-split:hover, .pane-split.dragging { background: var(--accent); }
+  /* Kéo divider: iframe nuốt pointer event của chính nó → tắt trong lúc kéo, nếu không
+     con trỏ vào pane là mất luôn thao tác kéo. */
+  #panes.dragging .pane { pointer-events: none; }
+  .panes-empty { flex: 1; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-style: italic; }
+
+  #ws-detail-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #ws-detail-view[hidden] { display: none; }
+  /* Thanh công cụ đầu pane: tên workspace + tabs Agents/History + suspend */
+  .pane-bar { display: flex; align-items: center; gap: 10px; padding: 0 10px; height: 40px; flex: none;
+    background: var(--panel); border-bottom: 1px solid var(--border); }
+  .pane-bar[hidden] { display: none; }
+  #ws-detail-title { font-size: 13px; font-weight: 620; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; display: flex; align-items: center; gap: 8px; min-width: 0; }
+  #ws-banner-actions { display: flex; gap: 6px; }
+  #ws-banner-actions button { padding: 3px 10px; font-size: 11.5px; }
   .tabs { display: flex; gap: 2px; background: var(--panel2); border: 1px solid var(--border);
     border-radius: 9px; padding: 3px; flex: none; }
-  .tabs .tab { padding: 4px 14px; font-size: 12.5px; background: transparent; border: none;
-    border-radius: 7px; color: var(--muted); cursor: pointer; }
-  .tabs .tab.active { color: var(--text); background: var(--panel); box-shadow: 0 1px 3px rgba(16,24,40,.14); }
-  .agent-card { cursor: pointer; }
-  /* Tab Agents = canvas full-bleed chiếm hết phần còn lại của viewport */
+  .tabs .tab { padding: 3px 13px; font-size: 12px; background: transparent; border: none;
+    border-radius: 6px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .tabs .tab:hover { color: var(--text); }
+  .tabs .tab.active { color: var(--text); background: var(--panel); box-shadow: var(--sh-1); font-weight: 600; }
+
   #tab-agents { flex: 1; min-height: 0; display: flex; }
   #tab-agents[hidden] { display: none; }
-  /* Tab History: container giữa trang, scroll trong main */
-  #tab-history { width: 100%; max-width: 1200px; margin: 0 auto; padding: 20px 24px;
+  #tab-history { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 20px;
     display: grid; gap: 16px; align-content: start; }
   #tab-history[hidden] { display: none; }
-  /* Form gửi signal thủ công (giữ từ dashboard cũ: approval + dry-run) */
-  .sg-form { display: flex; gap: 8px; align-items: center; padding: 4px 16px 14px; flex-wrap: wrap; }
+  .hist-wrap { width: 100%; max-width: 1100px; margin: 0 auto; display: grid; gap: 16px; }
+  .sg-form { display: flex; gap: 8px; align-items: center; padding: 12px 15px; flex-wrap: wrap; }
+  .sg-form select, .sg-form input { background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--r-ctl); padding: 6px 9px; font: inherit; font-size: 12.5px; }
   .sg-form select { min-width: 160px; }
   .sg-form input#sg-msg { flex: 1; min-width: 240px; }
-  .sg-chk { display: inline-flex; gap: 4px; align-items: center; font-size: 12px;
+  .sg-chk { display: inline-flex; gap: 5px; align-items: center; font-size: 11.5px;
     color: var(--muted); white-space: nowrap; }
-  .canvas { position: relative; flex: 1; min-width: 0; overflow: hidden; cursor: grab;
-    touch-action: none;
-    background: radial-gradient(circle, #c6cede 1px, transparent 1px) 0 0 / 22px 22px, #eef1f6; }
-  /* Overlay nổi trên canvas (toolbar zoom, nút ?, popover hint) — không pan/zoom xuyên qua */
-  .cv-overlay { position: absolute; z-index: 3; }
-  .cv-toolbar { right: 16px; bottom: 16px; display: flex; align-items: center; gap: 2px;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 3px;
-    box-shadow: 0 6px 20px rgba(16,24,40,.12); }
-  .cv-toolbar button { border: none; background: transparent; padding: 4px 10px; border-radius: 7px;
-    font-size: 14px; line-height: 1.2; }
-  .cv-toolbar button:hover { background: var(--panel2); }
-  #cv-zoom { font-size: 11px; color: var(--muted); min-width: 40px; text-align: center;
-    font-variant-numeric: tabular-nums; }
-  .cv-sep { width: 1px; height: 16px; background: var(--border); margin: 0 3px; }
-  .cv-help { left: 16px; bottom: 16px; width: 28px; height: 28px; padding: 0; border-radius: 50%;
-    background: var(--panel); border: 1px solid var(--border); color: var(--muted); font-size: 13px;
-    box-shadow: 0 6px 20px rgba(16,24,40,.12); }
-  .cv-help:hover { color: var(--text); }
-  .cv-hint { left: 16px; bottom: 52px; max-width: 380px; background: var(--panel);
-    border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font-size: 12px;
-    color: var(--muted); line-height: 1.7; box-shadow: 0 10px 30px rgba(16,24,40,.16); }
-  .cv-hint b { color: var(--text); }
+
+  /* ── Canvas ───────────────────────────────────────────────────────────── */
+  .canvas { position: relative; flex: 1; min-width: 0; overflow: hidden; cursor: grab; touch-action: none;
+    background: radial-gradient(circle, var(--dot) 1px, transparent 1px) 0 0 / 22px 22px, var(--canvas); }
   .canvas.grabbing { cursor: grabbing; }
   .world { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
   .node { position: absolute; }
-  /* Kéo giãn card: node được set width/height (lưu vào localStorage) → card con phải giãn theo,
-     nếu không thì kéo xong khung to mà nội dung vẫn giữ width cứng của .agent-card. */
+  .cv-overlay { position: absolute; z-index: 3; }
+  .cv-toolbar { right: 14px; bottom: 14px; display: flex; align-items: center; gap: 1px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 3px;
+    box-shadow: var(--sh-2); }
+  #cv-zoom { font-size: 10.5px; color: var(--muted); min-width: 40px; text-align: center;
+    font-variant-numeric: tabular-nums; }
+  .cv-sep { width: 1px; height: 16px; background: var(--border); margin: 0 3px; }
+  .cv-help { left: 14px; bottom: 14px; width: 28px; height: 28px; padding: 0; border-radius: 50%;
+    background: var(--panel); border: 1px solid var(--border); color: var(--muted); box-shadow: var(--sh-2);
+    display: flex; align-items: center; justify-content: center; }
+  .cv-help:hover { color: var(--text); }
+  .cv-hint { left: 14px; bottom: 50px; max-width: 380px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: var(--r-card); padding: 12px 14px; font-size: 11.5px;
+    color: var(--muted); line-height: 1.75; box-shadow: var(--sh-3); }
+  .cv-hint b { color: var(--text); }
+  .cv-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-style: italic; pointer-events: none; }
+  .cv-empty[hidden] { display: none; }
+  /* Minimap: toàn cảnh + khung nhìn. Ngồi TRÊN thanh zoom (thanh cao ~34 + đáy 14). */
+  .cv-minimap { right: 14px; bottom: 56px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: var(--sh-2); cursor: crosshair; touch-action: none; }
+  /* [hidden] không có tác dụng với phần tử SVG — UA stylesheet chỉ áp cho HTML. */
+  .cv-minimap[hidden] { display: none; }
+  .mm-r { fill: var(--muted); stroke: none; }
+  .mm-r.st-running { fill: var(--blue); }
+  .mm-r.st-paused { fill: var(--amber); }
+  .mm-r.st-stopped { fill: var(--red); }
+  .mm-r.mm-sel { fill: var(--accent); }
+  .mm-zone { fill: none; stroke: var(--zone-line); stroke-width: 1; }
+  .mm-view { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; }
+  .rz { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize;
+    z-index: 3; background: linear-gradient(135deg, transparent 50%, var(--faint) 50%);
+    opacity: .35; border-bottom-right-radius: var(--r-card); }
+  .rz:hover { opacity: .9; }
+
+  /* ── Node card ────────────────────────────────────────────────────────── */
+  /* Card chỉ mang DANH TÍNH + TRẠNG THÁI. Mọi thao tác nằm ở hover toolbar (4 nút hay dùng)
+     hoặc inspector bên phải (phần còn lại) — nhồi hết vào card thì 5 agent = 45 control. */
+  .agent-card { position: relative; width: 244px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--sh-1);
+    font-size: 12px; overflow: hidden; cursor: pointer;
+    transition: border-color .12s, box-shadow .12s; }
+  .agent-card:hover { box-shadow: var(--sh-2); }
+  .node.sel .agent-card { border-color: var(--accent); box-shadow: var(--ring), var(--sh-2); }
+  .agent-card.st-running { border-color: var(--blue); }
+  .agent-card.st-paused, .agent-card.needs-you { border-color: var(--amber); }
+  .agent-card.st-stopped { opacity: .68; }
+  .agent-card.is-orch { border-color: var(--crown); }
+  .node-head { display: flex; align-items: center; gap: 7px; padding: 9px 10px; cursor: grab;
+    user-select: none; }
+  .node-head b { font-size: 12.5px; font-weight: 620; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .node-head .crown { color: var(--crown); display: flex; }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--gray); }
+  .dot-running { background: var(--blue); animation: pulse 1.2s infinite; }
+  .dot-paused { background: var(--amber); }
+  .dot-stopped { background: var(--red); }
+  .needs-badge { font-size: 8.5px; font-weight: 700; letter-spacing: .05em; color: var(--amber);
+    background: var(--amber-soft); border-radius: 4px; padding: 2px 5px; animation: pulse 1.2s infinite;
+    flex: none; }
+  .eng-chip { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+    padding: 2px 6px; border-radius: 5px; background: var(--gray-soft); color: var(--muted); flex: none; }
+  .eng-claude { background: var(--amber-soft); color: var(--amber); }
+  .eng-codex { background: var(--green-soft); color: var(--green); }
+  .agent-body { padding: 0 10px 10px; display: grid; gap: 3px; }
+  .agent-body .mrow { display: flex; align-items: center; gap: 7px; color: var(--muted);
+    font-size: 11px; min-width: 0; }
+  .agent-body .mono { font-family: ui-monospace, monospace; font-size: 10.5px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .agent-body .num { font-variant-numeric: tabular-nums; }
+  /* Hover toolbar: 4 thao tác hay dùng, chỉ hiện khi rê chuột lên card hoặc card đang chọn */
+  .quick { position: absolute; top: 6px; right: 6px; display: flex; gap: 2px; padding: 2px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
+    box-shadow: var(--sh-2); opacity: 0; transform: translateY(-3px);
+    transition: opacity .12s, transform .12s; pointer-events: none; }
+  .agent-card:hover .quick, .node.sel .quick { opacity: 1; transform: none; pointer-events: auto; }
+  .quick button { width: 24px; height: 24px; padding: 0; display: flex; align-items: center;
+    justify-content: center; border-color: transparent; background: transparent; color: var(--muted); }
+  .quick button:hover { background: var(--panel2); color: var(--text); }
+  .quick button.danger:hover { background: var(--red-soft); color: var(--red); }
+
+  /* Zone: khung bo quanh các agent chung cwd */
+  .group-zone { border: 1px solid var(--zone-line); border-radius: 16px; background: var(--zone-fill);
+    pointer-events: none; }
+  .zone-head { pointer-events: auto; cursor: grab; user-select: none; padding: 8px 12px;
+    display: flex; flex-direction: column; gap: 5px; }
+  .zone-title { display: flex; align-items: center; gap: 8px; overflow: hidden; color: var(--muted); }
+  .zone-title b { font-size: 12.5px; color: var(--text); }
+  .g-count { font-size: 10.5px; color: var(--muted); flex: none; }
+  .g-path { font-family: ui-monospace, monospace; font-size: 10px; color: var(--faint);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Edges */
+  svg.edges { position: absolute; top: 0; left: 0; width: 10px; height: 10px;
+    overflow: visible; pointer-events: none; }
+  .edge { stroke-width: 1.6; fill: none; }
+  .edge-wait { stroke: var(--edge-wait); }
+  .edge-run { stroke: var(--edge-run); stroke-dasharray: 6 5; animation: edgeflow .6s linear infinite; }
+  @keyframes edgeflow { to { stroke-dashoffset: -11; } }
+
+  /* Card 👑 terminal nhúng */
   .node.sized > .agent-card, .node.sized > .vscode-card { width: 100%; height: 100%;
     display: flex; flex-direction: column; }
   .node.sized .agent-body, .node.sized .agent-actions { flex: none; }
   .node.sized .vscode-slot { flex: 1; height: auto; max-height: none; }
   .node.sized .term-slot { height: auto; }
-  /* Tay nắm góc dưới-phải. pointer-events tự bật (node cha không tắt) — cvInit bắt riêng. */
-  .rz { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize;
-    z-index: 3; background: linear-gradient(135deg, transparent 50%, var(--muted) 50%);
-    opacity: .35; border-bottom-right-radius: 10px; }
-  .rz:hover { opacity: .9; }
-  .cv-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    color: var(--muted); font-style: italic; pointer-events: none; }
-  .cv-empty[hidden] { display: none; }  /* display:flex đè attribute hidden nếu không có dòng này */
-  /* Agent card (node) */
-  .agent-card { width: 280px; background: var(--panel2); border: 1px solid var(--border);
-    border-radius: 10px; box-shadow: 0 6px 18px rgba(16,24,40,.10); font-size: 12px; overflow: hidden; }
-  .agent-card.st-running { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue), 0 6px 18px rgba(0,0,0,.35); }
-  .agent-card.st-paused, .agent-card.needs-you { border-color: var(--amber); }
-  .agent-card.st-stopped { border-color: var(--red); opacity: .75; }
-  .node-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-    border-bottom: 1px solid var(--border); cursor: grab; user-select: none; }
-  .node-head b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .node-head .sid { font-family: ui-monospace, monospace; font-size: 10px; color: var(--muted);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 90px; }
-  .status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--gray); }
-  .dot-running { background: var(--blue); animation: pulse 1.2s infinite; }
-  .dot-paused { background: var(--amber); }
-  .dot-stopped { background: var(--red); }
-  .needs-badge { font-size: 9px; font-weight: 700; letter-spacing: .05em; color: var(--amber);
-    border: 1px solid var(--amber); border-radius: 4px; padding: 1px 5px; animation: pulse 1.2s infinite; }
-  .agent-body { padding: 8px 10px; display: grid; gap: 6px; }
-  .agent-body .rw { display: flex; align-items: center; gap: 6px; color: var(--muted); }
-  .agent-body .rw .grow { flex: 1; }
-  .agent-body input.model-in { width: 100%; }
-  .agent-actions { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
-  .agent-actions button { padding: 2px 7px; font-size: 11px; }
-  /* Hàng nút icon (mở terminal / mở thư mục / điều khiển run) + các nhóm nút CHỮ có nhãn.
-     Nhãn để user không phải đoán icon nghĩa gì — nhóm nào đụng dữ liệu thì viết bằng chữ. */
-  .act-row { display: flex; flex-wrap: wrap; gap: 4px; }
-  .act-group { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-  .act-label { font-size: 9px; letter-spacing: .08em; text-transform: uppercase;
-    color: var(--muted); flex: none; min-width: 46px; }
-  .act-txt { font-size: 11px; font-weight: 500; }
-  /* Cột nút của card 👑 hẹp → nhãn nằm trên, nút xuống dòng dưới */
-  .orch-side .act-group { flex-direction: column; align-items: stretch; gap: 3px; margin-top: 4px; }
-  .orch-side .act-label { min-width: 0; }
-  /* Group ZONE: khung tự bo quanh các agent chung cwd (member là node tự do trên canvas).
-     Thân zone pointer-events:none để pan xuyên qua; chỉ header bắt chuột (kéo cả cụm + panel MCP). */
-  .group-zone { border: 1.5px dashed #a8b6d2; border-radius: 14px; background: rgba(76,141,255,.05);
-    pointer-events: none; }
-  .zone-head { pointer-events: auto; cursor: grab; user-select: none; padding: 8px 12px;
-    display: flex; flex-direction: column; gap: 6px; }
-  .zone-title { display: flex; align-items: baseline; gap: 8px; overflow: hidden; }
-  .zone-title b { font-size: 13px; }
-  .g-count { font-size: 11px; color: var(--muted); flex: none; }
-  .g-path { font-family: ui-monospace, monospace; font-size: 10px; color: var(--muted);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .agent-card.is-orch { border-color: #d4a017; box-shadow: 0 0 0 1px #d4a017, 0 6px 18px rgba(16,24,40,.12); }
-  /* Edges: mũi tên signal agent→agent (SVG nằm dưới node, trên zone) */
-  svg.edges { position: absolute; top: 0; left: 0; width: 10px; height: 10px;
-    overflow: visible; pointer-events: none; }
-  .edge { stroke-width: 1.6; fill: none; }
-  .edge-wait { stroke: #f0a020; }
-  .edge-run { stroke: #4c8dff; stroke-dasharray: 6 5; animation: edgeflow .6s linear infinite; }
-  @keyframes edgeflow { to { stroke-dashoffset: -11; } }
-  /* Card orchestrator (👑): terminal THẬT (xterm.js ↔ PTY claude --resume) nhúng thẳng trong card,
-     left bar dọc chứa action buttons. Element terminal được JS giữ bền qua các lần re-render. */
   .agent-card.orch-term { width: 680px; }
   .orch-body { display: flex; min-height: 0; flex: 1; }
-  /* Cột nút GHIM hẹp: mọi thứ trong đó phải tự co, không được đẩy rộng ra ăn chỗ terminal.
-     min-width:0 để flex item không lấy content-width làm sàn (mặc định flex là auto). */
-  .orch-side { display: flex; flex-direction: column; gap: 4px; padding: 6px 5px;
-    border-right: 1px solid var(--border); flex: none; width: 74px; min-width: 0; }
-  .orch-side button, .orch-side select { width: 100%; min-width: 0; max-width: 100%;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .orch-side button { font-size: 12px; padding: 3px 4px; }
-  /* Chọn CLI cho terminal (claude | codex) — xếp cùng cột với các nút bên trái card 👑 */
-  .cli-sel, .act-sel { width: 100%; max-width: 100%; min-width: 0; font-size: 11px; padding: 2px 4px;
+  .orch-side { display: flex; flex-direction: column; gap: 3px; padding: 6px 5px;
+    border-right: 1px solid var(--border); flex: none; width: 46px; min-width: 0; align-items: center; }
+  .orch-side .icon-btn { width: 32px; height: 28px; }
+  .orch-side .cli-sel { width: 100%; min-width: 0; font-size: 10px; padding: 2px 3px;
     background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 5px;
     overflow: hidden; text-overflow: ellipsis; }
-  /* Dropdown Action gom các thao tác phá hủy — viền đỏ để không nhầm với select thường */
-  .act-sel { border-color: var(--red); color: var(--red); }
-  .agent-actions .act-sel { max-width: 168px; }
-  .term-slot { flex: 1; height: 360px; min-width: 0; min-height: 0; background: #0c0e12; position: relative; }
-  /* Khóa chat orch khi run tự động đang/đã chạy — overlay phủ terminal, chặn gõ/click */
+  .term-slot { flex: 1; height: 360px; min-width: 0; min-height: 0; background: var(--term-bg); position: relative; }
   .term-lock { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center;
-    justify-content: center; text-align: center; padding: 20px; background: rgba(12,14,18,.85);
-    color: #e6e8eb; font-size: 12px; line-height: 1.8; cursor: pointer; }
+    justify-content: center; text-align: center; padding: 20px; background: rgba(8,10,14,.88);
+    color: #e6e8eb; font-size: 11.5px; line-height: 1.8; cursor: pointer; }
   .term-host { height: 100%; padding: 4px 0 4px 8px; }
   .term-host .xterm { height: 100%; }
-  /* Editor SKILL trong drawer (nút 📘 trên card agent) */
-  .skill-ta { width: 100%; height: 55vh; resize: vertical; font-family: ui-monospace, monospace;
-    font-size: 12px; line-height: 1.5; background: var(--panel2); color: var(--text);
-    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; box-sizing: border-box; }
-  .skill-save { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
-  /* Card VS Code trên canvas — 1 card duy nhất, kéo bằng header như node khác */
+
+  /* Card VS Code */
   .vscode-card { width: 1100px; max-width: 92vw; display: flex; flex-direction: column; padding: 0; }
-  .vscode-head { display: flex; gap: 8px; align-items: center; padding: 6px 10px;
-    border-bottom: 1px solid var(--border); font-size: 12px; cursor: grab; }
+  .vscode-head { display: flex; gap: 8px; align-items: center; padding: 7px 10px;
+    border-bottom: 1px solid var(--border); font-size: 11.5px; cursor: grab; }
   .vscode-head b { color: var(--accent); }
   .vscode-head .cwd { color: var(--muted); max-width: 380px; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
-  .vscode-head button { padding: 2px 8px; font-size: 12px; }
   .vscode-slot { height: 640px; max-height: 72vh; background: #1e1e1e; }
   .vscode-frame { width: 100%; height: 100%; border: 0; display: block; }
+
+  /* ── Inspector (bên phải canvas) ──────────────────────────────────────── */
+  .inspector { flex: none; width: 300px; background: var(--panel); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; min-height: 0; }
+  .inspector[hidden] { display: none; }
+  .insp-head { display: flex; align-items: center; gap: 8px; padding: 11px 12px;
+    border-bottom: 1px solid var(--border); }
+  .insp-head b { font-size: 13px; font-weight: 620; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  /* minmax(0,1fr) + min-width:0 khắp nơi: grid/flex mặc định lấy content-width làm sàn,
+     một session id dài là đủ đẩy cả panel tràn ngang và sinh scrollbar cho cả trang. */
+  .insp-body { flex: 1; overflow-y: auto; padding: 12px; display: grid; gap: 16px;
+    grid-template-columns: minmax(0, 1fr); align-content: start; }
+  .insp-sec { display: grid; gap: 7px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+  .insp-sec > h4 { margin: 0; font-size: 10px; font-weight: 700; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--faint); }
+  .insp-kv { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted);
+    min-width: 0; }
+  .insp-kv > span:first-child { flex: none; width: 62px; }
+  .insp-kv .mono { flex: 1; min-width: 0; font-family: ui-monospace, monospace; font-size: 10.5px;
+    color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .insp-row { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+  .insp-row button { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center;
+    gap: 6px; padding: 6px 8px; font-size: 11.5px; white-space: nowrap; overflow: hidden; }
+  .insp-body input, .insp-body select { width: 100%; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--r-ctl); padding: 6px 9px; font: inherit; font-size: 12px; }
+  .insp-danger { border-top: 1px solid var(--border); padding-top: 14px; }
+  .insp-empty { padding: 28px 16px; text-align: center; color: var(--muted); font-size: 12px;
+    line-height: 1.7; }
+
+  /* ── Drawer (transcript) ──────────────────────────────────────────────── */
+  .drawer-overlay { position: fixed; inset: 0; background: var(--scrim); z-index: 20; display: none; }
+  .drawer-overlay.open { display: block; }
+  .drawer { position: fixed; top: 0; right: 0; height: 100%; width: min(640px, 100%);
+    background: var(--panel); border-left: 1px solid var(--border); z-index: 21;
+    box-shadow: var(--sh-3);
+    transform: translateX(100%); transition: transform .18s ease; display: flex; flex-direction: column; }
+  .drawer.open { transform: translateX(0); }
+  .drawer-head { display: flex; align-items: center; gap: 10px; padding: 12px 15px;
+    border-bottom: 1px solid var(--border); }
+  .drawer-head h3 { margin: 0; font-size: 13.5px; }
+  .drawer-head .spacer { flex: 1; }
+  .drawer-body { flex: 1; overflow-y: auto; padding: 12px 15px; background: var(--bg); }
+  .ev { display: flex; gap: 9px; padding: 7px 10px; margin: 5px 0; background: var(--panel);
+    border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: var(--r-ctl); }
+  .ev-ic { flex: none; font-size: 13px; line-height: 1.5; }
+  .ev-main { flex: 1; min-width: 0; }
+  .ev-meta { display: flex; align-items: center; gap: 8px; }
+  .ev .k { font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); font-weight: 700; }
+  .ev .rep { font-size: 9.5px; font-weight: 700; color: var(--accent); background: var(--accent-soft);
+    border-radius: 999px; padding: 0 7px; }
+  .ev .t { margin-left: auto; font-size: 9.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .ev .s { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin-top: 2px; }
+  .ev.thinking .s, .ev.tool_use .s, .ev.tool_result .s { display: -webkit-box;
+    -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+  .ev.open .s { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
+  .ev .tr { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border);
+    font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted);
+    white-space: pre-wrap; word-break: break-word; display: -webkit-box;
+    -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+  .ev.open .tr { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
+  .ev .tr.pend { font-style: italic; border-top-style: dotted; }
+  .ev .tr.err { color: var(--red); }
+  .ev.thinking { border-left-color: var(--amber); } .ev.thinking .s { color: var(--amber); font-style: italic; }
+  .ev.tool_use { border-left-color: var(--blue); } .ev.tool_use .s { font-family: ui-monospace, monospace; font-size: 11.5px; }
+  .ev.tool_result { border-left-color: var(--gray); } .ev.tool_result .s { color: var(--muted); font-size: 11.5px; }
+  .ev.text { border-left-color: var(--green); }
+  .ev.system, .ev.result { border-left-color: var(--border); opacity: .85; }
+  .ev.system .s, .ev.result .s { color: var(--muted); font-size: 11.5px; }
+  .ev.error { border-left-color: var(--red); } .ev.error .s { color: var(--red); }
+  .skill-ta { width: 100%; height: 55vh; resize: vertical; font-family: ui-monospace, monospace;
+    font-size: 11.5px; line-height: 1.5; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 8px 10px; box-sizing: border-box; }
+  .skill-save { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
 </style>
 </head>
 <body>
+
+<!-- Icon sprite: emoji render khác nhau trên mỗi OS, SVG thì không. -->
+<svg id="sprite" xmlns="http://www.w3.org/2000/svg"><defs>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7.5 10 2.5 2-2.5 2M13.5 15H17"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a3 3 0 1 1 4.3 2.9c-.9.5-1.5 1.1-1.5 2.3M12 17.6h.01"/></symbol>
+  <symbol id="i-split" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-map" viewBox="0 0 24 24"><path d="m9 4-6 3v13l6-3 6 3 6-3V4l-6 3z"/><path d="M9 4v13M15 7v13"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5.2l3.2 2"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v18H6.5A1.5 1.5 0 0 1 5 19.5z"/><path d="M9 3v18"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><path d="M14 3v4h4"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M21 4 3 11.5l7 2.4 2.4 7z"/><path d="m10 14 4-4"/></symbol>
+  <symbol id="i-crown" viewBox="0 0 24 24"><path d="M4 18h16M4 18 3 7l5.2 3.2L12 4l3.8 6.2L21 7l-1 11z"/></symbol>
+  <symbol id="i-compress" viewBox="0 0 24 24"><path d="M4 8h16M4 16h16M9 4l3 3 3-3M9 20l3-3 3 3"/></symbol>
+  <symbol id="i-rocket" viewBox="0 0 24 24"><path d="M5 15c-1.5 1.5-2 6-2 6s4.5-.5 6-2a3 3 0 0 0-4-4z"/><path d="M9.5 13.5 7 11a12 12 0 0 1 10-8c2 0 4 .3 4 .3s.3 2 .3 4a12 12 0 0 1-8 10l-2.5-2.5z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 7V4.8A.8.8 0 0 1 10.8 4h2.4a.8.8 0 0 1 .8.8V7M6.5 7l.9 12.2a.8.8 0 0 0 .8.8h7.6a.8.8 0 0 0 .8-.8L17.5 7"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
+</defs></svg>
+
 <header>
-  <h1 onclick="backToList()">⚙️ Orchestrator</h1>
-  <div id="hdr-ws" hidden>
-    <span class="crumb-sep">/</span>
-    <span id="ws-detail-title"></span>
-    <span id="ws-banner-actions"></span>
-    <div class="tabs">
-      <button id="tab-btn-agents" class="tab active" onclick="switchTab('agents')">🗺 Agents</button>
-      <button id="tab-btn-history" class="tab" onclick="switchTab('history')">🕘 History</button>
-    </div>
-  </div>
+  <button class="brand" onclick="goHome()" title="Workspaces">
+    <img src="/logo.png" alt=""> Orchestrator
+  </button>
+  <nav id="ws-tabs" class="ws-tabs"></nav>
   <div class="spacer"></div>
   <span id="dry" class="pill dry" hidden>DRY-RUN</span>
-  <button class="secondary" onclick="newWorkspace()">+ Workspace</button>
+  <button id="split-btn" class="icon-btn" onclick="toggleSplit()" title="Side-by-side (needs 2 open workspaces)">
+    <svg class="ic"><use href="#i-split"/></svg></button>
+  <button id="theme-btn" class="icon-btn" onclick="cycleTheme()" title="Theme">
+    <svg class="ic"><use href="#i-theme"/></svg></button>
   <span id="conn" class="pill dead">offline</span>
 </header>
 
 <main>
-  <!-- Master view: workspace list + spawn agent form -->
+  <!-- SHELL · home: workspace list + spawn form -->
   <section id="ws-list-view">
-    <div class="back-bar"><h2>Workspaces</h2></div>
-    <div class="list-cols">
-    <div>
-      <div id="ws-grid" class="ws-grid"></div>
-      <div id="ws-grid-empty" class="empty" hidden>No workspaces yet. Click + Workspace to create one.</div>
-    </div>
-    <div class="spawn-panel">
-        <div class="form-card">
-          <h3>🚀 Spawn agent</h3>
-          <div class="hint">Orchestrator runs <code>claude -p</code> to create a new session.</div>
-          <label>Workspace</label>
-          <div id="sp-ws-cards" class="pick-grid"></div>
-          <div class="hint">Leave Working dir empty on a non-default workspace and the agent runs in that workspace's folder.</div>
-          <label>Role name</label>
-          <input id="sp-role" placeholder="Role name (e.g. Backend Dev)" oninput="spRoleSlug()">
-          <div class="hint" id="sp-role-hint"></div>
-          <label>Playbook template</label>
-          <div id="sp-template-cards" class="pick-grid"></div>
-          <div class="hint">The template is written to <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/SKILL.md</code>
-            (plus a <code>.codex</code> copy). Its <code>&lt;UPPERCASE&gt;</code> blanks are filled in by
-            the agent itself on its first run, after it has surveyed the project — more accurate than
-            typing them blind.</div>
-          <label>Working dir (cwd) — the project this agent works in</label>
-          <div class="dir-row">
-            <input id="sp-cwd" placeholder="type a folder name to search, or /path/to/project"
-              oninput="onCwdInput(this.value)">
-            <button type="button" onclick="browseDir(document.getElementById('sp-cwd').value.trim())"
-              title="Browse folders on the machine running the orchestrator">📁</button>
-          </div>
-          <div id="sp-dir" class="dir-browse" hidden></div>
-          <label>Model</label>
-          <div id="sp-model-tabs" class="tab-row"></div>
-          <div class="hint" id="sp-model-tabs-note"></div>
-          <div id="sp-model-cards" class="pick-grid"></div>
-          <div id="sp-model-custom" hidden>
-            <input id="sp-model" list="model-list" placeholder="custom model id / alias"
-              oninput="onModelCustomInput()">
-          </div>
-          <label>Effort (reasoning)</label>
-          <select id="sp-effort"></select>
-          <div id="sp-tools-wrap">
-            <label>Allowed tools</label>
-            <button type="button" class="secondary" onclick="loadTools('sp')">🔧 Load tools from cwd</button>
-            <div id="sp-tools" class="toolpicker"></div>
-          </div>
-          <div class="hint" id="sp-tools-codex" hidden>Codex has no tool allowlist — it always has
-            <code>shell</code> + <code>apply_patch</code> (read/write/grep/bash). Scope is decided by
-            the permission mode, not by a list of tools.</div>
-          <div class="spawn-actions"><button onclick="spawnAgent()">🚀 Spawn</button></div>
-          <div id="sp-msg" class="form-msg"></div>
+    <div class="home-wrap">
+      <div>
+        <div class="sec-head">
+          <h2>Workspaces</h2>
+          <div class="spacer"></div>
+          <button class="secondary" onclick="newWorkspace()">
+            <svg class="ic sm"><use href="#i-plus"/></svg> New workspace</button>
         </div>
+        <div id="ws-grid" class="ws-grid"></div>
+        <div id="ws-grid-empty" class="empty" hidden>No workspaces yet — create one to get started.</div>
+      </div>
+      <div class="form-card">
+        <h3><svg class="ic"><use href="#i-rocket"/></svg> Spawn agent</h3>
+        <div class="hint">The orchestrator runs <code>claude -p</code> to create a new session.</div>
+        <label>Workspace</label>
+        <div id="sp-ws-cards" class="pick-grid"></div>
+        <div class="hint">Leave Working dir empty on a non-default workspace and the agent runs in that workspace's folder.</div>
+        <label>Role name</label>
+        <input id="sp-role" placeholder="e.g. Backend Dev" oninput="spRoleSlug()">
+        <div class="hint" id="sp-role-hint"></div>
+        <label>Playbook template</label>
+        <div id="sp-template-cards" class="pick-grid"></div>
+        <div class="hint">The template is written to <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/SKILL.md</code>
+          (plus a <code>.codex</code> copy). Its <code>&lt;UPPERCASE&gt;</code> blanks are filled in by
+          the agent itself on its first run, after it has surveyed the project — more accurate than
+          typing them blind.</div>
+        <label>Working dir (cwd) — the project this agent works in</label>
+        <div class="dir-row">
+          <input id="sp-cwd" placeholder="type a folder name to search, or /path/to/project"
+            oninput="onCwdInput(this.value)">
+          <button type="button" onclick="browseDir(document.getElementById('sp-cwd').value.trim())"
+            title="Browse folders on the machine running the orchestrator">
+            <svg class="ic"><use href="#i-folder"/></svg></button>
+        </div>
+        <div id="sp-dir" class="dir-browse" hidden></div>
+        <label>Model</label>
+        <div id="sp-model-tabs" class="tab-row"></div>
+        <div class="hint" id="sp-model-tabs-note"></div>
+        <div id="sp-model-cards" class="pick-grid"></div>
+        <div id="sp-model-custom" hidden>
+          <input id="sp-model" list="model-list" placeholder="custom model id / alias"
+            oninput="onModelCustomInput()">
+        </div>
+        <label>Effort (reasoning)</label>
+        <select id="sp-effort"></select>
+        <div id="sp-tools-wrap">
+          <label>Allowed tools</label>
+          <button type="button" class="secondary" onclick="loadTools('sp')">Load tools from cwd</button>
+          <div id="sp-tools" class="toolpicker"></div>
+        </div>
+        <div class="hint" id="sp-tools-codex" hidden>Codex has no tool allowlist — it always has
+          <code>shell</code> + <code>apply_patch</code> (read/write/grep/bash). Scope is decided by
+          the permission mode, not by a list of tools.</div>
+        <div class="spawn-actions"><button class="primary" onclick="spawnAgent()">Spawn</button></div>
+        <div id="sp-msg" class="form-msg"></div>
+      </div>
     </div>
-    </div><!-- /list-cols -->
   </section>
 
-  <!-- Detail view: one workspace (view only — Sessions/Signal/Audit) -->
+  <!-- SHELL · panes: 1-2 iframe, mỗi cái là một workspace -->
+  <div id="panes" hidden></div>
+
+  <!-- PANE · một workspace (chỉ hiện khi ?pane=1) -->
   <div id="ws-detail-view" hidden>
-  <div id="tab-agents">
-    <div id="canvas" class="canvas">
-      <div id="world" class="world"></div>
-      <div id="cv-empty" class="cv-empty" hidden>No agents in this workspace yet.</div>
-      <div class="cv-overlay cv-toolbar">
-        <button onclick="cvZoom(1/1.2)" title="Zoom out">−</button>
-        <span id="cv-zoom">100%</span>
-        <button onclick="cvZoom(1.2)" title="Zoom in">+</button>
-        <span class="cv-sep"></span>
-        <button onclick="cvFit()" title="Fit every agent into view">⤢</button>
-      </div>
-      <button class="cv-overlay cv-help" title="Canvas help"
-        onclick="const h = document.getElementById('cv-hint'); h.hidden = !h.hidden">?</button>
-      <div id="cv-hint" class="cv-overlay cv-hint" hidden>
-        <b>Controls:</b> drag the background = pan · scroll = zoom · drag a card header = move that
-        agent · drag a 📁 header = move the whole group · click a card = watch its latest run live.<br>
-        <b>Arrows</b> = tasks currently in flight between agents: amber waiting · green running.
-        Finished or failed ones disappear — see the History tab.<br>
-        <b>Inside a 📁 card:</b> 💻 opens a terminal for one session (talk to it directly in the
-        card) · 🔌 MCP lists and adds MCP servers for the project.
+    <div id="hdr-ws" class="pane-bar" hidden>
+      <span id="ws-detail-title"></span>
+      <span id="ws-banner-actions"></span>
+      <div class="spacer"></div>
+      <div class="tabs">
+        <button id="tab-btn-agents" class="tab active" onclick="switchTab('agents')">
+          <svg class="ic sm"><use href="#i-map"/></svg> Agents</button>
+        <button id="tab-btn-history" class="tab" onclick="switchTab('history')">
+          <svg class="ic sm"><use href="#i-clock"/></svg> History</button>
       </div>
     </div>
-  </div><!-- /tab-agents -->
 
-  <div id="tab-history" hidden>
-  <section class="panel">
-    <h2>Send signal</h2>
-    <div class="sg-form">
-      <select id="sg-to"></select>
-      <input id="sg-msg" placeholder="Message (plain string or any JSON)">
-      <label class="sg-chk" title="Signal waits for Approve in the queue before it runs"><input type="checkbox" id="sg-approval"> approval</label>
-      <label class="sg-chk" title="Do not call the real CLI — exercises the pipeline only"><input type="checkbox" id="sg-dry"> dry-run</label>
-      <button onclick="sendSignal()">Send</button>
+    <div id="tab-agents">
+      <div id="canvas" class="canvas">
+        <div id="world" class="world"></div>
+        <div id="cv-empty" class="cv-empty" hidden>No agents in this workspace yet.</div>
+        <svg id="minimap" class="cv-overlay cv-minimap" width="180" height="120"
+          viewBox="0 0 180 120" hidden></svg>
+        <div class="cv-overlay cv-toolbar">
+          <button class="icon-btn" onclick="cvZoom(1/1.2)" title="Zoom out">
+            <svg class="ic"><use href="#i-minus"/></svg></button>
+          <span id="cv-zoom">100%</span>
+          <button class="icon-btn" onclick="cvZoom(1.2)" title="Zoom in">
+            <svg class="ic"><use href="#i-plus"/></svg></button>
+          <span class="cv-sep"></span>
+          <button class="icon-btn" onclick="cvFit()" title="Fit every agent into view">
+            <svg class="ic"><use href="#i-fit"/></svg></button>
+        </div>
+        <button class="cv-overlay cv-help" title="Canvas help"
+          onclick="const h = document.getElementById('cv-hint'); h.hidden = !h.hidden">
+          <svg class="ic"><use href="#i-help"/></svg></button>
+        <div id="cv-hint" class="cv-overlay cv-hint" hidden>
+          <b>Controls:</b> drag the background = pan · scroll = zoom · drag a card header = move that
+          agent · drag a folder header = move the whole group.<br>
+          <b>Click a card</b> to select it — everything about that agent opens in the panel on the
+          right. Hover a card for its quick actions.<br>
+          <b>Arrows</b> = tasks currently in flight between agents: amber waiting · blue running.
+          Finished or failed ones disappear — see the History tab.
+        </div>
+      </div>
+      <aside id="inspector" class="inspector" hidden>
+        <div class="insp-head">
+          <span id="insp-dot" class="status-dot"></span>
+          <b id="insp-name"></b>
+          <div class="spacer"></div>
+          <button class="icon-btn" onclick="selectNode(null)" title="Close">
+            <svg class="ic"><use href="#i-x"/></svg></button>
+        </div>
+        <div id="insp-body" class="insp-body"></div>
+      </aside>
     </div>
-  </section>
 
-  <section class="panel">
-    <h2>Signal queue</h2>
-    <div class="table-scroll">
-      <table>
-        <thead><tr><th>#</th><th>From → To</th><th>Message</th><th>Approval</th><th>Status</th><th>Actions</th></tr></thead>
-        <tbody id="signals"></tbody>
-      </table>
-    </div>
-    <div id="signals-empty" class="empty" hidden>No signals yet.</div>
-  </section>
+    <div id="tab-history" hidden>
+      <div class="hist-wrap">
+        <section class="panel">
+          <h2>Send signal</h2>
+          <div class="sg-form">
+            <select id="sg-to"></select>
+            <input id="sg-msg" placeholder="Message (plain string or any JSON)">
+            <label class="sg-chk" title="Signal waits for Approve in the queue before it runs"><input type="checkbox" id="sg-approval"> approval</label>
+            <label class="sg-chk" title="Do not call the real CLI — exercises the pipeline only"><input type="checkbox" id="sg-dry"> dry-run</label>
+            <button class="primary" onclick="sendSignal()">Send</button>
+          </div>
+        </section>
 
-  <section class="panel">
-    <h2>Audit log (runs)</h2>
-    <div class="table-scroll">
-      <table>
-        <thead><tr><th>#</th><th>Session</th><th>Signal</th><th>Status</th><th>Tokens</th><th>Time</th></tr></thead>
-        <tbody id="runs"></tbody>
-      </table>
+        <section class="panel">
+          <h2>Signal queue</h2>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>#</th><th>From → To</th><th>Message</th><th>Approval</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody id="signals"></tbody>
+            </table>
+          </div>
+          <div id="signals-empty" class="empty" hidden>No signals yet.</div>
+        </section>
+
+        <section class="panel">
+          <h2>Audit log (runs)</h2>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>#</th><th>Session</th><th>Signal</th><th>Status</th><th>Tokens</th><th>Time</th></tr></thead>
+              <tbody id="runs"></tbody>
+            </table>
+          </div>
+          <div id="runs-empty" class="empty" hidden>No runs yet.</div>
+          <div class="hint" style="padding:0 15px 12px">Click a run to view its transcript (thinking · tool · text) in real time.</div>
+        </section>
+      </div>
     </div>
-    <div id="runs-empty" class="empty" hidden>No runs yet.</div>
-    <div class="hint" style="padding:0 16px 12px">Click a run to view its transcript (thinking · tool · text) in real time.</div>
-  </section>
-  </div><!-- /tab-history -->
   </div><!-- /ws-detail-view -->
 </main>
 

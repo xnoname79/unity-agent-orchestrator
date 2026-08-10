@@ -3,6 +3,41 @@
 
 const $ = (id) => document.getElementById(id);
 
+// Cùng một file index.html chạy hai vai:
+//   SHELL  (/)            — header, tab workspace, panel side-by-side. Không có canvas.
+//   PANE   (/?pane=1&ws=) — một workspace trong iframe: canvas + inspector + history.
+// Nhờ vậy 2 workspace mở song song mà KHÔNG phải bóc mọi state toàn cục của canvas
+// (CV, cvTerms, cvNodeEls, currentWS…) thành object per-pane: mỗi pane là một document
+// riêng nên các biến đó vốn đã tách sẵn.
+const PANE = new URLSearchParams(location.search).has("pane");
+
+// <svg class="ic"><use href="#i-play"/></svg> — sprite nằm cuối index.html.
+const ic = (name, cls) => `<svg class="ic ${cls || ""}"><use href="#i-${name}"/></svg>`;
+
+// ── Theme ───────────────────────────────────────────────────────────────────
+// 'auto' bám prefers-color-scheme; light/dark ghim cứng. Giá trị ghi ra
+// documentElement.dataset.theme — CSS chỉ cần một khối [data-theme="dark"].
+const THEMES = ["auto", "light", "dark"];
+function themePref() {
+  try { return localStorage.getItem("orch-theme") || "auto"; } catch { return "auto"; }
+}
+function applyTheme(pref) {
+  const dark = pref === "dark"
+    || (pref === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  const btn = $("theme-btn");
+  if (btn) btn.title = `Theme: ${pref} — click to change`;
+  // Pane đọc localStorage lúc boot, nhưng đang chạy thì không biết shell vừa đổi → báo xuống.
+  for (const f of document.querySelectorAll("iframe.pane"))
+    try { f.contentWindow.postMessage({ t: "theme", pref }, location.origin); } catch { /* chưa load */ }
+}
+function cycleTheme() {
+  const next = THEMES[(THEMES.indexOf(themePref()) + 1) % THEMES.length];
+  try { localStorage.setItem("orch-theme", next); } catch { /* private mode */ }
+  applyTheme(next);
+}
+window.cycleTheme = cycleTheme;
+
 const SIGNAL_BADGE = { pending: "b-gray", approved: "b-blue", processing: "b-blue",
                        done: "b-green", failed: "b-red", denied: "b-red", blocked: "b-amber" };
 const RUN_BADGE = { ok: "b-green", error: "b-red", running: "b-blue" };
@@ -221,34 +256,218 @@ async function newWorkspace() {
   if (name === null) return;
   try {
     const w = await api("/api/workspaces", "POST", { name: name.trim() });
-    currentWS = w.id;                 // nhảy vào workspace vừa tạo
-    await refreshAll();
+    await refreshAll();               // grid phải có card mới trước khi mở nó thành tab
+    selectWorkspace(w.id);
     alert(`Created workspace '${w.name}'\nid: ${w.id}\nfolder: ${w.root_dir}`);
   } catch (e) { console.error(e); alert("Could not create workspace: " + e); }
 }
 window.newWorkspace = newWorkspace;
 
-// Render: grid card workspace (master view) + dropdown workspace ở form spawn.
+// Render: grid card workspace (shell) + dropdown workspace ở form spawn.
 function renderWorkspaces(list) {
   WORKSPACES = list;
+  if (PANE) { renderWsBanner(); return; }   // pane không có grid/form spawn
   renderWorkspaceGrid(list);
   renderSpawnPickers();   // form spawn: card picker workspace đồng bộ theo list mới
-  renderWsBanner();
+  renderShellTabs();
+  renderPanes();
 }
 
-// Grid card: mỗi workspace 1 card, click vào detail view.
+// Grid card: mỗi workspace 1 card, click = mở thành tab.
 function renderWorkspaceGrid(list) {
   const grid = $("ws-grid");
   $("ws-grid-empty").hidden = list.length > 0;
   grid.innerHTML = list.map((w) => {
     const st = badge(w.status, w.status === "active" ? "b-green" : "b-amber");
-    return `<div class="ws-card" onclick="selectWorkspace('${esc(w.id)}')">
+    const open = OPEN.includes(w.id);
+    return `<div class="ws-card${open ? " open" : ""}" onclick="selectWorkspace('${esc(w.id)}')">
+      ${open ? `<span class="open-tag">OPEN</span>` : ""}
       <h3>${esc(w.name || w.id)}</h3>
       <div class="ws-id">${esc(w.id)}</div>
       <div class="ws-meta"><span class="ws-count">${w.sessions}</span> session · ${st}</div>
       ${w.root_dir ? `<div class="ws-root" title="${esc(w.root_dir)}">${esc(w.root_dir)}</div>` : ""}
     </div>`;
   }).join("");
+}
+
+// ── Shell: tab workspace + pane side-by-side ────────────────────────────────
+// Tối đa 2 workspace mở cùng lúc. Mỗi cái là một <iframe> (?pane=1) — xem chú thích
+// ở đầu file. iframe KHÔNG BAO GIỜ được di chuyển trong DOM: trình duyệt reload nó,
+// terminal bên trong chết theo. Nên OPEN chỉ push cuối / remove, và thứ tự DOM luôn
+// khớp OPEN; đầy chỗ thì đóng tab hiện hành TRƯỚC rồi mới push.
+const MAX_PANES = 2;
+let OPEN = [];        // workspace id đang mở
+let ACTIVE = -1;      // tab đang xem; -1 = màn Home
+let SPLIT = false;    // hiện cả 2 pane cạnh nhau
+let SPLIT_PCT = 50;   // bề rộng pane trái, %
+
+function shellLoad() {
+  try { return JSON.parse(localStorage.getItem("orch-shell")) || {}; } catch { return {}; }
+}
+function shellSave() {
+  try {
+    localStorage.setItem("orch-shell",
+      JSON.stringify({ open: OPEN, active: ACTIVE, split: SPLIT, pct: SPLIT_PCT }));
+  } catch { /* private mode */ }
+  // Deep-link: F5 hoặc chia sẻ URL giữ nguyên tab đang mở.
+  const q = OPEN.length ? "?ws=" + OPEN.map(encodeURIComponent).join(",") + (SPLIT ? "&split=1" : "") : "";
+  history.replaceState(null, "", location.pathname + q);
+}
+
+function renderShellTabs() {
+  const nav = $("ws-tabs");
+  if (!nav) return;
+  const label = (id) => {
+    const w = WORKSPACES.find((x) => x.id === id);
+    return w ? (w.name || w.id) : id;
+  };
+  const split = SPLIT && OPEN.length === MAX_PANES;
+  nav.innerHTML = OPEN.map((id, i) =>
+    `<button class="ws-tab${!split && i === ACTIVE ? " active" : ""}${split ? " split-on" : ""}"
+       onclick="focusWs(${i})" title="${esc(label(id))}">
+       <span class="lbl">${esc(label(id))}</span>
+       <span class="x" title="Close" onclick="event.stopPropagation();closeWs('${esc(id)}')">${ic("x", "sm")}</span>
+     </button>`).join("")
+    + (OPEN.length < MAX_PANES
+        ? `<button class="tab-add" onclick="goHome()" title="Open another workspace">${ic("plus", "sm")}</button>`
+        : "");
+  const sb = $("split-btn");
+  sb.disabled = OPEN.length < MAX_PANES;
+  sb.classList.toggle("on", split);
+}
+
+// iframe của 1 workspace. Tạo một lần rồi giữ nguyên — đặt lại src (hoặc move node)
+// là reload cả pane.
+function paneFrame(id) {
+  const box = $("panes");
+  let f = [...box.querySelectorAll("iframe.pane")].find((x) => x.dataset.ws === id);
+  if (!f) {
+    f = document.createElement("iframe");
+    f.className = "pane";
+    f.dataset.ws = id;
+    f.title = id;
+    // ?nosse truyền xuống pane: EventSource giữ kết nối mãi nên trình duyệt headless
+    // không bao giờ bắn 'load' — không có cờ này thì không test được shell tự động.
+    f.src = "/?pane=1&ws=" + encodeURIComponent(id)
+          + (location.search.includes("nosse") ? "&nosse=1" : "");
+    box.appendChild(f);
+  }
+  return f;
+}
+
+function renderPanes() {
+  const box = $("panes");
+  if (!box) return;
+  if (ACTIVE >= OPEN.length) ACTIVE = OPEN.length - 1;
+  const home = ACTIVE < 0 || !OPEN.length;
+  $("ws-list-view").hidden = !home;
+  box.hidden = home;
+  // Workspace đã đóng → bỏ iframe (terminal bên trong bị huỷ, đúng ý người bấm ✕).
+  for (const f of [...box.querySelectorAll("iframe.pane")])
+    if (!OPEN.includes(f.dataset.ws)) f.remove();
+  if (home) return;
+
+  const split = SPLIT && OPEN.length === MAX_PANES;
+  const frames = OPEN.map(paneFrame);   // append-only: thứ tự DOM khớp OPEN
+  frames.forEach((f, i) => {
+    const show = split || i === ACTIVE;
+    f.hidden = !show;
+    f.style.flex = split && i === 0 ? `0 0 ${SPLIT_PCT}%` : "1 1 0";
+    // display:none → xterm đo được 0×0. Bảo pane fit lại khi nó vừa hiện ra.
+    if (show) try { f.contentWindow.postMessage({ t: "show" }, location.origin); } catch { /* chưa load */ }
+  });
+
+  let div = $("pane-div");
+  if (split) {
+    if (!div) {
+      div = document.createElement("div");
+      div.id = "pane-div";
+      div.className = "pane-split";
+      div.title = "Drag to resize";
+    }
+    box.insertBefore(div, frames[1]);   // chỉ divider bị move, iframe đứng yên
+  } else if (div) div.remove();
+}
+
+// Bấm tab = xem MỘT workspace đó. Đang split mà bấm tab thì thoát split — nếu không,
+// tab trông bấm được nhưng bấm xong không có gì đổi, người dùng tưởng hỏng.
+function focusWs(i) { ACTIVE = i; SPLIT = false; shellSave(); renderShellTabs(); renderPanes(); }
+window.focusWs = focusWs;
+
+// Mở workspace thành tab. Đã mở → nhảy tới nó. Đầy chỗ → đóng tab hiện hành trước
+// (giữ thứ tự DOM khớp OPEN, xem chú thích khối này).
+function selectWorkspace(id) {
+  const i = OPEN.indexOf(id);
+  if (i >= 0) return focusWs(i);
+  if (OPEN.length >= MAX_PANES) {
+    const victim = OPEN[Math.max(0, ACTIVE)];
+    OPEN = OPEN.filter((x) => x !== victim);
+    const box = $("panes");
+    for (const f of [...box.querySelectorAll("iframe.pane")])
+      if (f.dataset.ws === victim) f.remove();
+  }
+  OPEN.push(id);
+  ACTIVE = OPEN.length - 1;
+  shellSave(); renderWorkspaceGrid(WORKSPACES); renderShellTabs(); renderPanes();
+}
+window.selectWorkspace = selectWorkspace;
+
+function closeWs(id) {
+  OPEN = OPEN.filter((x) => x !== id);
+  if (!OPEN.length) { ACTIVE = -1; SPLIT = false; }
+  else if (ACTIVE >= OPEN.length) ACTIVE = OPEN.length - 1;
+  shellSave(); renderWorkspaceGrid(WORKSPACES); renderShellTabs(); renderPanes();
+}
+window.closeWs = closeWs;
+
+function goHome() {
+  if (PANE) return;         // trong pane, nút brand không tồn tại
+  ACTIVE = -1;
+  shellSave(); renderShellTabs(); renderPanes();
+  refreshAll();
+}
+window.goHome = goHome;
+
+function toggleSplit() {
+  if (OPEN.length < MAX_PANES) return;
+  SPLIT = !SPLIT;
+  shellSave(); renderShellTabs(); renderPanes();
+}
+window.toggleSplit = toggleSplit;
+
+// Kéo divider giữa 2 pane. pointer capture để con trỏ đi vào iframe vẫn không mất
+// sự kiện; thêm .dragging tắt pointer-events của iframe cho chắc.
+function initSplitDrag() {
+  const box = $("panes");
+  if (!box) return;
+  let start = null;
+  box.addEventListener("pointerdown", (e) => {
+    const div = e.target.closest(".pane-split");
+    if (!div) return;
+    start = { x: e.clientX, pct: SPLIT_PCT, w: box.clientWidth };
+    div.classList.add("dragging");
+    box.classList.add("dragging");
+    div.setPointerCapture(e.pointerId);
+  });
+  box.addEventListener("pointermove", (e) => {
+    if (!start) return;
+    const pct = start.pct + ((e.clientX - start.x) / start.w) * 100;
+    SPLIT_PCT = Math.min(80, Math.max(20, pct));
+    const f = box.querySelector("iframe.pane");
+    if (f) f.style.flex = `0 0 ${SPLIT_PCT}%`;
+  });
+  const end = () => {
+    if (!start) return;
+    start = null;
+    box.classList.remove("dragging");
+    const d = $("pane-div"); if (d) d.classList.remove("dragging");
+    shellSave();
+    // Pane vừa đổi bề rộng → xterm phải fit lại, iframe không tự báo cho ai cả.
+    for (const f of box.querySelectorAll("iframe.pane"))
+      try { f.contentWindow.postMessage({ t: "show" }, location.origin); } catch { /* chưa load */ }
+  };
+  box.addEventListener("pointerup", end);
+  box.addEventListener("pointercancel", end);
 }
 
 // Detail view: tiêu đề + nút suspend/activate của workspace đang xem.
@@ -263,23 +482,6 @@ function renderWsBanner() {
     : `<button onclick="act('/api/workspaces/${encodeURIComponent(w.id)}/activate')">Activate</button>`;
   $("ws-banner-actions").innerHTML = w.id === "default" ? "" : suspend;
 }
-
-// Master-detail navigation: chọn workspace → detail view; back → list view.
-// URL hash #ws=<id> để F5/share link giữ nguyên workspace đang xem.
-function selectWorkspace(id) {
-  currentWS = id;
-  sigShown = runsShown = PAGE;   // đổi workspace → reset phân trang
-  location.hash = id ? "ws=" + encodeURIComponent(id) : "";
-  refreshAll();
-}
-window.selectWorkspace = selectWorkspace;
-
-function backToList() {
-  currentWS = "";
-  location.hash = "";
-  refreshAll();
-}
-window.backToList = backToList;
 
 // Query suffix để scope API theo workspace đang lọc.
 function wsQuery() { return currentWS ? "?workspace_id=" + encodeURIComponent(currentWS) : ""; }
@@ -305,6 +507,92 @@ function cvSave(patch) {
 function applyView() {
   $("world").style.transform = `translate(${CV.tx}px, ${CV.ty}px) scale(${CV.k})`;
   $("cv-zoom").textContent = Math.round(CV.k * 100) + "%";
+  redrawMinimap();
+}
+
+// ── Minimap ─────────────────────────────────────────────────────────────────
+// Toàn cảnh canvas + ô khung nhìn. Click/kéo trong map = dời khung nhìn tới đó.
+// Vẽ lại từ applyView (pan/zoom) và redrawEdges (node đổi vị trí/số lượng) — hai chỗ đó
+// phủ hết mọi trường hợp hình học đổi, khỏi phải nhớ rải lời gọi khắp nơi.
+const MM = { w: 180, h: 120, pad: 6 };
+
+// Khung bao gồm cả node LẪN khung nhìn: chỉ lấy node thì pan ra vùng trống là ô xanh
+// trôi ra ngoài map, người dùng mất luôn thứ duy nhất chỉ họ đang ở đâu.
+function mmBox() {
+  const cv = $("canvas"), world = $("world");
+  if (!cv || !world) return null;
+  const nodes = [...world.children].filter((el) => el.classList.contains("node"));
+  if (!nodes.length) return null;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const add = (x, y, w, h) => {
+    x0 = Math.min(x0, x); y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x + w); y1 = Math.max(y1, y + h);
+  };
+  for (const el of nodes)
+    add(parseFloat(el.style.left) || 0, parseFloat(el.style.top) || 0, el.offsetWidth, el.offsetHeight);
+  const view = { x: -CV.tx / CV.k, y: -CV.ty / CV.k,
+                 w: cv.clientWidth / CV.k, h: cv.clientHeight / CV.k };
+  // Mọi node đã nằm trong khung nhìn → bản đồ chỉ còn là một ô xanh to, không nói thêm gì.
+  // Ẩn luôn thay vì thêm nút bật/tắt: nó tự xuất hiện đúng lúc có ích.
+  if (x0 >= view.x && y0 >= view.y && x1 <= view.x + view.w && y1 <= view.y + view.h) return null;
+  add(view.x, view.y, view.w, view.h);
+  const k = Math.min((MM.w - MM.pad * 2) / (x1 - x0 || 1),
+                     (MM.h - MM.pad * 2) / (y1 - y0 || 1));
+  return { x0, y0, k, nodes, view };
+}
+
+function redrawMinimap() {
+  const mm = $("minimap");
+  if (!mm) return;
+  const b = mmBox();
+  // toggleAttribute, KHÔNG phải `.hidden =`: hidden là thuộc tính của HTMLElement, SVGElement
+  // không có nó. Gán `.hidden` chỉ tạo expando trên object JS, attribute trong DOM đứng yên
+  // và minimap ẩn vĩnh viễn — đọc lại `.hidden` vẫn thấy false nên nhìn như đang chạy tốt.
+  mm.toggleAttribute("hidden", !b);
+  if (!b) return;
+  const X = (x) => (MM.pad + (x - b.x0) * b.k).toFixed(1);
+  const Y = (y) => (MM.pad + (y - b.y0) * b.k).toFixed(1);
+  const S = (v) => Math.max(2, v * b.k).toFixed(1);   // sàn 2px: card nhỏ quá thì mất hút
+  let out = "";
+  for (const el of b.nodes) {
+    const zone = el.classList.contains("group-zone");
+    const card = el.querySelector(".agent-card");
+    const st = card ? ([...card.classList].find((c) => c.startsWith("st-")) || "") : "";
+    const sel = el.classList.contains("sel") ? " mm-sel" : "";
+    out += `<rect class="${zone ? "mm-zone" : "mm-r " + st + sel}" rx="${zone ? 3 : 1.5}"
+      x="${X(parseFloat(el.style.left) || 0)}" y="${Y(parseFloat(el.style.top) || 0)}"
+      width="${S(el.offsetWidth)}" height="${S(el.offsetHeight)}"/>`;
+  }
+  out += `<rect class="mm-view" rx="2" x="${X(b.view.x)}" y="${Y(b.view.y)}"
+    width="${S(b.view.w)}" height="${S(b.view.h)}"/>`;
+  mm.innerHTML = out;
+}
+
+// Kéo trong minimap: GIỮ NGUYÊN phép chiếu bắt được lúc pointerdown. Tính lại mỗi lần
+// move thì khung bao đổi theo chính khung nhìn vừa dời — con trỏ và bản đồ đá nhau.
+function mmInit() {
+  const mm = $("minimap");
+  if (!mm) return;
+  let drag = null;
+  const goto_ = (e) => {
+    const cv = $("canvas"), r = drag.rect, b = drag.b;
+    const wx = b.x0 + (e.clientX - r.left - MM.pad) / b.k;
+    const wy = b.y0 + (e.clientY - r.top - MM.pad) / b.k;
+    CV.tx = cv.clientWidth / 2 - wx * CV.k;
+    CV.ty = cv.clientHeight / 2 - wy * CV.k;
+    applyView();
+  };
+  mm.addEventListener("pointerdown", (e) => {
+    const b = mmBox();
+    if (!b) return;
+    drag = { b, rect: mm.getBoundingClientRect() };
+    mm.setPointerCapture(e.pointerId);
+    goto_(e);
+  });
+  mm.addEventListener("pointermove", (e) => { if (drag) goto_(e); });
+  const up = () => { if (drag) { drag = null; cvSave({ view: CV }); } };
+  mm.addEventListener("pointerup", up);
+  mm.addEventListener("pointercancel", up);
 }
 
 // Zoom quanh tâm khung nhìn (nút +/−) — wheel thì zoom quanh con trỏ (xem cvInit).
@@ -338,7 +626,7 @@ window.cvFit = cvFit;
 // Element terminal sống NGOÀI chu trình innerHTML của canvas: tạo 1 lần per session,
 // sau mỗi render chỉ re-attach vào .term-slot của card orchestrator → SSE refresh không giết PTY.
 let cvTerms = {};  // sid → {sid, host, started, term, fit, ws}
-// Khóa terminal: run tự động (signal [REPORT] từ agent khác) đang/đã chạy trên session
+// Khóa terminal orch: run tự động (signal [BÁO CÁO] từ worker) đang/đã chạy trên session
 // → PTY cũ hết ngữ cảnh, 2 claude cùng ghi 1 transcript sẽ xung đột. Key theo NAME
 // (bền qua xoay session id); chỉ mở lại khi user bấm 🔄.
 let termLock = {};  // session name → true
@@ -348,7 +636,7 @@ let termLock = {};  // session name → true
 let termCli = {};   // session name → 'claude' | 'codex'
 
 // Gương của engine_from_model bên service — model là nguồn sự thật duy nhất của engine.
-// Lệch với backend là UI hiện sai (vd mời chọn effort 'ultra' mà engine không nhận).
+// Lệch với backend là UI hiện sai nút (vd mời xóa vĩnh viễn một session Claude rồi ăn 400).
 function engineOfModel(model) {
   const m = (model || "").trim().toLowerCase();
   return m === "codex" || m.startsWith("codex:") ? "codex" : "claude";
@@ -362,8 +650,10 @@ window.setTermCli = setTermCli;
 
 function startTerm(t) {
   t.started = true;
+  // Nền terminal đọc từ token --term-bg để đổi theme không để lại một ô lệch màu.
+  const bg = getComputedStyle(document.documentElement).getPropertyValue("--term-bg").trim();
   t.term = new Terminal({ fontSize: 12, cursorBlink: true, scrollback: 5000,
-                          theme: { background: "#0c0e12", foreground: "#e6e8eb" } });
+                          theme: { background: bg || "#0c0e12", foreground: "#e6e8eb" } });
   t.fit = new FitAddon.FitAddon();
   t.term.loadAddon(t.fit);
   t.term.open(t.host);
@@ -444,11 +734,11 @@ window.reloadVscode = reloadVscode;
 function vscodeCardHtml(st) {
   return `<div class="agent-card vscode-card">
     <div class="node-head vscode-head">
-      <span>💻 VS Code</span><b>${esc(st.name || "")}</b>
+      <span>${ic("terminal", "sm")} VS Code</span><b>${esc(st.name || "")}</b>
       <span class="cwd" title="${esc(st.cwd || "")}">${esc(st.cwd || "")}</span>
       <span class="spacer"></span>
-      <button class="secondary" onclick="reloadVscode()" title="Reload the iframe — useful while the server is still starting">🔄</button>
-      <button class="danger" onclick="closeVscode()" title="Close VS Code (exits the process)">✕</button>
+      <button class="icon-btn" onclick="reloadVscode()" title="Reload the iframe — useful while the server is still starting">${ic("refresh", "sm")}</button>
+      <button class="icon-btn danger" onclick="closeVscode()" title="Close VS Code (exits the process)">${ic("x", "sm")}</button>
     </div>
     <div class="vscode-slot"></div>
   </div>`;
@@ -496,19 +786,6 @@ async function sendSignalTo(id, name) {
 }
 window.sendSignalTo = sendSignalTo;
 
-// Dropdown "Action" trên card: mọi lựa chọn đều phá hủy nên luôn qua confirm.
-// Trả select về "Chọn…" NGAY (trước cả confirm) — nếu để kẹt ở lựa chọn cũ thì lần sau chọn lại
-// đúng mục đó sẽ không phát onchange, người dùng bấm mà không thấy gì xảy ra.
-async function runAction(id, name, sel) {
-  const action = sel.value;
-  sel.value = "";
-  if (action === "unregister") {
-    if (confirm(`Remove session '${name}' from the orchestrator?\n\nRuns, signals and audit records are kept.`))
-      await act(`/api/sessions/${id}/unregister`);
-  }
-}
-window.runAction = runAction;
-
 // Form gửi signal thủ công (tab History) — giữ từ dashboard cũ: chọn role, bật
 // requires_approval / dry_run (sendSignalTo trên card chỉ gửi nhanh, không có 2 flag này).
 function fillSignalForm(sessions) {
@@ -537,57 +814,22 @@ async function sendSignal() {
 }
 window.sendSignal = sendSignal;
 
-// 1 card agent. needsYou = có signal chờ duyệt tới nó; isOrch = s.is_orch (backend, toggle 💻
-// — card này mở terminal nhúng, 1 terminal mỗi project; không còn ý nghĩa gì với routing signal).
+// 1 card agent. needsYou = có signal chờ duyệt tới nó; isOrch = s.is_orch (backend, toggle 💻)
+// — card mở terminal nhúng + kéo giãn được. KHÔNG ảnh hưởng routing signal hay SKILL của vai.
 function agentCard(s, needsYou, isOrch) {
   const id = encodeURIComponent(s.id);
   const tools = JSON.parse(s.allowed_tools || "[]") || [];
-  const ctrl = (s.status === "paused" || s.status === "stopped")
-    ? `<button onclick="act('/api/sessions/${id}/resume')" title="Resume">▶</button>`
-    : `<button onclick="act('/api/sessions/${id}/pause')" title="Pause">⏸</button>`;
-  const allow = s.daily_blocked
-    ? `<button class="warn" onclick="allowMore('${id}','${esc(s.name)}')">Allow +${DAILY_STEP}</button>` : "";
   const today = s.daily_limit
-    ? `<span class="${s.daily_blocked ? "day-hit" : "day-ok"}" title="runs today / daily limit">${s.used_today}/${s.daily_limit}</span>`
+    ? `<span class="${s.daily_blocked ? "day-hit" : "day-ok"} num" title="runs today / daily limit">${s.used_today}/${s.daily_limit}</span>`
     : "";
-  // Mức hiện ra bám theo model của CHÍNH session này — gpt-5.5 không có 'max', đừng mời chọn.
-  const effortSel = `<select class="mini" onchange="setEffort('${id}', this.value)">` +
-    effortOptsFor(s.model).map((e) => `<option value="${e}"${e === (s.effort || "") ? " selected" : ""}>${e || "effort"}</option>`).join("") +
-    `</select>`;
   const head = `<div class="node-head">
       <span class="status-dot dot-${esc(s.status)}"></span>
-      ${isOrch ? `<span title="This session owns the project terminal">👑</span>` : ""}
+      ${isOrch ? `<span class="crown" title="This session owns the project terminal">${ic("crown", "sm")}</span>` : ""}
       <b title="${esc(s.name)}">${esc(s.name)}</b>
       ${needsYou ? `<span class="needs-badge">NEEDS YOU</span>` : ""}
       <span class="spacer"></span>
-      <span class="sid" title="${esc(s.id)}">${esc(s.id)}</span>
     </div>`;
   const engine = engineOfModel(s.model);
-  // Nút biểu tượng = thao tác MỞ một thứ gì đó (terminal / thư mục project) → giữ icon.
-  // Nút chữ = thao tác trên dữ liệu session → gom theo nhãn Context / Action ở dưới.
-  const vsBtn = (s.cwd || "").trim()
-    ? `<button class="secondary" onclick="openVscode('${id}','${esc(s.name)}')"
-        title="Open this session's project folder in VS Code (one card only — opening another closes this one)">📁</button>`
-    : "";
-  const killBtn = s.status === "running"
-    ? `<button class="danger" onclick="if(confirm('Kill the running job on ${esc(s.name)}? The run is marked failed and is not retried.'))act('/api/sessions/${id}/kill')" title="Kill the running job (stops a runaway)">🛑</button>`
-    : "";
-  const ctxGroup = (extra = "") => `<div class="act-group"><span class="act-label">Context</span>
-    <button class="secondary act-txt" onclick="viewCompact('${id}','${esc(s.name)}')"
-      title="View this session's current context / SKILL">Xem</button>${extra}</div>`;
-  // Action đều là thao tác PHÁ HỦY → giấu sau dropdown, không để bấm nhầm khi rê chuột trên card.
-  // KHÔNG có "Xóa vĩnh viễn": transcript do CLI (claude/codex) giữ, orchestrator không xóa được
-  // — bày ra là mời user chọn thứ chắc chắn lỗi. Gỡ session thì dùng Unregister.
-  // Nhãn NGẮN: select đóng chỉ hiện 1 dòng và không ellipsis được text option — nhãn dài sẽ
-  // đẩy rộng cả cột nút, ăn chỗ terminal. Giải thích đầy đủ để ở title (hover).
-  const actOpts = [["unregister", "Unregister", "Remove the session from the orchestrator — runs, signals and audit are kept"]];
-  const actGroup = `<div class="act-group"><span class="act-label">Action</span>
-    <select class="mini act-sel" title="Destructive actions — pick one, then confirm"
-      onchange="runAction('${id}','${esc(s.name)}', this)">
-      <option value="">Choose…</option>
-      ${actOpts.map(([v, label, hint]) =>
-        `<option value="${v}" title="${esc(hint)}">${esc(label)}</option>`).join("")}
-    </select></div>`;
   const cls = `st-${esc(s.status)}${needsYou ? " needs-you" : ""}`;
 
   // Card 👑: terminal thật nhúng thẳng trong card, action buttons xếp dọc left bar.
@@ -627,12 +869,10 @@ function agentCard(s, needsYou, isOrch) {
       ${head}
       <div class="orch-body">
         <div class="orch-side">
-          ${ctrl}${killBtn}${allow}${vsBtn}
+          ${quickBtns(s, id, true)}
           ${cliSel}
-          <button onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')" title="Reload the session/terminal (restarts the selected CLI)">🔄</button>
-          <button class="secondary" onclick="if(confirm('Close the terminal on ${esc(s.name)}? The session goes back to headless.'))toggleOrch('${id}',0)"
-            title="Close the terminal — the session goes back to a headless worker">💻</button>
-          ${ctxGroup()}${actGroup}
+          <button class="icon-btn" onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')"
+            title="Reload the session/terminal (restarts the selected CLI)">${ic("refresh", "sm")}</button>
         </div>
         <div class="term-slot" data-sid="${esc(s.id)}" data-cli="${cli}"${locked ? ` data-lock="1"` : ""}>${lock}</div>
       </div>
@@ -642,23 +882,146 @@ function agentCard(s, needsYou, isOrch) {
   return `<div class="agent-card ${cls}" data-sid="${esc(s.id)}">
     ${head}
     <div class="agent-body">
-      <div class="rw"><input class="mini model-in grow" list="model-list" value="${esc(s.model || "")}"
-        placeholder="model: auto" onchange="setModel('${id}', this.value.trim())">${effortSel}</div>
-      <div class="rw"><span title="${esc(tools.join(", ") || "every tool allowed")}">🔧 ${tools.length ? tools.length + " tools" : "all tools"}</span>
-        <span class="spacer"></span>${today}</div>
-    </div>
-    <div class="agent-actions">
-      <div class="act-row">
-        ${ctrl}${killBtn}${allow}
-        <button class="secondary" onclick="toggleOrch('${id}',1)"
-          title="Open a terminal for this session (one per project — closes any other terminal in the same cwd)">💻</button>
-        ${vsBtn}
+      <div class="mrow">
+        <span class="eng-chip eng-${esc(engine)}">${esc(engine)}</span>
+        <span class="mono" title="${esc(s.model || "auto")}">${esc(s.model || "auto")}</span>
+        <span class="spacer"></span><span>${esc(s.effort || DEFAULT_EFFORT)}</span>
       </div>
-      ${ctxGroup(`<button class="secondary act-txt" onclick="editSkill('${id}','${esc(s.name)}')"
-        title="Edit this role's SKILL (upserts into .claude/skills in the project cwd)">Update</button>`)}
-      ${actGroup}
+      <div class="mrow">
+        <span>${esc(s.status)}</span>
+        <span title="${esc(tools.join(", ") || "every tool allowed")}">·
+          ${tools.length ? tools.length + " tools" : "all tools"}</span>
+        <span class="spacer"></span>${today}
+      </div>
     </div>
+    ${quickBtns(s, id)}
   </div>`;
+}
+
+// Nút quick trên card: 4 thao tác hay dùng nhất, chỉ hiện khi hover hoặc card đang chọn.
+// Phần còn lại (model, effort, SKILL, context, xoá…) ở inspector — nhồi hết vào card thì
+// 5 agent = 45 control cùng lúc trên canvas, mắt không biết nhìn đâu.
+// side=true: cột dọc trong card 👑, không cần khung nổi.
+function quickBtns(s, id, side) {
+  const b = [];
+  // class GHÉP một lần ở đây: nhét thêm attribute class thứ hai vào chuỗi HTML thì parser
+  // lấy cái đầu và bỏ im cái sau — nút danger sẽ mất màu đỏ mà không ai thấy sai ở đâu.
+  const btn = (extra, title, onclick, inner) =>
+    `<button class="${side ? "icon-btn " : ""}${extra}" title="${title}" onclick="${onclick}">${inner}</button>`;
+
+  b.push(s.status === "paused" || s.status === "stopped"
+    ? btn("", "Resume", `act('/api/sessions/${id}/resume')`, ic("play", "sm"))
+    : btn("", "Pause", `act('/api/sessions/${id}/pause')`, ic("pause", "sm")));
+  if (s.status === "running")
+    b.push(btn("danger", "Kill the running job (stops a runaway)",
+      `if(confirm('Kill the running job on ${esc(s.name)}? The run is marked failed and is not retried.'))act('/api/sessions/${id}/kill')`,
+      ic("stop", "sm")));
+  if (s.daily_blocked)
+    b.push(btn("warn", `Daily run limit hit — allow ${DAILY_STEP} more`,
+      `allowMore('${id}','${esc(s.name)}')`, "+" + DAILY_STEP));
+  b.push(s.is_orch
+    ? btn("", "Close the terminal — the session goes back to a headless worker",
+        `if(confirm('Close the terminal on ${esc(s.name)}? The session goes back to headless.'))toggleOrch('${id}',0)`,
+        ic("x", "sm"))
+    : btn("", "Open a terminal for this session (one per project — closes any other terminal in the same cwd)",
+        `toggleOrch('${id}',1)`, ic("terminal", "sm")));
+  if ((s.cwd || "").trim())
+    b.push(btn("", "Open this session's project folder in VS Code (one card only — opening another closes this one)",
+      `openVscode('${id}','${esc(s.name)}')`, ic("folder", "sm")));
+  return side ? b.join("") : `<div class="quick">${b.join("")}</div>`;
+}
+
+// ── Inspector: mọi thứ về agent đang chọn ───────────────────────────────────
+// Chọn card = mở panel bên phải. Trước đây các control này nằm hết trên card; canvas
+// đông agent là thành một bức tường nút.
+let selSid = null;
+
+function selectNode(sid) {
+  selSid = sid || null;
+  renderInspector();
+  markSelection();
+}
+window.selectNode = selectNode;
+
+// renderCanvas dựng lại innerHTML mỗi lần refresh → class .sel bay mất, phải gắn lại.
+function markSelection() {
+  for (const el of $("world").querySelectorAll(".node"))
+    el.classList.toggle("sel", !!selSid && el.dataset.nid === "s:" + selSid);
+  redrawMinimap();   // minimap tô sáng node đang chọn — .sel vừa đổi thì nó phải theo
+}
+
+function renderInspector() {
+  const box = $("inspector");
+  if (!box) return;
+  const s = (cvLast.sessions || []).find((x) => x.id === selSid);
+  if (!s) { box.hidden = true; selSid = null; return; }   // session vừa bị xoá/unregister
+  box.hidden = false;
+  $("insp-dot").className = "status-dot dot-" + esc(s.status);
+  $("insp-name").textContent = s.name;
+  $("insp-name").title = s.name;
+
+  const id = encodeURIComponent(s.id);
+  const engine = engineOfModel(s.model);
+  const tools = JSON.parse(s.allowed_tools || "[]") || [];
+  // Mức hiện ra bám theo model của CHÍNH session này — gpt-5.5 không có 'max', đừng mời chọn.
+  const effortSel = `<select onchange="setEffort('${id}', this.value)">`
+    + effortOptsFor(s.model).map((e) =>
+        `<option value="${e}"${e === (s.effort || "") ? " selected" : ""}>${e || "default (" + DEFAULT_EFFORT + ")"}</option>`).join("")
+    + `</select>`;
+  const limit = s.daily_limit
+    ? `<span class="${s.daily_blocked ? "day-hit" : "day-ok"} num">${s.used_today}/${s.daily_limit}</span>`
+      + (s.daily_blocked
+          ? ` <button class="warn" onclick="allowMore('${id}','${esc(s.name)}')">Allow +${DAILY_STEP}</button>` : "")
+    : `<span>no limit</span>`;
+
+  $("insp-body").innerHTML = `
+    <div class="insp-sec">
+      <div class="insp-row">
+        <span class="eng-chip eng-${esc(engine)}">${esc(engine)}</span>
+        ${badge(s.status, { running: "b-blue", paused: "b-amber", stopped: "b-red" }[s.status] || "b-gray")}
+        ${s.is_orch ? badge("terminal", "b-amber") : ""}
+      </div>
+      <div class="insp-kv"><span>Session</span><span class="mono" title="${esc(s.id)}">${esc(s.id)}</span></div>
+      <div class="insp-kv"><span>Folder</span><span class="mono" title="${esc(s.cwd || "")}">${esc(s.cwd || "—")}</span></div>
+      <div class="insp-kv"><span>Tools</span><span title="${esc(tools.join(", ") || "every tool allowed")}">${tools.length ? tools.length + " allowed" : "all tools"}</span></div>
+      <div class="insp-kv"><span>Today</span>${limit}</div>
+    </div>
+
+    <div class="insp-sec">
+      <h4>Model</h4>
+      <input list="model-list" value="${esc(s.model || "")}" placeholder="auto — the CLI picks"
+        onchange="setModel('${id}', this.value.trim())">
+      ${effortSel}
+    </div>
+
+    <div class="insp-sec">
+      <h4>Work</h4>
+      <div class="insp-row">
+        <button class="secondary" onclick="openSessionRun('${esc(s.id)}')">${ic("doc", "sm")} Latest run</button>
+        <button class="secondary" onclick="sendSignalTo('${esc(s.id)}','${esc(s.name)}')">${ic("send", "sm")} Signal</button>
+      </div>
+    </div>
+
+    <div class="insp-sec">
+      <h4>Context</h4>
+      <div class="insp-row">
+        <button class="secondary" onclick="viewCompact('${id}','${esc(s.name)}')"
+          title="View this session's current context / SKILL">${ic("doc", "sm")} View</button>
+        <button class="secondary" onclick="editSkill('${id}','${esc(s.name)}')"
+          title="Edit this role's SKILL (upserts into .claude/skills in the project cwd)">${ic("book", "sm")} SKILL</button>
+      </div>
+      <button class="secondary" onclick="compactSession('${id}','${esc(s.name)}')"
+        title="Summarise the transcript so the role stops drifting on long jobs">${ic("compress", "sm")} Compact context</button>
+    </div>
+
+    <div class="insp-sec insp-danger">
+      <h4>Danger zone</h4>
+      <button class="danger" onclick="if(confirm('Remove session ${esc(s.name)} from the orchestrator?\\n\\nRuns, signals and audit records are kept.'))act('/api/sessions/${id}/unregister')">
+        ${ic("back", "sm")} Unregister</button>
+      <div class="hint">There is no permanent delete: the transcript belongs to the CLI that
+        owns the session, so the orchestrator cannot wipe it. Unregister drops the session here
+        and keeps its runs, signals and audit records.</div>
+    </div>`;
 }
 
 // ── Zone (cwd) + orchestrator + chat ────────────────────────────────────────
@@ -667,13 +1030,15 @@ let cvNodeEls = {};   // session_id → node element (để vẽ edge)
 let cvEdges = [];     // [{from, to, cls}] resolve từ signal list
 let cvLast = { sessions: [], signals: [] };  // data mới nhất (re-render cục bộ không cần fetch)
 
-const EDGE_COLORS = { wait: "#f0a020", run: "#4c8dff" };  // done/failed không vẽ mũi tên
+// Chỉ dùng cho <marker> đầu mũi tên. Đọc token thay vì hex cứng: dây vẽ bằng CSS
+// (.edge-wait/.edge-run) nên hardcode ở đây là dark mode có dây một màu, đầu mũi tên màu khác.
+const EDGE_COLORS = { wait: "var(--edge-wait)", run: "var(--edge-run)" };  // done/failed không vẽ mũi tên
 const EDGE_DEFS = "<defs>" + Object.entries(EDGE_COLORS).map(([k, c]) =>
   `<marker id="ah-${k}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
      <path d="M0,0L8,4L0,8z" fill="${c}"/></marker>`).join("") + "</defs>";
 
-// Toggle vai orchestrator cho 1 session DB (nguồn sự thật: cột is_orch backend — không còn
-// localStorage). Bật: backend tự đóng terminal của session khác cùng cwd (1 terminal/project).
+// Bật/tắt terminal nhúng cho 1 session DB (nguồn sự thật: cột is_orch backend — không còn
+// localStorage). Bật: backend tự tắt terminal của session khác cùng cwd (1 terminal/project).
 async function toggleOrch(id, on) {
   try { await api("/api/sessions/" + id + "/orch", "POST", { on: !!on }); }
   catch (e) { console.error(e); alert("Could not toggle the terminal: " + e); return; }
@@ -685,7 +1050,7 @@ function zoneHtml(gi, cwd, list) {
   const base = cwd.replace(/\/+$/, "").split("/").pop() || cwd;
   return `<div class="node group-zone" data-nid="g:${esc(cwd)}" data-gi="${gi}">
     <div class="zone-head">
-      <div class="zone-title">📁 <b>${esc(base)}</b><span class="g-count">${list.length} agents</span>
+      <div class="zone-title">${ic("folder", "sm")} <b>${esc(base)}</b><span class="g-count">${list.length} agents</span>
         <span class="g-path" title="${esc(cwd)}">${esc(cwd)}</span></div>
     </div>
   </div>`;
@@ -779,6 +1144,7 @@ function redrawEdges() {
     out += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" class="edge edge-${e.cls}" marker-end="url(#ah-${e.cls})"/>`;
   }
   svg.innerHTML = EDGE_DEFS + out;
+  redrawMinimap();   // gọi ở đây = mọi lần node đổi vị trí/kích thước/số lượng đều bắt được
 }
 
 function renderCanvas(sessions, signals) {
@@ -850,11 +1216,13 @@ function renderCanvas(sessions, signals) {
           else {
             if (cx + 940 > 1360 && cx > 40) { cx = 40; cy += rowH + 80; rowH = 0; }
             gc = { x0: cx, y0: cy + 80, i: 0 };
-            cx += 980; rowH = Math.max(rowH, 480);
+            cx += 980; rowH = Math.max(rowH, 360);
           }
           gcur[m.cwd] = gc;
         }
-        pos[nid] = { x: gc.x0 + (gc.i % 3) * 300, y: gc.y0 + Math.floor(gc.i / 3) * 200 };
+        // Bước dòng 130 bám chiều cao card hiện tại (~76px + thở). Card cũ cao ~200px nên
+        // con số cũ là 200 — giữ nguyên thì mỗi cụm mới thủng một khoảng trống to.
+        pos[nid] = { x: gc.x0 + (gc.i % 3) * 300, y: gc.y0 + Math.floor(gc.i / 3) * 130 };
         gc.i++;
       } else {
         if (cx + el.offsetWidth > 1360 && cx > 40) { cx = 40; cy += rowH + 40; rowH = 0; }
@@ -895,6 +1263,8 @@ function renderCanvas(sessions, signals) {
   }
   cvEdges = [...pairBest.values()];
   redrawEdges();
+  renderInspector();   // dữ liệu vừa đổi → panel bên phải phải theo
+  markSelection();     // innerHTML rebuild xoá .sel, gắn lại
   attachTerms();  // cắm terminal bền vào card 👑 (sau khi node đã vào DOM)
   attachVscode(); // iframe VS Code cũng phải bền qua re-render, không thì reload liên tục
   // Trả focus cho terminal đang gõ dở (rAF: sau khi attachTerms đã cắm host vào slot mới).
@@ -978,11 +1348,14 @@ function cvInit() {
       if (drag.mode === "group") drag.parts.forEach((p) => save(p.el)); else save(drag.el);
       cvSave({ pos });
     } else cvSave({ view: CV });
-    // Click (không kéo) vào header card agent (kể cả card 👑) → mở drawer run mới nhất.
+    // Click (không kéo) vào header card agent → CHỌN card (inspector mở bên phải).
+    // Trước đây click mở thẳng drawer transcript; giờ transcript là một nút trong inspector.
     if (drag.mode === "node" && !drag.moved) {
       const card = drag.el.querySelector(".agent-card");
-      if (card) openSessionRun(card.dataset.sid);
+      if (card && card.dataset.sid) selectNode(card.dataset.sid);
     }
+    // Click nền (pan mà không kéo) → bỏ chọn.
+    if (drag.mode === "pan" && !drag.moved) selectNode(null);
     drag = null; cvInteracting = false;
     cv.classList.remove("grabbing");
     if (cvPending) { const p = cvPending; cvPending = null; renderCanvas(p.sessions, p.signals); }
@@ -1000,15 +1373,15 @@ function cvInit() {
     cvSave({ pos });
     refitNode(el); layoutZones(); redrawEdges();
   });
-  // Click vào THÂN card (ngoài header — header đi đường pointerup ở trên) → drawer run.
-  // Card 👑: terminal (.term-slot) miễn trừ, nhưng overlay khóa (.term-lock) thì mở drawer
-  // để xem run tự động đang chạy.
+  // Click vào THÂN card (ngoài header — header đi đường pointerup ở trên) → chọn card.
+  // Card 👑: terminal (.term-slot) miễn trừ, nhưng overlay khóa (.term-lock) thì mở thẳng
+  // drawer để xem run tự động đang chạy — đó là thứ người dùng đang chờ.
   cv.addEventListener("click", (e) => {
     const lock = e.target.closest(".term-lock");
     if (lock) { openSessionRun(lock.closest(".agent-card").dataset.sid); return; }
     if (e.target.closest("button, select, input, textarea, option, .term-slot, .vscode-slot, .node-head, .zone-head")) return;
     const card = e.target.closest(".agent-card");
-    if (card) openSessionRun(card.dataset.sid);
+    if (card && card.dataset.sid) selectNode(card.dataset.sid);
   });
   cv.addEventListener("wheel", (e) => {
     if (e.target.closest(".term-slot, .vscode-slot, .cv-overlay")) return;  // wheel trong terminal/VS Code/overlay = scroll, không zoom
@@ -1254,7 +1627,7 @@ function showMsg(id, text, ok) {
 
 async function spawnAgent() {
   // Tên vai và template là HAI thứ khác nhau: template chỉ là playbook NGUỒN (nhiều agent dùng
-  // chung một template được), tên vai là danh tính để signal — phải unique trong workspace.
+  // chung một template được), tên vai là danh tính để signal.
   const name = slugRole($("sp-role").value);
   const cwd = $("sp-cwd").value.trim();
   const model = spModel();
@@ -1459,7 +1832,9 @@ function switchTab(name) {
   $("tab-history").hidden = name !== "history";
   $("tab-btn-agents").classList.toggle("active", name === "agents");
   $("tab-btn-history").classList.toggle("active", name === "history");
-  try { localStorage.setItem("orch-tab", name); } catch { /* private mode */ }
+  // Key theo workspace: hai pane mở cùng lúc dùng chung một key thì đổi tab ở pane này
+  // lật luôn pane kia.
+  try { localStorage.setItem("orch-tab." + currentWS, name); } catch { /* private mode */ }
   // Quay lại tab agents: xterm cần fit lại (lúc ẩn display:none đo được 0×0).
   if (name === "agents") requestAnimationFrame(() => Object.values(cvTerms).forEach(fitTerm));
 }
@@ -1513,21 +1888,42 @@ function pagedQuery(shown) {
   return `?${ws}limit=${shown}&offset=0`;
 }
 
+// Shell không mở SSE (xem chú thích connectSSE) → pill trạng thái bám kết quả fetch.
+function setConn(ok) {
+  const el = $("conn");
+  if (!el) return;
+  el.className = "pill " + (ok ? "live" : "dead");
+  el.textContent = ok ? "live" : "offline";
+}
+
 async function refreshAll() {
   try {
     const [workspaces, health] = await Promise.all([api("/api/workspaces"), api("/health")]);
     if (health.daily_allow_step) DAILY_STEP = health.daily_allow_step;
     if (health.default_effort) DEFAULT_EFFORT = health.default_effort;
     $("dry").hidden = !health.dry_run;
-    // Workspace đang xem bị xóa/không còn → về màn list.
-    if (currentWS && !workspaces.some((w) => w.id === currentWS)) currentWS = "";
-    renderWorkspaces(workspaces);
 
-    const inDetail = !!currentWS;
-    $("ws-list-view").hidden = inDetail;
-    $("ws-detail-view").hidden = !inDetail;
-    $("hdr-ws").hidden = !inDetail;   // breadcrumb + tabs trong header chỉ hiện ở detail view
-    if (!inDetail) return;   // màn list chỉ cần workspaces, khỏi fetch sessions/signals/runs
+    if (!PANE) {
+      // Workspace bị xoá ở nơi khác → đóng tab của nó, đừng để iframe trỏ vào hư không.
+      const live = new Set(workspaces.map((w) => w.id));
+      if (OPEN.some((id) => !live.has(id))) {
+        OPEN = OPEN.filter((id) => live.has(id));
+        if (!OPEN.length) { ACTIVE = -1; SPLIT = false; }
+        shellSave();
+      }
+      renderWorkspaces(workspaces);
+      setConn(true);
+      return;   // shell không đụng tới sessions/signals/runs — pane lo phần đó
+    }
+
+    // Workspace của pane này biến mất → nhờ shell đóng tab (pane không tự đóng được).
+    if (!workspaces.some((w) => w.id === currentWS)) {
+      try { parent.postMessage({ t: "gone", ws: currentWS }, location.origin); } catch { /* không có shell */ }
+      return;
+    }
+    renderWorkspaces(workspaces);
+    $("ws-detail-view").hidden = false;
+    $("hdr-ws").hidden = false;
 
     const q = wsQuery();
     const [sessions, signals, runs, vsc] = await Promise.all([
@@ -1541,7 +1937,7 @@ async function refreshAll() {
     fillSignalForm(sessions);
     sigHasMore = signals.has_more; renderSignals(signals.items);
     runsHasMore = runs.has_more; renderRuns(runs.items);
-  } catch (e) { console.error(e); }
+  } catch (e) { console.error(e); if (!PANE) setConn(false); }
 }
 
 // ── Live updates (SSE) ───────────────────────────────────────────────────────
@@ -1568,18 +1964,58 @@ function connectSSE() {
   };
 }
 
-// Deep-link: mở lại đúng workspace từ URL hash (#ws=<id>).
-if (location.hash.startsWith("#ws=")) currentWS = decodeURIComponent(location.hash.slice(4));
-cvInit();
-// Duyệt thư mục: click folder trong panel → đi sâu vào (path nằm ở data-path, không inline).
-$("sp-dir").addEventListener("click", (e) => {
-  const it = e.target.closest(".dir-item");
-  if (!it) return;
-  // Kết quả tìm: click là CHỌN luôn (đã là thư mục đích). Duyệt cây: click là đi vào.
-  if (it.dataset.pick) { $("sp-cwd").value = it.dataset.path; closeDirBrowse(); }
-  else browseDir(it.dataset.path);
-});
-try { switchTab(localStorage.getItem("orch-tab") || "agents"); } catch { /* tab mặc định */ }
-refreshAll();
-loadTemplates();
-if (!location.search.includes("nosse")) connectSSE();  // ?nosse: tắt SSE khi debug/test headless
+// ── Boot ────────────────────────────────────────────────────────────────────
+// Hai vai, hai đường khởi động. Xem chú thích PANE ở đầu file.
+const qs = new URLSearchParams(location.search);
+
+if (PANE) {
+  // class .pane đã được gắn vào <html> từ script trong <head> (trước paint).
+  currentWS = qs.get("ws") || "";
+  $("ws-detail-view").hidden = false;
+  $("hdr-ws").hidden = false;
+  cvInit();
+  mmInit();
+  try { switchTab(localStorage.getItem("orch-tab." + currentWS) || "agents"); }
+  catch { /* tab mặc định */ }
+  // Shell nói chuyện xuống: 'show' = pane vừa hiện/đổi bề rộng (xterm phải fit lại,
+  // display:none đo được 0×0); 'theme' = user vừa đổi theme ở shell.
+  window.addEventListener("message", (e) => {
+    if (e.origin !== location.origin) return;
+    const m = e.data || {};
+    if (m.t === "show") requestAnimationFrame(() => Object.values(cvTerms).forEach(fitTerm));
+    else if (m.t === "theme") applyTheme(m.pref);
+  });
+  refreshAll();
+  // SSE CHỈ ở pane. HTTP/1.1 giới hạn 6 kết nối mỗi origin và EventSource giữ kết nối
+  // vĩnh viễn — shell mở thêm một cái nữa là 2 pane + shell = 3, phần còn lại cho fetch
+  // mỏng đi thấy rõ. Shell poll thay thế (nó chỉ cần đếm session ở màn Home).
+  if (!location.search.includes("nosse")) connectSSE();
+} else {
+  applyTheme(themePref());
+  const st = shellLoad();
+  const fromUrl = (qs.get("ws") || "").split(",").filter(Boolean);
+  OPEN = (fromUrl.length ? fromUrl : (st.open || [])).slice(0, MAX_PANES);
+  SPLIT = qs.has("split") ? qs.get("split") === "1" : !!st.split;
+  SPLIT_PCT = st.pct || 50;
+  ACTIVE = !OPEN.length ? -1
+    : fromUrl.length ? 0
+    : Math.min(st.active == null ? 0 : st.active, OPEN.length - 1);
+  initSplitDrag();
+  // Pane báo lên: workspace của nó không còn → đóng tab.
+  window.addEventListener("message", (e) => {
+    if (e.origin !== location.origin) return;
+    if ((e.data || {}).t === "gone") closeWs(e.data.ws);
+  });
+  // Duyệt thư mục: click folder trong panel → đi sâu vào (path ở data-path, không inline).
+  $("sp-dir").addEventListener("click", (ev) => {
+    const it = ev.target.closest(".dir-item");
+    if (!it) return;
+    // Kết quả tìm: click là CHỌN luôn (đã là thư mục đích). Duyệt cây: click là đi vào.
+    if (it.dataset.pick) { $("sp-cwd").value = it.dataset.path; closeDirBrowse(); }
+    else browseDir(it.dataset.path);
+  });
+  refreshAll();
+  loadTemplates();
+  // Màn Home hiện số session mỗi workspace — poll nhẹ, không cần SSE (xem trên).
+  setInterval(() => { if (ACTIVE < 0) refreshAll(); }, 5000);
+}

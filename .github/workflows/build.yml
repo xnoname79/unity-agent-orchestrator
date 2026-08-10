@@ -45,6 +45,12 @@ jobs:
       - name: Verify dependencies are usable
         run: python -c "from mcp.server.fastmcp import FastMCP; import uvicorn, starlette, httpx"
 
+      # The dashboard is vanilla JS wired together by string ids and inline onclick attributes,
+      # so a rename breaks it silently — the page still loads, the button just stops working.
+      # Cheap enough to run on both platforms; catches it before the binary is even built.
+      - name: Check the dashboard wiring
+        run: python static/orchestrator/check_ui.py
+
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean
 
