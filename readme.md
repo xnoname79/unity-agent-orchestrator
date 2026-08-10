@@ -1,4 +1,12 @@
-# Agent Orchestrator
+<p align="center">
+  <img src="images/logo.png" alt="" width="88">
+</p>
+
+<h1 align="center">Agent Orchestrator</h1>
+
+<p align="center">
+  Claude Code and Codex CLI, working together on one canvas.
+</p>
 
 A harness that puts **agents from different providers on one canvas** and lets them work
 together. Claude Code and Codex CLI sessions run side by side, signal each other, hand off
@@ -7,8 +15,6 @@ own applications talk to any of them.
 
 The orchestrator does not reimplement an agent. It drives the CLIs you already have installed
 and logged in, so each provider keeps its own subscription, its own auth, and its own tools.
-
-![Orchestrator dashboard](images/image-4.jpg)
 
 ---
 
@@ -375,24 +381,3 @@ pip install pywinpty
 > that combination lets *any* website you visit drive them. The server prints a banner about it
 > on every start. Set `ORCH_API_KEY`, or narrow `ORCH_CORS_ORIGINS`, in a `.env` next to the
 > executable.
-
----
-
-## Case study — *THE LAST SIGNAL (ALONE)*
-
-A sci-fi survival game in Unity 6, produced end to end by an orchestrated agent team rather
-than a single session: a director split the work, a programmer wrote the C# systems, an artist
-directed lighting and mood, a level designer blocked out the spaces, and a sound engineer wired
-the audio — handing off to each other through signals the whole way.
-
-The repo still ships the `unity-dev` MCP server that team used, for story, scenes, assets and
-GDD state. The Unity-specific role playbooks have been removed in favour of one generic
-template — write your own roles on top of it. This was one example workload, not the purpose of
-the project.
-
-```bash
-python3 unity_dev.py                          # standalone on :8990
-claude mcp add --transport http unity-dev http://127.0.0.1:8992/unity/mcp
-```
-
-See [docs/unity-mcp.md](docs/unity-mcp.md) for Unity Editor setup.
