@@ -43,6 +43,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import sqlite3
 import sys
 from datetime import datetime, timedelta
@@ -61,6 +62,18 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, OSError, ValueError):
         pass  # stream bị thay bằng thứ không reconfigure được (pytest capture, pipe lạ)
+
+
+# ── MỘT module, KHÔNG hai bản ────────────────────────────────────────────────
+# Chạy bằng `python session_orchestrator.py serve` (và cả binary PyInstaller, entry cũng là
+# file này) thì module này mang tên '__main__'. signal_mcp lại `import session_orchestrator`
+# → Python KHÔNG thấy tên đó trong sys.modules nên nạp lại FILE LẦN HAI thành một module
+# khác, với bộ biến toàn cục RIÊNG. Hậu quả đã đo được: người dùng gõ terminal nhúng ghi mốc
+# vào _round_at của bản '__main__', còn send_signal qua MCP đọc _round_at của bản import —
+# luôn rỗng — nên trần ping-pong không bao giờ được mở lại và agent báo hết lượt dù vừa được
+# giao việc mới. Đăng ký bí danh NGAY ĐÂY, trước khi có ai kịp import.
+if __name__ == "__main__":
+    sys.modules.setdefault("session_orchestrator", sys.modules[__name__])
 
 
 # ── .env loader (stdlib, không thêm dep) ─────────────────────────────────────
@@ -85,7 +98,11 @@ def _load_dotenv(path=None):
     path = path or _app_dir() / ".env"
     if not path.exists():
         return
-    for line in path.read_text().splitlines():
+    # encoding + errors: không truyền thì đọc theo locale, và trên Windows locale là cp1252 —
+    # một dấu gạch dài trong comment hay đường dẫn có dấu là ném UnicodeDecodeError NGAY ở dòng
+    # này, tức orchestrator chết lúc khởi động. errors="replace" để một byte lạ cùng lắm làm hỏng
+    # một giá trị, chứ không chặn cả server khởi động.
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -584,36 +601,66 @@ def pair_signal_count(from_role, to_session, workspace_id):
       3. signal do người gửi (from_session ∈ _HUMAN_SENDERS) tới 1 trong 2 vai
     Duyệt từ mới về cũ, chạm mốc thì dừng đếm. Không cần bảng/cột trạng thái nào.
 
-    Signal điều khiển '/compact' KHÔNG tính — nó là lệnh vận hành, không phải một lượt trao đổi."""
+    Signal điều khiển '/compact' KHÔNG tính — nó là lệnh vận hành, không phải một lượt trao đổi.
+
+    Phép đếm nằm TRỌN trong pair_counts(); hàm này chỉ tra ra một cặp. Dashboard cần con số của
+    mọi cặp, mà hai bản cài đặt song song thì sớm muộn lệch nhau — và lệch ở đây nghĩa là UI báo
+    2/4 trong khi backend chặn ở 4/4. Cùng một vòng quét 200 dòng nên tra một cặp không đắt hơn."""
     _ensure_db()
     conn = _conn()
     to_row = conn.execute("SELECT name FROM sessions WHERE id = ?", (to_session,)).fetchone()
+    conn.close()
     to_name = (to_row["name"] if to_row else "") or ""
-    pair = _pair_key(from_role, to_name)
-    cutoff = (datetime.now() - timedelta(minutes=PAIR_SIGNAL_WINDOW_MIN)).isoformat()
-    for role in (from_role, to_name):
-        opened = _round_at.get(_round_key(workspace_id, role))
-        if opened and opened > cutoff:
-            cutoff = opened
-    # LIMIT: chặn quét cả bảng. 200 signal gần nhất của workspace dư sức chứa 1 chu kỳ hội thoại.
+    return pair_counts(workspace_id).get(_pair_key(from_role, to_name), 0), to_name
+
+
+def pair_counts(workspace_id):
+    """{(vai_a, vai_b): số lượt} cho MỌI cặp còn trong chu kỳ hiện tại — MỘT lượt quét.
+
+    Dashboard cần con số này cho từng cặp trên mỗi lần refresh. Gọi pair_signal_count cho
+    từng cặp thì 10 agent = 45 cặp × 200 dòng mỗi lần SSE bắn — nên gộp vào một vòng.
+
+    Dùng ĐÚNG câu truy vấn, LIMIT và ba mốc cutoff như pair_signal_count: số hiển thị phải
+    khớp số đem đi chặn, lệch một cái là UI báo 2/4 trong khi backend chặn ở 4/4.
+    """
+    _ensure_db()
+    conn = _conn()
     rows = conn.execute(
         "SELECT s.from_session AS f, sess.name AS t, s.created_at AS ts, "
         "substr(s.message, 1, 8) AS head "
         "FROM signals s LEFT JOIN sessions sess ON sess.id = s.to_session "
         "WHERE s.workspace_id = ? ORDER BY s.id DESC LIMIT 200", (workspace_id,)).fetchall()
     conn.close()
-    n = 0
+    window = (datetime.now() - timedelta(minutes=PAIR_SIGNAL_WINDOW_MIN)).isoformat()
+
+    def cutoff(pair):
+        c = window
+        for role in pair:
+            opened = _round_at.get(_round_key(workspace_id, role))
+            if opened and opened > c:
+                c = opened
+        return c
+
+    counts, closed, touched = {}, set(), set()
     for r in rows:
-        if (r["ts"] or "") < cutoff:
-            break              # ra ngoài chu kỳ (quá cũ / trước lần người dùng cầm lái)
         f, t = r["f"] or "", r["t"] or ""
         if f in _HUMAN_SENDERS:
-            if t in pair:
-                break          # người dùng vừa giao việc cho 1 trong 2 → chu kỳ mới
+            # Người dùng giao việc cho t → mọi cặp chứa t bắt đầu chu kỳ mới TỪ ĐÂY; các dòng
+            # cũ hơn (duyệt sau, vì đang đi từ mới về cũ) không tính nữa.
+            touched.add(t)
             continue
-        if _pair_key(f, t) == pair and (r["head"] or "") != "/compact":
-            n += 1
-    return n, to_name
+        # t rỗng = session id đã xoay, LEFT JOIN không ra tên. Không quy được về cặp nào.
+        if not f or not t or f == t:
+            continue
+        pair = _pair_key(f, t)
+        if pair in closed or f in touched or t in touched:
+            continue
+        if (r["ts"] or "") < cutoff(pair):
+            closed.add(pair)      # ra ngoài chu kỳ của CẶP NÀY, cặp khác vẫn đếm tiếp
+            continue
+        if (r["head"] or "") != "/compact":
+            counts[pair] = counts.get(pair, 0) + 1
+    return counts
 
 
 def enqueue_signal(to_session, message, from_session="", requires_approval=0, dry_run=0,
@@ -1035,56 +1082,86 @@ KILLED_SESSIONS = set()
 # thì bất kỳ ai trong mạng LAN cũng vào được. Token đi kèm URL, chỉ trả qua API (đã có ORCH_API_KEY).
 VSCODE_BIN = os.environ.get("ORCH_VSCODE_BIN", "code")
 VSCODE_HOST = os.environ.get("ORCH_VSCODE_HOST", "0.0.0.0")   # bám theo host của orchestrator
-VSCODE_PORT = int(os.environ.get("ORCH_VSCODE_PORT", "8995"))
+VSCODE_PORT = int(os.environ.get("ORCH_VSCODE_PORT", "8995"))   # cổng ĐẦU TIÊN, rồi dò lên
 VSCODE_READY_TIMEOUT = float(os.environ.get("ORCH_VSCODE_READY_TIMEOUT", "20"))
-_vscode: dict = {}   # rỗng = đang tắt; {proc, session, name, cwd, token, started}
+VSCODE_PORT_SPAN = 50   # số cổng dò từ VSCODE_PORT trước khi chịu thua
+# session_id → {proc, name, cwd, token, port, started}. Mỗi session MỘT tiến trình serve-web
+# riêng: người dùng mở được bao nhiêu thư mục tuỳ ý trong một workspace.
+# Không đắt như nhìn: `code serve-web` chỉ là CLI proxy vào server nền nghe UNIX socket, và các
+# instance DÙNG CHUNG server nền đó (đo được: mở cái thứ hai không đẻ thêm tiến trình server).
+_vscode: dict = {}
 
 
-def vscode_state():
-    """Trạng thái cho FE dựng iframe. URL do FE ghép (dùng location.hostname) — server bind
-    0.0.0.0 nên không tự biết hostname nào client gọi được."""
-    if not _vscode.get("proc"):
-        return {"open": False}
-    return {"open": True, "session": _vscode["session"], "name": _vscode["name"],
-            "cwd": _vscode["cwd"], "port": VSCODE_PORT, "token": _vscode["token"],
-            "started": _vscode["started"]}
+def _vscode_host():
+    return "127.0.0.1" if VSCODE_HOST in ("0.0.0.0", "") else VSCODE_HOST
 
 
-async def vscode_stop():
-    """Tắt serve-web đang chạy. Trả True nếu vừa tắt một tiến trình.
+def vscode_states():
+    """Danh sách card đang mở, cho FE dựng iframe. URL do FE ghép (dùng location.hostname) —
+    server bind 0.0.0.0 nên không tự biết hostname nào client gọi được."""
+    return [{"open": True, "session": sid, "name": v["name"], "cwd": v["cwd"],
+             "port": v["port"], "token": v["token"], "started": v["started"]}
+            for sid, v in _vscode.items() if v.get("proc")]
+
+
+def _vscode_free_port():
+    """Cổng trống đầu tiên từ VSCODE_PORT trở lên. Dò thay vì để OS cấp ngẫu nhiên: người dùng
+    hay mở firewall cho đúng dải này, cổng ngẫu nhiên là card trắng mà không hiểu vì sao."""
+    taken = {v["port"] for v in _vscode.values()}
+    host = _vscode_host()
+    for port in range(VSCODE_PORT, VSCODE_PORT + VSCODE_PORT_SPAN):
+        if port in taken:
+            continue
+        with socket.socket() as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind((host, port))
+            except OSError:
+                continue
+        return port
+    raise RuntimeError(f"no free port in {VSCODE_PORT}–{VSCODE_PORT + VSCODE_PORT_SPAN - 1} "
+                       f"for VS Code — close a folder first")
+
+
+async def vscode_stop(session_id=None):
+    """Tắt serve-web. session_id=None → tắt HẾT. Trả số tiến trình vừa tắt.
 
     Giết cả NHÓM tiến trình (start_new_session=True lúc spawn), không chỉ tiến trình cha.
 
     KHÔNG đuổi theo server nền `code-server`/`server-main.js`: nó nghe UNIX SOCKET chứ không nghe
     cổng TCP — chính CLI mới là thứ mở cổng và proxy vào socket. Giết CLI là cổng nhả, card chết,
-    đúng nghĩa "thoát VS Code". Server nền do VS Code tự quản (lần mở sau DÙNG LẠI chính nó, đã đo:
-    mở lần 2 không đẻ thêm tiến trình nào) nên không tích tụ, và diệt nó là phá luôn phiên serve-web
-    mà người dùng tự chạy ngoài dashboard."""
-    proc = _vscode.get("proc")
-    _vscode.clear()
-    if proc is None:
-        return False
-    for sig in (15, 9):   # SIGTERM rồi SIGKILL nếu chưa chịu chết
-        try:
-            os.killpg(os.getpgid(proc.pid), sig)
-        except (ProcessLookupError, PermissionError):
-            break
-        try:
-            await asyncio.wait_for(proc.wait(), 5)
-            break
-        except asyncio.TimeoutError:
+    đúng nghĩa "thoát VS Code". Server nền do VS Code tự quản và các card DÙNG CHUNG nó, nên giết
+    nó là phá luôn card khác đang mở lẫn phiên serve-web người dùng tự chạy ngoài dashboard."""
+    targets = [session_id] if session_id else list(_vscode)
+    n = 0
+    for sid in targets:
+        v = _vscode.pop(sid, None)
+        proc = (v or {}).get("proc")
+        if proc is None:
             continue
-    publish({"type": "vscode", "open": False})
-    return True
+        n += 1
+        for sig in (15, 9):   # SIGTERM rồi SIGKILL nếu chưa chịu chết
+            try:
+                os.killpg(os.getpgid(proc.pid), sig)
+            except (ProcessLookupError, PermissionError):
+                break
+            try:
+                await asyncio.wait_for(proc.wait(), 5)
+                break
+            except asyncio.TimeoutError:
+                continue
+    if n:
+        publish({"type": "vscode", "open": False, "session": session_id or ""})
+    return n
 
 
-async def _vscode_wait_ready(timeout):
+async def _vscode_wait_ready(port, timeout):
     """Chờ cổng nhận kết nối TCP. Lần chạy ĐẦU TIÊN VS Code còn tải server (~100MB) nên có thể
     lâu hơn timeout — vẫn trả về False chứ không treo API; FE hiện 'đang khởi động', bấm 🔄 sau."""
-    host = "127.0.0.1" if VSCODE_HOST in ("0.0.0.0", "") else VSCODE_HOST
+    host = _vscode_host()
     for _ in range(max(1, int(timeout / 0.5))):
         try:
-            _r, w = await asyncio.open_connection(host, VSCODE_PORT)
+            _r, w = await asyncio.open_connection(host, port)
             w.close()
             return True
         except OSError:
@@ -1093,18 +1170,23 @@ async def _vscode_wait_ready(timeout):
 
 
 async def vscode_start(session):
-    """Mở VS Code web tại cwd của session. Giết tiến trình cũ trước — chỉ 1 card tại 1 thời điểm."""
-    await vscode_stop()
+    """Mở VS Code web tại cwd của session. Các session KHÁC vẫn mở nguyên — mỗi cái một cổng.
+    Mở lại chính session đang mở = khởi động lại nó (token + cổng mới)."""
+    sid = session["id"]
+    await vscode_stop(sid)
     cwd = (session.get("cwd") or "").strip() or str(Path.home())
     token = secrets.token_urlsafe(24)
+    port = _vscode_free_port()
     proc = await asyncio.create_subprocess_exec(
-        VSCODE_BIN, "serve-web", "--host", VSCODE_HOST, "--port", str(VSCODE_PORT),
+        VSCODE_BIN, "serve-web", "--host", VSCODE_HOST, "--port", str(port),
         "--connection-token", token, "--accept-server-license-terms",
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         start_new_session=True)   # process group riêng → vscode_stop() killpg được cả cây con
-    _vscode.update({"proc": proc, "session": session["id"], "name": session["name"],
-                    "cwd": cwd, "token": token, "started": _now()})
-    info = {**vscode_state(), "ready": await _vscode_wait_ready(VSCODE_READY_TIMEOUT)}
+    _vscode[sid] = {"proc": proc, "name": session["name"], "cwd": cwd,
+                    "token": token, "port": port, "started": _now()}
+    ready = await _vscode_wait_ready(port, VSCODE_READY_TIMEOUT)
+    info = next((c for c in vscode_states() if c["session"] == sid), {"open": False})
+    info = {**info, "ready": ready}
     publish({"type": "vscode", **info})
     return info
 
@@ -2182,7 +2264,10 @@ def _read_mcp_servers(cwd):
     local scope (projects[cwd].mcpServers), project scope (<cwd>/.mcp.json)."""
     servers = {}
     try:
-        data = json.loads((Path.home() / ".claude.json").read_text())
+        # encoding="utf-8": hai file JSON này do CLI ghi ra bằng UTF-8 và chứa đường dẫn project.
+        # Thiếu nó thì trên Windows read_text ném UnicodeDecodeError, bị `except` bên dưới nuốt,
+        # và tool picker lặng lẽ báo không có MCP server nào — không một dòng lỗi.
+        data = json.loads((Path.home() / ".claude.json").read_text(encoding="utf-8"))
         servers.update(data.get("mcpServers") or {})
         if cwd:
             proj = (data.get("projects") or {}).get(cwd, {})
@@ -2191,7 +2276,7 @@ def _read_mcp_servers(cwd):
         pass
     if cwd:
         try:
-            data = json.loads((Path(cwd) / ".mcp.json").read_text())
+            data = json.loads((Path(cwd) / ".mcp.json").read_text(encoding="utf-8"))
             servers.update(data.get("mcpServers") or {})
         except Exception:  # noqa: BLE001
             pass
@@ -2813,6 +2898,9 @@ def build_app():
                              "embedded_terminal_reason": _pty_why,
                              "default_effort": DEFAULT_EFFORT,
                              "daily_allow_step": DAILY_ALLOW_STEP,
+                             # Mẫu số cho "3/4" ở inspector — UI không tự đoán được trần.
+                             "pair_signal_cap": PAIR_SIGNAL_CAP,
+                             "pair_signal_window_min": PAIR_SIGNAL_WINDOW_MIN,
                              "limits": {"max_runs_per_session": MAX_RUNS_PER_SESSION,
                                         "max_runs_per_day": MAX_RUNS_PER_DAY,
                                         "session_token_budget": SESSION_TOKEN_BUDGET,
@@ -2896,11 +2984,22 @@ def build_app():
         # Đính kèm trạng thái cap-theo-ngày để dashboard hiển thị "đã dùng/hạn mức" + nút Allow.
         # Filter theo ?workspace_id= để dashboard xem từng tenant (bỏ trống = tất cả, admin view).
         wsf = request.query_params.get("workspace_id")
+        # Ngân sách ping-pong: tính MỘT lần cho cả workspace rồi phát cho từng vai, thay vì
+        # thêm một endpoint nữa cho dashboard phải fetch (2 pane mở cùng lúc đã sát trần 6
+        # kết nối/origin của HTTP/1.1). Chỉ có khi lọc theo 1 workspace — view admin gộp mọi
+        # tenant thì con số không có nghĩa.
+        pairs = pair_counts(wsf) if wsf else {}
         out = []
         for s in list_sessions():
             if wsf and s.get("workspace_id") != wsf:
                 continue
-            out.append({**s, **daily_stats(s["id"])})
+            name = s.get("name") or ""
+            # Chỉ liệt kê cặp ĐÃ trao đổi trong chu kỳ này; cặp 0 lượt là nhiễu.
+            peers = sorted(
+                ({"peer": b if a == name else a, "n": n}
+                 for (a, b), n in pairs.items() if name in (a, b)),
+                key=lambda p: (-p["n"], p["peer"]))
+            out.append({**s, **daily_stats(s["id"]), "pairs": peers})
         return JSONResponse(out)
 
     async def api_session_detail(request: Request):
@@ -2936,8 +3035,8 @@ def build_app():
         return await _set_status(request, "stopped")
 
     async def api_vscode(request: Request):
-        """Trạng thái card VS Code hiện tại ({open:false} nếu chưa mở)."""
-        return JSONResponse(vscode_state())
+        """Các card VS Code đang mở (list rỗng = chưa mở cái nào)."""
+        return JSONResponse(vscode_states())
 
     async def api_vscode_open(request: Request):
         """Mở VS Code web tại cwd của session. Session khác đang mở → tiến trình cũ bị GIẾT."""
@@ -2954,7 +3053,12 @@ def build_app():
                                           f"CLI or set ORCH_VSCODE_BIN"}, status_code=500)
 
     async def api_vscode_close(request: Request):
-        return JSONResponse({"ok": True, "was_open": await vscode_stop()})
+        """Đóng 1 card ({"session": id}) hoặc tất cả (body rỗng)."""
+        try:
+            body = await request.json()
+        except Exception:      # body rỗng / không phải JSON → đóng hết
+            body = {}
+        return JSONResponse({"ok": True, "closed": await vscode_stop(body.get("session") or None)})
 
     async def api_kill(request: Request):
         """Giết proc claude của run đang chạy (session treo/chạy mãi). Run kết thúc theo luồng

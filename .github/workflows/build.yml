@@ -57,6 +57,16 @@ jobs:
           PYTHONUTF8: "0"
         run: python static/orchestrator/check_ui.py
 
+      # Both fail loudly for bugs that are otherwise silent: a second copy of the module
+      # splitting the in-memory state, and the ping-pong cap refusing to lift.
+      - name: Check orchestrator invariants
+        env:
+          LC_ALL: C
+          PYTHONUTF8: "0"
+        run: |
+          python check_single_module.py
+          python check_pair_cap.py
+
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean
 

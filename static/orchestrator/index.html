@@ -468,6 +468,14 @@
   .insp-kv > span:first-child { flex: none; width: 62px; }
   .insp-kv .mono { flex: 1; min-width: 0; font-family: ui-monospace, monospace; font-size: 10.5px;
     color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Hàng ngân sách ping-pong: tên peer co được, con số không. Không dùng .insp-kv vì cột
+     nhãn cố định 62px của nó sẽ cắt cụt tên vai. */
+  .insp-pair { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11.5px; }
+  .insp-pair .peer { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; color: var(--text); }
+  .insp-pair .num { flex: none; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .insp-pair .num.warn { color: var(--amber); }
+  .insp-pair .num.hit { color: var(--red); font-weight: 700; }
   .insp-row { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
   .insp-row button { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center;
     gap: 6px; padding: 6px 8px; font-size: 11.5px; white-space: nowrap; overflow: hidden; }
