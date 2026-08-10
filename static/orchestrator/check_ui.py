@@ -12,8 +12,19 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-HTML = (HERE / "index.html").read_text()
-JS = (HERE / "app.js").read_text()
+# encoding="utf-8" BẮT BUỘC: không truyền thì read_text() theo locale, và trên Windows locale
+# là cp1252 — index.html/app.js có comment tiếng Việt, gạch dài, ký tự khung nên vỡ ngay
+# ở CI (UnicodeDecodeError), dù chạy tốt trên Linux.
+HTML = (HERE / "index.html").read_text(encoding="utf-8")
+JS = (HERE / "app.js").read_text(encoding="utf-8")
+
+# Cùng lý do cho chiều ra: tên rule CSS in ra khi FAIL có thể chứa non-ASCII, console
+# Windows mặc định cp1252 sẽ ném UnicodeEncodeError và giấu mất chính cái lỗi cần đọc.
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):   # stream bị thay bằng thứ không reconfigure được
+        pass
 
 # Tên có sẵn của trình duyệt/JS + từ khoá — xuất hiện trong onclick nhưng không phải hàm của app.
 BUILTIN = {

@@ -49,6 +49,12 @@ jobs:
       # so a rename breaks it silently — the page still loads, the button just stops working.
       # Cheap enough to run on both platforms; catches it before the binary is even built.
       - name: Check the dashboard wiring
+        # LC_ALL=C + PYTHONUTF8=0 makes the Linux run open files under an ASCII locale, which is
+        # what Windows does with cp1252. Without it a missing encoding="utf-8" only blows up in
+        # the slower Windows job — the UI sources carry non-ASCII comments.
+        env:
+          LC_ALL: C
+          PYTHONUTF8: "0"
         run: python static/orchestrator/check_ui.py
 
       - name: Package
