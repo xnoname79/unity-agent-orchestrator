@@ -15,6 +15,14 @@ imported copy's, which stayed empty forever.
 import os
 import pathlib
 import sys
+
+# Console Windows mặc định cp1252: tên check có tiếng Việt sẽ ném UnicodeEncodeError và giấu
+# mất chính kết quả cần đọc. Cùng lý do như trong check_ui.py.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 import types
 
 HERE = pathlib.Path(__file__).resolve().parent

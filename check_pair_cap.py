@@ -9,6 +9,14 @@ enqueue_signal, so every path into the signal table goes through what is checked
 import os
 import sys
 
+# Console Windows mặc định cp1252: tên check có tiếng Việt sẽ ném UnicodeEncodeError và giấu
+# mất chính kết quả cần đọc. Cùng lý do như trong check_ui.py.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 os.environ["ORCH_DB"] = "check_pair_cap"
 os.environ.setdefault("ORCH_PAIR_SIGNAL_CAP", "4")
 
