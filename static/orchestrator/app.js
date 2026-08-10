@@ -753,9 +753,11 @@ function attachVscode() {
     seen.add(sid);
     const card = vscodeCards.find((c) => c.session === sid);
     if (!card) continue;
-    // key = session|token: token đổi nghĩa là tiến trình khác (mở lại) → phải dựng iframe mới,
-    // giữ iframe cũ là trỏ vào cổng đã chết.
-    const key = `${card.session}|${card.token}`;
+    // key phải đổi mỗi lần tiến trình khởi động lại, nếu không iframe cũ bám vào cổng đã chết.
+    // KHÔNG dùng token: mọi card dùng CHUNG một token (server nền của VS Code xác thực bằng một
+    // file duy nhất — xem _VSCODE_TOKEN), nên token không còn phân biệt được lần chạy nào.
+    // `started` do backend đóng dấu lúc spawn, đổi ở mọi lần mở lại.
+    const key = `${card.session}|${card.started}`;
     if (!cvVscode[sid] || cvVscode[sid].key !== key) {
       const el = document.createElement("iframe");
       el.className = "vscode-frame";

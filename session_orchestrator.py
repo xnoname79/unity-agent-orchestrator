@@ -1090,6 +1090,14 @@ VSCODE_PORT_SPAN = 50   # số cổng dò từ VSCODE_PORT trước khi chịu t
 # Không đắt như nhìn: `code serve-web` chỉ là CLI proxy vào server nền nghe UNIX socket, và các
 # instance DÙNG CHUNG server nền đó (đo được: mở cái thứ hai không đẻ thêm tiến trình server).
 _vscode: dict = {}
+# MỘT token cho MỌI card, sinh một lần mỗi lần chạy orchestrator.
+# BẮT BUỘC phải chung: `code serve-web` khởi động server nền với
+# `--connection-token-file ~/.vscode/cli/serve-web-token` — MỘT file, mọi instance dùng chung.
+# Mở card thứ hai với token khác là ghi đè file đó, và card đang mở lăn ra
+# "Unauthorized client refused: auth mismatch" (đo được: sau khi mở instance 2, file chứa token
+# của instance 2). Token riêng từng card vốn chỉ là ảo tưởng — thứ thật sự xác thực luôn là file
+# dùng chung kia; để chung cho đúng sự thật, không yếu đi chỗ nào.
+_VSCODE_TOKEN = secrets.token_urlsafe(24)
 
 
 def _vscode_host():
@@ -1175,7 +1183,7 @@ async def vscode_start(session):
     sid = session["id"]
     await vscode_stop(sid)
     cwd = (session.get("cwd") or "").strip() or str(Path.home())
-    token = secrets.token_urlsafe(24)
+    token = _VSCODE_TOKEN
     port = _vscode_free_port()
     proc = await asyncio.create_subprocess_exec(
         VSCODE_BIN, "serve-web", "--host", VSCODE_HOST, "--port", str(port),
