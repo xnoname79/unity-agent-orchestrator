@@ -6,7 +6,7 @@
 [![Issues][issues-shield]][issues-url]
 
 <div align="center">
-  <a href="https://github.com/xnoname79/my-mcp">
+  <a href="https://github.com/xnoname79/unity-agent-orchestrator">
     <img src="images/logo.png" alt="Logo" width="88">
   </a>
 
@@ -320,19 +320,19 @@ not yet to reuse. A `LICENSE` file will settle this.
 
 ## Contact
 
-Project link: [https://github.com/xnoname79/unity-agent-orchestrator](https://github.com/xnoname79/unity-agent-orchestrator) ·
+Project link: [xnoname79/unity-agent-orchestrator](https://github.com/xnoname79/unity-agent-orchestrator) ·
 [open an issue](../../issues)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-[contributors-shield]: https://img.shields.io/github/contributors/xnoname79/my-mcp.svg?style=for-the-badge
-[contributors-url]: https://github.com/xnoname79/my-mcp/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/xnoname79/my-mcp.svg?style=for-the-badge
-[forks-url]: https://github.com/xnoname79/my-mcp/network/members
-[stars-shield]: https://img.shields.io/github/stars/xnoname79/my-mcp.svg?style=for-the-badge
-[stars-url]: https://github.com/xnoname79/my-mcp/stargazers
-[issues-shield]: https://img.shields.io/github/issues/xnoname79/my-mcp.svg?style=for-the-badge
-[issues-url]: https://github.com/xnoname79/my-mcp/issues
+[contributors-shield]: https://img.shields.io/github/contributors/xnoname79/unity-agent-orchestrator.svg?style=for-the-badge
+[contributors-url]: https://github.com/xnoname79/unity-agent-orchestrator/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/xnoname79/unity-agent-orchestrator.svg?style=for-the-badge
+[forks-url]: https://github.com/xnoname79/unity-agent-orchestrator/network/members
+[stars-shield]: https://img.shields.io/github/stars/xnoname79/unity-agent-orchestrator.svg?style=for-the-badge
+[stars-url]: https://github.com/xnoname79/unity-agent-orchestrator/stargazers
+[issues-shield]: https://img.shields.io/github/issues/xnoname79/unity-agent-orchestrator.svg?style=for-the-badge
+[issues-url]: https://github.com/xnoname79/unity-agent-orchestrator/issues
 
 [python-shield]: https://img.shields.io/badge/Python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54
 [python-url]: https://www.python.org/
