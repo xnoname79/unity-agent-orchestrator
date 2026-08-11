@@ -36,12 +36,18 @@ os.environ["PATH"] = str(tmp) + os.pathsep + os.environ.get("PATH", "")
 so.VSCODE_BIN = "fake-code"      # tên trần, đúng như người dùng để mặc định
 argv = so._vscode_argv("serve-web", "--port", "8995")
 
-assert str(fake) in argv, f"PATH lookup missed the CLI (Windows needs PATHEXT): {argv}"
+# So sánh bỏ qua hoa/thường: trên Windows shutil.which() ghép đuôi lấy TỪ PATHEXT (viết hoa) chứ
+# không lấy tên file thật, nên fake-code.cmd quay về thành fake-code.CMD. Chỉ cái test này phải
+# biết chuyện đó — code sản phẩm đã .lower() trước khi xét đuôi rồi.
+lowered = [a.lower() for a in argv]
+target = str(fake).lower()
+
+assert target in lowered, f"PATH lookup missed the CLI (Windows needs PATHEXT): {argv}"
 assert argv[-3:] == ["serve-web", "--port", "8995"], f"arguments got dropped: {argv}"
 if NT:
     assert argv[:2] == ["cmd.exe", "/c"], f"a batch file has to go through cmd.exe: {argv}"
 else:
-    assert argv[0] == str(fake), f"POSIX must not be wrapped in cmd.exe: {argv}"
+    assert lowered[0] == target, f"POSIX must not be wrapped in cmd.exe: {argv}"
 
 # CLI không cài: vẫn trả tên trần, để thông báo lỗi nói đúng thứ vừa thử chứ không nói trống không.
 so.VSCODE_BIN = "definitely-not-installed-xyz"
