@@ -447,6 +447,23 @@ def set_session_model(session_id, model):
     conn.close()
 
 
+def set_session_workspace(session_id, workspace_id, name=None):
+    """Chuyển session sang workspace khác (kèm đổi tên vai nếu cần vì trùng tên bên đó).
+
+    CHỈ đụng cột workspace_id. KHÔNG viết lại signals/runs cũ: mỗi dòng đóng dấu nơi cuộc trao
+    đổi ĐÃ xảy ra — sửa là làm giả audit log. Hệ quả đã biết: lịch sử ở lại workspace cũ, và
+    ngân sách ping-pong (đếm theo signals.workspace_id) bắt đầu lại từ đầu bên mới."""
+    conn = _conn()
+    if name:
+        conn.execute("UPDATE sessions SET workspace_id = ?, name = ?, last_active = ? WHERE id = ?",
+                     (workspace_id, name, _now(), session_id))
+    else:
+        conn.execute("UPDATE sessions SET workspace_id = ?, last_active = ? WHERE id = ?",
+                     (workspace_id, _now(), session_id))
+    conn.commit()
+    conn.close()
+
+
 def set_session_effort(session_id, effort):
     conn = _conn()
     conn.execute("UPDATE sessions SET effort = ?, last_active = ? WHERE id = ?", (effort, _now(), session_id))
@@ -3429,6 +3446,54 @@ def build_app():
         publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": s.get("workspace_id")})
         return JSONResponse(s)
 
+    async def api_set_workspace(request: Request):
+        """Chuyển 1 session sang workspace khác — để nó signal được với agent của nhóm bên đó.
+
+        Routing signal resolve theo (role, workspace), nên đổi đúng một cột này là agent nhìn
+        thấy và gửi được cho nhóm mới. cwd KHÔNG đổi: với claude/codex, cwd vốn độc lập với
+        workspace (mỗi agent một project được), nên file của agent nằm nguyên chỗ cũ.
+
+        Đổi tên vai kèm theo qua body 'name' — cần khi workspace đích đã có vai trùng tên.
+        """
+        sid = request.path_params["sid"]
+        s = get_session(sid)
+        if not s:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        wid = (body.get("workspace_id") or "").strip()
+        if not wid:
+            return JSONResponse({"error": "workspace_id is required"}, status_code=400)
+        ws = get_workspace(wid)
+        if not ws:
+            return JSONResponse({"error": f"workspace '{wid}' does not exist"}, status_code=404)
+        if ws["status"] != "active":
+            # Chuyển vào workspace suspended = agent đứng hình câm: workspace_blocked() chặn mọi
+            # signal, mà UI không có chỗ nào nói vì sao.
+            return JSONResponse({"error": f"workspace '{wid}' is {ws['status']}"}, status_code=409)
+        if s.get("status") == "running":
+            return JSONResponse({"error": "session is running — wait for the current turn to finish"},
+                                status_code=409)
+        name = (body.get("name") or "").strip() or s["name"]
+        # Tên vai KHÔNG unique trong DB, và get_session_by_name lấy bản last_active mới nhất — hai
+        # vai trùng tên trong một workspace là signal đi lúc bản này lúc bản kia, im lặng, không lỗi.
+        clash = get_session_by_name(name, wid)
+        if clash and clash["id"] != sid:
+            return JSONResponse(
+                {"error": f"workspace '{wid}' already has a session named '{name}' — "
+                          f"pass a different 'name' to move and rename in one step"},
+                status_code=409)
+        old_ws = s.get("workspace_id") or DEFAULT_WORKSPACE
+        set_session_workspace(sid, wid, name if name != s["name"] else None)
+        s = get_session(sid)
+        # Hai event: pane cũ bỏ card đi, pane mới dựng lên. publish() lọc theo workspace_id nên
+        # một event chỉ tới được một bên.
+        publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": old_ws})
+        publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": wid})
+        return JSONResponse({**s, "moved_from": old_ws})
+
     async def api_set_effort(request: Request):
         """Đổi reasoning effort của 1 session ngay trên bảng Sessions."""
         sid = request.path_params["sid"]
@@ -3846,6 +3911,7 @@ def build_app():
         Route("/api/sessions/{sid}/compact", api_compact, methods=["POST"]),
         Route("/api/sessions/{sid}/model", api_set_model, methods=["POST"]),
         Route("/api/sessions/{sid}/effort", api_set_effort, methods=["POST"]),
+        Route("/api/sessions/{sid}/workspace", api_set_workspace, methods=["POST"]),
         Route("/api/sessions/{sid}/allow", api_allow, methods=["POST"]),
         Route("/api/signals", api_signals),
         Route("/api/signals", api_enqueue, methods=["POST"]),

@@ -225,6 +225,41 @@ async function deleteSignal(id) {
 window.deleteSignal = deleteSignal;
 
 // Đổi model 1 session ngay trên bảng (áp dụng cho các lượt sau).
+// Chuyển agent sang workspace khác — để nó signal được với nhóm bên đó (routing resolve theo
+// role + workspace). cwd không đổi, file của agent nằm nguyên chỗ cũ.
+async function moveWorkspace(id, name, wid, label) {
+  if (!wid) return;
+  if (!confirm(`Move '${name}' to workspace '${label}'?\n\n`
+             + `Its folder and files stay where they are. Past signals and runs stay in the old `
+             + `workspace, so its history there does not follow it.`)) { renderInspector(); return; }
+  let body = { workspace_id: wid };
+  for (;;) {
+    try {
+      await api(`/api/sessions/${id}/workspace`, "POST", body);
+      // Vị trí card cũ chỉ còn là rác trong store của workspace cũ — canvas bên kia không còn card này.
+      try {
+        const k = "orch-canvas." + currentWS, st = JSON.parse(localStorage.getItem(k)) || {};
+        delete st[name]; delete st[body.name || name];
+        localStorage.setItem(k, JSON.stringify(st));
+      } catch { /* private mode */ }
+      await refreshAll();
+      return;
+    } catch (e) {
+      // Trùng tên vai bên đó: hai vai cùng tên trong một workspace là signal đi lúc bản này lúc
+      // bản kia, im lặng. Backend chặn — hỏi tên mới rồi chuyển kèm đổi tên trong một nhịp.
+      const msg = String(e);
+      if (!msg.includes("already has a session named")) {
+        alert("Could not move: " + msg); renderInspector(); return;
+      }
+      const alt = prompt(`Workspace '${label}' already has a role named '${body.name || name}'.\n`
+                       + `New name for this agent there:`, (body.name || name) + "-2");
+      if (!alt || !alt.trim()) { renderInspector(); return; }
+      body = { ...body, name: alt.trim() };
+    }
+  }
+}
+window.moveWorkspace = moveWorkspace;
+
 async function setModel(id, model) {
   try { await api(`/api/sessions/${id}/model`, "POST", { model }); await refreshAll(); }
   catch (e) { console.error(e); alert("Could not change model: " + e); }
@@ -1022,6 +1057,23 @@ function windowLabel() {
   return h === 1 ? "an hour" : `${Number.isInteger(h) ? h : h.toFixed(1)} hours`;
 }
 
+// Mục "Workspace" trong inspector: chuyển agent sang nhóm khác để nó signal được với nhóm đó.
+function wsMove(s) {
+  const others = WORKSPACES.filter((w) => w.id !== (s.workspace_id || "default") && w.status === "active");
+  if (!others.length) return "";
+  const id = encodeURIComponent(s.id);
+  return `<div class="insp-sec">
+    <h4>Workspace</h4>
+    <select onchange="moveWorkspace('${id}','${esc(s.name)}', this.value, this.options[this.selectedIndex].text)"
+      title="Move this agent so it can signal the agents in another workspace">
+      <option value="">${esc(wsLabel(s.workspace_id))} — move to…</option>
+      ${others.map((w) => `<option value="${esc(w.id)}">${esc(w.name || w.id)}</option>`).join("")}
+    </select>
+  </div>`;
+}
+
+const wsLabel = (id) => (WORKSPACES.find((w) => w.id === id) || {}).name || id || "default";
+
 function renderInspector() {
   const box = $("inspector");
   if (!box) return;
@@ -1066,6 +1118,8 @@ ${pairBudget(s)}
         onchange="setModel('${id}', this.value.trim())">
       ${effortSel}
     </div>
+
+    ${wsMove(s)}
 
     <div class="insp-sec">
       <h4>Work</h4>
