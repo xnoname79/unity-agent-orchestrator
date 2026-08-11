@@ -43,6 +43,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import sqlite3
 import sys
@@ -1100,6 +1101,26 @@ _vscode: dict = {}
 _VSCODE_TOKEN = secrets.token_urlsafe(24)
 
 
+def _vscode_argv(*args):
+    r"""argv chạy được VS Code CLI trên cả POSIX lẫn Windows.
+
+    Windows có hai cái bẫy, cả hai đều rơi đúng vào nút "mở thư mục":
+      1. CreateProcess chỉ tự thêm ".exe", KHÔNG tra PATHEXT — mà VS Code cài `bin\code.cmd`,
+         nên `code` trần ném FileNotFoundError dù gõ trong cmd vẫn chạy ngon. shutil.which() có
+         tra PATHEXT nên tìm ra .cmd (và trên POSIX chỉ trả về đường dẫn tuyệt đối, không đổi gì).
+      2. CreateProcess từ chối chạy thẳng batch file (WinError 193) — phải nhờ cmd.exe chạy hộ.
+         Đây là lý do set ORCH_VSCODE_BIN bằng đường dẫn từ `where.exe code` vẫn chưa đủ.
+
+    ponytail: nhánh cmd.exe chỉ đúng khi args KHÔNG chứa dấu cách — cmd /c giữ nguyên dấu nháy
+    khi cả dòng có đúng hai cái (chính là đường dẫn cài có dấu cách), nhiều hơn là nó cắt bậy.
+    Args của serve-web chỉ là host/port/token nên an toàn; đừng bê hàm này sang chỗ truyền prompt.
+    """
+    exe = shutil.which(VSCODE_BIN) or VSCODE_BIN
+    if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
+        return ["cmd.exe", "/c", exe, *args]
+    return [exe, *args]
+
+
 def _vscode_host():
     return "127.0.0.1" if VSCODE_HOST in ("0.0.0.0", "") else VSCODE_HOST
 
@@ -1148,6 +1169,21 @@ async def vscode_stop(session_id=None):
         if proc is None:
             continue
         n += 1
+        if os.name == "nt":
+            # Windows không có process group (os.killpg cũng không tồn tại), và proc ở đây là
+            # cmd.exe — giết mình nó thì code.cmd con vẫn sống và vẫn giữ cổng. /T giết cả cây.
+            try:
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill", "/T", "/F", "/PID", str(proc.pid),
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                await killer.wait()
+            except OSError:      # không có taskkill → ít nhất giết tiến trình cha
+                proc.kill()
+            try:
+                await asyncio.wait_for(proc.wait(), 5)
+            except asyncio.TimeoutError:
+                pass
+            continue
         for sig in (15, 9):   # SIGTERM rồi SIGKILL nếu chưa chịu chết
             try:
                 os.killpg(os.getpgid(proc.pid), sig)
@@ -1186,10 +1222,11 @@ async def vscode_start(session):
     token = _VSCODE_TOKEN
     port = _vscode_free_port()
     proc = await asyncio.create_subprocess_exec(
-        VSCODE_BIN, "serve-web", "--host", VSCODE_HOST, "--port", str(port),
-        "--connection-token", token, "--accept-server-license-terms",
+        *_vscode_argv("serve-web", "--host", VSCODE_HOST, "--port", str(port),
+                      "--connection-token", token, "--accept-server-license-terms"),
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         start_new_session=True)   # process group riêng → vscode_stop() killpg được cả cây con
+        # (Windows bỏ qua tham số này — không có process group; vscode_stop() dùng taskkill /T)
     _vscode[sid] = {"proc": proc, "name": session["name"], "cwd": cwd,
                     "token": token, "port": port, "started": _now()}
     ready = await _vscode_wait_ready(port, VSCODE_READY_TIMEOUT)
@@ -3056,9 +3093,11 @@ def build_app():
             return JSONResponse({"error": "session has no cwd to open"}, status_code=400)
         try:
             return JSONResponse(await vscode_start(s))
-        except FileNotFoundError:
-            return JSONResponse({"error": f"command '{VSCODE_BIN}' not found — install the VS Code "
-                                          f"CLI or set ORCH_VSCODE_BIN"}, status_code=500)
+        except OSError as e:   # FileNotFoundError + WinError 193 (batch file) đều là OSError
+            hint = ("" if shutil.which(VSCODE_BIN) else
+                    " — install the VS Code CLI or point ORCH_VSCODE_BIN at its full path")
+            return JSONResponse({"error": f"could not run VS Code CLI "
+                                          f"'{_vscode_argv()[0]}': {e}{hint}"}, status_code=500)
 
     async def api_vscode_close(request: Request):
         """Đóng 1 card ({"session": id}) hoặc tất cả (body rỗng)."""

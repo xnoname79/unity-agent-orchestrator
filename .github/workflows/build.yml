@@ -57,8 +57,9 @@ jobs:
           PYTHONUTF8: "0"
         run: python static/orchestrator/check_ui.py
 
-      # Both fail loudly for bugs that are otherwise silent: a second copy of the module
-      # splitting the in-memory state, and the ping-pong cap refusing to lift.
+      # All three fail loudly for bugs that are otherwise silent: a second copy of the module
+      # splitting the in-memory state, the ping-pong cap refusing to lift, and the VS Code CLI
+      # spawned in a way only Windows rejects — this runner is the only place that branch is real.
       - name: Check orchestrator invariants
         env:
           LC_ALL: C
@@ -66,6 +67,7 @@ jobs:
         run: |
           python check_single_module.py
           python check_pair_cap.py
+          python check_vscode_argv.py
 
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean
