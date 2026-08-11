@@ -1,4 +1,4 @@
-# PyInstaller spec — build 1 file thực thi cho Linux và Windows.
+# PyInstaller spec — Linux ra 1 file thực thi, Windows ra 1 THƯ MỤC (xem ONEDIR cuối file).
 #   pyinstaller build.spec --noconfirm
 #
 # Vì sao dùng file .spec thay vì cờ dòng lệnh: `--add-data` ngăn cách nguồn/đích bằng ':' trên
@@ -64,10 +64,22 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
-exe = EXE(
-    pyz, a.scripts, a.binaries, a.datas, [],
+# Windows đóng gói kiểu THƯ MỤC (onedir), Linux giữ 1 file. Vì sao lệch nhau: bootloader onefile
+# giải nén cả bundle vào %TEMP% rồi chạy chính file nó vừa ghi ra — đúng hành vi của dropper, nên
+# heuristic của Defender/SmartScreen hay báo nhầm và bảo người dùng XOÁ file. onedir không có bước
+# ghi-rồi-chạy đó. Linux không dính chuyện này nên để nguyên 1 file cho gọn.
+# Cả hai kiểu đều không đổi cách tìm đường dẫn: _bundle_dir() vẫn đọc sys._MEIPASS (onedir trỏ vào
+# _internal/), _app_dir() vẫn là thư mục chứa file thực thi — chỗ người dùng đặt .env.
+ONEDIR = sys.platform == "win32"
+
+common = dict(
     name="agent-orch",
     console=True,           # công cụ CLI: cần thấy log; console=False là chạy xong không biết gì
     upx=False,              # UPX hay bị Windows Defender báo nhầm — không nén cho yên
-    strip=sys.platform != "win32",
 )
+
+if ONEDIR:
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **common)
+    COLLECT(exe, a.binaries, a.datas, upx=False, strip=False, name="agent-orch")
+else:
+    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], strip=True, **common)

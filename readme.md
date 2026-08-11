@@ -132,8 +132,26 @@ chmod +x agent-orch-linux-x64
 ./agent-orch-linux-x64            # no argument = serve
 ```
 
-On Windows, double-click `agent-orch-windows-x64.exe`. The console window that opens *is* the
-server; closing it stops the orchestrator.
+On Windows, unzip `agent-orch-windows-x64.zip` and double-click `agent-orch.exe` inside the
+folder. Keep the folder together — the `_internal` directory beside the `.exe` is the program,
+and the `.exe` will not start on its own. The console window that opens *is* the server; closing
+it stops the orchestrator.
+
+> [!NOTE]
+> These builds are not code-signed, so Windows SmartScreen has no reputation for them and may
+> offer to **delete** the download. Verify the hash against `SHA256SUMS.txt`, then clear the
+> download mark — do this on the `.zip`, *before* extracting, since every file inside inherits
+> the mark:
+>
+> ```powershell
+> Get-FileHash agent-orch-windows-x64.zip -Algorithm SHA256
+> Unblock-File agent-orch-windows-x64.zip
+> ```
+>
+> If Defender quarantines it outright, that is a false positive on the PyInstaller bundle — it
+> can be reported at [Microsoft's submission portal](https://www.microsoft.com/en-us/wdsi/filesubmission).
+> Do not disable Defender or add an exclusion for it; the next release is a different file and
+> the exclusion will not cover it.
 
 **From source:**
 
@@ -251,11 +269,12 @@ python3 session_orchestrator.py list-sessions   # also: list-signals, list-runs
 | `ORCH_CHAT_TIMEOUT` | `900` | Seconds one `/v1` turn may take |
 | `ORCH_DRY_RUN` | `0` | Simulate runs without calling any CLI |
 
-Values can also live in a `.env` file placed **next to the executable**. Full list in the header
-of [session_orchestrator.py](session_orchestrator.py).
+Values can also live in a `.env` file placed **next to the executable** — on Windows that means
+inside the unzipped folder, beside `agent-orch.exe`. Full list in the header of
+[session_orchestrator.py](session_orchestrator.py).
 
 **Windows:** the embedded terminal runs on ConPTY and needs Windows 10 1809 or newer. The
-prebuilt `.exe` bundles it; from source, `pip install pywinpty`. `GET /health` reports
+prebuilt build bundles it; from source, `pip install pywinpty`. `GET /health` reports
 `embedded_terminal`, and `embedded_terminal_reason` when it is unavailable.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>

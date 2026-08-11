@@ -1,8 +1,9 @@
 name: build binary
 
-# Package a single executable for Linux + Windows so users can download and run it directly,
-# with no Python install. Runs on: push of a v* tag (also cuts a release), push to
-# master/gamedev, pull requests, or manual dispatch.
+# Package the orchestrator for Linux + Windows so users can download and run it directly, with no
+# Python install. Linux ships a single file; Windows ships a folder, zipped (see build.spec for
+# why). Runs on: push of a v* tag (also cuts a release), push to master/gamedev, pull requests,
+# or manual dispatch.
 on:
   push:
     branches: [master, gamedev]
@@ -19,12 +20,17 @@ jobs:
       fail-fast: false   # if Windows breaks we still want to see the Linux build, and vice versa
       matrix:
         include:
+          # `exe` is what the smoke test runs; `artifact` is what gets uploaded. They differ on
+          # Windows because that build is a folder — the whole folder has to ship, not just the
+          # .exe, which is useless on its own.
           - os: ubuntu-22.04      # older glibc = runs on more distros
             target: linux-x64
-            binary: agent-orch
+            exe: ./dist/agent-orch
+            artifact: dist/agent-orch
           - os: windows-2022      # Windows 10 can run a binary built here
             target: windows-x64
-            binary: agent-orch.exe
+            exe: ./dist/agent-orch/agent-orch.exe
+            artifact: dist/agent-orch
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -84,10 +90,10 @@ jobs:
           # the process if stdout/stderr were not forced to UTF-8. Caught here instead of waiting
           # for the Windows job.
           export PYTHONIOENCODING=cp1252
-          ./dist/${{ matrix.binary }} init
+          ${{ matrix.exe }} init
           # Keep the child process log: if serve dies from a missing module this is the ONLY place
           # that says why — without it you just see a curl timeout and start guessing.
-          ORCH_PORT=8999 ORCH_HOST=127.0.0.1 ./dist/${{ matrix.binary }} serve > serve.log 2>&1 &
+          ORCH_PORT=8999 ORCH_HOST=127.0.0.1 ${{ matrix.exe }} serve > serve.log 2>&1 &
           SRV=$!
           for i in $(seq 40); do
             curl -sf localhost:8999/health >/dev/null && break
@@ -110,11 +116,11 @@ jobs:
           # pwsh does NOT stop when a native command exits non-zero, so check it explicitly.
           # Without this line, a failing `init` lets the job continue and the real error surfaces
           # several steps later.
-          & ./dist/${{ matrix.binary }} init
+          & ${{ matrix.exe }} init
           if ($LASTEXITCODE -ne 0) { throw "init exited with code $LASTEXITCODE" }
           $env:ORCH_PORT = "8999"; $env:ORCH_HOST = "127.0.0.1"
           # Keep the logs so a dead serve says WHY, instead of just "could not connect".
-          $p = Start-Process -PassThru -FilePath ./dist/${{ matrix.binary }} -ArgumentList serve `
+          $p = Start-Process -PassThru -FilePath ${{ matrix.exe }} -ArgumentList serve `
                  -RedirectStandardOutput serve.log -RedirectStandardError serve.err
           $ok = $false
           foreach ($i in 1..40) {
@@ -136,7 +142,7 @@ jobs:
           # Double-click path: Explorer launches the .exe with NO arguments. Started life as an
           # argparse usage error that exited(2) and closed the window instantly, so guard it.
           $env:ORCH_PORT = "8998"
-          $d = Start-Process -PassThru -FilePath ./dist/${{ matrix.binary }} `
+          $d = Start-Process -PassThru -FilePath ${{ matrix.exe }} `
                  -RedirectStandardOutput dbl.log -RedirectStandardError dbl.err
           $dblOk = $false
           foreach ($i in 1..40) {
@@ -152,7 +158,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: agent-orch-${{ matrix.target }}
-          path: dist/${{ matrix.binary }}
+          path: ${{ matrix.artifact }}
           if-no-files-found: error
 
   release:
@@ -167,10 +173,22 @@ jobs:
       # add a platform suffix to make it obvious which file belongs to which machine.
       - name: Collect files
         run: |
+          set -euo pipefail
           mkdir -p out
-          cp dist/agent-orch-linux-x64/agent-orch      out/agent-orch-linux-x64
-          cp dist/agent-orch-windows-x64/agent-orch.exe out/agent-orch-windows-x64.exe
-          chmod +x out/agent-orch-linux-x64
+          cp dist/agent-orch-linux-x64/agent-orch out/agent-orch-linux-x64
+          chmod +x out/agent-orch-linux-x64     # artifacts do not preserve the execute bit
+
+          # Windows ships as a folder, so zip it. Two reasons, both about the warning that tells
+          # people to delete the download: a bare .exe is what browser SmartScreen flags hardest,
+          # and the folder is useless without _internal/ anyway. Zipping WITH the folder as the
+          # top level means unzipping gives one tidy directory instead of spraying files into
+          # Downloads.
+          mkdir -p stage/agent-orch-windows-x64
+          cp -r dist/agent-orch-windows-x64/. stage/agent-orch-windows-x64/
+          test -f stage/agent-orch-windows-x64/agent-orch.exe
+          test -d stage/agent-orch-windows-x64/_internal   # exe alone does not run
+          (cd stage && zip -qr ../out/agent-orch-windows-x64.zip agent-orch-windows-x64)
+
           (cd out && sha256sum * > SHA256SUMS.txt)
           ls -la out
 
@@ -184,7 +202,7 @@ jobs:
             | Machine | File |
             |---|---|
             | Linux x64 | `agent-orch-linux-x64` |
-            | Windows 10/11 x64 | `agent-orch-windows-x64.exe` |
+            | Windows 10/11 x64 | `agent-orch-windows-x64.zip` |
 
             Verify integrity with `SHA256SUMS.txt`.
 
@@ -195,8 +213,10 @@ jobs:
             ./agent-orch-linux-x64                # no argument = serve
             ```
 
-            On Windows, **double-click `agent-orch-windows-x64.exe`** — no arguments needed. The
-            console window that opens is the server; close it to stop.
+            On Windows, unzip the archive and **double-click `agent-orch.exe`** inside the folder —
+            no arguments needed. Keep the folder together: the `_internal` directory next to the
+            `.exe` is the program, and the `.exe` will not start without it. The console window
+            that opens is the server; close it to stop.
 
             Open `http://localhost:8992` (dashboard) or `http://localhost:8992/docs` (API).
 
@@ -206,8 +226,9 @@ jobs:
             > executable before using this on a shared or untrusted network.
 
             Configure via environment variables, or a `.env` file placed **next to the
-            executable**. Notable ones: `ORCH_PORT`, `ORCH_HOST`, `ORCH_API_KEY` (enables auth on
-            `/api` + `/v1`), `CLAUDE_BIN`, `ORCH_CODEX_BIN`.
+            executable** (on Windows, inside the unzipped folder, beside `agent-orch.exe`).
+            Notable ones: `ORCH_PORT`, `ORCH_HOST`, `ORCH_API_KEY` (enables auth on `/api` + `/v1`),
+            `CLAUDE_BIN`, `ORCH_CODEX_BIN`.
 
             ## Prerequisites
 
@@ -217,5 +238,17 @@ jobs:
             ## Windows notes
 
             The dashboard's embedded terminal runs on ConPTY and needs Windows 10 1809 or newer;
-            the bindings for it are bundled in the `.exe`. `GET /health` reports
-            `embedded_terminal`, with `embedded_terminal_reason` when it is unavailable.
+            the bindings for it are bundled. `GET /health` reports `embedded_terminal`, with
+            `embedded_terminal_reason` when it is unavailable.
+
+            **If Windows warns you about the download.** These builds are not code-signed, so
+            SmartScreen has no reputation for them and may offer to delete the file. Check the
+            hash against `SHA256SUMS.txt` first, then clear the download mark:
+
+            ```powershell
+            Get-FileHash agent-orch-windows-x64.zip -Algorithm SHA256
+            Unblock-File agent-orch-windows-x64.zip
+            ```
+
+            Unblock the `.zip` **before** extracting — the download mark is inherited by every
+            file inside it.
