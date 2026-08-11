@@ -806,6 +806,35 @@ function vscodeWatch() {
   vscodeWaitTimer = setTimeout(() => { vscodeWaitTimer = null; refreshAll(); }, 2000);
 }
 
+// Node của card VS Code: dựng MỘT lần rồi giữ nguyên trong DOM mãi. renderCanvas xoá mọi con của
+// #world TRỪ node mang data-vsc, nên iframe bên trong không bao giờ bị chuyển cha — đó là điều
+// kiện duy nhất để nó không tải lại.
+// Ruột node chỉ được dựng lại khi card CHƯA có iframe (lúc đó chưa có gì để mất): nhờ vậy thanh
+// tiến trình vẫn đếm giây, và lúc ready thì khối tiến trình được thay bằng .vscode-slot rỗng để
+// attachVscode cắm iframe vào. Sau đó không ai đụng vào ruột nữa.
+let cvVscodeNodes = {};   // nid → node element bền
+function syncVscodeNodes(world, cards) {
+  const seen = new Set();
+  for (const c of cards) {
+    const nid = "vscode:" + c.session;
+    seen.add(nid);
+    let el = cvVscodeNodes[nid];
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "node";
+      el.dataset.nid = nid;
+      el.dataset.rz = "1";
+      el.dataset.vsc = "1";     // dấu để renderCanvas chừa ra lúc dọn #world
+      cvVscodeNodes[nid] = el;
+    }
+    if (!el.isConnected) world.appendChild(el);
+    if (!el.querySelector("iframe")) el.innerHTML = vscodeCardHtml(c) + RZ;
+  }
+  // Card đã đóng, hoặc thuộc workspace của pane khác → bỏ node (iframe đi theo).
+  for (const nid of Object.keys(cvVscodeNodes))
+    if (!seen.has(nid)) { cvVscodeNodes[nid].remove(); delete cvVscodeNodes[nid]; }
+}
+
 function attachVscode() {
   const seen = new Set();
   for (const slot of $("world").querySelectorAll(".vscode-slot")) {
@@ -823,8 +852,11 @@ function attachVscode() {
       el.className = "vscode-frame";
       el.src = vscodeUrl(card);
       cvVscode[sid] = { el, key };
+      slot.replaceChildren(el);   // mở lại = cổng mới: bỏ hẳn iframe cũ, đừng chồng hai cái
+    } else if (!cvVscode[sid].el.isConnected) {
+      slot.appendChild(cvVscode[sid].el);
     }
-    slot.appendChild(cvVscode[sid].el);   // re-attach, KHÔNG đặt lại src → không reload
+    // Đường thường: iframe ĐÃ nằm sẵn trong slot bền → không đụng gì. Chạm vào là tải lại.
   }
   // Card không còn trên canvas (đã đóng, hoặc thuộc workspace của pane khác) → bỏ iframe.
   for (const sid of Object.keys(cvVscode)) if (!seen.has(sid)) delete cvVscode[sid];
@@ -1326,14 +1358,19 @@ function renderCanvas(sessions, signals) {
   // pane bên kia — và card nhúng iframe kèm token, tức là lộ cây mã nguồn sang tenant khác.
   // `sessions` đã được scope theo workspace của pane, nên chỉ cần hỏi nó có session đó không.
   const myVscode = vscodeCards.filter((c) => sessions.some((s) => s.id === c.session));
-  for (const c of myVscode)
-    nodesHtml += `<div class="node" data-nid="vscode:${esc(c.session)}" data-rz="1">`
-               + `${vscodeCardHtml(c)}${RZ}</div>`;
-  world.innerHTML = zonesHtml + `<svg id="edges" class="edges"></svg>` + nodesHtml;
+  // Node VS Code KHÔNG đi qua innerHTML. Nó nhúng iframe, mà chuyển iframe sang cha mới là trình
+  // duyệt tải lại từ đầu — đo được: 5 lần render rời nhịp = 5 lần load. Re-attach vào slot mới
+  // KHÔNG cứu được, vì gắn lại CHÍNH LÀ chuyển cha. Cách duy nhất là đừng bứng nó ra: giữ nguyên
+  // node trong DOM, chỉ thay những thứ quanh nó. Handoff bắn một tràng SSE nên mỗi lần bàn giao
+  // là card chớp liên tục. (Terminal thoát vì host của xterm là div — chuyển div không tải lại gì.)
+  for (const ch of [...world.children]) if (!ch.dataset.vsc) ch.remove();
+  world.insertAdjacentHTML("afterbegin",
+    zonesHtml + `<svg id="edges" class="edges"></svg>` + nodesHtml);
+  syncVscodeNodes(world, myVscode);
 
   // Đặt vị trí agent: có lưu → dùng lại; mới → xếp cụm theo cwd (seed từ pos group cũ nếu có).
   cvNodeEls = {};
-  const agentEls = world.querySelectorAll(".node:not(.group-zone)");
+  const agentEls = world.querySelectorAll(".node:not(.group-zone):not([data-vsc])");
   let cx = 40, cy = 40, rowH = 0;
   const gcur = {};  // cwd → con trỏ xếp lưới 3 cột cho member mới
   nodeMeta.forEach((m, i) => {

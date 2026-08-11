@@ -84,6 +84,15 @@ stray -= {"#1e1e1e", "rgba(8,10,14,.88)", "#e6e8eb"}
 check("no hardcoded colors outside the token block", stray,
       "put it in :root / :root[data-theme=dark] instead")
 
+# 5 · Không được đập sạch #world. Card VS Code nhúng iframe, mà chuyển iframe sang cha mới là
+# trình duyệt TẢI LẠI (đo được: 5 render rời nhịp = 5 lần load) — nên node của nó phải sống sót
+# qua re-render. `world.innerHTML = ...` xoá cả nó, và triệu chứng chỉ lộ ra khi agent bàn giao
+# việc (một tràng SSE = một tràng reload), tức là lúc khó ngờ tới nhất.
+check("#world is never wiped wholesale",
+      set(re.findall(r"\bworld\.innerHTML\s*=", JS)),
+      "would drop the persistent VS Code nodes and reload their iframes — remove all children "
+      "EXCEPT [data-vsc] and insertAdjacentHTML instead")
+
 if fails:
     print("\n" + "\n\n".join(fails))
     sys.exit(1)
