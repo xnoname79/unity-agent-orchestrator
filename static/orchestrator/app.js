@@ -732,6 +732,23 @@ function reloadVscode(sid) {
 }
 window.reloadVscode = reloadVscode;
 
+// Thay chỗ của iframe khi serve-web chưa phục vụ được. Lần chạy đầu VS Code tải server ~100MB
+// LÚC có request đầu tiên (cổng mở ngay từ giây đầu, nên 'cổng mở' không nói lên gì) — không có
+// khối này thì người dùng nhìn một ô #1e1e1e câm vài phút và tưởng hỏng.
+function vscodeProgress(st) {
+  if (st.exit !== null && st.exit !== undefined)
+    return `<div class="vscode-dl"><b>serve-web exited with code ${st.exit}.</b>
+      <span>Close this folder and open it again.</span></div>`;
+  const t = Date.parse(st.started);
+  const secs = t ? Math.max(0, Math.round((Date.now() - t) / 1000)) : 0;
+  return `<div class="vscode-dl">
+    <b>${ic("refresh", "sm")} Downloading the VS Code Server…</b>
+    <div class="bar"><i></i></div>
+    <span>About 100 MB, once per VS Code version — ${secs}s so far.
+      The editor appears here on its own when it is done.</span>
+  </div>`;
+}
+
 function vscodeCardHtml(st) {
   const sid = esc(st.session);
   return `<div class="agent-card vscode-card">
@@ -742,8 +759,16 @@ function vscodeCardHtml(st) {
       <button class="icon-btn" onclick="reloadVscode('${sid}')" title="Reload the iframe — useful while the server is still starting">${ic("refresh", "sm")}</button>
       <button class="icon-btn danger" onclick="closeVscode('${sid}','${esc(st.name || '')}')" title="Close this folder (exits its serve-web process)">${ic("x", "sm")}</button>
     </div>
-    <div class="vscode-slot" data-sid="${sid}"></div>
+    ${st.ready ? `<div class="vscode-slot" data-sid="${sid}"></div>` : vscodeProgress(st)}
   </div>`;
+}
+
+// Trong lúc tải, KHÔNG có gì đẩy SSE nên canvas đứng im (poll 5 giây chỉ chạy ở màn Home).
+// Tự hẹn giờ, và chỉ khi còn card đang chờ — xong là thôi.
+let vscodeWaitTimer = null;
+function vscodeWatch() {
+  if (vscodeWaitTimer || !vscodeCards.some((c) => !c.ready && c.exit == null)) return;
+  vscodeWaitTimer = setTimeout(() => { vscodeWaitTimer = null; refreshAll(); }, 2000);
 }
 
 function attachVscode() {
@@ -1991,6 +2016,7 @@ async function refreshAll() {
       api("/api/vscode").catch(() => []),
     ]);
     vscodeCards = Array.isArray(vsc) ? vsc : [];
+    vscodeWatch();
     renderCanvas(sessions, signals.items);
     fillSignalForm(sessions);
     sigHasMore = signals.has_more; renderSignals(signals.items);

@@ -67,7 +67,7 @@ jobs:
         run: |
           python check_single_module.py
           python check_pair_cap.py
-          python check_vscode_argv.py
+          python check_vscode.py
 
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean

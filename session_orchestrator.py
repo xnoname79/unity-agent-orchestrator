@@ -1125,12 +1125,52 @@ def _vscode_host():
     return "127.0.0.1" if VSCODE_HOST in ("0.0.0.0", "") else VSCODE_HOST
 
 
-def vscode_states():
+async def _vscode_http_status(port, timeout=1.5):
+    """Mã HTTP của trang gốc, None nếu cổng chưa trả lời.
+
+    ĐO được: `code serve-web` mở cổng trong ~1 giây rồi mới tải VS Code Server (~100MB) LÚC có
+    request đầu tiên. Trong suốt lúc tải nó trả 202 kèm trang "downloading, please wait". Nên
+    'cổng có mở không' không nói lên điều gì — 202 mới là thứ phân biệt đang tải với dùng được."""
+    host = _vscode_host()
+    try:
+        r, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+    except (OSError, asyncio.TimeoutError):
+        return None
+    try:
+        w.write(f"GET / HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n".encode())
+        await w.drain()
+        line = await asyncio.wait_for(r.readline(), timeout)
+        return int(line.split()[1]) if line.startswith(b"HTTP/") else None
+    except (OSError, ValueError, IndexError, asyncio.TimeoutError):
+        return None
+    finally:
+        w.close()
+
+
+async def _vscode_ready(v):
+    """Đã phục vụ được chưa. DÍNH: lên rồi thì thôi probe, chết rồi thì cũng thôi."""
+    if v.get("ready") or v["proc"].returncode is not None:
+        return bool(v.get("ready"))
+    st = await _vscode_http_status(v["port"])
+    v["ready"] = st is not None and st != 202
+    return v["ready"]
+
+
+async def vscode_states():
     """Danh sách card đang mở, cho FE dựng iframe. URL do FE ghép (dùng location.hostname) —
-    server bind 0.0.0.0 nên không tự biết hostname nào client gọi được."""
-    return [{"open": True, "session": sid, "name": v["name"], "cwd": v["cwd"],
-             "port": v["port"], "token": v["token"], "started": v["started"]}
-            for sid, v in _vscode.items() if v.get("proc")]
+    server bind 0.0.0.0 nên không tự biết hostname nào client gọi được.
+
+    ready/exit để FE biết đang tải server hay tiến trình đã chết. Thiếu chúng thì cả hai trường
+    hợp trông y hệt nhau: một ô #1e1e1e câm."""
+    out = []
+    for sid, v in _vscode.items():
+        if not v.get("proc"):
+            continue
+        out.append({"open": True, "session": sid, "name": v["name"], "cwd": v["cwd"],
+                    "port": v["port"], "token": v["token"], "started": v["started"],
+                    "ready": await _vscode_ready(v),
+                    "exit": v["proc"].returncode})   # asyncio tự cập nhật, không cần wait()
+    return out
 
 
 def _vscode_free_port():
@@ -1200,16 +1240,17 @@ async def vscode_stop(session_id=None):
 
 
 async def _vscode_wait_ready(port, timeout):
-    """Chờ cổng nhận kết nối TCP. Lần chạy ĐẦU TIÊN VS Code còn tải server (~100MB) nên có thể
-    lâu hơn timeout — vẫn trả về False chứ không treo API; FE hiện 'đang khởi động', bấm 🔄 sau."""
-    host = _vscode_host()
+    """Chờ serve-web PHỤC VỤ được, không phải chỉ mở cổng.
+
+    KHÔNG chờ hết lần tải server: 202 nghĩa là đang tải, có thể vài phút — trả về ngay để API
+    không treo, FE hiện thanh tiến trình rồi tự poll đến khi 202 hết."""
     for _ in range(max(1, int(timeout / 0.5))):
-        try:
-            _r, w = await asyncio.open_connection(host, port)
-            w.close()
+        st = await _vscode_http_status(port)
+        if st == 202:
+            return False
+        if st is not None:
             return True
-        except OSError:
-            await asyncio.sleep(0.5)
+        await asyncio.sleep(0.5)
     return False
 
 
@@ -1229,9 +1270,8 @@ async def vscode_start(session):
         # (Windows bỏ qua tham số này — không có process group; vscode_stop() dùng taskkill /T)
     _vscode[sid] = {"proc": proc, "name": session["name"], "cwd": cwd,
                     "token": token, "port": port, "started": _now()}
-    ready = await _vscode_wait_ready(port, VSCODE_READY_TIMEOUT)
-    info = next((c for c in vscode_states() if c["session"] == sid), {"open": False})
-    info = {**info, "ready": ready}
+    _vscode[sid]["ready"] = await _vscode_wait_ready(port, VSCODE_READY_TIMEOUT)
+    info = next((c for c in await vscode_states() if c["session"] == sid), {"open": False})
     publish({"type": "vscode", **info})
     return info
 
@@ -3081,7 +3121,7 @@ def build_app():
 
     async def api_vscode(request: Request):
         """Các card VS Code đang mở (list rỗng = chưa mở cái nào)."""
-        return JSONResponse(vscode_states())
+        return JSONResponse(await vscode_states())
 
     async def api_vscode_open(request: Request):
         """Mở VS Code web tại cwd của session. Session khác đang mở → tiến trình cũ bị GIẾT."""
