@@ -93,6 +93,17 @@ check("#world is never wiped wholesale",
       "would drop the persistent VS Code nodes and reload their iframes — remove all children "
       "EXCEPT [data-vsc] and insertAdjacentHTML instead")
 
+# 6 · iframe VS Code phải giữ `allow` clipboard. Card khác origin (khác cổng), mà allowlist mặc
+# định của clipboard-read là `self` — mất dòng này là dán trong VS Code chết với "Unable to read
+# from the browser's clipboard", và người dùng sẽ đi bấm Allow cho site mãi mà không khỏi.
+# Bám vào chính phép gán, KHÔNG quét cả đoạn: comment ở đây cũng nhắc "clipboard-read", quét đoạn
+# là check tự xanh nhờ comment dù dòng code đã bị xoá (đã dính đúng bẫy đó lúc viết check này).
+grant = re.search(r'\bel\.allow\s*=\s*"([^"]*)"', JS)
+check("the VS Code iframe delegates clipboard permission",
+      set() if grant and {"clipboard-read", "clipboard-write"} <= set(
+          p.strip() for p in grant.group(1).split(";")) else {"el.allow"},
+      'set el.allow = "clipboard-read; clipboard-write" on the iframe')
+
 if fails:
     print("\n" + "\n\n".join(fails))
     sys.exit(1)

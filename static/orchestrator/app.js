@@ -850,6 +850,12 @@ function attachVscode() {
     if (!cvVscode[sid] || cvVscode[sid].key !== key) {
       const el = document.createElement("iframe");
       el.className = "vscode-frame";
+      // Card là iframe KHÁC ORIGIN (khác cổng = khác origin), mà allowlist mặc định của
+      // clipboard-read/-write là `self` → VS Code bên trong KHÔNG đọc nổi clipboard dù người dùng
+      // đã bấm Allow cho site: Permissions Policy chặn trước, quyền của người dùng không mở được.
+      // Đo được: iframe không có allow → allowsFeature("clipboard-read") = false; có allow = true.
+      // Triệu chứng nếu thiếu: "Unable to read from the browser's clipboard" mỗi lần dán.
+      el.allow = "clipboard-read; clipboard-write";
       el.src = vscodeUrl(card);
       cvVscode[sid] = { el, key };
       slot.replaceChildren(el);   // mở lại = cổng mới: bỏ hẳn iframe cũ, đừng chồng hai cái
