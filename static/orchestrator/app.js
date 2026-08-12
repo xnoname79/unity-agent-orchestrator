@@ -1573,36 +1573,6 @@ function cvInit() {
   }, { passive: false });
 }
 
-// ── Tool picker (checklist từ MCP servers của cwd) ───────────────────────────
-
-function toolCheck(val, cls) {
-  return `<label class="tool-item ${cls || ""}"><input type="checkbox" value="${esc(val)}"> ${esc(val)}</label>`;
-}
-
-function renderTools(data) {
-  let html = `<div class="tool-group"><b>Built-in</b>${(data.builtin || []).map((t) => toolCheck(t)).join("")}</div>`;
-  for (const [srv, info] of Object.entries(data.mcp || {})) {
-    html += `<div class="tool-group"><b>MCP: ${esc(srv)}</b>`;
-    html += toolCheck(info.wildcard, "wild");
-    html += (info.tools || []).map((t) => toolCheck(t)).join("");
-    html += `</div>`;
-  }
-  return html;
-}
-
-async function loadTools(prefix) {
-  const cwd = $(prefix + "-cwd").value.trim();
-  const box = $(prefix + "-tools");
-  box.innerHTML = `<div class="tool-group">Loading…</div>`;
-  try {
-    const data = await api("/api/available-tools?cwd=" + encodeURIComponent(cwd));
-    box.innerHTML = renderTools(data);
-  } catch (e) {
-    box.innerHTML = `<div class="tool-group" style="color:var(--red)">Could not load tools: ${esc(e)}</div>`;
-  }
-}
-window.loadTools = loadTools;
-
 // ── Spawn form: picker dạng card (workspace / template / model) + duyệt thư mục ──
 
 // Model chia theo engine — mỗi tab 1 engine.
@@ -1680,10 +1650,9 @@ function renderSpawnPickers() {
     `<div class="pd">${esc(m.desc)}</div>`)).join("");
   $("sp-model-custom").hidden = spSel.model !== "__custom";
   renderSpawnEffort();
-  syncToolPicker();
 }
 
-// Model đang chọn ở form (ô custom tính cả text đang gõ) → dùng cho effort + hiện/ẩn tools.
+// Model đang chọn ở form (ô custom tính cả text đang gõ) → dùng cho effort.
 function spModel() {
   return spSel.model === "__custom" ? $("sp-model").value.trim() : spSel.model;
 }
@@ -1694,15 +1663,6 @@ function renderSpawnEffort() {
   sel.innerHTML = opts.map((e) =>
     `<option value="${e}">${e || `— select — (server default: ${esc(DEFAULT_EFFORT)})`}</option>`).join("");
   sel.value = opts.includes(cur) ? cur : "";   // mức cũ vượt trần model mới → về default
-}
-
-// codex KHÔNG có allowlist tool (chỉ shell + apply_patch, luôn bật) → allowed_tools bị bỏ qua.
-// Hiện picker ở đó là mời user tick thứ không có tác dụng.
-function syncToolPicker() {
-  const codex = engineOfModel(spModel()) === "codex";
-  $("sp-tools-wrap").hidden = codex;
-  $("sp-tools-codex").hidden = !codex;
-  if (codex) $("sp-tools").innerHTML = "";
 }
 
 function spTabPick(engine) {
@@ -1717,7 +1677,7 @@ window.spTabPick = spTabPick;
 
 // Gõ model tùy chỉnh: chỉ cập nhật 2 thứ phụ thuộc model, KHÔNG render lại cả picker
 // (re-render mỗi ký tự là phí, và ô đang gõ nằm ngoài vùng render nên cũng chẳng cần).
-function onModelCustomInput() { renderSpawnEffort(); syncToolPicker(); }
+function onModelCustomInput() { renderSpawnEffort(); }
 window.onModelCustomInput = onModelCustomInput;
 
 function spPick(group, val) {
@@ -1791,10 +1751,6 @@ async function loadTemplates() {
   renderSpawnPickers();
 }
 
-function collectTools(prefix) {
-  return [...$(prefix + "-tools").querySelectorAll("input:checked")].map((i) => i.value);
-}
-
 // ── Form handlers ────────────────────────────────────────────────────────────
 
 function showMsg(id, text, ok) {
@@ -1811,8 +1767,7 @@ async function spawnAgent() {
   const model = spModel();
   const effort = $("sp-effort").value;
   // Mọi field phải có giá trị: agent thiếu cấu hình chỉ lộ ra ở run đầu tiên, lúc đó sửa đã tốn
-  // một session. Chặn ở đây rẻ hơn nhiều. (Workspace luôn có card 'default' được chọn sẵn;
-  // allowed tools để trống là CÓ nghĩa — bỏ cờ --allowedTools = CLI cho phép mọi tool.)
+  // một session. Chặn ở đây rẻ hơn nhiều. (Workspace luôn có card 'default' được chọn sẵn.)
   const missing = !name ? "Role name is required"
     : !spSel.template ? "Pick a playbook template"
     : !cwd ? "Working dir is required"
@@ -1826,14 +1781,13 @@ async function spawnAgent() {
       workspace_id: spSel.ws,               // "" = default; ≠ default thì cwd tự ghim
       model,
       effort,
-      // codex bỏ qua allowed_tools → gửi [] cho khớp sự thật, đừng lưu vào DB thứ không có hiệu lực.
-      allowed_tools: engineOfModel(spModel()) === "codex" ? [] : collectTools("sp"),
+      // allowed_tools KHÔNG gửi: backend mặc định [] → bỏ cờ --allowedTools → CLI cho phép mọi
+      // tool. Đó là mặc định cho cả claude lẫn codex. Muốn siết thì gọi thẳng API.
       template: spSel.template,
     });
     showMsg("sp-msg", `Spawned '${r.name}' (${r.id})`, true);
     $("sp-role").value = "";
     spRoleSlug();
-    $("sp-tools").innerHTML = "";
     refreshAll();
   } catch (e) { showMsg("sp-msg", "Error: " + e, false); }
 }
