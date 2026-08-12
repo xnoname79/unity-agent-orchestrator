@@ -1092,6 +1092,95 @@ ACTIVE_PROCS = {}
 # Session user vừa bấm kill — process_signal thấy thì KHÔNG retry run bị giết.
 KILLED_SESSIONS = set()
 
+# ─── MCP servers: đăng ký server MCP cho MỌI session claude, ngay trên dashboard ──
+# Thay cho việc bắt người dùng gõ `claude mcp add` trong terminal. Scope user, tức là mọi phiên
+# claude sau đó đều thấy — không thuộc workspace nào, nên nó nằm ở topbar chứ không ở canvas.
+#
+# Vì sao GHI THẲNG ~/.claude.json thay vì gọi CLI: server có token thì token phải đi trong header
+# Authorization, mà CLI chỉ nhận header qua cờ `--header` — tức là qua ARGV. `ps` đọc được, shell
+# lưu vào history. Đã ĐO shape trên máy này bằng chính CLI rồi đọc lại file:
+#     "<name>": {"type": "http", "url": "…", "headers": {"Authorization": "Bearer …"}}
+# Ghi thẳng cũng tránh cái bẫy commander của `claude mcp add`: `--header` là variadic nên nó NUỐT
+# mọi tham số vị trí đứng sau nó — đặt sai thứ tự thì lệnh sai mà không báo lỗi gì.
+MCP_TIMEOUT = float(os.environ.get("ORCH_MCP_TIMEOUT", "6"))
+# ~/.claude.json, KHÔNG phải ~/.claude/ — CLAUDE_CONFIG_DIR không dời file này.
+CLAUDE_CONFIG_FILE = Path(os.environ.get("ORCH_CLAUDE_CONFIG", str(Path.home() / ".claude.json")))
+# Tên đăng ký thành KHOÁ trong ~/.claude.json. Chặn ký tự lạ để không đẻ ra khoá kỳ quặc trong
+# file cấu hình của người dùng.
+MCP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _claude_config():
+    """Chưa có file / file hỏng đều coi như rỗng — KHÔNG được ném, vì UI gọi hàm này."""
+    try:
+        cfg = json.loads(CLAUDE_CONFIG_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _save_claude_config(cfg):
+    """Ghi qua file tạm rồi os.replace. File này giữ TOÀN BỘ cấu hình Claude Code của người dùng
+    (mọi project, mọi MCP server) — ghi dở dang là mất sạch, nên không ghi đè trực tiếp.
+    ponytail: không khoá file. `claude` chạy song song mà cùng ghi thì một bên mất update; thêm
+    lock nếu thực tế có va."""
+    tmp = CLAUDE_CONFIG_FILE.with_name(CLAUDE_CONFIG_FILE.name + ".orch-tmp")
+    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, CLAUDE_CONFIG_FILE)
+
+
+def _mcp_servers():
+    d = _claude_config().get("mcpServers")
+    return d if isinstance(d, dict) else {}
+
+
+def _entry_token(entry):
+    auth = ((entry or {}).get("headers") or {}).get("Authorization") or ""
+    return auth[7:] if auth.startswith("Bearer ") else ""
+
+
+def _mask(token):
+    """Token ĐÃ LƯU không bao giờ được trả nguyên vẹn ra khỏi tiến trình này — chỉ 4 ký tự cuối,
+    đủ để người dùng nhận ra mình đã dán cái nào."""
+    return ("•" * 8 + token[-4:]) if len(token or "") > 4 else ("•" * 8 if token else "")
+
+
+def _count_tools(body):
+    """Đếm tool trong câu trả lời tools/list. MCP streamable-http trả JSON thường HOẶC khung SSE
+    ('data: {...}') tuỳ server, nên thử cả hai kiểu."""
+    for chunk in [body] + [ln[5:] for ln in body.splitlines() if ln.startswith("data:")]:
+        try:
+            tools = ((json.loads(chunk) or {}).get("result") or {}).get("tools")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(tools, list):
+            return len(tools)
+    return 0
+
+
+async def _mcp_probe(url, token):
+    """Gọi tools/list — BẰNG CHỨNG duy nhất rằng server sống và token dùng được. "Đã lưu" không
+    phải là "đang chạy". Trả (state, tools, detail); detail đi thẳng ra UI nên TUYỆT ĐỐI không
+    chứa token."""
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json, text/event-stream"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    try:
+        async with httpx.AsyncClient(timeout=MCP_TIMEOUT) as c:
+            r = await c.post(url, headers=headers,
+                             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    except httpx.HTTPError:
+        return "unreachable", 0, "could not reach the server"
+    if r.status_code in (401, 403):
+        return "rejected", 0, f"the server refused this token (HTTP {r.status_code})"
+    if r.status_code == 426:
+        return "error", 0, "the server requires https (HTTP 426)"
+    if not 200 <= r.status_code < 300:
+        return "error", 0, f"the server answered HTTP {r.status_code}"
+    return "connected", _count_tools(r.text), ""
+
+
 # ─── VS Code trong trình duyệt (1 card duy nhất trên canvas) ──────────────────
 # `code serve-web` phục vụ VS Code qua HTTP → nhúng iframe vào 1 card canvas. Đã ĐO trên máy này:
 # response KHÔNG có X-Frame-Options lẫn CSP frame-ancestors nên nhúng iframe được.
@@ -3421,6 +3510,82 @@ def build_app():
     async def api_skill_templates(request: Request):
         return JSONResponse(_list_skill_templates())
 
+    # ── MCP servers (xem khối MCP_* ở đầu file) ──────────────────────────────
+    async def _body(request):
+        try:
+            return await request.json()
+        except (ValueError, TypeError):
+            return {}
+
+    async def api_mcp(request: Request):
+        """Các server MCP đang đăng ký ở scope user. KHÔNG gọi ra ngoài: danh sách phải hiện
+        ngay, không treo chờ timeout của một server có thể đang tắt. Kiểm thật là /api/mcp/check.
+        `checkable` = có gọi tools/list qua HTTP được không; server stdio thì không."""
+        out = []
+        for name, entry in sorted(_mcp_servers().items()):
+            entry = entry if isinstance(entry, dict) else {}
+            kind = entry.get("type") or ("stdio" if entry.get("command") else "")
+            out.append({"name": name, "type": kind, "url": entry.get("url") or "",
+                        "command": entry.get("command") or "",
+                        "token_hint": _mask(_entry_token(entry)),
+                        "checkable": kind in ("http", "sse") and bool(entry.get("url"))})
+        return JSONResponse(out)
+
+    async def api_mcp_check(request: Request):
+        """Kiểm thật bằng tools/list. Gửi `name` = kiểm cái đang lưu; gửi `url`(+`token`) = thử
+        một bộ mới TRƯỚC KHI lưu."""
+        b = await _body(request)
+        url, token = (b.get("url") or "").strip(), b.get("token")
+        if b.get("name") and not url:
+            entry = _mcp_servers().get(b["name"])
+            if not isinstance(entry, dict):
+                return JSONResponse({"error": "not found"}, status_code=404)
+            if not (entry.get("url") and entry.get("type") in ("http", "sse")):
+                return JSONResponse({"name": b["name"], "state": "unsupported", "tools": 0,
+                                     "detail": "only http/sse servers can be checked from here",
+                                     "checked_at": _now()})
+            url, token = entry["url"], _entry_token(entry)
+        if not url:
+            return JSONResponse({"error": "url or a known name is required"}, status_code=400)
+        state, tools, detail = await _mcp_probe(url, token or "")
+        return JSONResponse({"name": b.get("name") or "", "url": url, "state": state,
+                             "tools": tools, "detail": detail, "checked_at": _now()})
+
+    async def api_mcp_connect(request: Request):
+        """Kiểm TRƯỚC, ghi SAU. Server không trả lời hoặc từ chối token thì KHÔNG file nào bị
+        đụng tới — nửa vời còn tệ hơn, vì cấu hình trông đúng mà mọi lượt gọi tool đều hỏng."""
+        b = await _body(request)
+        name = (b.get("name") or "").strip()
+        url = (b.get("url") or "").strip()
+        token = (b.get("token") or "").strip()
+        if not MCP_NAME_RE.match(name):
+            return JSONResponse({"error": "name must be letters, digits, dot, dash or underscore"},
+                                status_code=400)
+        if not url.startswith(("http://", "https://")):
+            return JSONResponse({"error": "the server must be an http:// or https:// URL"},
+                                status_code=400)
+        state, tools, detail = await _mcp_probe(url, token)
+        if state != "connected":
+            return JSONResponse({"error": detail or state, "state": state}, status_code=400)
+        cfg = _claude_config()
+        entry = {"type": "http", "url": url}
+        if token:
+            entry["headers"] = {"Authorization": "Bearer " + token}
+        cfg.setdefault("mcpServers", {})[name] = entry
+        _save_claude_config(cfg)
+        return JSONResponse({"name": name, "url": url, "state": state, "tools": tools,
+                             "token_hint": _mask(token), "checked_at": _now()})
+
+    async def api_mcp_disconnect(request: Request):
+        """Gỡ đúng một khoá khỏi mcpServers, phần còn lại của ~/.claude.json giữ nguyên."""
+        b = await _body(request)
+        name = (b.get("name") or "").strip()
+        cfg = _claude_config()
+        removed = (cfg.get("mcpServers") or {}).pop(name, None) is not None
+        if removed:
+            _save_claude_config(cfg)
+        return JSONResponse({"name": name, "removed": removed})
+
     async def api_set_model(request: Request):
         """Đổi model của 1 session ngay trên bảng Sessions (không cần re-register)."""
         sid = request.path_params["sid"]
@@ -3894,6 +4059,10 @@ def build_app():
         Route("/api/fs", api_fs_list),
         WebSocketRoute("/ws/terminal", ws_terminal),
         Route("/api/skills/templates", api_skill_templates),
+        Route("/api/mcp", api_mcp),
+        Route("/api/mcp/check", api_mcp_check, methods=["POST"]),
+        Route("/api/mcp/connect", api_mcp_connect, methods=["POST"]),
+        Route("/api/mcp/disconnect", api_mcp_disconnect, methods=["POST"]),
         Route("/api/sessions/{sid}", api_session_detail),
         Route("/api/sessions/{sid}/unregister", api_unregister, methods=["POST"]),
         Route("/api/sessions/{sid}/runs", api_session_runs),

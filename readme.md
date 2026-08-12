@@ -179,6 +179,31 @@ codex mcp add signal --url http://127.0.0.1:8992/signal/mcp
 
 The signal server runs **in-process** with the orchestrator — no second service, no extra port.
 
+### MCP servers panel
+
+The 🔌 button in the topbar registers any HTTP MCP server for **every** claude session on the
+machine — the same user-scope entry `claude mcp add` writes, into the same `~/.claude.json`.
+It lists what is already registered, checks each one, and removes them.
+
+Two things it does that the CLI does not:
+
+- **The token never reaches a command line.** `claude mcp add` only accepts a header through
+  `--header`, so the bearer token ends up in `argv` — readable by `ps`, kept in shell history.
+  The panel writes the entry directly instead. Saved tokens are never handed back out; the API
+  answers with the last four characters.
+- **It proves the server works before saving.** Add calls `tools/list` first; a server that
+  refuses the token or does not answer leaves your config **byte-identical**. "Saved" is not a
+  status anyone can act on, so the panel reports the tool count the server actually returned.
+
+Servers registered as stdio are listed but not probed — there is no URL to call.
+
+| Env | Default | |
+|---|---|---|
+| `ORCH_CLAUDE_CONFIG` | `~/.claude.json` | the config file that gets written |
+| `ORCH_MCP_TIMEOUT` | `6` | seconds to wait for `tools/list` |
+
+Guard: `python3 check_mcp.py`.
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Usage

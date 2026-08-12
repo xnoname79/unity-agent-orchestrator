@@ -250,6 +250,20 @@
   .form-card .dir-actions button.secondary { border-color: var(--border); color: var(--text); font-weight: 500; }
   .form-msg { font-size: 11.5px; margin-top: 8px; min-height: 16px; }
   .form-msg.ok { color: var(--green); } .form-msg.err { color: var(--red); }
+  /* Modal MCP servers. z-index trên drawer (20) để mở được từ bất cứ đâu ở shell. */
+  .modal-overlay { position: fixed; inset: 0; background: var(--scrim); z-index: 30;
+    display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .modal-overlay[hidden] { display: none; }
+  .modal { width: min(480px, 100%); max-height: calc(100vh - 40px); overflow-y: auto; }
+  .modal input + input { margin-top: 6px; }
+  .ai-actions button { padding: 8px 16px; }   /* nút trong cột hẹp, 28px là tràn */
+  .mcp-list { margin-top: 12px; display: grid; gap: 6px; }
+  .mcp-row { display: flex; align-items: center; gap: 8px; padding: 7px 9px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: var(--r-ctl); font-size: 12px; }
+  .mcp-row .nm { font-weight: 600; }
+  .mcp-row .meta { color: var(--faint); font-size: 11px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-row button { padding: 3px 8px; font-size: 11px; }
   select.mini, input.mini { background: var(--bg); border: 1px solid var(--border); color: var(--text);
     border-radius: 6px; padding: 4px 7px; font: inherit; font-size: 11.5px; }
   select.mini:hover, input.mini:hover { border-color: var(--border-strong); }
@@ -559,6 +573,7 @@
   <symbol id="i-rocket" viewBox="0 0 24 24"><path d="M5 15c-1.5 1.5-2 6-2 6s4.5-.5 6-2a3 3 0 0 0-4-4z"/><path d="M9.5 13.5 7 11a12 12 0 0 1 10-8c2 0 4 .3 4 .3s.3 2 .3 4a12 12 0 0 1-8 10l-2.5-2.5z"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 7V4.8A.8.8 0 0 1 10.8 4h2.4a.8.8 0 0 1 .8.8V7M6.5 7l.9 12.2a.8.8 0 0 0 .8.8h7.6a.8.8 0 0 0 .8-.8L17.5 7"/></symbol>
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></symbol>
 </defs></svg>
 
 <header>
@@ -568,6 +583,8 @@
   <nav id="ws-tabs" class="ws-tabs"></nav>
   <div class="spacer"></div>
   <span id="dry" class="pill dry" hidden>DRY-RUN</span>
+  <button id="mcp-btn" class="icon-btn" onclick="mcpOpen()" title="MCP servers">
+    <svg class="ic"><use href="#i-plug"/></svg></button>
   <button id="split-btn" class="icon-btn" onclick="toggleSplit()" title="Side-by-side (needs 2 open workspaces)">
     <svg class="ic"><use href="#i-split"/></svg></button>
   <button id="theme-btn" class="icon-btn" onclick="cycleTheme()" title="Theme">
@@ -737,6 +754,33 @@
   </div>
   <div id="dr-body" class="drawer-body"></div>
 </aside>
+
+<!-- MCP servers: register an HTTP MCP server for every claude session (user scope, written
+     straight into ~/.claude.json). Not tied to any workspace, so it opens from the topbar. -->
+<div id="mcp-modal" class="modal-overlay" onclick="if (event.target === this) mcpClose()" hidden>
+  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="mcp-title">
+    <h3 id="mcp-title"><svg class="ic"><use href="#i-plug"/></svg> MCP servers
+      <span class="spacer"></span>
+      <button class="icon-btn" onclick="mcpClose()" title="Close">
+        <svg class="ic"><use href="#i-x"/></svg></button></h3>
+    <div class="hint">Registered for <b>every</b> claude session on this machine (user scope, in
+      <code>~/.claude.json</code>). Same thing <code>claude mcp add</code> does — without putting
+      your token on a command line.</div>
+    <div id="mcp-list" class="mcp-list"></div>
+    <label>Add a server</label>
+    <input id="mcp-name" placeholder="name, e.g. story-studio" autocomplete="off" spellcheck="false">
+    <input id="mcp-url" placeholder="https://host/mcp" autocomplete="off" spellcheck="false">
+    <input id="mcp-token" type="password" autocomplete="off" spellcheck="false"
+      placeholder="bearer token — leave empty if the server needs none">
+    <div class="hint">The server is contacted with <code>tools/list</code> before anything is
+      written. A server that refuses leaves your config untouched.</div>
+    <div class="spawn-actions ai-actions">
+      <button class="secondary" onclick="mcpTest()">Test</button>
+      <button class="primary" onclick="mcpAdd()">Add</button>
+    </div>
+    <div id="mcp-msg" class="form-msg"></div>
+  </div>
+</div>
 
 <datalist id="model-list">
   <option value="opus" label="alias — latest Opus">

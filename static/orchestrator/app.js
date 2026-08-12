@@ -1761,6 +1761,130 @@ function showMsg(id, text, ok) {
   el.className = "form-msg " + (ok ? "ok" : "err");
 }
 
+// ── MCP servers ──────────────────────────────────────────────────────────────
+// Đăng ký ở scope user nên nó áp cho MỌI session claude, không thuộc workspace nào — vì thế
+// mở từ topbar chứ không từ canvas.
+// Token đi MỘT CHIỀU: gõ vào ô rồi POST đi. Server không bao giờ trả token về (chỉ 4 ký tự
+// cuối), nên KHÔNG có chỗ nào điền ngược lại vào ô input — cố tình như vậy.
+const MCP_STATE = {
+  connected: "b-green", rejected: "b-red", unreachable: "b-amber",
+  error: "b-red", unsupported: "b-gray",
+};
+let mcpStatus = {};   // name → {state, tools, detail} của lần kiểm gần nhất
+
+function mcpRows(list) {
+  if (!list.length) return `<div class="hint">Nothing registered yet.</div>`;
+  return list.map((s) => {
+    const st = mcpStatus[s.name];
+    const label = !st ? (s.checkable ? "not checked" : s.type || "unknown")
+      : st.state === "connected" ? `${st.tools} tools` : st.state;
+    const meta = [s.type, s.url || s.command, s.token_hint && "token " + s.token_hint]
+      .filter(Boolean).join(" · ");
+    // Tên do người dùng đặt và có thể đã nằm sẵn trong file — KHÔNG nhét vào inline onclick,
+    // đi qua data-attribute + listener uỷ quyền như chỗ duyệt thư mục.
+    return `<div class="mcp-row">
+      <span class="nm">${esc(s.name)}</span>
+      ${badge(label, st ? MCP_STATE[st.state] : "b-gray")}
+      <span class="meta" title="${esc(meta)}">${esc(meta)}</span>
+      <div class="spacer"></div>
+      ${s.checkable ? `<button class="secondary" data-mcp-check="${esc(s.name)}">Check</button>` : ""}
+      <button class="danger" data-mcp-rm="${esc(s.name)}">Remove</button>
+    </div>`;
+  }).join("");
+}
+
+async function mcpLoad(check) {
+  const list = await api("/api/mcp");
+  $("mcp-list").innerHTML = mcpRows(list);
+  if (!check) return list;
+  // Kiểm SONG SONG khi mở modal. Không kiểm lúc boot: mỗi server tắt là một timeout, và người
+  // dùng có thể đăng ký cả chục cái — trả giá đó cho mọi lần tải trang là vô lý.
+  await Promise.all(list.filter((s) => s.checkable).map(async (s) => {
+    try { mcpStatus[s.name] = await api("/api/mcp/check", "POST", { name: s.name }); }
+    catch { mcpStatus[s.name] = { state: "error", tools: 0 }; }
+  }));
+  $("mcp-list").innerHTML = mcpRows(list);
+  return list;
+}
+
+function mcpOpen() {
+  $("mcp-modal").hidden = false;
+  $("mcp-msg").textContent = "";
+  $("mcp-list").innerHTML = `<div class="hint">Loading…</div>`;
+  mcpLoad(true).catch((e) => showMsg("mcp-msg", "Error: " + e, false));
+}
+window.mcpOpen = mcpOpen;
+
+function mcpClose() {
+  $("mcp-modal").hidden = true;
+  $("mcp-token").value = "";   // đừng để token gõ dở nằm lại trong DOM sau khi đóng
+}
+window.mcpClose = mcpClose;
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
+});
+
+// Nút trong danh sách: tên đi qua data-attribute, không qua inline onclick.
+$("mcp-list").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-mcp-check], button[data-mcp-rm]");
+  if (!btn) return;
+  const name = btn.dataset.mcpCheck || btn.dataset.mcpRm;
+  try {
+    if (btn.dataset.mcpCheck) {
+      showMsg("mcp-msg", `Checking ${name}…`, true);
+      const r = await api("/api/mcp/check", "POST", { name });
+      mcpStatus[name] = r;
+      await mcpLoad(false);
+      showMsg("mcp-msg", r.state === "connected" ? `${name}: ${r.tools} tools`
+        : `${name}: ${r.detail || r.state}`, r.state === "connected");
+    } else {
+      if (!confirm(`Remove '${name}' from Claude Code?\n\nAgents already running keep it until they restart.`)) return;
+      await api("/api/mcp/disconnect", "POST", { name });
+      delete mcpStatus[name];
+      await mcpLoad(false);
+      showMsg("mcp-msg", `Removed ${name}.`, true);
+    }
+  } catch (e) { showMsg("mcp-msg", mcpErr(e), false); }
+});
+
+function mcpErr(e) {
+  try { return JSON.parse(e).error || String(e); } catch { return String(e); }
+}
+
+function mcpForm() {
+  return { name: $("mcp-name").value.trim(), url: $("mcp-url").value.trim(),
+           token: $("mcp-token").value };
+}
+
+// Thử mà KHÔNG lưu — xem server có sống và token có đúng không trước khi ghi vào cấu hình.
+async function mcpTest() {
+  const f = mcpForm();
+  if (!f.url) return showMsg("mcp-msg", "URL is required.", false);
+  showMsg("mcp-msg", "Testing…", true);
+  try {
+    const r = await api("/api/mcp/check", "POST", { url: f.url, token: f.token });
+    showMsg("mcp-msg", r.state === "connected" ? `Reachable — ${r.tools} tools. Not saved yet.`
+      : (r.detail || r.state), r.state === "connected");
+  } catch (e) { showMsg("mcp-msg", mcpErr(e), false); }
+}
+window.mcpTest = mcpTest;
+
+async function mcpAdd() {
+  const f = mcpForm();
+  if (!f.name || !f.url) return showMsg("mcp-msg", "Name and URL are required.", false);
+  showMsg("mcp-msg", "Connecting…", true);
+  try {
+    const r = await api("/api/mcp/connect", "POST", f);
+    mcpStatus[r.name] = r;
+    $("mcp-name").value = ""; $("mcp-url").value = "";
+    $("mcp-token").value = "";   // xong việc là bỏ khỏi DOM, đừng để nằm lại trong form
+    await mcpLoad(false);
+    showMsg("mcp-msg", `Added ${r.name} — ${r.tools} tools. New agents pick it up automatically.`, true);
+  } catch (e) { showMsg("mcp-msg", mcpErr(e), false); }
+}
+window.mcpAdd = mcpAdd;
+
 async function spawnAgent() {
   // Tên vai và template là HAI thứ khác nhau: template chỉ là playbook NGUỒN (nhiều agent dùng
   // chung một template được), tên vai là danh tính để signal.
