@@ -555,10 +555,10 @@ def _extract_ticket(message):
     return ""
 
 
-# id=94 TRẦN PING-PONG. Hai agent nhắn qua lại tối đa PAIR_SIGNAL_CAP lượt (nguồn→đích, đích→nguồn,
-# nguồn→đích, đích→nguồn) rồi DỪNG: agent nguồn tổng hợp và báo cáo cho NGƯỜI DÙNG quyết định bước
-# kế. Chống vòng signal tự đẻ việc, kéo scope ra ngoài thứ người dùng yêu cầu.
-PAIR_SIGNAL_CAP = int(os.environ.get("ORCH_PAIR_SIGNAL_CAP", "4"))
+# id=94 TRẦN PING-PONG. Hai agent nhắn qua lại tối đa PAIR_SIGNAL_CAP lượt (nguồn→đích, rồi
+# đích→nguồn) là DỪNG: agent nguồn tổng hợp và báo cáo cho NGƯỜI DÙNG quyết định bước kế. Chống
+# vòng signal tự đẻ việc, kéo scope ra ngoài thứ người dùng yêu cầu.
+PAIR_SIGNAL_CAP = int(os.environ.get("ORCH_PAIR_SIGNAL_CAP", "2"))
 # Người gửi KHÔNG phải agent: không tính vào trần, và là MỐC RESET (người dùng giao việc mới thì
 # hai bên có lại đủ lượt). '' = FE BFF/hệ thống, 'human' = chat trên dashboard.
 _HUMAN_SENDERS = ("", "human", "user")
@@ -588,6 +588,22 @@ def note_human_touch(name, workspace_id=DEFAULT_WORKSPACE):
     """Người dùng gõ thẳng / giao việc cho vai này → MỞ VÒNG VIỆC MỚI tại vai đó."""
     if name:
         _round_at[_round_key(workspace_id, name)] = _now()
+
+
+def is_user_typing(data):
+    r"""Byte từ WS terminal có phải NGƯỜI đang giao việc không.
+
+    KHÔNG được coi mọi input là người gõ. xterm.js TỰ trả lời truy vấn của chương trình TUI —
+    đã đo trên đúng bản đang vendor: ESC[6n → ESC[1;1R, ESC[c → ESC[?1;2c, ESC[>c →
+    ESC[>0;276;0c, ESC[5n → ESC[0n; và khi chương trình bật ESC[?1004h thì chỉ cần click ra rồi
+    click lại vào cửa sổ trình duyệt là phát ESC[O / ESC[I. Mọi byte đó đều đi qua onData như
+    input thật, nên trước đây mỗi cái mở một VÒNG VIỆC mới → trần ping-pong của cặp agent tự tụt
+    về 1 giữa lúc không ai đụng vào terminal.
+
+    Mốc là phím Enter ('\r'): đó mới là lúc người dùng GIAO xong một việc. Không lời đáp tự động
+    nào chứa '\r' (đã đo), nên nó lọc luôn cả mũi tên, Esc, Ctrl-C — bấm mấy phím đó không phải
+    là ra đề bài mới."""
+    return "\r" in str(data or "")
 
 
 def _session_name(session_id):
@@ -623,7 +639,7 @@ def pair_signal_count(from_role, to_session, workspace_id):
 
     Phép đếm nằm TRỌN trong pair_counts(); hàm này chỉ tra ra một cặp. Dashboard cần con số của
     mọi cặp, mà hai bản cài đặt song song thì sớm muộn lệch nhau — và lệch ở đây nghĩa là UI báo
-    2/4 trong khi backend chặn ở 4/4. Cùng một vòng quét 200 dòng nên tra một cặp không đắt hơn."""
+    1/2 trong khi backend chặn ở 2/2. Cùng một vòng quét 200 dòng nên tra một cặp không đắt hơn."""
     _ensure_db()
     conn = _conn()
     to_row = conn.execute("SELECT name FROM sessions WHERE id = ?", (to_session,)).fetchone()
@@ -639,7 +655,7 @@ def pair_counts(workspace_id):
     từng cặp thì 10 agent = 45 cặp × 200 dòng mỗi lần SSE bắn — nên gộp vào một vòng.
 
     Dùng ĐÚNG câu truy vấn, LIMIT và ba mốc cutoff như pair_signal_count: số hiển thị phải
-    khớp số đem đi chặn, lệch một cái là UI báo 2/4 trong khi backend chặn ở 4/4.
+    khớp số đem đi chặn, lệch một cái là UI báo 1/2 trong khi backend chặn ở 2/2.
     """
     _ensure_db()
     conn = _conn()

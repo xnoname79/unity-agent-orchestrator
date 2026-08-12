@@ -103,6 +103,18 @@ check("pair_counts khớp pair_signal_count",
       and counts.get(("alpha", "gamma")) == 1,
       dict(counts))
 
+# ── xterm TỰ đáp truy vấn của TUI: không phải người gõ ──────────────────────
+# Mỗi chuỗi dưới đây đã ĐO trên bản xterm.js đang vendor — thư viện tự gửi, không ai chạm bàn
+# phím. Tính chúng là người gõ = mở vòng việc mới = trần ping-pong tụt về 1 giữa chừng.
+for seq, label in [("\x1b[1;1R", "CPR (ESC[6n)"), ("\x1b[?1;2c", "DA1 (ESC[c)"),
+                   ("\x1b[>0;276;0c", "DA2 (ESC[>c)"), ("\x1b[0n", "DSR (ESC[5n)"),
+                   ("\x1b[I", "focus vào (ESC[?1004h)"), ("\x1b[O", "focus ra"),
+                   ("\x1b[A", "mũi tên lên"), ("\x1b", "Esc"), ("\x03", "Ctrl-C")]:
+    check(f"{label} không mở vòng việc", not so.is_user_typing(seq))
+check("Enter mở vòng việc", so.is_user_typing("\r"))
+check("gõ xong bấm Enter mở vòng việc", so.is_user_typing("sửa giúp tôi chỗ này\r"))
+check("gõ dở chưa Enter thì chưa mở", not so.is_user_typing("sửa giúp tôi chỗ này"))
+
 os.remove(so._db_path())
 print()
 if FAILS:

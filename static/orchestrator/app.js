@@ -620,16 +620,31 @@ function mmInit() {
     applyView();
   };
   mm.addEventListener("pointerdown", (e) => {
+    // DỪNG nổi bọt. Canvas có sẵn chốt `e.target.closest('.cv-overlay')` để không pan khi bấm vào
+    // overlay, nhưng chốt đó ĐỌC HỤT ở đây: goto_ bên dưới gọi applyView → redrawMinimap →
+    // mm.innerHTML = … , tức là cái <rect> đang là e.target bị GỠ khỏi cây trước khi canvas kịp
+    // xét. Node rời cây thì closest() trả null → canvas tưởng bấm vào nền và mở luôn một cú pan
+    // thứ hai chạy song song. Đã đo: canvas pointerdown nhìn thấy "rect overlay=false".
+    e.stopPropagation();
     const b = mmBox();
     if (!b) return;
     drag = { b, rect: mm.getBoundingClientRect() };
     mm.setPointerCapture(e.pointerId);
     goto_(e);
   });
-  mm.addEventListener("pointermove", (e) => { if (drag) goto_(e); });
   const up = () => { if (drag) { drag = null; cvSave({ view: CV }); } };
-  mm.addEventListener("pointerup", up);
-  mm.addEventListener("pointercancel", up);
+  mm.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    if (!e.buttons) return up();   // không còn giữ nút = kéo đã kết thúc ở đâu đó, tự gỡ
+    goto_(e);
+  });
+  // up/cancel bắt ở WINDOW chứ không ở minimap. Kéo cho mọi node lọt hết vào khung nhìn thì
+  // redrawMinimap ẩn luôn minimap NGAY GIỮA cú kéo → element ẩn mất pointer capture, pointerup
+  // rơi vào canvas, `drag` không ai xoá. Lần sau minimap hiện lại là chỉ rê chuột qua đã kéo
+  // khung nhìn đi mà chưa bấm nút nào.
+  addEventListener("pointerup", up);
+  addEventListener("pointercancel", up);
+  mm.addEventListener("lostpointercapture", up);
 }
 
 // Zoom quanh tâm khung nhìn (nút +/−) — wheel thì zoom quanh con trỏ (xem cvInit).
@@ -1496,6 +1511,10 @@ function cvInit() {
   });
   cv.addEventListener("pointermove", (e) => {
     if (!drag) return;
+    // Không còn giữ nút nào mà `drag` vẫn còn = cú pointerup đã lạc mất (nhả ngoài cửa sổ, mất
+    // pointer capture…). Không chốt chỗ này thì chỉ rê chuột qua canvas là khung nhìn tự chạy —
+    // đúng triệu chứng "hover là tự dời vùng hiển thị".
+    if (!e.buttons) return up();
     const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
     if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;  // phân biệt click vs kéo
     if (drag.mode === "pan") { CV.tx = drag.ox + dx; CV.ty = drag.oy + dy; applyView(); return; }
