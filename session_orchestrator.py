@@ -1103,6 +1103,12 @@ KILLED_SESSIONS = set()
 # Ghi thẳng cũng tránh cái bẫy commander của `claude mcp add`: `--header` là variadic nên nó NUỐT
 # mọi tham số vị trí đứng sau nó — đặt sai thứ tự thì lệnh sai mà không báo lỗi gì.
 MCP_TIMEOUT = float(os.environ.get("ORCH_MCP_TIMEOUT", "6"))
+# Phiên bản khai lúc initialize. Cứ khai bản cũ: server trả về phiên bản CỦA NÓ trong response,
+# thoả thuận xong là dùng được, còn khai bản mới hơn server thì có server từ chối thẳng.
+MCP_PROTOCOL = "2024-11-05"
+# Chính orchestrator cũng mount vài MCP server nội bộ. Chúng KHÔNG hiện trong modal: người dùng
+# không tự đăng ký chúng ở đây, mà bấm Remove thì agent mất luôn đường signal.
+MCP_OWN_PATHS = ("/signal/mcp", "/unity/mcp")
 # ~/.claude.json, KHÔNG phải ~/.claude/ — CLAUDE_CONFIG_DIR không dời file này.
 CLAUDE_CONFIG_FILE = Path(os.environ.get("ORCH_CLAUDE_CONFIG", str(Path.home() / ".claude.json")))
 # Tên đăng ký thành KHOÁ trong ~/.claude.json. Chặn ký tự lạ để không đẻ ra khoá kỳ quặc trong
@@ -1158,27 +1164,47 @@ def _count_tools(body):
     return 0
 
 
-async def _mcp_probe(url, token):
-    """Gọi tools/list — BẰNG CHỨNG duy nhất rằng server sống và token dùng được. "Đã lưu" không
-    phải là "đang chạy". Trả (state, tools, detail); detail đi thẳng ra UI nên TUYỆT ĐỐI không
-    chứa token."""
-    headers = {"Content-Type": "application/json",
-               "Accept": "application/json, text/event-stream"}
-    if token:
-        headers["Authorization"] = "Bearer " + token
-    try:
-        async with httpx.AsyncClient(timeout=MCP_TIMEOUT) as c:
-            r = await c.post(url, headers=headers,
-                             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-    except httpx.HTTPError:
-        return "unreachable", 0, "could not reach the server"
+def _probe_http_error(r):
+    """Đọc mã HTTP thành (state, tools, detail), hoặc None nếu ổn."""
     if r.status_code in (401, 403):
         return "rejected", 0, f"the server refused this token (HTTP {r.status_code})"
     if r.status_code == 426:
         return "error", 0, "the server requires https (HTTP 426)"
     if not 200 <= r.status_code < 300:
         return "error", 0, f"the server answered HTTP {r.status_code}"
-    return "connected", _count_tools(r.text), ""
+    return None
+
+
+async def _mcp_probe(url, token):
+    """Bắt tay MCP rồi gọi tools/list — BẰNG CHỨNG duy nhất rằng server sống và token dùng được.
+    "Đã lưu" không phải là "đang chạy". Trả (state, tools, detail); detail đi thẳng ra UI nên
+    TUYỆT ĐỐI không chứa token."""
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json, text/event-stream"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    try:
+        async with httpx.AsyncClient(timeout=MCP_TIMEOUT) as c:
+            r = await c.post(url, headers=headers, json={
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": MCP_PROTOCOL, "capabilities": {},
+                           "clientInfo": {"name": "session-orchestrator", "version": "1"}}})
+            bad = _probe_http_error(r)
+            if bad:
+                return bad
+            # Server có phiên phát mcp-session-id ở đây và BẮT các lượt sau mang theo. Thiếu nó là
+            # 400 "Missing session ID" — đo được với chính /signal/mcp của orchestrator. Server
+            # không phiên thì không phát header này, bỏ qua là xong, không cần rẽ nhánh theo loại.
+            sid = r.headers.get("mcp-session-id")
+            if sid:
+                headers["Mcp-Session-Id"] = sid
+                await c.post(url, headers=headers,
+                             json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+            r = await c.post(url, headers=headers,
+                             json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    except httpx.HTTPError:
+        return "unreachable", 0, "could not reach the server"
+    return _probe_http_error(r) or ("connected", _count_tools(r.text), "")
 
 
 # ─── VS Code trong trình duyệt (1 card duy nhất trên canvas) ──────────────────
@@ -3524,6 +3550,9 @@ def build_app():
         out = []
         for name, entry in sorted(_mcp_servers().items()):
             entry = entry if isinstance(entry, dict) else {}
+            url = (entry.get("url") or "").split("?")[0].rstrip("/")
+            if url.endswith(MCP_OWN_PATHS):   # server nội bộ của chính orchestrator
+                continue
             kind = entry.get("type") or ("stdio" if entry.get("command") else "")
             out.append({"name": name, "type": kind, "url": entry.get("url") or "",
                         "command": entry.get("command") or "",

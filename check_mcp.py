@@ -74,24 +74,42 @@ def check(name, ok, detail=""):
 # ── MCP server giả ───────────────────────────────────────────────────────────
 # Trả tools/list bằng KHUNG SSE, đúng kiểu streamable-http hay dùng — nhánh khó của _count_tools.
 TOOLS = [{"name": f"tool_{i}"} for i in range(12)]
+SESSION = "sess-abc123"
+
+
+def sse(result):
+    payload = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result})
+    return f"event: message\ndata: {payload}\n\n".encode()
 
 
 class Server(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        if self.headers.get("Authorization") != "Bearer " + TOKEN:
-            body = json.dumps({"error": "bad token"}).encode()
-            self.send_response(401)
-        else:
-            payload = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"tools": TOOLS}})
-            body = f"event: message\ndata: {payload}\n\n".encode()
-            self.send_response(200)
+    def reply(self, code, body, sid=None):
+        self.send_response(code)
+        if sid:
+            self.send_header("mcp-session-id", sid)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        method = (json.loads(raw or b"{}") or {}).get("method")
+        if self.headers.get("Authorization") != "Bearer " + TOKEN:
+            return self.reply(401, json.dumps({"error": "bad token"}).encode())
+        # Server CÓ PHIÊN, đúng mặc định của mcp python SDK: initialize phát mcp-session-id, mọi
+        # lượt sau thiếu header đó ăn 400. Không bắt tay thì không đời nào thấy được tools/list —
+        # đây chính là cái làm /signal/mcp hiện ERROR trong modal.
+        if method == "initialize":
+            return self.reply(200, sse({"protocolVersion": "2024-11-05"}), sid=SESSION)
+        if self.headers.get("Mcp-Session-Id") != SESSION:
+            return self.reply(400, json.dumps(
+                {"error": {"code": -32600, "message": "Bad Request: Missing session ID"}}).encode())
+        if method == "notifications/initialized":
+            return self.reply(202, b"")
+        return self.reply(200, sse({"tools": TOOLS}))
 
 
 srv = HTTPServer(("127.0.0.1", 0), Server)
@@ -111,7 +129,13 @@ async def main():
         listed = (await c.get("/api/mcp")).json()
         names = {s["name"]: s for s in listed}
         check("the servers already in the file are listed",
-              set(names) == {"signal", "local-tool"}, str(sorted(names)))
+              set(names) == {"local-tool"}, str(sorted(names)))
+        # Server orchestrator tự mount bị GIẤU khỏi modal, nhưng vẫn nguyên trong file — giấu
+        # không phải xoá, agent vẫn signal được.
+        check("the orchestrator's own bundled server is hidden",
+              "signal" not in names, str(sorted(names)))
+        check("but it is still registered in the file",
+              "signal" in json.loads(cfg_now())["mcpServers"], cfg_now())
         check("a stdio server is listed but not checkable",
               names["local-tool"]["checkable"] is False
               and names["local-tool"]["type"] == "stdio", str(names.get("local-tool")))
