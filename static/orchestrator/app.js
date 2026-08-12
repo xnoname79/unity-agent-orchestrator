@@ -1580,8 +1580,10 @@ function cvInit() {
 // API credits). BẮT BUỘC có tiền tố: 'gpt-5.6-terra' trơn cũng là tên model API hợp lệ, không
 // có tiền tố thì không phân biệt được ý người dùng.
 const MODEL_TABS = [
+  // KHÔNG có card "Auto" ở tab Claude: id của nó phải là "" (bỏ cờ --model), mà form đọc model
+  // rỗng là CHƯA CHỌN → chọn Auto xong bấm Spawn ăn "Pick a model", không đường nào ra.
+  // Tab Codex vẫn có Auto vì id của nó là "codex" — một giá trị thật, không lẫn với rỗng.
   { engine: "claude", label: "Claude", note: "claude CLI · API credits Anthropic", models: [
-    { id: "", name: "Auto", desc: "Let the CLI pick its own default model" },
     { id: "opus", name: "Opus · alias", desc: "Always points at the latest Opus" },
     { id: "sonnet", name: "Sonnet · alias", desc: "Balanced on quality, speed and price" },
     { id: "haiku", name: "Haiku · alias", desc: "Fast and cheap — light, repetitive work" },
