@@ -294,6 +294,9 @@
     text-overflow: ellipsis; display: flex; align-items: center; gap: 8px; min-width: 0; }
   #ws-banner-actions { display: flex; gap: 6px; }
   #ws-banner-actions button { padding: 3px 10px; font-size: 11.5px; }
+  .win-btn { display: flex; align-items: center; gap: 6px; padding: 4px 11px; font-size: 12px; }
+  .win-btn .n { font-size: 10.5px; color: var(--muted); background: var(--panel2);
+    border-radius: 999px; padding: 0 7px; font-variant-numeric: tabular-nums; }
   .tabs { display: flex; gap: 2px; background: var(--panel2); border: 1px solid var(--border);
     border-radius: 9px; padding: 3px; flex: none; }
   .tabs .tab { padding: 3px 13px; font-size: 12px; background: transparent; border: none;
@@ -351,6 +354,16 @@
   .mm-r.mm-sel { fill: var(--accent); }
   .mm-zone { fill: none; stroke: var(--zone-line); stroke-width: 1; }
   .mm-view { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; }
+  /* Cửa sổ ghim. Node vẫn nằm TRONG #world — bứng sang cha khác là iframe VS Code tải lại từ
+     đầu. transform-origin 0 0 vì applyPin bù lại phép phóng của world bằng scale(1/k) từ đúng
+     góc trên trái. Tay nắm resize ẩn đi: hình học của node ghim do applyPin tính, kéo thì hai
+     bên ghi đè nhau. */
+  .node.pinned { z-index: 4; transform-origin: 0 0; box-shadow: var(--sh-3); }
+  .node.pinned .rz { display: none; }
+  .cv-unpin { width: 26px; height: 26px; padding: 0; display: flex; align-items: center;
+    justify-content: center; border-radius: 7px; background: var(--panel);
+    border: 1px solid var(--border); color: var(--muted); box-shadow: var(--sh-2); }
+  .cv-unpin:hover { color: var(--red); border-color: var(--red); }
   .rz { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize;
     z-index: 3; background: linear-gradient(135deg, transparent 50%, var(--faint) 50%);
     opacity: .35; border-bottom-right-radius: var(--r-card); }
@@ -513,6 +526,16 @@
   .drawer-head h3 { margin: 0; font-size: 13.5px; }
   .drawer-head .spacer { flex: 1; }
   .drawer-body { flex: 1; overflow-y: auto; padding: 12px 15px; background: var(--bg); }
+  /* Danh sách cửa sổ trong drawer */
+  .win-card { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin: 6px 0;
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-ctl);
+    cursor: pointer; }
+  .win-card:hover { border-color: var(--accent); }
+  .win-card.on { border-color: var(--accent); background: var(--accent-soft); }
+  .win-main { flex: 1; min-width: 0; display: grid; }
+  .win-main b { font-size: 12.5px; }
+  .win-sub { font-family: ui-monospace, monospace; font-size: 10.5px; color: var(--faint);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ev { display: flex; gap: 9px; padding: 7px 10px; margin: 5px 0; background: var(--panel);
     border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: var(--r-ctl); }
   .ev-ic { flex: none; font-size: 13px; line-height: 1.5; }
@@ -573,6 +596,7 @@
   <symbol id="i-rocket" viewBox="0 0 24 24"><path d="M5 15c-1.5 1.5-2 6-2 6s4.5-.5 6-2a3 3 0 0 0-4-4z"/><path d="M9.5 13.5 7 11a12 12 0 0 1 10-8c2 0 4 .3 4 .3s.3 2 .3 4a12 12 0 0 1-8 10l-2.5-2.5z"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 7V4.8A.8.8 0 0 1 10.8 4h2.4a.8.8 0 0 1 .8.8V7M6.5 7l.9 12.2a.8.8 0 0 0 .8.8h7.6a.8.8 0 0 0 .8-.8L17.5 7"/></symbol>
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
+  <symbol id="i-window" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01"/></symbol>
   <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></symbol>
 </defs></svg>
 
@@ -655,6 +679,9 @@
       <span id="ws-detail-title"></span>
       <span id="ws-banner-actions"></span>
       <div class="spacer"></div>
+      <button id="win-btn" class="secondary win-btn" onclick="openWindows()"
+        title="Every window in this workspace — pin one to the left edge">
+        <svg class="ic sm"><use href="#i-window"/></svg> Windows <span class="n">0</span></button>
       <div class="tabs">
         <button id="tab-btn-agents" class="tab active" onclick="switchTab('agents')">
           <svg class="ic sm"><use href="#i-map"/></svg> Agents</button>
@@ -679,6 +706,9 @@
           <button class="icon-btn" onclick="cvFit()" title="Fit every agent into view">
             <svg class="ic"><use href="#i-fit"/></svg></button>
         </div>
+        <button id="cv-unpin" class="cv-overlay cv-unpin" onclick="unpinWindow()"
+          title="Unpin this window — it goes back where it was on the canvas" hidden>
+          <svg class="ic sm"><use href="#i-x"/></svg></button>
         <button class="cv-overlay cv-help" title="Canvas help"
           onclick="const h = document.getElementById('cv-hint'); h.hidden = !h.hidden">
           <svg class="ic"><use href="#i-help"/></svg></button>

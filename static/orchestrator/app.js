@@ -544,7 +544,117 @@ function cvSave(patch) {
 function applyView() {
   $("world").style.transform = `translate(${CV.tx}px, ${CV.ty}px) scale(${CV.k})`;
   $("cv-zoom").textContent = Math.round(CV.k * 100) + "%";
+  applyPin();       // node ghim tự bù transform vừa đặt → đứng yên trên màn hình
   redrawMinimap();
+}
+
+// ── Ghim một cửa sổ vào mép trái ────────────────────────────────────────────
+// Node ghim vẫn nằm TRONG #world. Bứng nó sang cha khác (một lớp overlay không transform) là
+// cách hiển nhiên, nhưng iframe VS Code tải lại từ đầu mỗi lần đổi cha — xem syncVscodeNodes.
+// Và position:fixed bên trong #world vô dụng: ancestor có transform là containing block của
+// mọi con fixed. Nên cách duy nhất vừa giữ nguyên cha vừa đứng yên là TỰ BÙ world:
+//   left/top   = (PAD − CV.t) / CV.k   → sau khi world dịch+phóng thì rơi đúng góc trên trái
+//   scale(1/k) → nội dung về 1:1, không teo/phình theo mức zoom (nếu chỉ chia w/h cho k thì
+//                khung đúng cỡ nhưng terminal đổi số cột và chữ VS Code bé lại)
+let pinnedNid = null;
+const PIN_PAD = 10;
+let pinSize = "";   // "w×h" của lần áp gần nhất — chỉ fit lại terminal khi số này đổi
+
+function pinnedEl() {
+  if (!pinnedNid) return null;
+  return $("world").querySelector(`.node[data-nid="${CSS.escape(pinnedNid)}"]`);
+}
+
+function applyPin() {
+  const cv = $("canvas"), btn = $("cv-unpin"), el = pinnedEl();
+  if (btn) btn.hidden = !el;
+  if (!el || !cv) return;
+  // ponytail: bề rộng cố định. Cho kéo giãn thì phải lưu riêng và đá nhau với tay nắm .rz —
+  // thêm khi thật sự thấy chật.
+  const w = Math.round(Math.min(760, Math.max(320, cv.clientWidth * 0.55)));
+  const h = Math.max(160, cv.clientHeight - PIN_PAD * 2);
+  el.classList.add("pinned", "sized");
+  el.style.left = ((PIN_PAD - CV.tx) / CV.k) + "px";
+  el.style.top = ((PIN_PAD - CV.ty) / CV.k) + "px";
+  el.style.transform = `scale(${1 / CV.k})`;
+  el.style.width = w + "px";
+  el.style.height = h + "px";
+  if (btn) { btn.style.left = (PIN_PAD + w - 34) + "px"; btn.style.top = (PIN_PAD + 7) + "px"; }
+  // Pan/zoom KHÔNG đổi cỡ trên màn hình, nên đừng fit xterm mỗi khung hình khi đang kéo.
+  const size = w + "x" + h;
+  if (size !== pinSize) { pinSize = size; requestAnimationFrame(() => refitNode(el)); }
+}
+
+function pinWindow(nid) {
+  if (pinnedNid === nid) return unpinWindow();
+  unpinWindow(true);          // trả cái đang ghim về chỗ cũ; store để pin mới ghi đè
+  pinnedNid = nid;
+  cvSave({ pin: nid });
+  applyView();
+  layoutZones(); redrawEdges();
+}
+window.pinWindow = pinWindow;
+
+// Bỏ ghim: trả node về đúng vị trí/kích thước đã lưu trong pos[nid] (applyPin chỉ ghi style
+// nội tuyến, không đụng store — nên không có gì phải khôi phục ngoài việc áp lại pos).
+function unpinWindow(keep) {
+  const el = pinnedEl();
+  pinnedNid = null;
+  pinSize = "";
+  if (!keep) cvSave({ pin: null });
+  if (el) {
+    el.classList.remove("pinned");
+    el.style.transform = "";
+    const p = (cvLoad().pos || {})[el.dataset.nid] || {};
+    el.style.left = (p.x || 0) + "px";
+    el.style.top = (p.y || 0) + "px";
+    applySize(el, p);
+    refitNode(el);
+  }
+  if ($("cv-unpin")) $("cv-unpin").hidden = true;
+  layoutZones(); redrawEdges();
+}
+window.unpinWindow = unpinWindow;
+
+// Mọi "cửa sổ" của workspace này: card 👑 (terminal nhúng) + card VS Code đang mở.
+// Card agent thường không có gì để ghim — nội dung là vài dòng meta.
+function winList() {
+  const sessions = cvLast.sessions || [];
+  const out = sessions.filter((s) => s.is_orch).map((s) => ({
+    nid: "s:" + s.id, kind: "Terminal", icon: ic("terminal"),
+    name: s.name, sub: s.cwd || "" }));
+  for (const c of vscodeCards)
+    if (sessions.some((s) => s.id === c.session))
+      out.push({ nid: "vscode:" + c.session, kind: "VS Code", icon: ic("folder"),
+                 name: c.name || c.session, sub: c.cwd || "" });
+  return out;
+}
+
+function openWindows() {
+  const list = winList();
+  $("dr-title").textContent = "Windows";
+  $("dr-badge").innerHTML = "";
+  $("dr-body").innerHTML = list.length
+    ? `<div class="hint">Click one to pin it to the left edge at full height — it stays put while
+         you pan and zoom the canvas. Click the pinned one again to send it back.</div>`
+      + list.map((w) => `<div class="win-card${w.nid === pinnedNid ? " on" : ""}"
+          onclick="pinWindow('${esc(w.nid)}'); closeDrawer()">
+          ${w.icon}
+          <div class="win-main"><b>${esc(w.name)}</b>
+            <span class="win-sub" title="${esc(w.sub)}">${esc(w.sub)}</span></div>
+          ${badge(w.kind, "b-gray")}
+          ${w.nid === pinnedNid ? badge("pinned", "b-blue") : ""}
+        </div>`).join("")
+    : `<div class="empty">No windows here yet — turn on the terminal for an agent (💻 in its
+         inspector), or open a VS Code folder.</div>`;
+  $("drawer").classList.add("open");
+  $("drawer-overlay").classList.add("open");
+}
+window.openWindows = openWindows;
+
+function renderWinBtn() {
+  const b = $("win-btn");
+  if (b) b.querySelector(".n").textContent = winList().length;
 }
 
 // ── Minimap ─────────────────────────────────────────────────────────────────
@@ -553,12 +663,20 @@ function applyView() {
 // phủ hết mọi trường hợp hình học đổi, khỏi phải nhớ rải lời gọi khắp nơi.
 const MM = { w: 180, h: 120, pad: 6 };
 
+// Node được tính vào hình học của canvas. Node ĐANG GHIM bị loại: left/top của nó là kết quả
+// bù transform, tức là đổi theo từng cú pan — để nó vào bbox thì minimap, cvFit và zone đều
+// chạy theo khung nhìn thay vì theo nội dung.
+function cvGeomNodes() {
+  return [...$("world").children].filter(
+    (el) => el.classList.contains("node") && !el.classList.contains("pinned") && !el.hidden);
+}
+
 // Khung bao gồm cả node LẪN khung nhìn: chỉ lấy node thì pan ra vùng trống là ô xanh
 // trôi ra ngoài map, người dùng mất luôn thứ duy nhất chỉ họ đang ở đâu.
 function mmBox() {
   const cv = $("canvas"), world = $("world");
   if (!cv || !world) return null;
-  const nodes = [...world.children].filter((el) => el.classList.contains("node"));
+  const nodes = cvGeomNodes();
   if (!nodes.length) return null;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   const add = (x, y, w, h) => {
@@ -660,7 +778,7 @@ window.cvZoom = cvZoom;
 // Fit toàn bộ node vào khung nhìn (padding 40, không phóng quá 100%).
 function cvFit() {
   const cv = $("canvas");
-  const nodes = [...$("world").children].filter((el) => el.classList.contains("node"));
+  const nodes = cvGeomNodes();
   if (!nodes.length) { CV = { k: 1, tx: 40, ty: 40 }; applyView(); return; }
   let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
   for (const el of nodes) {
@@ -1286,11 +1404,17 @@ function layoutZones() {
     const g = cvGroups[+z.dataset.gi];
     if (!g || !g.els.length) continue;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    let n = 0;
     for (const el of g.els) {
+      if (el.classList.contains("pinned")) continue;   // xem cvGeomNodes
+      n++;
       const x = parseFloat(el.style.left) || 0, y = parseFloat(el.style.top) || 0;
       x0 = Math.min(x0, x); y0 = Math.min(y0, y);
       x1 = Math.max(x1, x + el.offsetWidth); y1 = Math.max(y1, y + el.offsetHeight);
     }
+    // Cả cụm chỉ còn mỗi cái đang ghim → không còn gì để bo.
+    z.hidden = !n;
+    if (!n) continue;
     const headH = (z.querySelector(".zone-head") || {}).offsetHeight || 74;
     z.style.left = (x0 - 18) + "px";
     z.style.top = (y0 - headH - 14) + "px";
@@ -1318,6 +1442,9 @@ function redrawEdges() {
   for (const e of cvEdges) {
     const a = cvNodeEls[e.from], b = cvNodeEls[e.to];
     if (!a || !b) continue;
+    // Mũi tên tới node ghim sẽ quét ngang màn hình theo từng cú pan — bỏ, đằng nào node ghim
+    // cũng luôn nhìn thấy được.
+    if (a.classList.contains("pinned") || b.classList.contains("pinned")) continue;
     const ra = rect(a), rb = rect(b);
     const p1 = rectBorderPoint(ra, rb.x + rb.w / 2, rb.y + rb.h / 2);
     const p2 = rectBorderPoint(rb, ra.x + ra.w / 2, ra.y + ra.h / 2);
@@ -1340,6 +1467,8 @@ function renderCanvas(sessions, signals) {
 
   const st = cvLoad();
   const pos = st.pos || {};
+  // Ghim lưu theo workspace, cùng chỗ với pos/view → đổi pane hay F5 vẫn giữ nguyên cửa sổ ghim.
+  pinnedNid = st.pin || null;
 
   // Gom theo cwd: ≥2 agent chung cwd → zone bo quanh; member vẫn là node TỰ DO trên canvas.
   const byCwd = new Map();
@@ -1456,6 +1585,7 @@ function renderCanvas(sessions, signals) {
   }
   cvEdges = [...pairBest.values()];
   redrawEdges();
+  renderWinBtn();      // số cửa sổ đổi theo session 👑 và card VS Code
   renderInspector();   // dữ liệu vừa đổi → panel bên phải phải theo
   markSelection();     // innerHTML rebuild xoá .sel, gắn lại
   attachTerms();  // cắm terminal bền vào card 👑 (sau khi node đã vào DOM)
@@ -1493,6 +1623,8 @@ function cvInit() {
     }
     const head = e.target.closest(".node-head, .zone-head");
     const node = head && head.closest(".node");
+    // Node ghim: hình học do applyPin tính, kéo nó chỉ làm hai bên ghi đè lẫn nhau.
+    if (node && node.classList.contains("pinned")) return;
     if (node && node.classList.contains("group-zone")) {
       // Kéo header 📁 → di chuyển cả cụm member (zone tự bo theo).
       const g = cvGroups[+node.dataset.gi] || { els: [] };
@@ -1580,6 +1712,9 @@ function cvInit() {
     const card = e.target.closest(".agent-card");
     if (card && card.dataset.sid) selectNode(card.dataset.sid);
   });
+  // Chiều cao node ghim đo từ canvas, mà canvas co giãn theo cửa sổ trình duyệt (và theo thanh
+  // kéo giữa 2 pane) → không nghe resize thì panel ghim giữ nguyên chiều cao cũ.
+  addEventListener("resize", () => { if (pinnedNid) applyPin(); });
   cv.addEventListener("wheel", (e) => {
     if (e.target.closest(".term-slot, .vscode-slot, .cv-overlay")) return;  // wheel trong terminal/VS Code/overlay = scroll, không zoom
     e.preventDefault();  // wheel = zoom quanh con trỏ (không scroll trang)
