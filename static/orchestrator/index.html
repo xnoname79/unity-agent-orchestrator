@@ -360,10 +360,6 @@
      bên ghi đè nhau. */
   .node.pinned { z-index: 4; transform-origin: 0 0; box-shadow: var(--sh-3); }
   .node.pinned .rz { display: none; }
-  .cv-unpin { width: 26px; height: 26px; padding: 0; display: flex; align-items: center;
-    justify-content: center; border-radius: 7px; background: var(--panel);
-    border: 1px solid var(--border); color: var(--muted); box-shadow: var(--sh-2); }
-  .cv-unpin:hover { color: var(--red); border-color: var(--red); }
   .rz { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize;
     z-index: 3; background: linear-gradient(135deg, transparent 50%, var(--faint) 50%);
     opacity: .35; border-bottom-right-radius: var(--r-card); }
@@ -706,9 +702,6 @@
           <button class="icon-btn" onclick="cvFit()" title="Fit every agent into view">
             <svg class="ic"><use href="#i-fit"/></svg></button>
         </div>
-        <button id="cv-unpin" class="cv-overlay cv-unpin" onclick="unpinWindow()"
-          title="Unpin this window — it goes back where it was on the canvas" hidden>
-          <svg class="ic sm"><use href="#i-x"/></svg></button>
         <button class="cv-overlay cv-help" title="Canvas help"
           onclick="const h = document.getElementById('cv-hint'); h.hidden = !h.hidden">
           <svg class="ic"><use href="#i-help"/></svg></button>

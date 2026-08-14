@@ -566,8 +566,7 @@ function pinnedEl() {
 }
 
 function applyPin() {
-  const cv = $("canvas"), btn = $("cv-unpin"), el = pinnedEl();
-  if (btn) btn.hidden = !el;
+  const cv = $("canvas"), el = pinnedEl();
   if (!el || !cv) return;
   // ponytail: bề rộng cố định. Cho kéo giãn thì phải lưu riêng và đá nhau với tay nắm .rz —
   // thêm khi thật sự thấy chật.
@@ -579,7 +578,6 @@ function applyPin() {
   el.style.transform = `scale(${1 / CV.k})`;
   el.style.width = w + "px";
   el.style.height = h + "px";
-  if (btn) { btn.style.left = (PIN_PAD + w - 34) + "px"; btn.style.top = (PIN_PAD + 7) + "px"; }
   // Pan/zoom KHÔNG đổi cỡ trên màn hình, nên đừng fit xterm mỗi khung hình khi đang kéo.
   const size = w + "x" + h;
   if (size !== pinSize) { pinSize = size; requestAnimationFrame(() => refitNode(el)); }
@@ -611,10 +609,8 @@ function unpinWindow(keep) {
     applySize(el, p);
     refitNode(el);
   }
-  if ($("cv-unpin")) $("cv-unpin").hidden = true;
   layoutZones(); redrawEdges();
 }
-window.unpinWindow = unpinWindow;
 
 // Mọi "cửa sổ" của workspace này: card 👑 (terminal nhúng) + card VS Code đang mở.
 // Card agent thường không có gì để ghim — nội dung là vài dòng meta.
