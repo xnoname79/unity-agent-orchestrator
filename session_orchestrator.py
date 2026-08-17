@@ -1672,6 +1672,15 @@ _PEER_RULE = ('[Peers] Cần gửi signal cho một vai mà bạn chưa chắc c
               'list_agents(from_role="<vai của bạn>") để lấy danh sách agent đang sống trong '
               'workspace. ĐỪNG nhớ tên vai từ lượt trước — danh sách trong đầu bạn là bản cũ.')
 
+# Gửi signal giữa lượt là tự mở cửa cho một run thứ hai vào CÙNG session mình: vai kia làm xong
+# sớm, báo cáo về lúc mình còn đang chạy, và hai tiến trình cùng ghi một transcript. Lock
+# per-session không cứu được trường hợp agent đang chạy trong terminal PTY nhúng — PTY đó không
+# đi qua lock. Rẻ nhất là ghim luật vào mọi signal, kể cả vai không có SKILL riêng.
+_TIMING_RULE = ('[Thời điểm] send_signal là thao tác CUỐI của lượt. Làm XONG việc rồi mới gửi — '
+                'gửi giữa chừng thì báo cáo của vai kia có thể về lúc bạn CÒN ĐANG CHẠY, mở THÊM '
+                'một tiến trình trên CÙNG session bạn và hai bên cùng ghi một transcript. Nhiều '
+                'signal (báo cáo + bàn giao) thì gửi liền nhau ở cuối lượt.')
+
 
 def _reply_rule(name, from_role):
     """Đích báo cáo = NGƯỜI GỬI signal này, không phải một vai cố định.
@@ -1699,6 +1708,7 @@ def _prepend_role(cwd, name, message, from_role=""):
         parts.append(skill)
     # Luôn có, kể cả vai không có SKILL riêng.
     parts.append(_PEER_RULE)
+    parts.append(_TIMING_RULE)
     parts.append(_reply_rule(name, from_role))
     return (f"[Role: {name}]\n[Signal from: {from_role or 'user'}]\n"
             + "\n\n---\n\n".join(parts) + f"\n\n---\n\n{message}")
