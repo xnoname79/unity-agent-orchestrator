@@ -118,11 +118,17 @@ not replace them.
 | **Codex CLI** | [learn.chatgpt.com/docs/codex/cli](https://learn.chatgpt.com/docs/codex/cli#getting-started) |
 | **Python 3.10+** | Only if you run from source |
 | **neovim** + **tmux** | Optional — only for the editor card |
+| **lazygit** | Optional — adds the card's **git** tab |
 
 > The editor card runs `nvim` inside a tmux session, so closing the browser tab detaches instead
 > of discarding your buffer. Without tmux the card still works, but the nvim process ends with the
-> tab. Without `nvim` there is simply no editor card; everything else is unaffected. Override the
-> binaries with `ORCH_NVIM_BIN` / `ORCH_TMUX_BIN`.
+> tab. Without `nvim` there is simply no editor card; everything else is unaffected.
+>
+> With [lazygit](https://github.com/jesseduffield/lazygit) on PATH the card grows a second tab —
+> a full git UI (stage hunks, branches, diffs, rebase) in the same window, no leaving the
+> dashboard. Without it the card just has no git tab.
+>
+> Override any of them with `ORCH_NVIM_BIN` / `ORCH_TMUX_BIN` / `ORCH_LAZYGIT_BIN`.
 
 > The orchestrator finds the CLIs through the **PATH of its own process**. Install one while it
 > is running and you have to restart it. If `where.exe claude` / `which claude` prints a path but
