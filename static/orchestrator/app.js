@@ -885,8 +885,9 @@ async function closeEditor(sid, name) {
 }
 window.closeEditor = closeEditor;
 
-// Đổi tab = đổi cửa sổ tmux ở SERVER. Không đụng gì tới xterm: nó vẫn attach vào đúng phiên,
-// tmux tự vẽ lại màn hình mới. Nhờ vậy không có state tab nào ở client phải giữ đồng bộ.
+// Đổi tab = gửi một lệnh ex vào nvim ở SERVER (:DiffviewOpen / :DiffviewClose). Không đụng gì
+// tới xterm: nó vẫn attach vào đúng phiên, nvim tự vẽ lại. Không có state tab nào ở client phải
+// giữ đồng bộ — nút chỉ sáng lên cho biết vừa bấm gì.
 async function editorFocus(sid, win, el) {
   try { await api("/api/editor/focus", "POST", { session: sid, window: win }); }
   catch (e) { console.error(e); return; }
@@ -907,7 +908,7 @@ function editorCardHtml(st) {
   const wins = st.windows || ["nvim"];
   const tabs = wins.length < 2 ? "" : `<span class="ed-tabs">` + wins.map((w, i) =>
     `<button class="${i === 0 ? "on" : ""}" onclick="editorFocus('${sid}','${esc(w)}',this)"
-      title="${w === "git" ? "lazygit — stage hunks, branches, diffs, rebase" : "nvim"}"
+      title="${w === "git" ? "diffview.nvim — side-by-side diff of the working tree, staged, or any revision" : "back to editing (closes the diff view)"}"
       >${esc(w)}</button>`).join("") + `</span>`;
   return `<div class="agent-card editor-card">
     <div class="node-head editor-head" title="${esc(tip)}">

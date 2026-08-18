@@ -18,6 +18,7 @@ The card replaced `code serve-web`, and the whole point was to stop owning proce
 import asyncio
 import os
 import shutil
+import subprocess
 import sys
 import time
 import tempfile
@@ -33,6 +34,16 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 tmp = Path(tempfile.mkdtemp())
+# Repo git thật: :DiffviewOpen ngoài repo chỉ báo lỗi, không mở gì — test sẽ xanh giả nếu chỉ
+# kiểm "lệnh đã gửi đi".
+subprocess.run(["git", "init", "-q"], cwd=tmp, check=False)
+(tmp / "tracked.txt").write_text("one\n", encoding="utf-8")
+subprocess.run(["git", "add", "-A"], cwd=tmp, check=False)
+subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+               cwd=tmp, check=False)
+(tmp / "tracked.txt").write_text("two\n", encoding="utf-8")
+(tmp / "dirty.txt").write_text("untracked\n", encoding="utf-8")
+
 os.environ["ORCH_DB"] = "check_editor"
 os.environ["ORCH_DRY_RUN"] = "1"
 os.environ["ORCH_WORKSPACES_ROOT"] = str(tmp / "ws")
@@ -139,29 +150,39 @@ async def main():
         check("opening twice is harmless and does not duplicate",
               r.status_code == 200 and len(again) == 1, f"{r.status_code} {again}")
 
-        # ── tab git (lazygit) ────────────────────────────────────────────────
-        if have_tmux and shutil.which(so.LAZYGIT_BIN):
-            _, wins = await so._tmux_run("list-windows", "-t", NAME, "-F", "#{window_name}",
-                                         capture=True)
-            check("the card has both a nvim and a git window",
-                  set(wins.split()) == {"nvim", "git"}, wins.strip()[:120])
-            check("and the API advertises both tabs",
-                  (await c.get("/api/editor")).json()[0].get("windows") == ["nvim", "git"],
+        # ── tab git (diffview.nvim) ──────────────────────────────────────────
+        # Không kiểm "đã gửi phím" — gửi được mà nvim không mở gì thì tính năng vẫn hỏng.
+        # Đọc thẳng màn hình tmux: Diffview có hiện ra hay không.
+        if have_tmux and HAVE_NVIM:
+            check("the API advertises both tabs",
+                  (await c.get("/api/editor")).json()[0].get("windows") == ["edit", "git"],
                   str((await c.get("/api/editor")).json()))
 
             r = await c.post("/api/editor/focus", json={"session": SID, "window": "git"})
-            _, cur = await so._tmux_run("display-message", "-p", "-t", NAME,
-                                        "#{window_name}", capture=True)
-            check("switching the tab moves tmux to that window",
-                  r.status_code == 200 and cur.strip() == "git", f"{r.status_code} {cur.strip()}")
+            check("switching to the git tab is accepted", r.status_code == 200, str(r.status_code))
+            pane = ""
+            for _ in range(40):          # nvim + diffview cần một nhịp để vẽ
+                await asyncio.sleep(0.5)
+                _, pane = await so._tmux_run("capture-pane", "-p", "-t", f"{NAME}:nvim",
+                                             capture=True)
+                if "Diffview" in pane or "dirty.txt" in pane:
+                    break
+            check("diffview actually opens inside nvim",
+                  "Diffview" in pane or "dirty.txt" in pane,
+                  "pane never showed the diff — " + " ".join(pane.split())[:180])
 
-            # Người dùng thoát lazygit → cửa sổ chết. Bấm tab lại phải DỰNG LẠI, không báo lỗi.
-            await so._tmux_run("kill-window", "-t", f"{NAME}:git")
-            r = await c.post("/api/editor/focus", json={"session": SID, "window": "git"})
-            _, cur = await so._tmux_run("display-message", "-p", "-t", NAME,
-                                        "#{window_name}", capture=True)
-            check("a tab whose window was killed is rebuilt on click",
-                  r.status_code == 200 and cur.strip() == "git", f"{r.status_code} {cur.strip()}")
+            r = await c.post("/api/editor/focus", json={"session": SID, "window": "edit"})
+            for _ in range(20):
+                await asyncio.sleep(0.5)
+                _, pane = await so._tmux_run("capture-pane", "-p", "-t", f"{NAME}:nvim",
+                                             capture=True)
+                if "DiffviewFilePanel" not in pane:
+                    break
+            # Đừng dò chuỗi "Diffview": nvim in lại chính lệnh ":DiffviewClose" vừa gõ ở dòng
+            # lệnh, nên nó có mặt kể cả khi panel đã đóng.
+            check("and that closes the diff panel again",
+                  r.status_code == 200 and "DiffviewFilePanel" not in pane,
+                  " ".join(pane.split())[:160])
 
             r = await c.post("/api/editor/focus", json={"session": SID, "window": "bogus"})
             check("an unknown tab name is refused", r.status_code == 400, str(r.status_code))
