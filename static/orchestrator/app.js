@@ -550,7 +550,7 @@ function applyView() {
 
 // ── Ghim một cửa sổ vào mép trái ────────────────────────────────────────────
 // Node ghim vẫn nằm TRONG #world. Bứng nó sang cha khác (một lớp overlay không transform) là
-// cách hiển nhiên, nhưng iframe VS Code tải lại từ đầu mỗi lần đổi cha — xem syncVscodeNodes.
+// cách hiển nhiên, nhưng node ghim phải giữ nguyên cha để không mất trạng thái đang gõ dở.
 // Và position:fixed bên trong #world vô dụng: ancestor có transform là containing block của
 // mọi con fixed. Nên cách duy nhất vừa giữ nguyên cha vừa đứng yên là TỰ BÙ world:
 //   left/top   = (PAD − CV.t) / CV.k   → sau khi world dịch+phóng thì rơi đúng góc trên trái
@@ -619,9 +619,9 @@ function winList() {
   const out = sessions.filter((s) => s.is_orch).map((s) => ({
     nid: "s:" + s.id, kind: "Terminal", icon: ic("terminal"),
     name: s.name, sub: s.cwd || "" }));
-  for (const c of vscodeCards)
+  for (const c of editorCards)
     if (sessions.some((s) => s.id === c.session))
-      out.push({ nid: "vscode:" + c.session, kind: "VS Code", icon: ic("folder"),
+      out.push({ nid: "editor:" + c.session, kind: "nvim", icon: ic("edit"),
                  name: c.name || c.session, sub: c.cwd || "" });
   return out;
 }
@@ -824,8 +824,10 @@ function startTerm(t) {
   t.term.loadAddon(t.fit);
   t.term.open(t.host);
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  t.ws = new WebSocket(`${proto}://${location.host}/ws/terminal?session=${encodeURIComponent(t.sid)}`
-                       + (t.cli ? `&cli=${encodeURIComponent(t.cli)}` : ""));
+  const path = t.wsPath
+    || `/ws/terminal?session=${encodeURIComponent(t.sid)}`
+       + (t.cli ? `&cli=${encodeURIComponent(t.cli)}` : "");
+  t.ws = new WebSocket(`${proto}://${location.host}${path}`);
   t.ws.binaryType = "arraybuffer";
   t.ws.onopen = () => fitTerm(t);
   t.ws.onmessage = (e) => t.term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
@@ -860,153 +862,62 @@ async function reconnectTerm(sid, name) {
 window.reconnectTerm = reconnectTerm;
 
 // Sau mỗi render: cắm terminal vào slot của các card 👑; hủy terminal của card không còn.
-// ── Card VS Code (code serve-web trong iframe) ──────────────────────────────
-// Mở được BAO NHIÊU card tuỳ ý: mỗi session một tiến trình serve-web, mỗi tiến trình một cổng.
-// iframe sống NGOÀI chu trình innerHTML của canvas (giống terminal): mỗi render chỉ re-attach vào
-// .vscode-slot, nếu không thì mỗi lần SSE re-render là VS Code tải lại từ đầu.
-let vscodeCards = [];   // [{open, session, name, cwd, port, token, started}]
-let cvVscode = {};      // session_id → {el: <iframe>, key}; key đổi thì mới dựng iframe mới
+// ── Card editor (nvim trong PTY, y hệt terminal) ────────────────────────────
+// Không iframe, không cổng, không tải server: nvim là TUI nên card này chỉ là một .term-slot
+// nữa, nối vào /ws/editor. Nhờ vậy nó đi qua ĐÚNG đường render của card agent — không còn phải
+// giữ node ngoài chu trình innerHTML như hồi iframe VS Code (bứng iframe sang cha mới là tải lại).
+let editorCards = [];   // [{open, session, name, cwd, persistent}] từ /api/editor
 
-function vscodeUrl(st) {
-  // Server bind 0.0.0.0 nên không tự biết hostname client gọi được → ghép ở đây.
-  return `http://${location.hostname}:${st.port}/?tkn=${encodeURIComponent(st.token)}`
-       + `&folder=${encodeURIComponent(st.cwd)}`;
-}
-
-async function openVscode(sid) {
+async function openEditor(sid) {
   try {
-    await api("/api/vscode/open", "POST", { session: sid });
+    await api("/api/editor/open", "POST", { session: sid });
     await refreshAll();
-  } catch (e) { alert("Could not open VS Code: " + e); }
+  } catch (e) { alert("Could not open the editor: " + e); }
 }
-window.openVscode = openVscode;
+window.openEditor = openEditor;
 
-async function closeVscode(sid, name) {
-  if (!confirm(`Close the VS Code folder for '${name}'? Its serve-web process exits; other folders stay open.`))
+async function closeEditor(sid, name) {
+  if (!confirm(`Close the editor for '${name}'?\n\nIts nvim session is killed — unsaved buffers `
+               + `are lost (nvim leaves a swap file to :recover from).`))
     return;
-  try { await api("/api/vscode/close", "POST", { session: sid }); await refreshAll(); }
-  catch (e) { alert("Could not close VS Code: " + e); }
+  try { await api("/api/editor/close", "POST", { session: sid }); await refreshAll(); }
+  catch (e) { alert("Could not close the editor: " + e); }
 }
-window.closeVscode = closeVscode;
+window.closeEditor = closeEditor;
 
-function reloadVscode(sid) {
-  // Lần chạy đầu VS Code còn tải server → iframe có thể rỗng. Nút này nạp lại chính iframe đó.
-  const v = cvVscode[sid];
-  if (v) v.el.src = v.el.src;
-}
-window.reloadVscode = reloadVscode;
-
-// Thay chỗ của iframe khi serve-web chưa phục vụ được. Lần chạy đầu VS Code tải server ~100MB
-// LÚC có request đầu tiên (cổng mở ngay từ giây đầu, nên 'cổng mở' không nói lên gì) — không có
-// khối này thì người dùng nhìn một ô #1e1e1e câm vài phút và tưởng hỏng.
-function vscodeProgress(st) {
-  if (st.exit !== null && st.exit !== undefined)
-    return `<div class="vscode-dl"><b>serve-web exited with code ${st.exit}.</b>
-      <span>Close this folder and open it again.</span></div>`;
-  const t = Date.parse(st.started);
-  const secs = t ? Math.max(0, Math.round((Date.now() - t) / 1000)) : 0;
-  return `<div class="vscode-dl">
-    <b>${ic("refresh", "sm")} Downloading the VS Code Server…</b>
-    <div class="bar"><i></i></div>
-    <span>About 100 MB, once per VS Code version — ${secs}s so far.
-      The editor appears here on its own when it is done.</span>
-  </div>`;
-}
-
-function vscodeCardHtml(st) {
+function editorCardHtml(st) {
   const sid = esc(st.session);
-  return `<div class="agent-card vscode-card">
-    <div class="node-head vscode-head">
-      <span>${ic("terminal", "sm")} VS Code</span><b>${esc(st.name || '')}</b>
+  // key riêng ("ed:") vì một session có thể mở CẢ terminal agent lẫn editor — trùng key là hai
+  // card dùng chung một xterm.
+  const tip = st.persistent
+    ? "Runs in tmux — closing the tab only detaches, the buffer survives"
+    : "No tmux on this machine — closing the tab ends the nvim session";
+  return `<div class="agent-card editor-card">
+    <div class="node-head editor-head" title="${esc(tip)}">
+      <span>${ic("edit", "sm")} nvim</span><b>${esc(st.name || '')}</b>
       <span class="cwd" title="${esc(st.cwd || '')}">${esc(st.cwd || '')}</span>
       <span class="spacer"></span>
-      <button class="icon-btn" onclick="reloadVscode('${sid}')" title="Reload the iframe — useful while the server is still starting">${ic("refresh", "sm")}</button>
-      <button class="icon-btn danger" onclick="closeVscode('${sid}','${esc(st.name || '')}')" title="Close this folder (exits its serve-web process)">${ic("x", "sm")}</button>
+      <button class="icon-btn danger" onclick="closeEditor('${sid}','${esc(st.name || '')}')"
+        title="Close the editor (kills its nvim session)">${ic("x", "sm")}</button>
     </div>
-    ${st.ready ? `<div class="vscode-slot" data-sid="${sid}"></div>` : vscodeProgress(st)}
+    <div class="term-slot" data-sid="${sid}" data-key="ed:${sid}"
+      data-ws="/ws/editor?session=${encodeURIComponent(st.session)}"></div>
   </div>`;
-}
-
-// Trong lúc tải, KHÔNG có gì đẩy SSE nên canvas đứng im (poll 5 giây chỉ chạy ở màn Home).
-// Tự hẹn giờ, và chỉ khi còn card đang chờ — xong là thôi.
-let vscodeWaitTimer = null;
-function vscodeWatch() {
-  if (vscodeWaitTimer || !vscodeCards.some((c) => !c.ready && c.exit == null)) return;
-  vscodeWaitTimer = setTimeout(() => { vscodeWaitTimer = null; refreshAll(); }, 2000);
-}
-
-// Node của card VS Code: dựng MỘT lần rồi giữ nguyên trong DOM mãi. renderCanvas xoá mọi con của
-// #world TRỪ node mang data-vsc, nên iframe bên trong không bao giờ bị chuyển cha — đó là điều
-// kiện duy nhất để nó không tải lại.
-// Ruột node chỉ được dựng lại khi card CHƯA có iframe (lúc đó chưa có gì để mất): nhờ vậy thanh
-// tiến trình vẫn đếm giây, và lúc ready thì khối tiến trình được thay bằng .vscode-slot rỗng để
-// attachVscode cắm iframe vào. Sau đó không ai đụng vào ruột nữa.
-let cvVscodeNodes = {};   // nid → node element bền
-function syncVscodeNodes(world, cards) {
-  const seen = new Set();
-  for (const c of cards) {
-    const nid = "vscode:" + c.session;
-    seen.add(nid);
-    let el = cvVscodeNodes[nid];
-    if (!el) {
-      el = document.createElement("div");
-      el.className = "node";
-      el.dataset.nid = nid;
-      el.dataset.rz = "1";
-      el.dataset.vsc = "1";     // dấu để renderCanvas chừa ra lúc dọn #world
-      cvVscodeNodes[nid] = el;
-    }
-    if (!el.isConnected) world.appendChild(el);
-    if (!el.querySelector("iframe")) el.innerHTML = vscodeCardHtml(c) + RZ;
-  }
-  // Card đã đóng, hoặc thuộc workspace của pane khác → bỏ node (iframe đi theo).
-  for (const nid of Object.keys(cvVscodeNodes))
-    if (!seen.has(nid)) { cvVscodeNodes[nid].remove(); delete cvVscodeNodes[nid]; }
-}
-
-function attachVscode() {
-  const seen = new Set();
-  for (const slot of $("world").querySelectorAll(".vscode-slot")) {
-    const sid = slot.dataset.sid;
-    seen.add(sid);
-    const card = vscodeCards.find((c) => c.session === sid);
-    if (!card) continue;
-    // key phải đổi mỗi lần tiến trình khởi động lại, nếu không iframe cũ bám vào cổng đã chết.
-    // KHÔNG dùng token: mọi card dùng CHUNG một token (server nền của VS Code xác thực bằng một
-    // file duy nhất — xem _VSCODE_TOKEN), nên token không còn phân biệt được lần chạy nào.
-    // `started` do backend đóng dấu lúc spawn, đổi ở mọi lần mở lại.
-    const key = `${card.session}|${card.started}`;
-    if (!cvVscode[sid] || cvVscode[sid].key !== key) {
-      const el = document.createElement("iframe");
-      el.className = "vscode-frame";
-      // Card là iframe KHÁC ORIGIN (khác cổng = khác origin), mà allowlist mặc định của
-      // clipboard-read/-write là `self` → VS Code bên trong KHÔNG đọc nổi clipboard dù người dùng
-      // đã bấm Allow cho site: Permissions Policy chặn trước, quyền của người dùng không mở được.
-      // Đo được: iframe không có allow → allowsFeature("clipboard-read") = false; có allow = true.
-      // Triệu chứng nếu thiếu: "Unable to read from the browser's clipboard" mỗi lần dán.
-      el.allow = "clipboard-read; clipboard-write";
-      el.src = vscodeUrl(card);
-      cvVscode[sid] = { el, key };
-      slot.replaceChildren(el);   // mở lại = cổng mới: bỏ hẳn iframe cũ, đừng chồng hai cái
-    } else if (!cvVscode[sid].el.isConnected) {
-      slot.appendChild(cvVscode[sid].el);
-    }
-    // Đường thường: iframe ĐÃ nằm sẵn trong slot bền → không đụng gì. Chạm vào là tải lại.
-  }
-  // Card không còn trên canvas (đã đóng, hoặc thuộc workspace của pane khác) → bỏ iframe.
-  for (const sid of Object.keys(cvVscode)) if (!seen.has(sid)) delete cvVscode[sid];
 }
 
 function attachTerms() {
   const seen = new Set();
   for (const slot of $("world").querySelectorAll(".term-slot")) {
+    // key ≠ sid: một session mở được cả terminal agent lẫn card editor, hai xterm riêng.
+    const key = slot.dataset.key || slot.dataset.sid;
     const sid = slot.dataset.sid;
-    seen.add(sid);
-    let t = cvTerms[sid];
-    if (!t) t = cvTerms[sid] = { sid, host: Object.assign(document.createElement("div"),
-                                                          { className: "term-host" }),
+    seen.add(key);
+    let t = cvTerms[key];
+    if (!t) t = cvTerms[key] = { sid, key, host: Object.assign(document.createElement("div"),
+                                                               { className: "term-host" }),
                                  started: false, term: null, fit: null, ws: null };
     t.cli = slot.dataset.cli || "";   // đọc TRƯỚC startTerm (rAF chạy sau vòng render này)
+    t.wsPath = slot.dataset.ws || "";
     slot.appendChild(t.host);
     // Slot đang khóa: KHÔNG start PTY mới (đợi user bấm 🔄 sau khi run tự động xong).
     requestAnimationFrame(() => {
@@ -1014,7 +925,7 @@ function attachTerms() {
       else fitTerm(t);
     });
   }
-  for (const sid of Object.keys(cvTerms)) if (!seen.has(sid)) destroyTerm(sid);
+  for (const key of Object.keys(cvTerms)) if (!seen.has(key)) destroyTerm(key);
 }
 
 // Gửi signal nhanh tới 1 agent ngay trên card.
@@ -1114,7 +1025,7 @@ function agentCard(s, needsYou, isOrch) {
           <button class="icon-btn" onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')"
             title="Reload the session/terminal (restarts the selected CLI)">${ic("refresh", "sm")}</button>
         </div>
-        <div class="term-slot" data-sid="${esc(s.id)}" data-cli="${cli}"${locked ? ` data-lock="1"` : ""}>${lock}</div>
+        <div class="term-slot" data-sid="${esc(s.id)}" data-key="${esc(s.id)}" data-cli="${cli}"${locked ? ` data-lock="1"` : ""}>${lock}</div>
       </div>
     </div>`;
   }
@@ -1166,8 +1077,8 @@ function quickBtns(s, id, side) {
     : btn("", "Open a terminal for this session (one per project — closes any other terminal in the same cwd)",
         `toggleOrch('${id}',1)`, ic("terminal", "sm")));
   if ((s.cwd || "").trim())
-    b.push(btn("", "Open this session's project folder in VS Code — as many folders as you like",
-      `openVscode('${id}')`, ic("folder", "sm")));
+    b.push(btn("", "Open this session's project folder in nvim — as many editors as you like",
+      `openEditor('${id}')`, ic("edit", "sm")));
   return side ? b.join("") : `<div class="quick">${b.join("")}</div>`;
 }
 
@@ -1390,7 +1301,10 @@ function saveNodeGeom(el, pos) {
 // Terminal xterm KHÔNG tự biết khung đổi: phải fit lại, nếu không chữ giữ nguyên cols/rows cũ.
 function refitNode(el) {
   const nid = el.dataset.nid || "";
-  const t = nid.startsWith("s:") && cvTerms[nid.slice(2)];
+  // "s:<sid>" = card agent (key = sid) · "editor:<sid>" = card editor (key = "ed:"+sid)
+  const key = nid.startsWith("s:") ? nid.slice(2)
+    : nid.startsWith("editor:") ? "ed:" + nid.slice(7) : "";
+  const t = key && cvTerms[key];
   if (t) fitTerm(t);
 }
 
@@ -1497,26 +1411,24 @@ function renderCanvas(sessions, signals) {
   // khi worker đang chạy — không nhớ là user gõ vài phím lại văng focus một lần).
   const focusSid = Object.keys(cvTerms).find((sid) =>
     cvTerms[sid].host.contains(document.activeElement)) || null;
-  // Thứ tự vẽ: zone (dưới) → edges (giữa) → agent card (trên).
-  // Card VS Code: 1 node độc lập (không thuộc session nào) — kéo thả/lưu vị trí như node khác.
-  // CHỈ dựng card của workspace NÀY: /api/vscode trả mọi card đang mở của cả orchestrator,
-  // không có khái niệm workspace. Không lọc thì mở thư mục ở workspace này lại hiện card ở cả
-  // pane bên kia — và card nhúng iframe kèm token, tức là lộ cây mã nguồn sang tenant khác.
-  // `sessions` đã được scope theo workspace của pane, nên chỉ cần hỏi nó có session đó không.
-  const myVscode = vscodeCards.filter((c) => sessions.some((s) => s.id === c.session));
-  // Node VS Code KHÔNG đi qua innerHTML. Nó nhúng iframe, mà chuyển iframe sang cha mới là trình
-  // duyệt tải lại từ đầu — đo được: 5 lần render rời nhịp = 5 lần load. Re-attach vào slot mới
-  // KHÔNG cứu được, vì gắn lại CHÍNH LÀ chuyển cha. Cách duy nhất là đừng bứng nó ra: giữ nguyên
-  // node trong DOM, chỉ thay những thứ quanh nó. Handoff bắn một tràng SSE nên mỗi lần bàn giao
-  // là card chớp liên tục. (Terminal thoát vì host của xterm là div — chuyển div không tải lại gì.)
-  for (const ch of [...world.children]) if (!ch.dataset.vsc) ch.remove();
+  // Thứ tự vẽ: zone (dưới) → edges (giữa) → agent card (trên) → card editor (sau cùng).
+  // CHỈ dựng card của workspace NÀY: /api/editor trả mọi card đang mở của cả orchestrator, không
+  // có khái niệm workspace. Không lọc thì mở editor ở workspace này lại hiện card ở cả pane bên
+  // kia — tức là lộ cây mã nguồn sang tenant khác. `sessions` đã scope theo workspace của pane.
+  const myEditors = editorCards.filter((c) => sessions.some((s) => s.id === c.session));
+  // Card editor đi qua innerHTML như mọi card khác: ruột nó là .term-slot, mà host của xterm là
+  // một <div> sống ngoài chu trình render và được attachTerms cắm lại sau — chuyển <div> sang cha
+  // mới không mất gì. (Bản VS Code cũ phải giữ node ngoài innerHTML vì iframe đổi cha là tải lại.)
+  for (const c of myEditors)
+    nodesHtml += `<div class="node" data-nid="editor:${esc(c.session)}" data-rz="1">`
+               + editorCardHtml(c) + RZ + `</div>`;
+  world.replaceChildren();
   world.insertAdjacentHTML("afterbegin",
     zonesHtml + `<svg id="edges" class="edges"></svg>` + nodesHtml);
-  syncVscodeNodes(world, myVscode);
 
   // Đặt vị trí agent: có lưu → dùng lại; mới → xếp cụm theo cwd (seed từ pos group cũ nếu có).
   cvNodeEls = {};
-  const agentEls = world.querySelectorAll(".node:not(.group-zone):not([data-vsc])");
+  const agentEls = world.querySelectorAll('.node[data-nid^="s:"]');
   let cx = 40, cy = 40, rowH = 0;
   const gcur = {};  // cwd → con trỏ xếp lưới 3 cột cho member mới
   nodeMeta.forEach((m, i) => {
@@ -1551,9 +1463,9 @@ function renderCanvas(sessions, signals) {
     el.style.top = pos[nid].y + "px";
     applySize(el, pos[nid]);
   });
-  // Card VS Code: mỗi cái một nid riêng nên nhớ được vị trí/kích thước riêng. Card mới xếp
+  // Card editor: mỗi cái một nid riêng nên nhớ được vị trí/kích thước riêng. Card mới xếp
   // chéo xuống để không chồng khít lên cái đang mở.
-  world.querySelectorAll('.node[data-nid^="vscode:"]').forEach((vsEl, i) => {
+  world.querySelectorAll('.node[data-nid^="editor:"]').forEach((vsEl, i) => {
     const nid = vsEl.dataset.nid;
     if (!pos[nid]) pos[nid] = { x: 40 + i * 40, y: 40 + i * 40 };
     vsEl.style.left = pos[nid].x + "px";
@@ -1585,7 +1497,6 @@ function renderCanvas(sessions, signals) {
   renderInspector();   // dữ liệu vừa đổi → panel bên phải phải theo
   markSelection();     // innerHTML rebuild xoá .sel, gắn lại
   attachTerms();  // cắm terminal bền vào card 👑 (sau khi node đã vào DOM)
-  attachVscode(); // iframe VS Code cũng phải bền qua re-render, không thì reload liên tục
   // Trả focus cho terminal đang gõ dở (rAF: sau khi attachTerms đã cắm host vào slot mới).
   if (focusSid && cvTerms[focusSid])
     requestAnimationFrame(() => { const t = cvTerms[focusSid]; if (t && t.term) t.term.focus(); });
@@ -1704,7 +1615,7 @@ function cvInit() {
   cv.addEventListener("click", (e) => {
     const lock = e.target.closest(".term-lock");
     if (lock) { openSessionRun(lock.closest(".agent-card").dataset.sid); return; }
-    if (e.target.closest("button, select, input, textarea, option, .term-slot, .vscode-slot, .node-head, .zone-head")) return;
+    if (e.target.closest("button, select, input, textarea, option, .term-slot, .node-head, .zone-head")) return;
     const card = e.target.closest(".agent-card");
     if (card && card.dataset.sid) selectNode(card.dataset.sid);
   });
@@ -1712,7 +1623,7 @@ function cvInit() {
   // kéo giữa 2 pane) → không nghe resize thì panel ghim giữ nguyên chiều cao cũ.
   addEventListener("resize", () => { if (pinnedNid) applyPin(); });
   cv.addEventListener("wheel", (e) => {
-    if (e.target.closest(".term-slot, .vscode-slot, .cv-overlay")) return;  // wheel trong terminal/VS Code/overlay = scroll, không zoom
+    if (e.target.closest(".term-slot, .cv-overlay")) return;  // wheel trong terminal/editor/overlay = scroll, không zoom
     e.preventDefault();  // wheel = zoom quanh con trỏ (không scroll trang)
     const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
     const k2 = Math.min(1.6, Math.max(0.35, CV.k * Math.exp(-e.deltaY * 0.0012)));
@@ -2340,10 +2251,9 @@ async function refreshAll() {
       api("/api/sessions" + q),
       api("/api/signals" + pagedQuery(sigShown)),
       api("/api/runs" + pagedQuery(runsShown)),
-      api("/api/vscode").catch(() => []),
+      api("/api/editor").catch(() => []),
     ]);
-    vscodeCards = Array.isArray(vsc) ? vsc : [];
-    vscodeWatch();
+    editorCards = Array.isArray(vsc) ? vsc : [];
     renderCanvas(sessions, signals.items);
     fillSignalForm(sessions);
     sigHasMore = signals.has_more; renderSignals(signals.items);

@@ -1223,205 +1223,126 @@ async def _mcp_probe(url, token):
     return _probe_http_error(r) or ("connected", _count_tools(r.text), "")
 
 
-# ─── VS Code trong trình duyệt (1 card duy nhất trên canvas) ──────────────────
-# `code serve-web` phục vụ VS Code qua HTTP → nhúng iframe vào 1 card canvas. Đã ĐO trên máy này:
-# response KHÔNG có X-Frame-Options lẫn CSP frame-ancestors nên nhúng iframe được.
-# CHỈ 1 tiến trình tại một thời điểm: mở cho session khác = GIẾT tiến trình cũ (chốt với user).
-# Luôn phát --connection-token ngẫu nhiên: serve-web mở là cả filesystem + terminal, không token
-# thì bất kỳ ai trong mạng LAN cũng vào được. Token đi kèm URL, chỉ trả qua API (đã có ORCH_API_KEY).
-VSCODE_BIN = os.environ.get("ORCH_VSCODE_BIN", "code")
-VSCODE_HOST = os.environ.get("ORCH_VSCODE_HOST", "0.0.0.0")   # bám theo host của orchestrator
-VSCODE_PORT = int(os.environ.get("ORCH_VSCODE_PORT", "8995"))   # cổng ĐẦU TIÊN, rồi dò lên
-VSCODE_READY_TIMEOUT = float(os.environ.get("ORCH_VSCODE_READY_TIMEOUT", "20"))
-VSCODE_PORT_SPAN = 50   # số cổng dò từ VSCODE_PORT trước khi chịu thua
-# session_id → {proc, name, cwd, token, port, started}. Mỗi session MỘT tiến trình serve-web
-# riêng: người dùng mở được bao nhiêu thư mục tuỳ ý trong một workspace.
-# Không đắt như nhìn: `code serve-web` chỉ là CLI proxy vào server nền nghe UNIX socket, và các
-# instance DÙNG CHUNG server nền đó (đo được: mở cái thứ hai không đẻ thêm tiến trình server).
-_vscode: dict = {}
-# MỘT token cho MỌI card, sinh một lần mỗi lần chạy orchestrator.
-# BẮT BUỘC phải chung: `code serve-web` khởi động server nền với
-# `--connection-token-file ~/.vscode/cli/serve-web-token` — MỘT file, mọi instance dùng chung.
-# Mở card thứ hai với token khác là ghi đè file đó, và card đang mở lăn ra
-# "Unauthorized client refused: auth mismatch" (đo được: sau khi mở instance 2, file chứa token
-# của instance 2). Token riêng từng card vốn chỉ là ảo tưởng — thứ thật sự xác thực luôn là file
-# dùng chung kia; để chung cho đúng sự thật, không yếu đi chỗ nào.
-_VSCODE_TOKEN = secrets.token_urlsafe(24)
+# ─── Neovim trong trình duyệt (card trên canvas) ──────────────────────────────
+# nvim là TUI, nên card editor chạy trên ĐÚNG hạ tầng terminal đã có: PTY + xterm.js. Không
+# server HTTP, không cấp cổng, không iframe khác origin, không tải 100MB server lúc mở lần đầu —
+# đó là toàn bộ lý do bỏ `code serve-web`.
+#
+# Phiên sống trong TMUX chứ không phải PTY trần: đóng tab dashboard chỉ là detach, mở lại là
+# nguyên buffer, con trỏ, undo tree. Hệ quả quan trọng hơn: orchestrator KHÔNG giữ state nào cả —
+# `tmux ls` chính là sổ đăng ký, và nó sống qua cả restart orchestrator. Bản VS Code cũ giữ dict
+# trong RAM, nên restart xong là mấy tiến trình serve-web thành mồ côi mà UI không còn thấy để
+# đóng.
+NVIM_BIN = os.environ.get("ORCH_NVIM_BIN", "nvim")
+TMUX_BIN = os.environ.get("ORCH_TMUX_BIN", "tmux")
+EDITOR_PREFIX = "orch-nvim-"     # tiền tố tên phiên tmux — để không đụng phiên tmux của người dùng
+
+# Máy không có tmux (Windows là chính) vẫn mở được card, nhưng là PTY trần: đóng tab là nvim
+# chết, và "đang mở" chỉ còn là ghi nhớ trong RAM, mất khi restart.
+_editors: set = set()
 
 
-def _vscode_argv(*args):
-    r"""argv chạy được VS Code CLI trên cả POSIX lẫn Windows.
-
-    Windows có hai cái bẫy, cả hai đều rơi đúng vào nút "mở thư mục":
-      1. CreateProcess chỉ tự thêm ".exe", KHÔNG tra PATHEXT — mà VS Code cài `bin\code.cmd`,
-         nên `code` trần ném FileNotFoundError dù gõ trong cmd vẫn chạy ngon. shutil.which() có
-         tra PATHEXT nên tìm ra .cmd (và trên POSIX chỉ trả về đường dẫn tuyệt đối, không đổi gì).
-      2. CreateProcess từ chối chạy thẳng batch file (WinError 193) — phải nhờ cmd.exe chạy hộ.
-         Đây là lý do set ORCH_VSCODE_BIN bằng đường dẫn từ `where.exe code` vẫn chưa đủ.
-
-    ponytail: nhánh cmd.exe chỉ đúng khi args KHÔNG chứa dấu cách — cmd /c giữ nguyên dấu nháy
-    khi cả dòng có đúng hai cái (chính là đường dẫn cài có dấu cách), nhiều hơn là nó cắt bậy.
-    Args của serve-web chỉ là host/port/token nên an toàn; đừng bê hàm này sang chỗ truyền prompt.
-    """
-    exe = shutil.which(VSCODE_BIN) or VSCODE_BIN
-    if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
-        return ["cmd.exe", "/c", exe, *args]
-    return [exe, *args]
+def _tmux():
+    """Đường dẫn tmux, '' nếu máy không có."""
+    return shutil.which(TMUX_BIN) or ""
 
 
-def _vscode_host():
-    return "127.0.0.1" if VSCODE_HOST in ("0.0.0.0", "") else VSCODE_HOST
+def _editor_tmux_name(sid):
+    # tmux cấm '.' và ':' trong tên phiên. session id là uuid nên hiếm khi dính, thay cho chắc.
+    return EDITOR_PREFIX + str(sid).replace(".", "_").replace(":", "_")
 
 
-async def _vscode_http_status(port, timeout=1.5):
-    """Mã HTTP của trang gốc, None nếu cổng chưa trả lời.
+async def _tmux_run(*args, capture=False):
+    """Chạy tmux → (returncode, stdout). Không có tmux / spawn lỗi / quá hạn → (127, '').
 
-    ĐO được: `code serve-web` mở cổng trong ~1 giây rồi mới tải VS Code Server (~100MB) LÚC có
-    request đầu tiên. Trong suốt lúc tải nó trả 202 kèm trang "downloading, please wait". Nên
-    'cổng có mở không' không nói lên điều gì — 202 mới là thứ phân biệt đang tải với dùng được."""
-    host = _vscode_host()
+    capture=False là MẶC ĐỊNH và quan trọng: `tmux new-session` khởi động tmux SERVER, mà server
+    đó daemon hoá và KẾ THỪA luôn ống stdout mình mở. communicate() chờ EOF trên ống ấy, còn ống
+    ấy chỉ đóng khi server chết — tức là treo vĩnh viễn, và /api/editor/open treo theo. Đã dính
+    đúng bẫy này: request đứng im, không lỗi, không log. Chỉ mở ống cho lệnh THỰC SỰ cần đọc
+    output (list-sessions — lệnh này không bao giờ tự dựng server).
+
+    wait_for là chốt chặn cuối: không có lệnh tmux nào đáng chạy quá 10 giây, và treo ở đây là
+    treo cả một request của dashboard."""
+    tmux = _tmux()
+    if not tmux:
+        return 127, ""
+    pipe = asyncio.subprocess.PIPE if capture else asyncio.subprocess.DEVNULL
     try:
-        r, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+        proc = await asyncio.create_subprocess_exec(
+            tmux, *args, stdin=asyncio.subprocess.DEVNULL,
+            stdout=pipe, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), 10)
     except (OSError, asyncio.TimeoutError):
-        return None
-    try:
-        w.write(f"GET / HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n".encode())
-        await w.drain()
-        line = await asyncio.wait_for(r.readline(), timeout)
-        return int(line.split()[1]) if line.startswith(b"HTTP/") else None
-    except (OSError, ValueError, IndexError, asyncio.TimeoutError):
-        return None
-    finally:
-        w.close()
+        return 127, ""
+    return proc.returncode, (out or b"").decode("utf-8", "replace")
 
 
-async def _vscode_ready(v):
-    """Đã phục vụ được chưa. DÍNH: lên rồi thì thôi probe, chết rồi thì cũng thôi."""
-    if v.get("ready") or v["proc"].returncode is not None:
-        return bool(v.get("ready"))
-    st = await _vscode_http_status(v["port"])
-    v["ready"] = st is not None and st != 202
-    return v["ready"]
+async def editor_open_ids():
+    """session_id đang có card editor. Nguồn sự thật là tmux; không có tmux thì tập trong RAM."""
+    if not _tmux():
+        return set(_editors)
+    # rc != 0 khi CHƯA có tmux server nào chạy — đó là 'chưa mở card nào', không phải lỗi.
+    _, out = await _tmux_run("list-sessions", "-F", "#{session_name}", capture=True)
+    return {n[len(EDITOR_PREFIX):] for n in out.split() if n.startswith(EDITOR_PREFIX)}
 
 
-async def vscode_states():
-    """Danh sách card đang mở, cho FE dựng iframe. URL do FE ghép (dùng location.hostname) —
-    server bind 0.0.0.0 nên không tự biết hostname nào client gọi được.
-
-    ready/exit để FE biết đang tải server hay tiến trình đã chết. Thiếu chúng thì cả hai trường
-    hợp trông y hệt nhau: một ô #1e1e1e câm."""
+async def editor_states():
+    """Card editor đang mở, cho FE dựng node trên canvas."""
     out = []
-    for sid, v in _vscode.items():
-        if not v.get("proc"):
-            continue
-        out.append({"open": True, "session": sid, "name": v["name"], "cwd": v["cwd"],
-                    "port": v["port"], "token": v["token"], "started": v["started"],
-                    "ready": await _vscode_ready(v),
-                    "exit": v["proc"].returncode})   # asyncio tự cập nhật, không cần wait()
+    for sid in sorted(await editor_open_ids()):
+        s = get_session(sid)
+        if not s:
+            continue    # session bị xoá mà phiên tmux còn sót → đừng dựng card ma
+        out.append({"open": True, "session": sid, "name": s["name"],
+                    "cwd": (s.get("cwd") or "").strip() or str(Path.home()),
+                    "persistent": bool(_tmux())})
     return out
 
 
-def _vscode_free_port():
-    """Cổng trống đầu tiên từ VSCODE_PORT trở lên. Dò thay vì để OS cấp ngẫu nhiên: người dùng
-    hay mở firewall cho đúng dải này, cổng ngẫu nhiên là card trắng mà không hiểu vì sao."""
-    taken = {v["port"] for v in _vscode.values()}
-    host = _vscode_host()
-    for port in range(VSCODE_PORT, VSCODE_PORT + VSCODE_PORT_SPAN):
-        if port in taken:
-            continue
-        with socket.socket() as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                s.bind((host, port))
-            except OSError:
-                continue
-        return port
-    raise RuntimeError(f"no free port in {VSCODE_PORT}–{VSCODE_PORT + VSCODE_PORT_SPAN - 1} "
-                       f"for VS Code — close a folder first")
+def editor_argv(session):
+    """Lệnh mở nvim cho card của session này.
 
-
-async def vscode_stop(session_id=None):
-    """Tắt serve-web. session_id=None → tắt HẾT. Trả số tiến trình vừa tắt.
-
-    Giết cả NHÓM tiến trình (start_new_session=True lúc spawn), không chỉ tiến trình cha.
-
-    KHÔNG đuổi theo server nền `code-server`/`server-main.js`: nó nghe UNIX SOCKET chứ không nghe
-    cổng TCP — chính CLI mới là thứ mở cổng và proxy vào socket. Giết CLI là cổng nhả, card chết,
-    đúng nghĩa "thoát VS Code". Server nền do VS Code tự quản và các card DÙNG CHUNG nó, nên giết
-    nó là phá luôn card khác đang mở lẫn phiên serve-web người dùng tự chạy ngoài dashboard."""
-    targets = [session_id] if session_id else list(_vscode)
-    n = 0
-    for sid in targets:
-        v = _vscode.pop(sid, None)
-        proc = (v or {}).get("proc")
-        if proc is None:
-            continue
-        n += 1
-        if os.name == "nt":
-            # Windows không có process group (os.killpg cũng không tồn tại), và proc ở đây là
-            # cmd.exe — giết mình nó thì code.cmd con vẫn sống và vẫn giữ cổng. /T giết cả cây.
-            try:
-                killer = await asyncio.create_subprocess_exec(
-                    "taskkill", "/T", "/F", "/PID", str(proc.pid),
-                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-                await killer.wait()
-            except OSError:      # không có taskkill → ít nhất giết tiến trình cha
-                proc.kill()
-            try:
-                await asyncio.wait_for(proc.wait(), 5)
-            except asyncio.TimeoutError:
-                pass
-            continue
-        for sig in (15, 9):   # SIGTERM rồi SIGKILL nếu chưa chịu chết
-            try:
-                os.killpg(os.getpgid(proc.pid), sig)
-            except (ProcessLookupError, PermissionError):
-                break
-            try:
-                await asyncio.wait_for(proc.wait(), 5)
-                break
-            except asyncio.TimeoutError:
-                continue
-    if n:
-        publish({"type": "vscode", "open": False, "session": session_id or ""})
-    return n
-
-
-async def _vscode_wait_ready(port, timeout):
-    """Chờ serve-web PHỤC VỤ được, không phải chỉ mở cổng.
-
-    KHÔNG chờ hết lần tải server: 202 nghĩa là đang tải, có thể vài phút — trả về ngay để API
-    không treo, FE hiện thanh tiến trình rồi tự poll đến khi 202 hết."""
-    for _ in range(max(1, int(timeout / 0.5))):
-        st = await _vscode_http_status(port)
-        if st == 202:
-            return False
-        if st is not None:
-            return True
-        await asyncio.sleep(0.5)
-    return False
-
-
-async def vscode_start(session):
-    """Mở VS Code web tại cwd của session. Các session KHÁC vẫn mở nguyên — mỗi cái một cổng.
-    Mở lại chính session đang mở = khởi động lại nó (token + cổng mới)."""
-    sid = session["id"]
-    await vscode_stop(sid)
+    Có tmux → `new-session -A`: có phiên thì attach, chưa có thì tạo. MỘT lệnh lo cả hai nên WS
+    không phải hỏi trước phiên tồn tại chưa, và hai tab mở cùng lúc không đua nhau tạo trùng."""
     cwd = (session.get("cwd") or "").strip() or str(Path.home())
-    token = _VSCODE_TOKEN
-    port = _vscode_free_port()
-    proc = await asyncio.create_subprocess_exec(
-        *_vscode_argv("serve-web", "--host", VSCODE_HOST, "--port", str(port),
-                      "--connection-token", token, "--accept-server-license-terms"),
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-        start_new_session=True)   # process group riêng → vscode_stop() killpg được cả cây con
-        # (Windows bỏ qua tham số này — không có process group; vscode_stop() dùng taskkill /T)
-    _vscode[sid] = {"proc": proc, "name": session["name"], "cwd": cwd,
-                    "token": token, "port": port, "started": _now()}
-    _vscode[sid]["ready"] = await _vscode_wait_ready(port, VSCODE_READY_TIMEOUT)
-    info = next((c for c in await vscode_states() if c["session"] == sid), {"open": False})
-    publish({"type": "vscode", **info})
+    tmux = _tmux()
+    if not tmux:
+        return [NVIM_BIN]
+    return [tmux, "new-session", "-A", "-s", _editor_tmux_name(session["id"]),
+            "-c", cwd, NVIM_BIN]
+
+
+async def editor_start(session):
+    """Mở card editor. Có tmux thì tạo phiên detached ngay để card hiện lên trước khi ai attach."""
+    sid = session["id"]
+    if not shutil.which(NVIM_BIN):
+        raise OSError(f"could not find '{NVIM_BIN}' — install neovim or set ORCH_NVIM_BIN")
+    if _tmux():
+        cwd = (session.get("cwd") or "").strip() or str(Path.home())
+        rc, _ = await _tmux_run("new-session", "-d", "-s", _editor_tmux_name(sid), "-c", cwd,
+                                NVIM_BIN)
+        # rc != 0 gần như luôn là "duplicate session" = card đã mở sẵn → coi như thành công.
+        if rc != 0 and sid not in await editor_open_ids():
+            raise OSError("tmux refused to start the editor session")
+    else:
+        _editors.add(sid)
+    info = next((c for c in await editor_states() if c["session"] == sid), {"open": False})
+    publish({"type": "editor", **info})
     return info
+
+
+async def editor_stop(session_id=None):
+    """Đóng card: giết phiên tmux (nvim chết theo). None → đóng hết. Trả số card đã đóng."""
+    ids = [session_id] if session_id else sorted(await editor_open_ids())
+    n = 0
+    for sid in ids:
+        had = sid in _editors
+        _editors.discard(sid)
+        rc, _ = await _tmux_run("kill-session", "-t", _editor_tmux_name(sid))
+        if rc == 0 or had:
+            n += 1
+        publish({"type": "editor", "open": False, "session": sid})
+    return n
 
 
 async def _run_claude(session, prompt, on_event=None, dry_run=False):
@@ -3293,12 +3214,12 @@ def build_app():
     async def api_stop(request: Request):
         return await _set_status(request, "stopped")
 
-    async def api_vscode(request: Request):
-        """Các card VS Code đang mở (list rỗng = chưa mở cái nào)."""
-        return JSONResponse(await vscode_states())
+    async def api_editor(request: Request):
+        """Các card editor đang mở (list rỗng = chưa mở cái nào)."""
+        return JSONResponse(await editor_states())
 
-    async def api_vscode_open(request: Request):
-        """Mở VS Code web tại cwd của session. Session khác đang mở → tiến trình cũ bị GIẾT."""
+    async def api_editor_open(request: Request):
+        """Mở nvim tại cwd của session. Các card khác vẫn mở nguyên."""
         body = await request.json()
         s = get_session(body.get("session") or "")
         if not s:
@@ -3306,20 +3227,17 @@ def build_app():
         if not (s.get("cwd") or "").strip():
             return JSONResponse({"error": "session has no cwd to open"}, status_code=400)
         try:
-            return JSONResponse(await vscode_start(s))
-        except OSError as e:   # FileNotFoundError + WinError 193 (batch file) đều là OSError
-            hint = ("" if shutil.which(VSCODE_BIN) else
-                    " — install the VS Code CLI or point ORCH_VSCODE_BIN at its full path")
-            return JSONResponse({"error": f"could not run VS Code CLI "
-                                          f"'{_vscode_argv()[0]}': {e}{hint}"}, status_code=500)
+            return JSONResponse(await editor_start(s))
+        except OSError as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
 
-    async def api_vscode_close(request: Request):
+    async def api_editor_close(request: Request):
         """Đóng 1 card ({"session": id}) hoặc tất cả (body rỗng)."""
         try:
             body = await request.json()
         except Exception:      # body rỗng / không phải JSON → đóng hết
             body = {}
-        return JSONResponse({"ok": True, "closed": await vscode_stop(body.get("session") or None)})
+        return JSONResponse({"ok": True, "closed": await editor_stop(body.get("session") or None)})
 
     async def api_kill(request: Request):
         """Giết proc claude của run đang chạy (session treo/chạy mãi). Run kết thúc theo luồng
@@ -3500,11 +3418,14 @@ def build_app():
                              "paths": [str(_skill_path(cwd, name, r)) for r in CLI_SKILL_ROOTS],
                              "bytes": len(content.encode("utf-8"))})
 
-    async def ws_terminal(websocket):
-        """Terminal thật trong browser (xterm.js): spawn CLI interactive (claude/codex, xem
-        terminal_argv) trong PTY tại cwd của session, bơm 2 chiều qua WebSocket.
+    async def _ws_pty(websocket, argv_for):
+        """PTY thật trong browser (xterm.js): spawn argv_for(session) tại cwd của session, bơm 2
+        chiều qua WebSocket.
         Client gửi JSON {t:'i', d:<keys>} (input) và {t:'r', c, r} (resize); server gửi bytes thô.
         Mỗi kết nối 1 PTY + 1 thread đọc (read blocking); đóng WS là giết child.
+
+        Dùng chung cho hai loại card — terminal của agent (claude/codex) và editor (nvim) — vì
+        chúng khác nhau ĐÚNG một chỗ: argv. Mọi thứ còn lại y hệt.
 
         PTY lấy từ pty_backend(): pty.fork() trên POSIX, ConPTY trên Windows. Thiếu backend thì
         BÁO THẲNG ra màn hình xterm — để import lỗi rồi WS đứt câm là kiểu hỏng khó đoán nhất."""
@@ -3525,7 +3446,7 @@ def build_app():
             await websocket.close(code=4403)
             return
         cwd = (s.get("cwd") or "").strip() or str(Path.home())
-        argv = terminal_argv(s, websocket.query_params.get("cli", ""))
+        argv = argv_for(s)
         env = dict(os.environ, TERM="xterm-256color")
         # codex mở từ terminal PHẢI gỡ key API y như đường headless (_codex_env), nếu không nó
         # chạy "API-key mode" và đốt credits trong khi đường signal dùng gói ChatGPT.
@@ -3656,6 +3577,15 @@ def build_app():
         if removed:
             _save_claude_config(cfg)
         return JSONResponse({"name": name, "removed": removed})
+
+    async def ws_terminal(websocket):
+        """Terminal của agent: claude/codex interactive trong PTY (xem terminal_argv)."""
+        return await _ws_pty(
+            websocket, lambda s: terminal_argv(s, websocket.query_params.get("cli", "")))
+
+    async def ws_editor(websocket):
+        """Card editor: nvim trong PTY, bọc tmux nếu máy có (xem editor_argv)."""
+        return await _ws_pty(websocket, editor_argv)
 
     async def api_set_model(request: Request):
         """Đổi model của 1 session ngay trên bảng Sessions (không cần re-register)."""
@@ -4091,12 +4021,10 @@ def build_app():
                 yield
             finally:
                 task.cancel()
-                # serve-web chạy trong process group RIÊNG (start_new_session=True) nên nó KHÔNG
-                # chết theo orchestrator, mà _vscode lại chỉ nằm trong RAM: restart xong dashboard
-                # thấy rỗng và không còn đường nào đóng mấy tiến trình đó nữa. Mỗi lần restart lúc
-                # đang mở card là bỏ lại một serve-web + VS Code Server giữ cổng 8995+ cho tới khi
-                # có người kill tay. Đóng ở đây, đúng thứ tiến trình này tự đẻ ra.
-                await vscode_stop()
+                # KHÔNG đóng card editor ở đây. Phiên nvim sống trong tmux và CỐ Ý sống tiếp qua
+                # restart — mở lại dashboard là còn nguyên buffer. Đây chính là chỗ bản VS Code cũ
+                # phải dọn tay: serve-web mồ côi mà UI không còn thấy để đóng. tmux không có vấn
+                # đề đó vì `tmux ls` luôn tìm lại được chúng.
 
     class ApiKeyMiddleware(BaseHTTPMiddleware):
         """Chặn /api/* và /v1/* nếu thiếu/sai API key. Chỉ bật khi ORCH_API_KEY được set (mặc định
@@ -4137,6 +4065,7 @@ def build_app():
         Route("/api/available-tools", api_available_tools),
         Route("/api/fs", api_fs_list),
         WebSocketRoute("/ws/terminal", ws_terminal),
+        WebSocketRoute("/ws/editor", ws_editor),
         Route("/api/skills/templates", api_skill_templates),
         Route("/api/mcp", api_mcp),
         Route("/api/mcp/check", api_mcp_check, methods=["POST"]),
@@ -4149,9 +4078,9 @@ def build_app():
         Route("/api/sessions/{sid}/resume", api_resume, methods=["POST"]),
         Route("/api/sessions/{sid}/stop", api_stop, methods=["POST"]),
         Route("/api/sessions/{sid}/kill", api_kill, methods=["POST"]),
-        Route("/api/vscode", api_vscode),
-        Route("/api/vscode/open", api_vscode_open, methods=["POST"]),
-        Route("/api/vscode/close", api_vscode_close, methods=["POST"]),
+        Route("/api/editor", api_editor),
+        Route("/api/editor/open", api_editor_open, methods=["POST"]),
+        Route("/api/editor/close", api_editor_close, methods=["POST"]),
         Route("/api/sessions/{sid}/orch", api_orch_toggle, methods=["POST"]),
         Route("/api/sessions/{sid}/skill", api_get_skill),
         Route("/api/sessions/{sid}/skill", api_put_skill, methods=["POST"]),

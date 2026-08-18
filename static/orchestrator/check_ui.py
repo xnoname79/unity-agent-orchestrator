@@ -84,25 +84,14 @@ stray -= {"#1e1e1e", "rgba(8,10,14,.88)", "#e6e8eb"}
 check("no hardcoded colors outside the token block", stray,
       "put it in :root / :root[data-theme=dark] instead")
 
-# 5 · Không được đập sạch #world. Card VS Code nhúng iframe, mà chuyển iframe sang cha mới là
-# trình duyệt TẢI LẠI (đo được: 5 render rời nhịp = 5 lần load) — nên node của nó phải sống sót
-# qua re-render. `world.innerHTML = ...` xoá cả nó, và triệu chứng chỉ lộ ra khi agent bàn giao
-# việc (một tràng SSE = một tràng reload), tức là lúc khó ngờ tới nhất.
-check("#world is never wiped wholesale",
-      set(re.findall(r"\bworld\.innerHTML\s*=", JS)),
-      "would drop the persistent VS Code nodes and reload their iframes — remove all children "
-      "EXCEPT [data-vsc] and insertAdjacentHTML instead")
-
-# 6 · iframe VS Code phải giữ `allow` clipboard. Card khác origin (khác cổng), mà allowlist mặc
-# định của clipboard-read là `self` — mất dòng này là dán trong VS Code chết với "Unable to read
-# from the browser's clipboard", và người dùng sẽ đi bấm Allow cho site mãi mà không khỏi.
-# Bám vào chính phép gán, KHÔNG quét cả đoạn: comment ở đây cũng nhắc "clipboard-read", quét đoạn
-# là check tự xanh nhờ comment dù dòng code đã bị xoá (đã dính đúng bẫy đó lúc viết check này).
-grant = re.search(r'\bel\.allow\s*=\s*"([^"]*)"', JS)
-check("the VS Code iframe delegates clipboard permission",
-      set() if grant and {"clipboard-read", "clipboard-write"} <= set(
-          p.strip() for p in grant.group(1).split(";")) else {"el.allow"},
-      'set el.allow = "clipboard-read; clipboard-write" on the iframe')
+# 5 · Mỗi .term-slot phải mang data-key riêng. Card agent và card editor của CÙNG một session
+# dùng chung sổ cvTerms; trùng key là hai card cùng trỏ vào một xterm, và cái sau cướp host của
+# cái trước — trên màn hình là một card bỗng trống trơn, không lỗi, không log.
+slots = re.findall(r'<div class="term-slot"([^>]*)>', JS)
+check("every terminal slot carries a data-key",
+      {s.strip() for s in slots if "data-key" not in s},
+      "attachTerms keys cvTerms by data-key; without it the agent terminal and the editor of the "
+      "same session collide on one xterm")
 
 if fails:
     print("\n" + "\n\n".join(fails))

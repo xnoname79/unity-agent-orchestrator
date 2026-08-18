@@ -117,6 +117,12 @@ not replace them.
 | **Claude Code** | [code.claude.com/docs/en/quickstart](https://code.claude.com/docs/en/quickstart#native-install-recommended) |
 | **Codex CLI** | [learn.chatgpt.com/docs/codex/cli](https://learn.chatgpt.com/docs/codex/cli#getting-started) |
 | **Python 3.10+** | Only if you run from source |
+| **neovim** + **tmux** | Optional — only for the editor card |
+
+> The editor card runs `nvim` inside a tmux session, so closing the browser tab detaches instead
+> of discarding your buffer. Without tmux the card still works, but the nvim process ends with the
+> tab. Without `nvim` there is simply no editor card; everything else is unaffected. Override the
+> binaries with `ORCH_NVIM_BIN` / `ORCH_TMUX_BIN`.
 
 > The orchestrator finds the CLIs through the **PATH of its own process**. Install one while it
 > is running and you have to restart it. If `where.exe claude` / `which claude` prints a path but
