@@ -43,7 +43,7 @@ env = {**os.environ, "ORCH_PORT": str(PORT), "ORCH_HOST": "127.0.0.1",
        "ORCH_WORKSPACES_ROOT": os.path.join(tmp, "ws"),
        "ORCH_CLAUDE_CONFIG": os.path.join(tmp, "claude.json")}
 proc = subprocess.Popen([sys.executable, "session_orchestrator.py", "serve"], env=env, cwd=str(HERE),
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 try:
     for _ in range(80):
         try:
@@ -61,7 +61,7 @@ try:
     t0 = time.time()
     proc.send_signal(signal.SIGINT)      # y hệt Ctrl-C ở terminal
     try:
-        proc.wait(timeout=DEADLINE)
+        err = proc.communicate(timeout=DEADLINE)[1].decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
         proc.kill()
         raise AssertionError(
@@ -73,6 +73,15 @@ try:
     assert took < 3, (f"took {took:.1f}s — the stream was force-closed by the graceful timeout, "
                       "not ended by _stop_streams()")
     print(f"ok   Ctrl-C shuts down in {took:.1f}s with a live SSE stream attached")
+
+    # Tắt sạch còn phải KHÔNG in traceback. asyncio.run() của 3.11 dựng lại KeyboardInterrupt sau
+    # khi loop dừng; không nuốt thì mỗi lần Ctrl-C người dùng ăn một stack trace trông như crash,
+    # dù shutdown đã chạy xong. -2 = chết theo SIGINT, đúng quy ước, cũng chấp nhận.
+    assert "Traceback" not in err, ("Ctrl-C printed a traceback:\n"
+                                    + "\n".join(err.strip().splitlines()[-8:]))
+    assert proc.returncode in (0, -signal.SIGINT), f"unclean exit status {proc.returncode}"
+    assert "Application shutdown complete" in err, "lifespan shutdown never ran:\n" + err[-400:]
+    print("ok   and it exits without a traceback, after the lifespan shutdown ran")
 finally:
     if proc.poll() is None:
         proc.kill()

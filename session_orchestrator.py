@@ -4236,8 +4236,15 @@ def serve():
 
     # timeout_graceful_shutdown giữ lại làm chốt chặn cuối: một response dở dang nào KHÁC cũng đủ
     # giữ Ctrl-C lại vô hạn.
-    _Server(uvicorn.Config(build_app(), host=ORCH_HOST, port=ORCH_PORT,
-                           timeout_graceful_shutdown=5)).run()
+    try:
+        _Server(uvicorn.Config(build_app(), host=ORCH_HOST, port=ORCH_PORT,
+                               timeout_graceful_shutdown=5)).run()
+    except KeyboardInterrupt:
+        # Ctrl-C là cách tắt BÌNH THƯỜNG, không phải lỗi. Server.run() gọi asyncio.run(), và
+        # asyncio.run() của 3.11 dựng lại KeyboardInterrupt sau khi loop dừng — không nuốt ở đây
+        # thì mỗi lần tắt máy người dùng ăn một traceback trông y như crash, dù shutdown đã chạy
+        # xong sạch sẽ. Tiến trình vẫn thoát theo tín hiệu (uvicorn raise_signal lại), đúng quy ước.
+        print("\n[orchestrator] stopped", file=sys.stderr)
 
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
