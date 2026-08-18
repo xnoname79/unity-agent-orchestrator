@@ -559,18 +559,28 @@ function applyView() {
 let pinnedNid = null;
 const PIN_PAD = 10;
 let pinSize = "";   // "w×h" của lần áp gần nhất — chỉ fit lại terminal khi số này đổi
+let pinResizing = false;   // đang kéo bề ngang → hoãn fit xterm tới lúc thả
 
 function pinnedEl() {
   if (!pinnedNid) return null;
   return $("world").querySelector(`.node[data-nid="${CSS.escape(pinnedNid)}"]`);
 }
 
+// Bề ngang của card ghim: đã kéo thì dùng số đã lưu, chưa thì 55% canvas (trần 760). Luôn kẹp
+// lại theo canvas hiện tại — cửa sổ thu nhỏ mà giữ nguyên 900px là panel tràn ra ngoài.
+function pinWidth(nid, cv) {
+  const saved = ((cvLoad().pos || {})[nid] || {}).pw;
+  const max = Math.max(PIN_W_MIN, cv.clientWidth - PIN_PAD * 2);
+  if (saved) return Math.round(Math.min(max, Math.max(PIN_W_MIN, saved)));
+  return Math.round(Math.min(760, max, Math.max(PIN_W_MIN, cv.clientWidth * 0.55)));
+}
+
 function applyPin() {
   const cv = $("canvas"), el = pinnedEl();
   if (!el || !cv) return;
-  // ponytail: bề rộng cố định. Cho kéo giãn thì phải lưu riêng và đá nhau với tay nắm .rz —
-  // thêm khi thật sự thấy chật.
-  const w = Math.round(Math.min(760, Math.max(320, cv.clientWidth * 0.55)));
+  // Bề ngang do người dùng kéo, lưu ở pos[nid].pw — KHÁC khoá với w/h của .rz. Chung khoá thì
+  // kích thước lúc ghim đè lên kích thước lúc thả tự do, và bỏ ghim ra là card sai cỡ.
+  const w = pinWidth(el.dataset.nid, cv);
   const h = Math.max(160, cv.clientHeight - PIN_PAD * 2);
   el.classList.add("pinned", "sized");
   el.style.left = ((PIN_PAD - CV.tx) / CV.k) + "px";
@@ -580,7 +590,10 @@ function applyPin() {
   el.style.height = h + "px";
   // Pan/zoom KHÔNG đổi cỡ trên màn hình, nên đừng fit xterm mỗi khung hình khi đang kéo.
   const size = w + "x" + h;
-  if (size !== pinSize) { pinSize = size; requestAnimationFrame(() => refitNode(el)); }
+  if (size !== pinSize) {
+    pinSize = size;
+    if (!pinResizing) requestAnimationFrame(() => refitNode(el));
+  }
 }
 
 function pinWindow(nid) {
@@ -1286,8 +1299,12 @@ function zoneHtml(gi, cwd, list) {
 // Card headless không có gì để giãn — nội dung là vài dòng meta, kéo to chỉ ra khoảng trống.
 // Guard theo data-rz thay vì chỉ ẩn tay nắm: session từng là 👑 rồi bị demote vẫn còn w/h trong
 // store, không chặn thì card headless bị kéo giãn theo size cũ.
-const RZ = `<div class="rz" title="Drag to resize the card (double-click to reset)"></div>`;
+// Hai tay nắm, KHÔNG bao giờ dùng cùng lúc: .rz cho card tự do trên canvas, .rzw cho card đang
+// ghim (CSS chỉ hiện đúng một cái). Ghim thì chiều cao đã bằng canvas, chỉ còn bề ngang để chỉnh.
+const RZ = `<div class="rz" title="Drag to resize the card (double-click to reset)"></div>`
+  + `<div class="rzw" title="Drag to set the pinned width (double-click to reset)"></div>`;
 const RZ_MIN = { w: 220, h: 130 };
+const PIN_W_MIN = 280;
 
 function applySize(el, p) {
   if (p && p.w && p.h && el.dataset.rz) {
@@ -1534,6 +1551,18 @@ function cvInit() {
   cv.addEventListener("pointerdown", (e) => {
     if (e.target.closest("button, select, input, textarea, option")) return;
     if (e.target.closest(".cv-overlay")) return;  // overlay toolbar-hint: không pan/kéo
+    // Tay nắm bề ngang của card GHIM. Phải xét trước chốt "node ghim thì bỏ qua" ngay bên dưới,
+    // nếu không nó bị chặn và không bao giờ kéo được.
+    const rzw = e.target.closest(".rzw");
+    if (rzw) {
+      const n = rzw.closest(".node");
+      drag = { mode: "pinw", el: n, nid: n.dataset.nid, sx: e.clientX, ow: n.offsetWidth };
+      pinResizing = true;
+      cvInteracting = true;
+      cv.classList.add("grabbing");
+      cv.setPointerCapture(e.pointerId);
+      return;
+    }
     // Tay nắm resize phải xét TRƯỚC .node-head: nó nằm ngoài header nên nhánh dưới sẽ coi là
     // click nền rồi return, không kéo giãn được.
     const rz = e.target.closest(".rz");
@@ -1575,6 +1604,15 @@ function cvInit() {
     const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
     if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;  // phân biệt click vs kéo
     if (drag.mode === "pan") { CV.tx = drag.ox + dx; CV.ty = drag.oy + dy; applyView(); return; }
+    if (drag.mode === "pinw") {
+      // Card ghim đã bù scale nên nó 1:1 với màn hình — dx dùng thẳng, KHÔNG chia CV.k như .rz.
+      const pos = cvLoad().pos || {};
+      const nid = drag.el.dataset.nid;
+      pos[nid] = { ...(pos[nid] || {}), pw: Math.max(PIN_W_MIN, drag.ow + dx) };
+      cvSave({ pos });
+      applyPin();
+      return;
+    }
     if (drag.mode === "resize") {
       // chia CV.k: chuột đi 1px màn hình = 1/k px trong toạ độ world (canvas đang zoom)
       applySize(drag.el, { w: Math.max(RZ_MIN.w, drag.ow + dx / CV.k),
@@ -1596,6 +1634,26 @@ function cvInit() {
   });
   const up = () => {
     if (!drag) return;
+    if (drag.mode === "pinw") {
+      pinResizing = false;
+      // Bấm đúp lên tay nắm = bỏ bề ngang tuỳ chỉnh, về mặc định. KHÔNG dùng event `dblclick`:
+      // nhánh này gọi cv.setPointerCapture(), và trong lúc capture mọi event chuột bị RETARGET
+      // về canvas — `e.target.closest('.rzw')` trong handler dblclick đọc ra null, nên nhánh đó
+      // không bao giờ chạy. Đã đo: bấm đúp giữ nguyên 980px thay vì về 760px.
+      const now = performance.now();
+      if (!drag.moved && cvInit._pinwAt && now - cvInit._pinwAt < 400) {
+        const pos = cvLoad().pos || {};
+        if (pos[drag.nid]) delete pos[drag.nid].pw;
+        cvSave({ pos });
+        applyPin();
+      }
+      cvInit._pinwAt = now;
+      refitNode(drag.el);   // hoãn suốt lúc kéo, fit đúng một lần ở đây
+      drag = null; cvInteracting = false;
+      cv.classList.remove("grabbing");
+      if (cvPending) { const p = cvPending; cvPending = null; renderCanvas(p.sessions, p.signals); }
+      return;
+    }
     if (drag.mode === "node" || drag.mode === "group" || drag.mode === "resize") {
       const pos = cvLoad().pos || {};
       const save = (el) => saveNodeGeom(el, pos);

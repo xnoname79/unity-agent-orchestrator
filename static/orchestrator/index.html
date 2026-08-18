@@ -360,6 +360,15 @@
      bên ghi đè nhau. */
   .node.pinned { z-index: 4; transform-origin: 0 0; box-shadow: var(--sh-3); }
   .node.pinned .rz { display: none; }
+  /* Tay nắm bề ngang, CHỈ hiện khi card đang ghim (lúc đó chiều cao đã bằng canvas nên .rz vô
+     nghĩa). Nằm trong node nên nó tự đi theo panel — không phải tính vị trí bằng tay như nút ✕
+     bỏ ghim ngày trước, thứ đã lệch ra nền trống khi panel ra kích thước khác dự tính. */
+  .rzw { position: absolute; top: 0; right: -4px; width: 9px; height: 100%; cursor: ew-resize;
+    z-index: 5; display: none; }
+  .node.pinned .rzw { display: block; }
+  .rzw::after { content: ""; position: absolute; top: 50%; right: 3px; width: 3px; height: 36px;
+    margin-top: -18px; border-radius: 2px; background: var(--border-strong); }
+  .rzw:hover::after { background: var(--accent); height: 60px; margin-top: -30px; }
   .rz { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize;
     z-index: 3; background: linear-gradient(135deg, transparent 50%, var(--faint) 50%);
     opacity: .35; border-bottom-right-radius: var(--r-card); }
