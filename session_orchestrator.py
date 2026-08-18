@@ -1235,6 +1235,13 @@ async def _mcp_probe(url, token):
 # đóng.
 NVIM_BIN = os.environ.get("ORCH_NVIM_BIN", "nvim")
 TMUX_BIN = os.environ.get("ORCH_TMUX_BIN", "tmux")
+# Git bằng GUI ngay trong card: lazygit là TUI đầy đủ (stage từng hunk, branch, diff, rebase,
+# dùng được chuột) nên nó chạy trên đúng PTY này. Zed thì KHÔNG nhúng được — nó là app GUI
+# native, CLI không có chế độ phục vụ qua HTTP nào (đã đọc `zed --help` 1.15.0: mọi tuỳ chọn đều
+# mở cửa sổ desktop; --dev-server-token là remote dev-server cho một Zed CLIENT, không phải trình
+# duyệt). Muốn git UI mà không rời dashboard thì đây là đường duy nhất.
+LAZYGIT_BIN = os.environ.get("ORCH_LAZYGIT_BIN", "lazygit")
+EDITOR_WINDOWS = ("nvim", "git")   # tên cửa sổ tmux, cũng là tên tab trên card
 EDITOR_PREFIX = "orch-nvim-"     # tiền tố tên phiên tmux — để không đụng phiên tmux của người dùng
 
 # Máy không có tmux (Windows là chính) vẫn mở được card, nhưng là PTY trần: đóng tab là nvim
@@ -1286,8 +1293,17 @@ async def editor_open_ids():
     return {n[len(EDITOR_PREFIX):] for n in out.split() if n.startswith(EDITOR_PREFIX)}
 
 
+def _editor_windows():
+    """Tab card có được. Không tmux → một cửa sổ duy nhất (PTY trần, không chuyển được).
+    Không có lazygit → không có tab git, thay vì một tab bấm vào là màn hình đen."""
+    if not _tmux():
+        return ["nvim"]
+    return [w for w in EDITOR_WINDOWS if w != "git" or shutil.which(LAZYGIT_BIN)]
+
+
 async def editor_states():
     """Card editor đang mở, cho FE dựng node trên canvas."""
+    wins = _editor_windows()
     out = []
     for sid in sorted(await editor_open_ids()):
         s = get_session(sid)
@@ -1295,7 +1311,7 @@ async def editor_states():
             continue    # session bị xoá mà phiên tmux còn sót → đừng dựng card ma
         out.append({"open": True, "session": sid, "name": s["name"],
                     "cwd": (s.get("cwd") or "").strip() or str(Path.home()),
-                    "persistent": bool(_tmux())})
+                    "persistent": bool(_tmux()), "windows": wins})
     return out
 
 
@@ -1319,16 +1335,44 @@ async def editor_start(session):
         raise OSError(f"could not find '{NVIM_BIN}' — install neovim or set ORCH_NVIM_BIN")
     if _tmux():
         cwd = (session.get("cwd") or "").strip() or str(Path.home())
-        rc, _ = await _tmux_run("new-session", "-d", "-s", _editor_tmux_name(sid), "-c", cwd,
-                                NVIM_BIN)
+        name = _editor_tmux_name(sid)
+        rc, _ = await _tmux_run("new-session", "-d", "-s", name, "-c", cwd, "-n", "nvim", NVIM_BIN)
         # rc != 0 gần như luôn là "duplicate session" = card đã mở sẵn → coi như thành công.
         if rc != 0 and sid not in await editor_open_ids():
             raise OSError("tmux refused to start the editor session")
+        if rc == 0 and shutil.which(LAZYGIT_BIN):
+            # Cửa sổ git dựng NGAY lúc mở, không đợi bấm tab: lazygit mất một nhịp để quét repo,
+            # dựng sẵn thì lần bấm đầu đã có sẵn màn hình thay vì nhìn nó khởi động.
+            await _tmux_run("new-window", "-d", "-t", name, "-c", cwd, "-n", "git", LAZYGIT_BIN)
     else:
         _editors.add(sid)
     info = next((c for c in await editor_states() if c["session"] == sid), {"open": False})
     publish({"type": "editor", **info})
     return info
+
+
+async def editor_focus(session_id, window):
+    """Chuyển tab card = chuyển cửa sổ tmux. Không cần đụng client: xterm đang attach vào phiên,
+    tmux tự vẽ lại.
+
+    Cửa sổ có thể ĐÃ CHẾT (người dùng gõ `q` thoát lazygit, hoặc `:q` trong nvim) — lúc đó
+    select-window trả khác 0. Dựng lại thay vì báo lỗi: người dùng bấm tab là muốn thấy nó, không
+    muốn đọc thông báo."""
+    if window not in EDITOR_WINDOWS or not _tmux():
+        return False
+    name = _editor_tmux_name(session_id)
+    rc, _ = await _tmux_run("select-window", "-t", f"{name}:{window}")
+    if rc == 0:
+        return True
+    s = get_session(session_id)
+    if not s:
+        return False
+    cwd = (s.get("cwd") or "").strip() or str(Path.home())
+    cmd = NVIM_BIN if window == "nvim" else LAZYGIT_BIN
+    if not shutil.which(cmd):
+        return False
+    rc, _ = await _tmux_run("new-window", "-t", name, "-c", cwd, "-n", window, cmd)
+    return rc == 0
 
 
 async def editor_stop(session_id=None):
@@ -3231,6 +3275,12 @@ def build_app():
         except OSError as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    async def api_editor_focus(request: Request):
+        """Đổi tab của card ({"session": id, "window": "nvim"|"git"})."""
+        body = await request.json()
+        ok = await editor_focus(body.get("session") or "", body.get("window") or "")
+        return JSONResponse({"ok": ok}, status_code=200 if ok else 400)
+
     async def api_editor_close(request: Request):
         """Đóng 1 card ({"session": id}) hoặc tất cả (body rỗng)."""
         try:
@@ -4080,6 +4130,7 @@ def build_app():
         Route("/api/sessions/{sid}/kill", api_kill, methods=["POST"]),
         Route("/api/editor", api_editor),
         Route("/api/editor/open", api_editor_open, methods=["POST"]),
+        Route("/api/editor/focus", api_editor_focus, methods=["POST"]),
         Route("/api/editor/close", api_editor_close, methods=["POST"]),
         Route("/api/sessions/{sid}/orch", api_orch_toggle, methods=["POST"]),
         Route("/api/sessions/{sid}/skill", api_get_skill),

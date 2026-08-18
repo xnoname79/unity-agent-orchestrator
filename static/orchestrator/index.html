@@ -456,6 +456,13 @@
   .editor-head { display: flex; gap: 8px; align-items: center; padding: 7px 10px;
     border-bottom: 1px solid var(--border); font-size: 11.5px; cursor: grab; }
   .editor-head b { color: var(--accent); }
+  .ed-tabs { display: flex; gap: 2px; background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 7px; padding: 2px; flex: none; }
+  .ed-tabs button { padding: 1px 9px; font-size: 11px; background: transparent; border: none;
+    border-radius: 5px; color: var(--muted); }
+  .ed-tabs button:hover { color: var(--text); }
+  .ed-tabs button.on { color: var(--text); background: var(--panel); box-shadow: var(--sh-1);
+    font-weight: 600; }
   .editor-head .cwd { color: var(--muted); max-width: 380px; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
   .editor-card .term-slot { height: 560px; max-height: 72vh; }

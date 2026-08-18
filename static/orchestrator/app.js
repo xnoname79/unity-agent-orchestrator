@@ -885,6 +885,16 @@ async function closeEditor(sid, name) {
 }
 window.closeEditor = closeEditor;
 
+// Đổi tab = đổi cửa sổ tmux ở SERVER. Không đụng gì tới xterm: nó vẫn attach vào đúng phiên,
+// tmux tự vẽ lại màn hình mới. Nhờ vậy không có state tab nào ở client phải giữ đồng bộ.
+async function editorFocus(sid, win, el) {
+  try { await api("/api/editor/focus", "POST", { session: sid, window: win }); }
+  catch (e) { console.error(e); return; }
+  const bar = el && el.parentElement;
+  if (bar) for (const b of bar.querySelectorAll("button")) b.classList.toggle("on", b === el);
+}
+window.editorFocus = editorFocus;
+
 function editorCardHtml(st) {
   const sid = esc(st.session);
   // key riêng ("ed:") vì một session có thể mở CẢ terminal agent lẫn editor — trùng key là hai
@@ -892,9 +902,16 @@ function editorCardHtml(st) {
   const tip = st.persistent
     ? "Runs in tmux — closing the tab only detaches, the buffer survives"
     : "No tmux on this machine — closing the tab ends the nvim session";
+  // Một tab = một cửa sổ tmux. Chỉ hiện khi CÓ tmux và có nhiều hơn một cửa sổ — máy không có
+  // tmux thì card chỉ là một PTY nvim, không chuyển đi đâu được.
+  const wins = st.windows || ["nvim"];
+  const tabs = wins.length < 2 ? "" : `<span class="ed-tabs">` + wins.map((w, i) =>
+    `<button class="${i === 0 ? "on" : ""}" onclick="editorFocus('${sid}','${esc(w)}',this)"
+      title="${w === "git" ? "lazygit — stage hunks, branches, diffs, rebase" : "nvim"}"
+      >${esc(w)}</button>`).join("") + `</span>`;
   return `<div class="agent-card editor-card">
     <div class="node-head editor-head" title="${esc(tip)}">
-      <span>${ic("edit", "sm")} nvim</span><b>${esc(st.name || '')}</b>
+      <span>${ic("edit", "sm")}</span>${tabs}<b>${esc(st.name || '')}</b>
       <span class="cwd" title="${esc(st.cwd || '')}">${esc(st.cwd || '')}</span>
       <span class="spacer"></span>
       <button class="icon-btn danger" onclick="closeEditor('${sid}','${esc(st.name || '')}')"

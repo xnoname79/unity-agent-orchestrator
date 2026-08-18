@@ -139,6 +139,33 @@ async def main():
         check("opening twice is harmless and does not duplicate",
               r.status_code == 200 and len(again) == 1, f"{r.status_code} {again}")
 
+        # ── tab git (lazygit) ────────────────────────────────────────────────
+        if have_tmux and shutil.which(so.LAZYGIT_BIN):
+            _, wins = await so._tmux_run("list-windows", "-t", NAME, "-F", "#{window_name}",
+                                         capture=True)
+            check("the card has both a nvim and a git window",
+                  set(wins.split()) == {"nvim", "git"}, wins.strip()[:120])
+            check("and the API advertises both tabs",
+                  (await c.get("/api/editor")).json()[0].get("windows") == ["nvim", "git"],
+                  str((await c.get("/api/editor")).json()))
+
+            r = await c.post("/api/editor/focus", json={"session": SID, "window": "git"})
+            _, cur = await so._tmux_run("display-message", "-p", "-t", NAME,
+                                        "#{window_name}", capture=True)
+            check("switching the tab moves tmux to that window",
+                  r.status_code == 200 and cur.strip() == "git", f"{r.status_code} {cur.strip()}")
+
+            # Người dùng thoát lazygit → cửa sổ chết. Bấm tab lại phải DỰNG LẠI, không báo lỗi.
+            await so._tmux_run("kill-window", "-t", f"{NAME}:git")
+            r = await c.post("/api/editor/focus", json={"session": SID, "window": "git"})
+            _, cur = await so._tmux_run("display-message", "-p", "-t", NAME,
+                                        "#{window_name}", capture=True)
+            check("a tab whose window was killed is rebuilt on click",
+                  r.status_code == 200 and cur.strip() == "git", f"{r.status_code} {cur.strip()}")
+
+            r = await c.post("/api/editor/focus", json={"session": SID, "window": "bogus"})
+            check("an unknown tab name is refused", r.status_code == 400, str(r.status_code))
+
         # Tắt orchestrator KHÔNG được đụng phiên nvim — đó chính là tính năng.
         async with app.router.lifespan_context(app):
             pass
