@@ -63,11 +63,12 @@ jobs:
           PYTHONUTF8: "0"
         run: python static/orchestrator/check_ui.py
 
-      # All five fail loudly for bugs that are otherwise silent: a second copy of the module
+      # All six fail loudly for bugs that are otherwise silent: a second copy of the module
       # splitting the in-memory state, the ping-pong cap refusing to lift, the VS Code CLI spawned
       # in a way only Windows rejects (this runner is the only place that branch is real), a
-      # workspace move that lets two agents share one role name, and an MCP server registration
-      # that writes the user's config before proving the token works — or hands the token back out.
+      # workspace move that lets two agents share one role name, an MCP server registration
+      # that writes the user's config before proving the token works — or hands the token back out,
+      # and a Ctrl-C that parks forever because the dashboard's SSE stream never ends.
       - name: Check orchestrator invariants
         env:
           LC_ALL: C
@@ -78,6 +79,7 @@ jobs:
           python check_vscode.py
           python check_workspace_move.py
           python check_mcp.py
+          python check_shutdown.py
 
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean

@@ -2575,6 +2575,22 @@ _semaphore: asyncio.Semaphore | None = None
 
 # Event bus for SSE (Phase B). Set of subscriber queues.
 _subscribers: set = set()
+# Ctrl-C: uvicorn CHỜ mọi response đang dở chạy xong ("Waiting for connections to close").
+# Stream SSE của dashboard thì không bao giờ xong — vòng lặp chỉ thoát khi CLIENT ngắt, mà lúc
+# tắt máy client vẫn đang mở tab. Kết quả là treo tới khi force quit. Cách rẻ nhất: bắn một
+# sentinel None vào hàng đợi của từng subscriber để chính q.get() đang chờ trả về ngay.
+_stopping = False
+
+
+def _stop_streams():
+    """Đánh thức mọi SSE subscriber để generator kết thúc → uvicorn đóng được response."""
+    global _stopping
+    _stopping = True
+    for q, _ in list(_subscribers):
+        try:
+            q.put_nowait(None)
+        except Exception:  # noqa: BLE001
+            pass
 def workspace_blocked(workspace_id):
     """Trả (True, reason) nếu workspace đang suspended. Workspace không tồn tại coi như không
     chặn (dữ liệu 'default' cũ / edge case)."""
@@ -3920,11 +3936,13 @@ def build_app():
         async def gen():
             try:
                 yield "event: ready\ndata: {}\n\n"
-                while True:
+                while not _stopping:
                     if await request.is_disconnected():
                         break
                     try:
                         ev = await asyncio.wait_for(q.get(), timeout=15)
+                        if ev is None:      # sentinel của _stop_streams: server đang tắt
+                            break
                         yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
                     except asyncio.TimeoutError:
                         yield ": keepalive\n\n"
@@ -4205,7 +4223,21 @@ def serve():
     conn.execute("UPDATE runs SET status = 'error', ended_at = ? WHERE status = 'running'", (_now(),))
     conn.commit()
     conn.close()
-    uvicorn.run(build_app(), host=ORCH_HOST, port=ORCH_PORT)
+    # Ctrl-C: KHÔNG đặt _stop_streams() trong lifespan được. Thứ tự của uvicorn là
+    #   nhận tín hiệu → NGỪNG nhận request mới → CHỜ mọi response đang dở đóng → mới chạy
+    #   lifespan shutdown.
+    # Stream SSE là một response "đang dở" không bao giờ tự đóng, nên nó treo ở bước 3 và lifespan
+    # không bao giờ tới lượt. Đo được: hook trong lifespan cho 5.3s (chính là timeout ép), hook ở
+    # handle_exit cho 0.1s. Phải cắt stream NGAY khi nhận tín hiệu — handle_exit là móc đó.
+    class _Server(uvicorn.Server):
+        def handle_exit(self, sig, frame):
+            _stop_streams()
+            super().handle_exit(sig, frame)
+
+    # timeout_graceful_shutdown giữ lại làm chốt chặn cuối: một response dở dang nào KHÁC cũng đủ
+    # giữ Ctrl-C lại vô hạn.
+    _Server(uvicorn.Config(build_app(), host=ORCH_HOST, port=ORCH_PORT,
+                           timeout_graceful_shutdown=5)).run()
 
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
