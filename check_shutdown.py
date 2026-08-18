@@ -32,6 +32,15 @@ for stream in (sys.stdout, sys.stderr):
 
 HERE = Path(__file__).resolve().parent
 DEADLINE = 15          # giây: graceful timeout là 5, cộng dư cho máy CI chậm
+NT = os.name == "nt"
+
+# Windows KHÔNG gửi được SIGINT sang tiến trình khác: Popen.send_signal(SIGINT) ném thẳng
+# ValueError("Unsupported signal: 2"). Thứ tương đương gần nhất là CTRL_BREAK_EVENT, và nó chỉ
+# tới được tiến trình con nếu con được tạo trong PROCESS GROUP RIÊNG — không có cờ đó thì tín
+# hiệu bay vào group của chính runner. uvicorn có bắt SIGBREAK trên Windows (HANDLED_SIGNALS),
+# nên đường tắt máy đi qua đúng handle_exit như Ctrl-C trên POSIX.
+STOP_SIGNAL = signal.CTRL_BREAK_EVENT if NT else signal.SIGINT
+CREATION = subprocess.CREATE_NEW_PROCESS_GROUP if NT else 0
 
 with socket.socket() as s:
     s.bind(("127.0.0.1", 0))
@@ -43,7 +52,8 @@ env = {**os.environ, "ORCH_PORT": str(PORT), "ORCH_HOST": "127.0.0.1",
        "ORCH_WORKSPACES_ROOT": os.path.join(tmp, "ws"),
        "ORCH_CLAUDE_CONFIG": os.path.join(tmp, "claude.json")}
 proc = subprocess.Popen([sys.executable, "session_orchestrator.py", "serve"], env=env, cwd=str(HERE),
-                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                        creationflags=CREATION)
 try:
     for _ in range(80):
         try:
@@ -59,7 +69,7 @@ try:
     assert b"ready" in sse.readline() + sse.readline(), "stream did not open"
 
     t0 = time.time()
-    proc.send_signal(signal.SIGINT)      # y hệt Ctrl-C ở terminal
+    proc.send_signal(STOP_SIGNAL)        # y hệt Ctrl-C ở terminal (Ctrl-Break trên Windows)
     try:
         err = proc.communicate(timeout=DEADLINE)[1].decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
@@ -79,7 +89,11 @@ try:
     # dù shutdown đã chạy xong. -2 = chết theo SIGINT, đúng quy ước, cũng chấp nhận.
     assert "Traceback" not in err, ("Ctrl-C printed a traceback:\n"
                                     + "\n".join(err.strip().splitlines()[-8:]))
-    assert proc.returncode in (0, -signal.SIGINT), f"unclean exit status {proc.returncode}"
+    # POSIX: 0 (đã nuốt KeyboardInterrupt) hoặc -SIGINT (uvicorn dựng lại tín hiệu, đúng quy ước).
+    # Windows không có quy ước đó — Python để SIGBREAK cho OS xử lý nên mã thoát là của hệ điều
+    # hành. Ở đó chỉ đòi shutdown đã chạy xong và không có traceback, hai chốt ngay trên/dưới.
+    if not NT:
+        assert proc.returncode in (0, -signal.SIGINT), f"unclean exit status {proc.returncode}"
     assert "Application shutdown complete" in err, "lifespan shutdown never ran:\n" + err[-400:]
     print("ok   and it exits without a traceback, after the lifespan shutdown ran")
 finally:
