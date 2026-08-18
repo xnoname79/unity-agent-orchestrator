@@ -114,4 +114,33 @@ async def probes():
 asyncio.run(probes())
 print("ok   202 means still downloading, anything else means serving")
 print("ok   ready is sticky and stops probing once up or dead")
+
+
+# ── Tắt orchestrator phải đóng luôn serve-web ────────────────────────────────
+# serve-web sinh ra với start_new_session=True (process group riêng, để vscode_stop killpg được
+# cả cây con) — nghĩa là nó KHÔNG chết theo orchestrator. Mà sổ _vscode chỉ nằm trong RAM: restart
+# xong dashboard thấy rỗng và không còn nút nào đóng mấy tiến trình đó. Không có chốt này thì mỗi
+# lần restart lúc đang mở card là bỏ lại một serve-web + VS Code Server giữ cổng 8995+.
+async def shutdown_closes_cards():
+    os.environ.setdefault("ORCH_DB", "check_vscode")
+    os.environ.setdefault("ORCH_DRY_RUN", "1")
+    child = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(120)",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True)
+    so._vscode["fake-session"] = {"proc": child, "name": "fake", "cwd": str(tmp),
+                                  "token": "x", "port": 65000, "started": "now", "ready": True}
+    app = so.build_app()
+    async with app.router.lifespan_context(app):
+        assert child.returncode is None, "child died before the test even ran"
+    assert not so._vscode, f"the registry still lists cards after shutdown: {list(so._vscode)}"
+    try:
+        await asyncio.wait_for(child.wait(), 10)
+    except asyncio.TimeoutError:
+        child.kill()
+        raise AssertionError("serve-web survived the orchestrator — it would leak on every restart")
+
+
+asyncio.run(shutdown_closes_cards())
+print("ok   shutting down the orchestrator closes every open VS Code card")
 print("\nall checks passed")

@@ -4073,6 +4073,12 @@ def build_app():
                 yield
             finally:
                 task.cancel()
+                # serve-web chạy trong process group RIÊNG (start_new_session=True) nên nó KHÔNG
+                # chết theo orchestrator, mà _vscode lại chỉ nằm trong RAM: restart xong dashboard
+                # thấy rỗng và không còn đường nào đóng mấy tiến trình đó nữa. Mỗi lần restart lúc
+                # đang mở card là bỏ lại một serve-web + VS Code Server giữ cổng 8995+ cho tới khi
+                # có người kill tay. Đóng ở đây, đúng thứ tiến trình này tự đẻ ra.
+                await vscode_stop()
 
     class ApiKeyMiddleware(BaseHTTPMiddleware):
         """Chặn /api/* và /v1/* nếu thiếu/sai API key. Chỉ bật khi ORCH_API_KEY được set (mặc định
