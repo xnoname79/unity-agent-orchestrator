@@ -93,6 +93,19 @@ check("every terminal slot carries a data-key",
       "attachTerms keys cvTerms by data-key; without it the agent terminal and the editor of the "
       "same session collide on one xterm")
 
+# 6 · Bản xterm vendor phải còn miếng vá toạ độ chuột. Card nằm trong #world có transform:scale(k);
+# bản gốc của xterm trộn pixel màn hình (getBoundingClientRect) với cell size dạng CSS, nên mọi
+# mức zoom khác 100% là bôi chọn trúng nhầm dòng — lệch = hàng × |1-k|, càng xa mép trên càng sai.
+# Nâng cấp xterm sẽ ghi đè im lặng: không có chốt này thì bug quay lại mà không ai biết.
+XTERM = (HERE / "vendor" / "xterm.js").read_text(encoding="utf-8")
+missing = set()
+if "PATCHED-FOR-ORCHESTRATOR" not in XTERM:
+    missing.add("marker comment")
+if "/u-n,(t.clientY-s.top)/d-o]" not in XTERM:
+    missing.add("the divide-by-scale expression in getCoordsRelativeToElement")
+check("the vendored xterm keeps its mouse-coordinate patch", missing,
+      "re-apply it after upgrading xterm, or selection breaks at every zoom level except 100%")
+
 if fails:
     print("\n" + "\n\n".join(fails))
     sys.exit(1)
