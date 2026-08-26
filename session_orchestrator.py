@@ -47,6 +47,7 @@ import shutil
 import socket
 import sqlite3
 import sys
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -125,6 +126,11 @@ POLL_INTERVAL = int(os.environ.get("ORCH_POLL_INTERVAL", "5"))
 MAX_CONCURRENT = int(os.environ.get("ORCH_MAX_CONCURRENT", "3"))
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 CODEX_BIN = os.environ.get("ORCH_CODEX_BIN", "codex")
+# Nơi hai CLI cất transcript — dùng để hỏi "CLI này mở được id đó không" trước khi đổi engine
+# của một session (xem api_set_model). claude: <dir>/projects/<slug-cwd>/<sid>.jsonl.
+# codex: <dir>/sessions/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl.
+CLAUDE_PROJECTS_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
+CODEX_SESSIONS_DIR = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "sessions"
 ORCH_HOST = os.environ.get("ORCH_HOST", "0.0.0.0")
 ORCH_PORT = int(os.environ.get("ORCH_PORT", "8992"))
 # Service-to-service auth. Để TRỐNG = tắt (localhost/dev như cũ). Set = mọi /api/* yêu cầu
@@ -1763,6 +1769,53 @@ def _build_init_prompt(name, init_prompt, workspace_id):
         prompt += (f"\n\nBạn thuộc workspace '{workspace_id}'. Khi gọi tool signal "
                    f"(send_signal/compact_context), luôn truyền workspace_id='{workspace_id}'.")
     return prompt
+
+
+def _claude_knows_session(sid):
+    """Claude CLI đã có transcript mang id này chưa (bất kể cwd nào)."""
+    return next(CLAUDE_PROJECTS_DIR.glob(f"*/{sid}.jsonl"), None) is not None
+
+
+def _codex_knows_session(sid):
+    """Codex CLI đã có rollout mang id này chưa (`codex exec resume <sid>` cần nó)."""
+    return next(CODEX_SESSIONS_DIR.rglob(f"rollout-*-{sid}.jsonl"), None) is not None
+
+
+async def _adopt_session_for_claude(session):
+    """Cho claude CLI 'nhận nuôi' một session id do codex sinh.
+
+    ĐÃ ĐO trên claude 2.1.245: `claude -p --session-id <uuid>` mở hội thoại MỚI mang ĐÚNG id đó
+    (kể cả uuidv7 của codex), và mọi `--resume <uuid>` sau đó chạy bình thường. Nhờ vậy đổi model
+    xuyên engine KHÔNG phải đổi session id — id là khoá chính, runs/signals/history đều trỏ vào nó.
+
+    Transcript đã có thì KHÔNG chạy lại: CLI trả 'Session ID <uuid> is already in use.'
+    Trả '' nếu xong, chuỗi lỗi nếu không nhận nuôi được."""
+    sid = session["id"]
+    if _claude_knows_session(sid):
+        return ""
+    try:
+        uuid.UUID(sid)
+    except ValueError:
+        return f"session id '{sid}' is not a UUID — claude --session-id refuses it"
+    if DRY_RUN:
+        return ""
+    cmd = [CLAUDE_BIN, "-p", "--session-id", sid, "--output-format", "json"]
+    perm_mode = session.get("permission_mode") or DEFAULT_PERMISSION_MODE
+    if perm_mode:
+        cmd += ["--permission-mode", perm_mode]
+    # Seed = init prompt chung của mọi engine. SKILL của vai đã nằm sẵn ở .claude/skills lúc spawn
+    # (_write_role_skill ghi cho CẢ HAI CLI) nên phiên claude mới có đủ playbook.
+    prompt = _build_init_prompt(session["name"], "", session.get("workspace_id") or DEFAULT_WORKSPACE)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=session.get("cwd") or None, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _, stderr = await proc.communicate(input=prompt.encode("utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return f"could not run claude: {e}"
+    if proc.returncode != 0:
+        return (stderr or b"").decode("utf-8", "replace").strip()[:300] or "claude exited non-zero"
+    return ""
 
 
 async def spawn_session(name, project="", cwd="", allowed_tools=None, permission_mode="", init_prompt="",
@@ -3634,15 +3687,23 @@ def build_app():
         except Exception:  # noqa: BLE001
             body = {}
         model = (body.get("model") or "").strip()
-        # Engine suy TỪ model, mà session id gắn chặt với engine đã tạo ra nó (uuid của claude
-        # không resume được bằng codex và ngược lại). Cho đổi xuyên engine = biến session thành
-        # xác: mọi lần resume sau đó đều lỗi. Chặn ở đây, muốn đổi thì spawn session mới.
+        # Engine suy TỪ model, mà session id là KHOÁ CHÍNH (runs/signals/history đều trỏ vào) nên
+        # đổi engine KHÔNG được đổi id. Điều kiện đủ: CLI đích phải mở được ĐÚNG id đó.
+        #   claude  → có transcript thì resume, chưa có thì nhận nuôi (_adopt_session_for_claude).
+        #   codex   → KHÔNG có cờ đặt thread id, chỉ quay về được nếu rollout của id còn trên đĩa
+        #             (session sinh ra bởi codex thì luôn còn) — không thì spawn session mới.
         old, new = engine_name_of_session(s), engine_from_model(model)
-        if old != new:
-            return JSONResponse(
-                {"error": f"cannot switch between '{new}' and '{old}' — one CLI cannot resume the "
-                          f"other's session id. Spawn a new session instead."},
-                status_code=400)
+        if new != old:
+            if new == "codex" and not _codex_knows_session(sid):
+                return JSONResponse(
+                    {"error": f"cannot switch from '{old}' to codex — codex cannot adopt a session id "
+                              f"it did not create. Spawn a new codex session instead."},
+                    status_code=400)
+            if new == "claude":
+                err = await _adopt_session_for_claude(s)
+                if err:
+                    return JSONResponse(
+                        {"error": f"cannot switch from '{old}' to claude — {err}"}, status_code=400)
         set_session_model(sid, model)
         s = get_session(sid)
         publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": s.get("workspace_id")})
