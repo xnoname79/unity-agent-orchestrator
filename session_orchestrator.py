@@ -4387,7 +4387,19 @@ def build_app():
     # Dashboard (Phase C): serve static UI at "/" (must be last — catches the rest).
     static_dir = _bundle_dir() / "static" / "orchestrator"
     if static_dir.exists():
-        routes.append(Mount("/", app=StaticFiles(directory=str(static_dir), html=True)))
+        class NoCacheStatic(StaticFiles):
+            """Dashboard tĩnh KHÔNG được cache cứng: mỗi workspace mở bằng một URL riêng
+            ("/?pane=1&ws=<id>") nên mỗi cái là một entry cache riêng — refresh cứng chỉ làm mới
+            pane đang mở, pane mở sau đó vẫn ăn bản cũ, thành ra UI mới đứng cạnh UI cũ mà nhìn
+            không ra vì sao. no-cache = luôn hỏi lại server; ETag vẫn trả 304 nên không tốn thêm
+            băng thông. Đặt ở đây chứ không ở middleware: middleware chỉ được lắp khi có API key,
+            và bọc BaseHTTPMiddleware quanh SSE là chuốc thêm rủi ro cho một cái header."""
+            def file_response(self, *args, **kwargs):
+                resp = super().file_response(*args, **kwargs)
+                resp.headers.setdefault("cache-control", "no-cache")
+                return resp
+
+        routes.append(Mount("/", app=NoCacheStatic(directory=str(static_dir), html=True)))
 
     # THỨ TỰ QUAN TRỌNG: CORS phải NGOÀI CÙNG. Preflight OPTIONS của trình duyệt KHÔNG mang
     # Authorization (theo chuẩn), nên nếu ApiKeyMiddleware chạy trước thì preflight ăn 401 và
