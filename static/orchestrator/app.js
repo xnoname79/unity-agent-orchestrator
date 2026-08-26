@@ -602,7 +602,7 @@ function pinWindow(nid) {
   pinnedNid = nid;
   cvSave({ pin: nid });
   applyView();
-  layoutZones(); redrawEdges();
+  layoutZones(); redrawEdges(); renderWinBar();
 }
 window.pinWindow = pinWindow;
 
@@ -622,7 +622,7 @@ function unpinWindow(keep) {
     applySize(el, p);
     refitNode(el);
   }
-  layoutZones(); redrawEdges();
+  layoutZones(); redrawEdges(); renderWinBar();
 }
 
 // Mọi "cửa sổ" của workspace này: card 👑 (terminal nhúng) + card VS Code đang mở.
@@ -630,41 +630,36 @@ function unpinWindow(keep) {
 function winList() {
   const sessions = cvLast.sessions || [];
   const out = sessions.filter((s) => s.is_orch).map((s) => ({
-    nid: "s:" + s.id, kind: "Terminal", icon: ic("terminal"),
+    nid: "s:" + s.id, kind: "Terminal", icon: ic("terminal", "sm"),
     name: s.name, sub: s.cwd || "" }));
   for (const c of editorCards)
     if (sessions.some((s) => s.id === c.session))
-      out.push({ nid: "editor:" + c.session, kind: "nvim", icon: ic("edit"),
+      out.push({ nid: "editor:" + c.session, kind: "nvim", icon: ic("edit", "sm"),
                  name: c.name || c.session, sub: c.cwd || "" });
   return out;
 }
 
-function openWindows() {
+// Thanh cửa sổ: mọi card ghim được của workspace nằm ngang ngay dưới topbar, bấm phát là
+// ghim/bỏ ghim. Tab History không có canvas để ghim vào → ẩn thanh. Workspace chưa có cửa sổ nào
+// thì VẪN hiện, kèm câu chỉ đường: ẩn sạch thì người dùng tưởng tính năng biến mất (nút Windows
+// cũ luôn nằm đó, dù đếm 0).
+function renderWinBar() {
+  const bar = $("win-bar");
+  if (!bar) return;
   const list = winList();
-  $("dr-title").textContent = "Windows";
-  $("dr-badge").innerHTML = "";
-  $("dr-body").innerHTML = list.length
-    ? `<div class="hint">Click one to pin it to the left edge at full height — it stays put while
-         you pan and zoom the canvas. Click the pinned one again to send it back.</div>`
-      + list.map((w) => `<div class="win-card${w.nid === pinnedNid ? " on" : ""}"
-          onclick="pinWindow('${esc(w.nid)}'); closeDrawer()">
-          ${w.icon}
-          <div class="win-main"><b>${esc(w.name)}</b>
-            <span class="win-sub" title="${esc(w.sub)}">${esc(w.sub)}</span></div>
-          ${badge(w.kind, "b-gray")}
-          ${w.nid === pinnedNid ? badge("pinned", "b-blue") : ""}
-        </div>`).join("")
-    : `<div class="empty">No windows here yet — turn on the terminal for an agent (💻 in its
-         inspector), or open a VS Code folder.</div>`;
-  $("drawer").classList.add("open");
-  $("drawer-overlay").classList.add("open");
+  bar.hidden = $("tab-agents").hidden;
+  if (!list.length) {
+    bar.innerHTML = `<span class="win-empty">No windows yet — turn on the terminal for an agent
+      (${ic("terminal", "sm")} in its inspector) or open an editor, then pin it here.</span>`;
+    return;
+  }
+  bar.innerHTML = list.map((w) => `<button class="win-chip${w.nid === pinnedNid ? " on" : ""}"
+      onclick="pinWindow('${esc(w.nid)}')"
+      title="${esc(w.kind)}${w.sub ? " · " + esc(w.sub) : ""} — pin it to the left edge at full
+        height (it stays put while you pan and zoom); click again to send it back">
+      ${w.icon}<span>${esc(w.name)}</span></button>`).join("");
 }
-window.openWindows = openWindows;
-
-function renderWinBtn() {
-  const b = $("win-btn");
-  if (b) b.querySelector(".n").textContent = winList().length;
-}
+window.renderWinBar = renderWinBar;
 
 // ── Minimap ─────────────────────────────────────────────────────────────────
 // Toàn cảnh canvas + ô khung nhìn. Click/kéo trong map = dời khung nhìn tới đó.
@@ -1569,7 +1564,7 @@ function renderCanvas(sessions, signals) {
   }
   cvEdges = [...pairBest.values()];
   redrawEdges();
-  renderWinBtn();      // số cửa sổ đổi theo session 👑 và card VS Code
+  renderWinBar();      // danh sách cửa sổ đổi theo session 👑 và card editor
   renderInspector();   // dữ liệu vừa đổi → panel bên phải phải theo
   markSelection();     // innerHTML rebuild xoá .sel, gắn lại
   attachTerms();  // cắm terminal bền vào card 👑 (sau khi node đã vào DOM)
@@ -2272,6 +2267,7 @@ function switchTab(name) {
   // lật luôn pane kia.
   try { localStorage.setItem("orch-tab." + currentWS, name); } catch { /* private mode */ }
   // Quay lại tab agents: xterm cần fit lại (lúc ẩn display:none đo được 0×0).
+  renderWinBar();
   if (name === "agents") requestAnimationFrame(() => Object.values(cvTerms).forEach(fitTerm));
 }
 window.switchTab = switchTab;
