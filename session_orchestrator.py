@@ -231,6 +231,7 @@ def init_db():
             model TEXT NOT NULL DEFAULT '',         -- '' = auto (claude tự chọn); vd 'opus'/'sonnet'/'haiku'
             effort TEXT NOT NULL DEFAULT '',         -- '' = dùng ORCH_DEFAULT_EFFORT; low|medium|high|xhigh|max
             engine TEXT NOT NULL DEFAULT 'claude',   -- engine chạy session (luôn 'claude')
+            resume_id TEXT NOT NULL DEFAULT '',      -- transcript CŨ được ghim để chat tiếp ('' = transcript của chính id này)
             created_at TEXT NOT NULL,
             last_active TEXT NOT NULL DEFAULT ''
         );
@@ -301,6 +302,8 @@ def init_db():
         conn.execute("ALTER TABLE sessions ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude'")
     if "is_orch" not in scols:
         conn.execute("ALTER TABLE sessions ADD COLUMN is_orch INTEGER NOT NULL DEFAULT 0")
+    if "resume_id" not in scols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN resume_id TEXT NOT NULL DEFAULT ''")
     # migrate: thêm workspace_id cho runs nếu DB cũ chưa có
     rcols = [r[1] for r in conn.execute("PRAGMA table_info(runs)").fetchall()]
     if "workspace_id" not in rcols:
@@ -449,6 +452,16 @@ def set_session_status(session_id, status):
 def set_session_model(session_id, model):
     conn = _conn()
     conn.execute("UPDATE sessions SET model = ?, last_active = ? WHERE id = ?", (model, _now(), session_id))
+    conn.commit()
+    conn.close()
+
+
+def set_session_resume(session_id, resume_id):
+    """Ghim/bỏ ghim transcript mà session này chat tiếp. resume_id là CON TRỎ, KHÔNG phải khoá:
+    runs/signals/history vẫn ghi theo id của session nên ghim rồi bỏ ghim không mất gì."""
+    conn = _conn()
+    conn.execute("UPDATE sessions SET resume_id = ?, last_active = ? WHERE id = ?",
+                 (resume_id, _now(), session_id))
     conn.commit()
     conn.close()
 
@@ -1405,7 +1418,9 @@ async def _run_claude(session, prompt, on_event=None, dry_run=False):
     fmt = "stream-json" if stream else "json"
     # Prompt truyền qua STDIN (không phải argv) để tránh lỗi khi prompt bắt đầu bằng
     # dấu '-' (vd YAML frontmatter '---') hoặc chứa ký tự đặc biệt/multiline.
-    cmd = [CLAUDE_BIN, "-p", "--resume", session_id, "--output-format", fmt]
+    # Transcript mở ra có thể là phiên GHIM (resume_id), nhưng ACTIVE_PROCS/kết quả vẫn khoá theo
+    # session_id: nút 🛑, runs, audit đều tra theo id của session, không theo transcript.
+    cmd = [CLAUDE_BIN, "-p", "--resume", resume_target(session, "claude"), "--output-format", fmt]
     if stream:
         cmd.append("--verbose")  # bắt buộc cho stream-json trong -p
         if STREAM_PARTIAL:
@@ -2125,6 +2140,107 @@ def _codex_env():
     return {k: v for k, v in os.environ.items() if k not in CODEX_DROP_ENV}
 
 
+def _first_text(content):
+    """message.content của claude: chuỗi, hoặc list block → lấy đoạn text đầu tiên."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
+                return b["text"]
+    return ""
+
+
+# Câu mở đầu do CHÍNH orchestrator seed lúc spawn (SKILL của vai, hoặc init prompt generic):
+# session nào cũng y hệt nhau nên vô dụng làm nhãn nhận dạng phiên. Bỏ qua, lấy câu tiếp theo —
+# câu người dùng thật sự gõ.
+def _is_seed_text(t):
+    return t.startswith("Bạn là agent '") or (t.startswith("---") and "\nname:" in t[:200])
+
+
+def _scan_transcript(path, cli, max_lines=200):
+    """Đọc phần ĐẦU một transcript → (session_id, cwd, preview).
+
+    KHÔNG đọc hết file: transcript dài hàng MB nhưng cwd và câu người dùng gõ đầu tiên luôn nằm
+    ở đầu. Preview bỏ qua text mở bằng '<' (thẻ hệ thống <command-name>, <skills_instructions>…)
+    và các dòng user thật ra là tool result — chúng không giúp nhận ra phiên nào là phiên nào."""
+    sid, cwd, preview = (path.stem if cli != "codex" else ""), "", ""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= max_lines or (sid and cwd and preview):
+                    break
+                try:
+                    o = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if cli == "codex":
+                    pay = o.get("payload") or {}
+                    if o.get("type") == "session_meta":
+                        sid, cwd = pay.get("session_id") or "", pay.get("cwd") or ""
+                    elif not preview and pay.get("type") == "user_message":
+                        preview = pay.get("message") or ""
+                else:
+                    cwd = cwd or (o.get("cwd") or "")
+                    if not preview and o.get("type") == "user" and not o.get("toolUseResult"):
+                        preview = _first_text((o.get("message") or {}).get("content"))
+                # Thẻ hệ thống (<command-name>, <skills_instructions>…) và seed của orchestrator
+                # đều không phải câu người dùng gõ → bỏ, đọc tiếp.
+                if preview and (preview.startswith("<") or _is_seed_text(preview)):
+                    preview = ""
+    except OSError:
+        return "", "", ""
+    return sid, cwd, " ".join(preview.split())[:120]
+
+
+def list_cli_sessions(cwd, cli="claude", limit=20, scan_cap=200):
+    """Các phiên CLI đã có transcript trong MỘT thư mục — nguồn cho ô chọn phiên của terminal card.
+
+    claude: <projects>/<slug-cwd>/<sid>.jsonl. Slug là LOSSY ('_' và '-' cùng thành '-') nên vẫn
+    phải đối chiếu cwd thật đọc trong file, không tin mỗi tên thư mục.
+    codex: <sessions>/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl, cwd nằm ở dòng session_meta.
+    Sắp theo mtime giảm dần (phiên vừa dùng nằm trên), quét tối đa scan_cap file."""
+    want = str(Path(cwd).expanduser()) if cwd else ""
+    if cli == "codex":
+        files = CODEX_SESSIONS_DIR.rglob("rollout-*.jsonl")
+    else:
+        files = (CLAUDE_PROJECTS_DIR / re.sub(r"[^A-Za-z0-9]", "-", want)).glob("*.jsonl")
+    try:
+        files = sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)[:scan_cap]
+    except OSError:
+        return []
+    out = []
+    for f in files:
+        sid, got, preview = _scan_transcript(f, cli)
+        if not sid or (want and got != want):
+            continue
+        out.append({"id": sid, "cli": cli, "cwd": got, "preview": preview,
+                    "ts": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def resume_target(session, cli=""):
+    """Transcript mà CLI phải mở cho session này: phiên người dùng GHIM (cột resume_id) nếu CLI đó
+    còn giữ, không thì chính id của session.
+
+    Dùng chung cho CẢ terminal LẪN run headless — ghim ở card là ghim cho cả hai, nếu tách ra thì
+    người gõ ở terminal và signal chạy nền sẽ ghi vào hai transcript khác nhau mà nhìn thì tưởng
+    một. Transcript bị xoá ngoài đĩa → rơi về id của session, KHÔNG để CLI chết vì id lạ."""
+    rid = (session.get("resume_id") or "").strip()
+    if not rid:
+        return session["id"]
+    cli = (cli or "").strip().lower()
+    if cli not in ("claude", "codex"):
+        cli = "codex" if engine_name_of_session(session) == "codex" else "claude"
+    if _codex_knows_session(rid) if cli == "codex" else _claude_knows_session(rid):
+        return rid
+    print(f"[orchestrator] ⚠ {cli} không còn transcript '{rid}' (resume_id của "
+          f"'{session.get('name')}') → dùng transcript của chính session")
+    return session["id"]
+
+
 def terminal_argv(session, cli=""):
     """Lệnh CLI interactive cho terminal của 1 session (nút 💻 trên dashboard).
 
@@ -2132,12 +2248,18 @@ def terminal_argv(session, cli=""):
     CHỈ resume được transcript do CHÍNH CLI đó tạo — session id của claude không phải thread của
     codex và ngược lại → CLI khác engine thì mở PHIÊN MỚI trong cùng cwd (bỏ --resume) thay vì
     cố resume rồi lỗi.
+
+    Session có ghim phiên cũ (resume_id) thì mở ĐÚNG phiên đó — kể cả khi CLI đang chọn khác engine
+    của session, vì resume_target đã kiểm CLI này thật sự có transcript đó (id đi thẳng vào argv).
     """
     eng = engine_name_of_session(session)
     sid = session["id"]
     cli = (cli or "").strip().lower()
     if cli not in ("claude", "codex"):
         cli = "codex" if eng == "codex" else "claude"
+    pinned = resume_target(session, cli)
+    if pinned != sid:
+        return [CODEX_BIN, "resume", pinned] if cli == "codex" else [CLAUDE_BIN, "--resume", pinned]
     if cli == "codex":
         return [CODEX_BIN, "resume", sid] if eng == "codex" else [CODEX_BIN]
     return [CLAUDE_BIN, "--resume", sid] if eng == "claude" else [CLAUDE_BIN]
@@ -2404,7 +2526,7 @@ class CodexEngine(AgentEngine):
                            {"subtype": "codex_mcp_blocked"})
         # Prompt là positional SAU '--' để prompt bắt đầu bằng '-' (vd frontmatter '---') không bị
         # nuốt thành cờ — vai trò y như stdin bên _run_claude.
-        cmd = [CODEX_BIN, "exec", "resume", sid,
+        cmd = [CODEX_BIN, "exec", "resume", resume_target(session, "codex"),
                *_codex_flags(session.get("model", ""), session.get("permission_mode", ""),
                              session.get("effort", "")),
                "--", prompt]
@@ -3676,6 +3798,27 @@ def build_app():
         """Card editor: nvim trong PTY, bọc tmux nếu máy có (xem editor_argv)."""
         return await _ws_pty(websocket, editor_argv)
 
+    async def api_cli_sessions(request: Request):
+        """Phiên CLI đã có trong một thư mục — để terminal card chọn phiên muốn chat tiếp.
+
+        ?session=<sid> lấy cwd + CLI mặc định từ session đó; ?cwd= / ?cli= ghi đè."""
+        q = request.query_params
+        cli = (q.get("cli") or "").strip().lower()
+        cwd = (q.get("cwd") or "").strip()
+        s = get_session((q.get("session") or "").strip()) if q.get("session") else None
+        if s:
+            cwd = cwd or (s.get("cwd") or "")
+            cli = cli or ("codex" if engine_name_of_session(s) == "codex" else "claude")
+        if cli not in ("claude", "codex"):
+            cli = "claude"
+        if not cwd:
+            return JSONResponse({"error": "cwd (or a session that has one) is required"},
+                                status_code=400)
+        limit = q.get("limit") or "20"
+        return JSONResponse({"cwd": cwd, "cli": cli,
+                             "sessions": list_cli_sessions(cwd, cli,
+                                                           int(limit) if limit.isdigit() else 20)})
+
     async def api_set_model(request: Request):
         """Đổi model của 1 session ngay trên bảng Sessions (không cần re-register)."""
         sid = request.path_params["sid"]
@@ -3707,6 +3850,34 @@ def build_app():
         set_session_model(sid, model)
         s = get_session(sid)
         publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": s.get("workspace_id")})
+        return JSONResponse(s)
+
+    async def api_set_resume(request: Request):
+        """Ghim session này chat tiếp một transcript CŨ trong cwd của nó (xem /api/cli-sessions).
+
+        Ghim ăn cho CẢ terminal LẪN run headless. Phải là phiên mà ENGINE của session mở được:
+        ghim transcript codex trong khi session chạy claude thì terminal nhìn thì thật, còn signal
+        chạy nền lại rơi về transcript cũ — lệch kiểu đó chỉ lộ ra khi đã muộn. Rỗng = bỏ ghim."""
+        sid = request.path_params["sid"]
+        s = get_session(sid)
+        if not s:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        rid = (body.get("resume_id") or "").strip()
+        eng = engine_name_of_session(s)
+        if rid:
+            if not (_codex_knows_session(rid) if eng == "codex" else _claude_knows_session(rid)):
+                return JSONResponse(
+                    {"error": f"{eng} has no session '{rid}' on this machine — pick one from "
+                              f"/api/cli-sessions, or switch this session's model to the other CLI"},
+                    status_code=400)
+        set_session_resume(sid, rid)
+        s = get_session(sid)
+        publish({"type": "session", "id": sid, "status": s["status"],
+                 "workspace_id": s.get("workspace_id")})
         return JSONResponse(s)
 
     async def api_set_workspace(request: Request):
@@ -4161,6 +4332,8 @@ def build_app():
         Route("/api/sessions/spawn", api_spawn, methods=["POST"]),
         Route("/api/available-tools", api_available_tools),
         Route("/api/fs", api_fs_list),
+        Route("/api/cli-sessions", api_cli_sessions),
+        Route("/api/sessions/{sid}/resume-id", api_set_resume, methods=["POST"]),
         WebSocketRoute("/ws/terminal", ws_terminal),
         WebSocketRoute("/ws/editor", ws_editor),
         Route("/api/skills/templates", api_skill_templates),

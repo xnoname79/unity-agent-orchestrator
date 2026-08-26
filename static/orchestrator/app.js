@@ -827,6 +827,38 @@ async function setTermCli(sid, name, cli) {
 }
 window.setTermCli = setTermCli;
 
+// Ghim phiên cũ để chat tiếp. State nằm ở DB (cột resume_id) chứ KHÔNG ở client: run headless
+// (signal chạy nền) phải mở cùng transcript với terminal, mà nó thì không đọc được biến của tab.
+async function setTermSid(sid, name, chosen) {
+  try { await api(`/api/sessions/${encodeURIComponent(sid)}/resume-id`, "POST", { resume_id: chosen }); }
+  catch (e) {
+    let msg = String(e);
+    try { const j = JSON.parse(e); if (j && j.error) msg = j.error; } catch (_) {}
+    alert("Could not pin that session: " + msg);
+  }
+  await reconnectTerm(sid, name);
+}
+window.setTermSid = setTermSid;
+
+// Nạp danh sách phiên của cwd LÚC MỞ select (không phải mỗi lần render): quét transcript trên đĩa
+// là việc của filesystem, không nên chạy theo mỗi lần SSE refresh.
+async function fillTermSessions(el, sid, cli) {
+  if (el.dataset.filled) return;
+  el.dataset.filled = "1";
+  let list = [];
+  try {
+    const r = await api(`/api/cli-sessions?session=${encodeURIComponent(sid)}&cli=${encodeURIComponent(cli)}`);
+    list = r.sessions || [];
+  } catch (e) { console.error(e); el.dataset.filled = ""; return; }
+  const cur = el.value;
+  el.innerHTML = `<option value="">▸ this session</option>` + list.map((x) =>
+    `<option value="${esc(x.id)}" title="${esc(x.preview || x.id)}">${esc(x.ts.slice(5))} · `
+    + `${esc(x.preview ? x.preview.slice(0, 40) : x.id.slice(0, 8))}</option>`).join("");
+  el.value = cur;
+  if (el.value !== cur) el.value = "";   // phiên cũ không còn trong danh sách
+}
+window.fillTermSessions = fillTermSessions;
+
 function startTerm(t) {
   t.started = true;
   // Nền terminal đọc từ token --term-bg để đổi theme không để lại một ô lệch màu.
@@ -1040,6 +1072,14 @@ function agentCard(s, needsYou, isOrch) {
       ${["claude", "codex"].map((c) => `<option value="${c}"${c === cli ? " selected" : ""}
         >${c === "claude" ? "🅒" : "🅞"} ${c}${c === eng ? "" : " ✦"}</option>`).join("")}
     </select>`;
+    // Ghim PHIÊN để chat tiếp: mọi transcript của CLI này trong cwd của session, mới nhất trên
+    // cùng. Danh sách chỉ nạp khi mở select (xem fillTermSessions). Ghim ăn cho cả run headless.
+    const psid = s.resume_id || "";
+    const sidSel = `<select class="mini cli-sel" title="Which past ${cli} session this card resumes — terminal AND background runs. Lists every ${cli} session recorded in this folder"
+      onmousedown="fillTermSessions(this,'${esc(s.id)}','${cli}')"
+      onchange="setTermSid('${esc(s.id)}','${esc(s.name)}', this.value)">
+      <option value="${esc(psid)}">${psid ? "▸ " + esc(psid.slice(0, 8)) : "▸ this session"}</option>
+    </select>`;
     const lock = busy
       ? `<div class="term-lock">⏳ An automatic run is in progress (handling a report from another agent)…<br>
            Click to watch it · when it finishes, press 🔄 to chat again</div>`
@@ -1053,6 +1093,7 @@ function agentCard(s, needsYou, isOrch) {
         <div class="orch-side">
           ${quickBtns(s, id, true)}
           ${cliSel}
+          ${sidSel}
           <button class="icon-btn" onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')"
             title="Reload the session/terminal (restarts the selected CLI)">${ic("refresh", "sm")}</button>
         </div>
