@@ -52,18 +52,21 @@ js_made = set(re.findall(r'\bid\s*=\s*"([\w-]+)"', JS)) | set(
 check("every $(\"id\") exists in index.html", js_ids - html_ids - js_made,
       "referenced by app.js but no such element")
 
-# 2 · Mọi hàm gọi trong onclick="" phải được gán vào window ở app.js.
+# 2 · Mọi hàm gọi trong handler inline (onclick/onchange/oninput/onfocus/onmousedown…) phải
+# được gán vào window ở app.js. KHÔNG chỉ onclick: ô tìm card chạy bằng oninput/onfocus, ô chọn
+# phiên bằng onchange/onmousedown — sót attribute nào là loại đó không được kiểm, và một cái tên
+# gõ sai ở đó im lặng y hệt onclick (element vẫn hiện, gõ vào thì không có gì xảy ra).
 # KHÔNG neo ^: app.js gán nhiều hàm trên cùng một dòng.
 exported = set(re.findall(r"\bwindow\.(\w+)\s*=", JS))
 called = set()
 for src in (HTML, JS):
-    for body in re.findall(r'onclick="([^"]*)"', src):
+    for body in re.findall(r'\bon[a-z]+="([^"]*)"', src):
         # ${...} chạy lúc render trong scope JS, không phải trong onclick → bỏ đi.
         # (?<![.\w$]) bỏ lời gọi phương thức (this.value.trim()) — chỉ còn hàm toàn cục.
         called |= set(re.findall(r"(?<![.\w$])([a-zA-Z_$][\w$]*)\s*\(",
                                  re.sub(r"\$\{[^}]*\}", "", body)))
-check("every onclick handler is exported", called - exported - BUILTIN,
-      "called from an onclick but never assigned to window.*")
+check("every inline handler is exported", called - exported - BUILTIN,
+      "called from an inline on*= handler but never assigned to window.*")
 
 # 3 · Mọi icon <use href="#i-x"> phải có <symbol> tương ứng trong sprite.
 symbols = set(re.findall(r'<symbol id="(i-[\w-]+)"', HTML))
