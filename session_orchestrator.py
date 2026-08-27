@@ -1903,9 +1903,6 @@ def unregister_session(session_id):
 
 # ─── Compact context (đọc từ transcript ~/.claude/projects) ───────────────────
 
-CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
-
-
 def _find_transcript(session_id):
     """Tìm file transcript <session_id>.jsonl trong mọi project dir của claude.
     Đoán theo cwd không đáng tin (claude đổi cả '/', '.', '_') → quét trực tiếp."""
