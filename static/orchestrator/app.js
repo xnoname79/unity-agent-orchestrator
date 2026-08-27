@@ -644,22 +644,82 @@ function winList() {
 // thì VẪN hiện, kèm câu chỉ đường: ẩn sạch thì người dùng tưởng tính năng biến mất (nút Windows
 // cũ luôn nằm đó, dù đếm 0).
 function renderWinBar() {
-  const bar = $("win-bar");
-  if (!bar) return;
+  const bar = $("win-bar"), chips = $("win-chips");
+  if (!bar || !chips) return;
   const list = winList();
   bar.hidden = $("tab-agents").hidden;
   if (!list.length) {
-    bar.innerHTML = `<span class="win-empty">No windows yet — turn on the terminal for an agent
-      (${ic("terminal", "sm")} in its inspector) or open an editor, then pin it here.</span>`;
+    chips.innerHTML = `<span class="win-sep"></span><span class="win-empty">No windows yet — turn on
+      the terminal for an agent (${ic("terminal", "sm")} in its inspector) or open an editor, then
+      pin it here.</span>`;
     return;
   }
-  bar.innerHTML = list.map((w) => `<button class="win-chip${w.nid === pinnedNid ? " on" : ""}"
+  chips.innerHTML = `<span class="win-sep"></span>` + list.map((w) =>
+    `<button class="win-chip${w.nid === pinnedNid ? " on" : ""}"
       onclick="pinWindow('${esc(w.nid)}')"
       title="${esc(w.kind)}${w.sub ? " · " + esc(w.sub) : ""} — pin it to the left edge at full
         height (it stays put while you pan and zoom); click again to send it back">
       ${w.icon}<span>${esc(w.name)}</span></button>`).join("");
 }
 window.renderWinBar = renderWinBar;
+
+// ── Tìm một card rồi đưa nó vào giữa khung nhìn ──────────────────────────────
+// Workspace đông card thì cuộn canvas đi tìm bằng mắt là việc tệ nhất; ô tìm là <input list=>
+// nên trình duyệt lo phần lọc theo chữ gõ, không cần dropdown tự chế.
+// Danh sách nạp lúc FOCUS chứ không mỗi lần render: SSE refresh chạy liên tục, dựng lại
+// <option> giữa lúc dropdown đang mở là nó tự đóng dưới tay người dùng.
+let findMap = {};   // nhãn hiện trong ô tìm → nid của node
+
+function fillFindList() {
+  const dl = $("cv-find-list");
+  if (!dl) return;
+  const sessions = cvLast.sessions || [];
+  const rows = sessions.map((s) => ({ nid: "s:" + s.id, name: s.name,
+    kind: s.is_orch ? "terminal" : "agent", sub: s.cwd || "" }));
+  // Card editor dùng CHUNG tên với session của nó → thêm hậu tố, không thì hai dòng trùng nhãn
+  // và findMap chỉ giữ được một cái.
+  for (const c of editorCards)
+    if (sessions.some((s) => s.id === c.session))
+      rows.push({ nid: "editor:" + c.session, name: (c.name || c.session) + " · editor",
+                  kind: "editor", sub: c.cwd || "" });
+  findMap = {};
+  dl.innerHTML = rows.map((r) => {
+    findMap[r.name] = r.nid;
+    return `<option value="${esc(r.name)}" label="${esc(r.kind + (r.sub ? " · " + r.sub : ""))}">`;
+  }).join("");
+}
+window.fillFindList = fillFindList;
+
+// Chỉ nhảy khi chữ trong ô KHỚP HẲN một dòng của danh sách — gõ dở dang thì không đi đâu cả.
+function findCard(el) {
+  const nid = findMap[el.value];
+  if (nid) { el.blur(); focusNode(nid); }
+}
+window.findCard = findCard;
+
+// Đưa node vào giữa khung nhìn + chọn nó. Giữ nguyên mức zoom: người dùng đặt zoom nào là cố ý,
+// tự phóng to giúp chỉ làm họ mất chỗ.
+function focusNode(nid) {
+  const el = $("world").querySelector(`.node[data-nid="${nid}"]`);
+  if (!el) return;
+  if (nid.startsWith("s:")) selectNode(nid.slice(2));
+  // Node ghim đứng sẵn ở mép trái màn hình rồi; left/top của nó là kết quả bù transform nên
+  // lấy làm tâm sẽ ném khung nhìn đi đâu không biết.
+  if (nid !== pinnedNid) {
+    const cv = $("canvas");
+    const x = parseFloat(el.style.left) || 0, y = parseFloat(el.style.top) || 0;
+    CV.tx = cv.clientWidth / 2 - (x + el.offsetWidth / 2) * CV.k;
+    CV.ty = cv.clientHeight / 2 - (y + el.offsetHeight / 2) * CV.k;
+    applyView(); cvSave({ view: CV });
+  }
+  // Gỡ .found ở MỌI node trước: animation kết thúc ở outline trong suốt nên nhìn thì không thấy
+  // gì, nhưng để nó bám lại thì "card vừa tìm ra" không còn là một node duy nhất nữa.
+  // remove + đọc offsetWidth = ép reflow, không thì tìm lại đúng card đó sẽ không nháy nữa.
+  for (const n of $("world").querySelectorAll(".node.found")) n.classList.remove("found");
+  void el.offsetWidth;
+  el.classList.add("found");
+}
+window.focusNode = focusNode;
 
 // ── Minimap ─────────────────────────────────────────────────────────────────
 // Toàn cảnh canvas + ô khung nhìn. Click/kéo trong map = dời khung nhìn tới đó.

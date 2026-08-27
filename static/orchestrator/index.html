@@ -301,6 +301,14 @@
   .win-chip { display: inline-flex; align-items: center; gap: 6px; flex: none; white-space: nowrap;
     padding: 3px 10px; font-size: 12px; color: var(--muted); }
   .win-chip:hover { color: var(--text); }
+  .cv-find { flex: none; width: 190px; }
+  .win-chips { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .win-sep { flex: none; width: 1px; align-self: stretch; margin: 2px 3px; background: var(--border); }
+  /* Canvas vừa nhảy tới card khác → không nháy thì không biết cái nào vừa được tìm ra.
+     outline chứ không box-shadow: .node.sel đã dùng box-shadow, hai bên sẽ đè nhau. */
+  @keyframes node-found { from { outline-color: var(--accent); } to { outline-color: transparent; } }
+  .node.found { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: var(--r-card);
+    animation: node-found 1.4s ease-out forwards; }
   .win-empty { font-size: 11.5px; color: var(--faint); white-space: nowrap; }
   .win-empty .ic { vertical-align: -2px; }
   .win-chip.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent);
@@ -689,7 +697,16 @@
 
     <!-- Mọi cửa sổ của workspace, một hàng ngang: bấm = ghim/bỏ ghim. Nằm NGOÀI #tab-agents vì
          trong đó là flex ngang (canvas + inspector); ở đây nó là một hàng của cột #ws-detail-view. -->
-    <div id="win-bar" class="win-bar" hidden></div>
+    <div id="win-bar" class="win-bar" hidden>
+      <!-- Ô tìm nằm TRONG markup tĩnh, không do renderWinBar dựng: mỗi lần SSE refresh mà
+           innerHTML dựng lại là chữ đang gõ và dropdown đang mở bay mất. Danh sách nạp lúc
+           focus (fillFindList) nên nó không bao giờ đổi dưới tay người đang chọn. -->
+      <input id="cv-find" class="mini cv-find" type="search" list="cv-find-list" autocomplete="off"
+        placeholder="Find a card…" oninput="findCard(this)" onfocus="fillFindList()"
+        title="Type part of a card's name, then pick it — the canvas centres on that card and selects it">
+      <datalist id="cv-find-list"></datalist>
+      <span id="win-chips" class="win-chips"></span>
+    </div>
 
     <div id="tab-agents">
       <div id="canvas" class="canvas">
