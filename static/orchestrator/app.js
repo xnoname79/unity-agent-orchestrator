@@ -952,7 +952,7 @@ function editorCardHtml(st) {
       >${esc(w)}</button>`).join("") + `</span>`;
   return `<div class="agent-card editor-card">
     <div class="node-head editor-head" title="${esc(tip)}">
-      <span>${ic("edit", "sm")}</span>${tabs}<b>${esc(st.name || '')}</b>
+      <span class="ed-ic">${ic("edit", "sm")}</span>${tabs}<b>${esc(st.name || '')}</b>
       <span class="cwd" title="${esc(st.cwd || '')}">${esc(st.cwd || '')}</span>
       <span class="spacer"></span>
       <button class="icon-btn danger" onclick="closeEditor('${sid}','${esc(st.name || '')}')"
