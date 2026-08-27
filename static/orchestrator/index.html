@@ -313,6 +313,12 @@
   .win-empty .ic { vertical-align: -2px; }
   .win-chip.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent);
     font-weight: 600; }
+  /* Chip editor mang cùng màu cam với card của nó — hai chip cạnh nhau của CÙNG một session
+     (terminal + editor) trùng tên, màu là thứ duy nhất tách được chúng ra.
+     Đặt SAU .win-chip:hover và .win-chip.on: cùng/ hơn specificity, thắng nhờ cả hai. */
+  .win-chip.ed { color: var(--amber); }
+  .win-chip.ed:hover { color: var(--amber); background: var(--amber-soft); }
+  .win-chip.ed.on { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
   .tabs { display: flex; gap: 2px; background: var(--panel2); border: 1px solid var(--border);
     border-radius: 9px; padding: 3px; flex: none; }
   .tabs .tab { padding: 3px 13px; font-size: 12px; background: transparent; border: none;

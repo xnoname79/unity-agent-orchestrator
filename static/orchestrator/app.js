@@ -634,7 +634,7 @@ function winList() {
     name: s.name, sub: s.cwd || "" }));
   for (const c of editorCards)
     if (sessions.some((s) => s.id === c.session))
-      out.push({ nid: "editor:" + c.session, kind: "nvim", icon: ic("edit", "sm"),
+      out.push({ nid: "editor:" + c.session, kind: "nvim", icon: ic("edit", "sm"), ed: true,
                  name: c.name || c.session, sub: c.cwd || "" });
   return out;
 }
@@ -655,7 +655,7 @@ function renderWinBar() {
     return;
   }
   chips.innerHTML = `<span class="win-sep"></span>` + list.map((w) =>
-    `<button class="win-chip${w.nid === pinnedNid ? " on" : ""}"
+    `<button class="win-chip${w.ed ? " ed" : ""}${w.nid === pinnedNid ? " on" : ""}"
       onclick="pinWindow('${esc(w.nid)}')"
       title="${esc(w.kind)}${w.sub ? " · " + esc(w.sub) : ""} — pin it to the left edge at full
         height (it stays put while you pan and zoom); click again to send it back">
