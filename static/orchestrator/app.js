@@ -351,27 +351,60 @@ function shellSave() {
   history.replaceState(null, "", location.pathname + q);
 }
 
+// Thanh tab liệt kê MỌI workspace, không chỉ cái đang mở: mở một workspace khác mà phải quay
+// về màn Home rồi bấm card thì mất luôn chỗ đang đứng. Tab ≠ pane — pane vẫn tối đa MAX_PANES
+// vì mỗi pane là một iframe với terminal sống bên trong, không phải thứ dựng sẵn cho cả chục cái.
 function renderShellTabs() {
   const nav = $("ws-tabs");
   if (!nav) return;
-  const label = (id) => {
-    const w = WORKSPACES.find((x) => x.id === id);
-    return w ? (w.name || w.id) : id;
-  };
   const split = SPLIT && OPEN.length === MAX_PANES;
-  nav.innerHTML = OPEN.map((id, i) =>
-    `<button class="ws-tab${!split && i === ACTIVE ? " active" : ""}${split ? " split-on" : ""}"
-       onclick="focusWs(${i})" title="${esc(label(id))}">
-       <span class="lbl">${esc(label(id))}</span>
-       <span class="x" title="Close" onclick="event.stopPropagation();closeWs('${esc(id)}')">${ic("x", "sm")}</span>
-     </button>`).join("")
-    + (OPEN.length < MAX_PANES
-        ? `<button class="tab-add" onclick="goHome()" title="Open another workspace">${ic("plus", "sm")}</button>`
-        : "");
+  // Workspace đang mở mà không còn trong danh sách (vừa bị xoá) vẫn phải có tab, không thì pane
+  // của nó nằm đó mà không còn chỗ nào bấm đóng.
+  const rows = WORKSPACES.map((w) => ({ id: w.id, name: w.name || w.id }))
+    .concat(OPEN.filter((id) => !WORKSPACES.some((w) => w.id === id)).map((id) => ({ id, name: id })));
+  nav.innerHTML = rows.map(({ id, name }) => {
+    const i = OPEN.indexOf(id);
+    const open = i >= 0;
+    const cls = "ws-tab" + (open ? " open" : "")
+      + (open && !split && i === ACTIVE ? " active" : "") + (open && split ? " split-on" : "");
+    const tip = open ? `${name} — open${split ? ` in the ${i ? "right" : "left"} pane` : ""}`
+                     : `${name} — click to open`;
+    return `<button class="${cls}" onclick="selectWorkspace('${esc(id)}')" title="${esc(tip)}">
+       ${open && split ? `<span class="pane-tag">${i ? "R" : "L"}</span>` : ""}
+       <span class="lbl">${esc(name)}</span>
+       ${open ? `<span class="x" title="Close"
+         onclick="event.stopPropagation();closeWs('${esc(id)}')">${ic("x", "sm")}</span>` : ""}
+     </button>`;
+  }).join("");
+
+  // Split: chọn thẳng workspace nào nằm pane nào. Trước đây muốn đổi một bên thì phải đóng nó
+  // rồi mở cái mới, mà đóng xong split tự tắt — mất luôn cả pane bên kia đang xem dở.
+  const pick = $("pane-pick");
+  pick.hidden = !split;
+  if (split)
+    pick.innerHTML = ["Left", "Right"].map((side, i) =>
+      `<label class="pane-one" title="Workspace shown in the ${side.toLowerCase()} pane">
+         <span>${side[0]}</span>
+         <select class="mini" onchange="setPane(${i}, this.value)">${
+           WORKSPACES.map((w) => `<option value="${esc(w.id)}"${w.id === OPEN[i] ? " selected" : ""}
+             >${esc(w.name || w.id)}</option>`).join("")
+         }</select></label>`).join("");
+
   const sb = $("split-btn");
   sb.disabled = OPEN.length < MAX_PANES;
   sb.classList.toggle("on", split);
 }
+
+// Đặt workspace cho MỘT pane, pane kia không đụng tới. Chọn đúng workspace của pane kia = đổi
+// chỗ hai bên (không có gì phải tải lại, chỉ là thứ tự hiển thị).
+function setPane(i, id) {
+  if (!id || OPEN[i] === id) return;
+  if (id === OPEN[1 - i]) OPEN = [OPEN[1], OPEN[0]];
+  else OPEN[i] = id;        // iframe của workspace bị thay do renderPanes dọn
+  ACTIVE = i;
+  shellSave(); renderWorkspaceGrid(WORKSPACES); renderShellTabs(); renderPanes();
+}
+window.setPane = setPane;
 
 // iframe của 1 workspace. Tạo một lần rồi giữ nguyên — đặt lại src (hoặc move node)
 // là reload cả pane.
@@ -405,10 +438,13 @@ function renderPanes() {
   if (home) return;
 
   const split = SPLIT && OPEN.length === MAX_PANES;
-  const frames = OPEN.map(paneFrame);   // append-only: thứ tự DOM khớp OPEN
+  const frames = OPEN.map(paneFrame);
+  // Vị trí trái/phải đặt bằng CSS order, KHÔNG bằng thứ tự DOM: đổi chỗ hai pane bằng cách
+  // move node là trình duyệt tải lại iframe và giết terminal bên trong. order chỉ là layout.
   frames.forEach((f, i) => {
     const show = split || i === ACTIVE;
     f.hidden = !show;
+    f.style.order = i * 2;
     f.style.flex = split && i === 0 ? `0 0 ${SPLIT_PCT}%` : "1 1 0";
     // display:none → xterm đo được 0×0. Bảo pane fit lại khi nó vừa hiện ra.
     if (show) try { f.contentWindow.postMessage({ t: "show" }, location.origin); } catch { /* chưa load */ }
@@ -422,7 +458,8 @@ function renderPanes() {
       div.className = "pane-split";
       div.title = "Drag to resize";
     }
-    box.insertBefore(div, frames[1]);   // chỉ divider bị move, iframe đứng yên
+    div.style.order = 1;                       // nằm giữa hai pane (order 0 và 2)
+    if (div.parentElement !== box) box.appendChild(div);
   } else if (div) div.remove();
 }
 
@@ -437,14 +474,12 @@ function selectWorkspace(id) {
   const i = OPEN.indexOf(id);
   if (i >= 0) return focusWs(i);
   if (OPEN.length >= MAX_PANES) {
-    const victim = OPEN[Math.max(0, ACTIVE)];
-    OPEN = OPEN.filter((x) => x !== victim);
-    const box = $("panes");
-    for (const f of [...box.querySelectorAll("iframe.pane")])
-      if (f.dataset.ws === victim) f.remove();
+    ACTIVE = Math.max(0, ACTIVE);
+    OPEN[ACTIVE] = id;        // iframe cũ do renderPanes dọn
+  } else {
+    OPEN.push(id);
+    ACTIVE = OPEN.length - 1;
   }
-  OPEN.push(id);
-  ACTIVE = OPEN.length - 1;
   shellSave(); renderWorkspaceGrid(WORKSPACES); renderShellTabs(); renderPanes();
 }
 window.selectWorkspace = selectWorkspace;
@@ -490,7 +525,7 @@ function initSplitDrag() {
     if (!start) return;
     const pct = start.pct + ((e.clientX - start.x) / start.w) * 100;
     SPLIT_PCT = Math.min(80, Math.max(20, pct));
-    const f = box.querySelector("iframe.pane");
+    const f = [...box.querySelectorAll("iframe.pane")].find((x) => x.dataset.ws === OPEN[0]);
     if (f) f.style.flex = `0 0 ${SPLIT_PCT}%`;
   });
   const end = () => {

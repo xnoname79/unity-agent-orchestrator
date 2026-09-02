@@ -92,22 +92,30 @@
   .brand:hover { background: var(--panel2); }
   .brand img { width: 18px; height: 18px; display: block; }
   .spacer { flex: 1; }
+  /* Chọn workspace cho từng pane, chỉ hiện khi đang split. */
+  .pane-pick { display: flex; align-items: center; gap: 6px; flex: none; }
+  .pane-pick[hidden] { display: none; }
+  .pane-one { display: flex; align-items: center; gap: 4px; }
+  .pane-one > span { font-size: 9.5px; font-weight: 700; color: var(--faint); }
+  .pane-one select { max-width: 140px; }
 
-  /* Workspace tabs (kiểu browser) — tối đa 2, quá đó phải đóng bớt */
-  .ws-tabs { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+  /* Workspace tabs (kiểu browser): liệt kê MỌI workspace. Số pane vẫn tối đa 2 — tab chỉ là
+     chỗ bấm, pane mới là iframe tốn tài nguyên. Nhiều workspace thì cuộn ngang, đừng cắt cụt. */
+  .ws-tabs { display: flex; align-items: center; gap: 4px; min-width: 0; overflow-x: auto;
+    scrollbar-width: thin; }
   .ws-tab { display: flex; align-items: center; gap: 7px; max-width: 220px; padding: 5px 6px 5px 11px;
     border: 1px solid transparent; background: transparent; color: var(--muted);
     border-radius: var(--r-ctl); font-size: 12.5px; }
   .ws-tab:hover { background: var(--panel2); border-color: transparent; }
   .ws-tab.active { background: var(--panel2); border-color: var(--border); color: var(--text);
     font-weight: 600; }
+  .ws-tab.open { border-color: var(--border); color: var(--text); }
   .ws-tab.split-on { border-color: var(--accent); }
+  .ws-tab .pane-tag { flex: none; font-size: 9.5px; font-weight: 700; letter-spacing: .04em;
+    color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 3px; }
   .ws-tab .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ws-tab .x { display: flex; padding: 2px; border-radius: 5px; color: var(--faint); }
   .ws-tab .x:hover { background: var(--red-soft); color: var(--red); }
-  .tab-add { display: flex; padding: 5px; border: 1px dashed var(--border); background: transparent;
-    color: var(--muted); border-radius: var(--r-ctl); }
-  .tab-add:hover { color: var(--accent); border-color: var(--accent); }
 
   /* ── Controls ─────────────────────────────────────────────────────────── */
   button { font: inherit; cursor: pointer; border: 1px solid var(--border); background: var(--panel2);
@@ -620,6 +628,7 @@
   </button>
   <nav id="ws-tabs" class="ws-tabs"></nav>
   <div class="spacer"></div>
+  <span id="pane-pick" class="pane-pick" hidden></span>
   <span id="dry" class="pill dry" hidden>DRY-RUN</span>
   <button id="mcp-btn" class="icon-btn" onclick="mcpOpen()" title="MCP servers">
     <svg class="ic"><use href="#i-plug"/></svg></button>
