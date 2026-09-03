@@ -300,6 +300,9 @@ def init_db():
         conn.execute(f"ALTER TABLE sessions ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '{DEFAULT_WORKSPACE}'")
     if "engine" not in scols:
         conn.execute("ALTER TABLE sessions ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude'")
+    # is_orch: BỎ DÙNG. Trước đây 1 = card có terminal nhúng, tối đa 1 card/cwd. Giờ card nào cũng
+    # có terminal nên cờ này không phân biệt được gì nữa. Cột vẫn tạo để DB cũ và DB mới cùng một
+    # hình dạng (xoá cột trong SQLite phải dựng lại bảng — không đáng cho một cột không ai đọc).
     if "is_orch" not in scols:
         conn.execute("ALTER TABLE sessions ADD COLUMN is_orch INTEGER NOT NULL DEFAULT 0")
     if "resume_id" not in scols:
@@ -504,24 +507,6 @@ def get_session_by_name(name, workspace_id=None):
             "SELECT * FROM sessions WHERE name = ? ORDER BY last_active DESC LIMIT 1", (name,)).fetchone()
     conn.close()
     return dict(row) if row else None
-
-
-def set_session_orch(session_id, on):
-    """Bật/tắt cờ terminal cho 1 session. Bật: tắt cờ ở mọi session CÙNG cwd (1 terminal/project).
-
-    is_orch KHÔNG còn liên quan routing signal (alias 'orch' đã bỏ — đích báo cáo là người gửi,
-    xem _reply_rule). Giờ nó chỉ nói: card này mở terminal nhúng và được kéo giãn. Backend không
-    đọc nó trên đường prompt nữa; giữ tên cột để khỏi migration."""
-    _ensure_db()
-    conn = _conn()
-    if on:
-        row = conn.execute("SELECT cwd FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        if row:
-            conn.execute("UPDATE sessions SET is_orch = 0 WHERE cwd = ? AND is_orch = 1", (row["cwd"],))
-    conn.execute("UPDATE sessions SET is_orch = ?, last_active = ? WHERE id = ?",
-                 (1 if on else 0, _now(), session_id))
-    conn.commit()
-    conn.close()
 
 
 def resolve_session_id(ref, workspace_id=None, from_ref=None):
@@ -3507,19 +3492,6 @@ def build_app():
         publish({"type": "session", "id": body["id"], "status": "idle", "workspace_id": wid})
         return JSONResponse(get_session(body["id"]))
 
-    async def api_orch_toggle(request: Request):
-        """Bật/tắt terminal nhúng cho 1 session DB. Bật: tắt terminal của session khác cùng cwd
-        (1 terminal/project). Tắt: card về dạng headless. Xem set_session_orch."""
-        sid = request.path_params["sid"]
-        s = get_session(sid)
-        if not s:
-            return JSONResponse({"error": "not found"}, status_code=404)
-        body = await request.json()
-        on = bool(body.get("on", True))
-        set_session_orch(sid, on)
-        publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": s.get("workspace_id")})
-        return JSONResponse(get_session(sid))
-
     async def api_spawn(request: Request):
         body = await request.json()
         if not body.get("name"):
@@ -4349,7 +4321,6 @@ def build_app():
         Route("/api/editor/open", api_editor_open, methods=["POST"]),
         Route("/api/editor/focus", api_editor_focus, methods=["POST"]),
         Route("/api/editor/close", api_editor_close, methods=["POST"]),
-        Route("/api/sessions/{sid}/orch", api_orch_toggle, methods=["POST"]),
         Route("/api/sessions/{sid}/skill", api_get_skill),
         Route("/api/sessions/{sid}/skill", api_put_skill, methods=["POST"]),
         Route("/api/sessions/{sid}/compact", api_get_compact),

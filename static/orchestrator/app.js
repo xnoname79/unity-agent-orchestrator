@@ -664,7 +664,7 @@ function unpinWindow(keep) {
 // Card agent thường không có gì để ghim — nội dung là vài dòng meta.
 function winList() {
   const sessions = cvLast.sessions || [];
-  const out = sessions.filter((s) => s.is_orch).map((s) => ({
+  const out = sessions.map((s) => ({
     nid: "s:" + s.id, kind: "Terminal", icon: ic("terminal", "sm"),
     name: s.name, sub: s.cwd || "" }));
   for (const c of editorCards)
@@ -684,9 +684,8 @@ function renderWinBar() {
   const list = winList();
   bar.hidden = $("tab-agents").hidden;
   if (!list.length) {
-    chips.innerHTML = `<span class="win-sep"></span><span class="win-empty">No windows yet — turn on
-      the terminal for an agent (${ic("terminal", "sm")} in its inspector) or open an editor, then
-      pin it here.</span>`;
+    chips.innerHTML = `<span class="win-sep"></span><span class="win-empty">No windows yet — spawn an
+      agent (${ic("terminal", "sm")}) or open an editor, then pin it here.</span>`;
     return;
   }
   chips.innerHTML = `<span class="win-sep"></span>` + list.map((w) =>
@@ -710,7 +709,7 @@ function fillFindList() {
   if (!dl) return;
   const sessions = cvLast.sessions || [];
   const rows = sessions.map((s) => ({ nid: "s:" + s.id, name: s.name,
-    kind: s.is_orch ? "terminal" : "agent", sub: s.cwd || "" }));
+    kind: "agent", sub: s.cwd || "" }));
   // Card editor dùng CHUNG tên với session của nó → thêm hậu tố, không thì hai dòng trùng nhãn
   // và findMap chỉ giữ được một cái.
   for (const c of editorCards)
@@ -1118,26 +1117,21 @@ async function sendSignal() {
 }
 window.sendSignal = sendSignal;
 
-// 1 card agent. needsYou = có signal chờ duyệt tới nó; isOrch = s.is_orch (backend, toggle 💻)
-// — card mở terminal nhúng + kéo giãn được. KHÔNG ảnh hưởng routing signal hay SKILL của vai.
-function agentCard(s, needsYou, isOrch) {
+// 1 card agent. needsYou = có signal chờ duyệt tới nó.
+// MỌI card đều là card terminal: terminal nhúng thẳng trong card, action buttons xếp dọc ở cột
+// trái, kéo giãn được. Không còn dạng headless và không còn nút bật/tắt — một agent mà không gõ
+// thẳng vào được thì lần nào cũng phải bật terminal lên trước đã.
+function agentCard(s, needsYou) {
   const id = encodeURIComponent(s.id);
-  const tools = JSON.parse(s.allowed_tools || "[]") || [];
-  const today = s.daily_limit
-    ? `<span class="${s.daily_blocked ? "day-hit" : "day-ok"} num" title="runs today / daily limit">${s.used_today}/${s.daily_limit}</span>`
-    : "";
   const head = `<div class="node-head">
       <span class="status-dot dot-${esc(s.status)}"></span>
-      ${isOrch ? `<span class="crown" title="This session owns the project terminal">${ic("crown", "sm")}</span>` : ""}
       <b title="${esc(s.name)}">${esc(s.name)}</b>
       ${needsYou ? `<span class="needs-badge">NEEDS YOU</span>` : ""}
       <span class="spacer"></span>
     </div>`;
-  const engine = engineOfModel(s.model);
   const cls = `st-${esc(s.status)}${needsYou ? " needs-you" : ""}`;
 
-  // Card 👑: terminal thật nhúng thẳng trong card, action buttons xếp dọc left bar.
-  if (isOrch) {
+  {
     // Run tự động (báo cáo worker → run mới) đang chạy HOẶC đang xếp hàng → khóa chat +
     // ngắt PTY cũ ngay (2 claude cùng ghi 1 session = xung đột transcript). Tính cả signal
     // queued để 🔄 trong khe hở giữa 2 run liên tiếp không mở PTY xung đột. Signal pending
@@ -1177,11 +1171,11 @@ function agentCard(s, needsYou, isOrch) {
         ? `<div class="term-lock">✅ The automatic run finished — press 🔄 to load the new context and keep chatting.<br>
            Click to review that run.</div>`
         : "";
-    return `<div class="agent-card orch-term is-orch ${cls}" data-sid="${esc(s.id)}">
+    return `<div class="agent-card orch-term ${cls}" data-sid="${esc(s.id)}">
       ${head}
       <div class="orch-body">
         <div class="orch-side">
-          ${quickBtns(s, id, true)}
+          ${quickBtns(s, id)}
           ${cliSel}
           ${sidSel}
           <button class="icon-btn" onclick="reconnectTerm('${esc(s.id)}','${esc(s.name)}')"
@@ -1191,36 +1185,17 @@ function agentCard(s, needsYou, isOrch) {
       </div>
     </div>`;
   }
-
-  return `<div class="agent-card ${cls}" data-sid="${esc(s.id)}">
-    ${head}
-    <div class="agent-body">
-      <div class="mrow">
-        <span class="eng-chip eng-${esc(engine)}">${esc(engine)}</span>
-        <span class="mono" title="${esc(s.model || "auto")}">${esc(s.model || "auto")}</span>
-        <span class="spacer"></span><span>${esc(s.effort || DEFAULT_EFFORT)}</span>
-      </div>
-      <div class="mrow">
-        <span>${esc(s.status)}</span>
-        <span title="${esc(tools.join(", ") || "every tool allowed")}">·
-          ${tools.length ? tools.length + " tools" : "all tools"}</span>
-        <span class="spacer"></span>${today}
-      </div>
-    </div>
-    ${quickBtns(s, id)}
-  </div>`;
 }
 
-// Nút quick trên card: 4 thao tác hay dùng nhất, chỉ hiện khi hover hoặc card đang chọn.
+// Nút quick trên card: các thao tác hay dùng nhất, xếp dọc ở cột trái của card.
 // Phần còn lại (model, effort, SKILL, context, xoá…) ở inspector — nhồi hết vào card thì
 // 5 agent = 45 control cùng lúc trên canvas, mắt không biết nhìn đâu.
-// side=true: cột dọc trong card 👑, không cần khung nổi.
-function quickBtns(s, id, side) {
+function quickBtns(s, id) {
   const b = [];
   // class GHÉP một lần ở đây: nhét thêm attribute class thứ hai vào chuỗi HTML thì parser
   // lấy cái đầu và bỏ im cái sau — nút danger sẽ mất màu đỏ mà không ai thấy sai ở đâu.
   const btn = (extra, title, onclick, inner) =>
-    `<button class="${side ? "icon-btn " : ""}${extra}" title="${title}" onclick="${onclick}">${inner}</button>`;
+    `<button class="icon-btn ${extra}" title="${title}" onclick="${onclick}">${inner}</button>`;
 
   b.push(s.status === "paused" || s.status === "stopped"
     ? btn("", "Resume", `act('/api/sessions/${id}/resume')`, ic("play", "sm"))
@@ -1232,16 +1207,10 @@ function quickBtns(s, id, side) {
   if (s.daily_blocked)
     b.push(btn("warn", `Daily run limit hit — allow ${DAILY_STEP} more`,
       `allowMore('${id}','${esc(s.name)}')`, "+" + DAILY_STEP));
-  b.push(s.is_orch
-    ? btn("", "Close the terminal — the session goes back to a headless worker",
-        `if(confirm('Close the terminal on ${esc(s.name)}? The session goes back to headless.'))toggleOrch('${id}',0)`,
-        ic("x", "sm"))
-    : btn("", "Open a terminal for this session (one per project — closes any other terminal in the same cwd)",
-        `toggleOrch('${id}',1)`, ic("terminal", "sm")));
   if ((s.cwd || "").trim())
     b.push(btn("", "Open this session's project folder in nvim — as many editors as you like",
       `openEditor('${id}')`, ic("edit", "sm")));
-  return side ? b.join("") : `<div class="quick">${b.join("")}</div>`;
+  return b.join("");
 }
 
 // ── Inspector: mọi thứ về agent đang chọn ───────────────────────────────────
@@ -1343,7 +1312,6 @@ function renderInspector() {
       <div class="insp-row">
         <span class="eng-chip eng-${esc(engine)}">${esc(engine)}</span>
         ${badge(s.status, { running: "b-blue", paused: "b-amber", stopped: "b-red" }[s.status] || "b-gray")}
-        ${s.is_orch ? badge("terminal", "b-amber") : ""}
       </div>
       <div class="insp-kv"><span>Session</span><span class="mono" title="${esc(s.id)}">${esc(s.id)}</span></div>
       <div class="insp-kv"><span>Folder</span><span class="mono" title="${esc(s.cwd || "")}">${esc(s.cwd || "—")}</span></div>
@@ -1403,15 +1371,6 @@ const EDGE_COLORS = { wait: "var(--edge-wait)", run: "var(--edge-run)" };  // do
 const EDGE_DEFS = "<defs>" + Object.entries(EDGE_COLORS).map(([k, c]) =>
   `<marker id="ah-${k}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
      <path d="M0,0L8,4L0,8z" fill="${c}"/></marker>`).join("") + "</defs>";
-
-// Bật/tắt terminal nhúng cho 1 session DB (nguồn sự thật: cột is_orch backend — không còn
-// localStorage). Bật: backend tự tắt terminal của session khác cùng cwd (1 terminal/project).
-async function toggleOrch(id, on) {
-  try { await api("/api/sessions/" + id + "/orch", "POST", { on: !!on }); }
-  catch (e) { console.error(e); alert("Could not toggle the terminal: " + e); return; }
-  await refreshAll();
-}
-window.toggleOrch = toggleOrch;
 
 function zoneHtml(gi, cwd, list) {
   const base = cwd.replace(/\/+$/, "").split("/").pop() || cwd;
@@ -1565,10 +1524,8 @@ function renderCanvas(sessions, signals) {
       zonesHtml += zoneHtml(gi, cwd, list);
     }
     for (const s of list) {
-      // Chỉ card 👑 (có terminal) mới gắn tay nắm + cờ data-rz; headless giữ size cố định của CSS.
-      const rz = s.is_orch ? ` data-rz="1"` : "";
-      nodesHtml += `<div class="node" data-nid="s:${esc(s.id)}"${rz}>`
-                 + agentCard(s, needs.has(s.id), !!s.is_orch) + (s.is_orch ? RZ : "") + `</div>`;
+      nodesHtml += `<div class="node" data-nid="s:${esc(s.id)}" data-rz="1">`
+                 + agentCard(s, needs.has(s.id)) + RZ + `</div>`;
       nodeMeta.push({ sid: s.id, cwd, grouped, gi });
     }
   }
@@ -1596,7 +1553,14 @@ function renderCanvas(sessions, signals) {
   cvNodeEls = {};
   const agentEls = world.querySelectorAll('.node[data-nid^="s:"]');
   let cx = 40, cy = 40, rowH = 0;
-  const gcur = {};  // cwd → con trỏ xếp lưới 3 cột cho member mới
+  const gcur = {};  // cwd → con trỏ xếp lưới cho member mới
+  // Bước lưới ĐO từ card thật, không phải số cứng: mọi card giờ là card terminal (~680px rộng),
+  // còn 300×130 ngày trước là cỡ card headless — giữ nguyên thì agent mới cùng cwd chồng lên nhau.
+  const GCOLS = 2;
+  const probe = agentEls[0];
+  const stepX = (probe ? probe.offsetWidth : 680) + 40;
+  const stepY = (probe ? probe.offsetHeight : 400) + 40;
+  const clusterW = stepX * GCOLS + 60;
   nodeMeta.forEach((m, i) => {
     const el = agentEls[i], nid = "s:" + m.sid;
     cvNodeEls[m.sid] = el;
@@ -1608,18 +1572,19 @@ function renderCanvas(sessions, signals) {
           const old = pos["g:" + m.cwd];  // migrate: vị trí group-card kiểu cũ làm gốc cụm
           if (old) gc = { x0: old.x + 20, y0: old.y + 90, i: 0 };
           else {
-            if (cx + 940 > 1360 && cx > 40) { cx = 40; cy += rowH + 80; rowH = 0; }
+            if (cx > 40 && cx + clusterW > 40 + clusterW * 2) { cx = 40; cy += rowH + 80; rowH = 0; }
             gc = { x0: cx, y0: cy + 80, i: 0 };
-            cx += 980; rowH = Math.max(rowH, 360);
+            cx += clusterW;
+            // Chiều cao CẢ CỤM, không phải một card: lấy một bước thì card đơn xếp sau đó rơi
+            // đè lên hàng thứ hai của cụm (80 = chỗ cho zone-head phía trên).
+            rowH = Math.max(rowH, 80 + Math.ceil(byCwd.get(m.cwd).length / GCOLS) * stepY);
           }
           gcur[m.cwd] = gc;
         }
-        // Bước dòng 130 bám chiều cao card hiện tại (~76px + thở). Card cũ cao ~200px nên
-        // con số cũ là 200 — giữ nguyên thì mỗi cụm mới thủng một khoảng trống to.
-        pos[nid] = { x: gc.x0 + (gc.i % 3) * 300, y: gc.y0 + Math.floor(gc.i / 3) * 130 };
+        pos[nid] = { x: gc.x0 + (gc.i % GCOLS) * stepX, y: gc.y0 + Math.floor(gc.i / GCOLS) * stepY };
         gc.i++;
       } else {
-        if (cx + el.offsetWidth > 1360 && cx > 40) { cx = 40; cy += rowH + 40; rowH = 0; }
+        if (cx > 40 && cx + el.offsetWidth > 40 + stepX * GCOLS) { cx = 40; cy += rowH + 40; rowH = 0; }
         pos[nid] = { x: cx, y: cy };
         cx += el.offsetWidth + 40;
         rowH = Math.max(rowH, el.offsetHeight);

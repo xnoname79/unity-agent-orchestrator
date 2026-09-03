@@ -37,7 +37,7 @@
     --gray-soft: rgba(107,114,128,.14); --blue-soft: rgba(59,116,224,.12);
     --amber-soft: rgba(176,111,10,.14); --red-soft: rgba(217,45,32,.12);
     --green-soft: rgba(26,127,78,.13);
-    --crown: #c98a04; --edge-wait: #e0930c; --edge-run: #3b74e0;
+    --edge-wait: #e0930c; --edge-run: #3b74e0;
     --zone-line: #b9c4d6; --zone-fill: rgba(59,116,224,.045);
     --term-bg: #0c0e12; --scrim: rgba(16,24,40,.45);
     --sh-1: 0 1px 2px rgba(16,24,40,.07);
@@ -57,7 +57,7 @@
     --gray-soft: rgba(139,147,161,.16); --blue-soft: rgba(77,139,255,.18);
     --amber-soft: rgba(232,163,61,.16); --red-soft: rgba(255,107,94,.15);
     --green-soft: rgba(62,207,142,.15);
-    --crown: #e0b341; --edge-wait: #e8a33d; --edge-run: #4d8bff;
+    --edge-wait: #e8a33d; --edge-run: #4d8bff;
     --zone-line: #35415a; --zone-fill: rgba(77,139,255,.05);
     --term-bg: #0a0d13; --scrim: rgba(0,0,0,.62);
     --sh-1: 0 1px 2px rgba(0,0,0,.5);
@@ -416,12 +416,10 @@
   .agent-card.st-running { border-color: var(--blue); }
   .agent-card.st-paused, .agent-card.needs-you { border-color: var(--amber); }
   .agent-card.st-stopped { opacity: .68; }
-  .agent-card.is-orch { border-color: var(--crown); }
   .node-head { display: flex; align-items: center; gap: 7px; padding: 9px 10px; cursor: grab;
     user-select: none; }
   .node-head b { font-size: 12.5px; font-weight: 620; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; }
-  .node-head .crown { color: var(--crown); display: flex; }
   .status-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--gray); }
   .dot-running { background: var(--blue); animation: pulse 1.2s infinite; }
   .dot-paused { background: var(--amber); }
@@ -433,22 +431,6 @@
     padding: 2px 6px; border-radius: 5px; background: var(--gray-soft); color: var(--muted); flex: none; }
   .eng-claude { background: var(--amber-soft); color: var(--amber); }
   .eng-codex { background: var(--green-soft); color: var(--green); }
-  .agent-body { padding: 0 10px 10px; display: grid; gap: 3px; }
-  .agent-body .mrow { display: flex; align-items: center; gap: 7px; color: var(--muted);
-    font-size: 11px; min-width: 0; }
-  .agent-body .mono { font-family: ui-monospace, monospace; font-size: 10.5px; color: var(--text);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .agent-body .num { font-variant-numeric: tabular-nums; }
-  /* Hover toolbar: 4 thao tác hay dùng, chỉ hiện khi rê chuột lên card hoặc card đang chọn */
-  .quick { position: absolute; top: 6px; right: 6px; display: flex; gap: 2px; padding: 2px;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
-    box-shadow: var(--sh-2); opacity: 0; transform: translateY(-3px);
-    transition: opacity .12s, transform .12s; pointer-events: none; }
-  .agent-card:hover .quick, .node.sel .quick { opacity: 1; transform: none; pointer-events: auto; }
-  .quick button { width: 24px; height: 24px; padding: 0; display: flex; align-items: center;
-    justify-content: center; border-color: transparent; background: transparent; color: var(--muted); }
-  .quick button:hover { background: var(--panel2); color: var(--text); }
-  .quick button.danger:hover { background: var(--red-soft); color: var(--red); }
 
   /* Zone: khung bo quanh các agent chung cwd */
   .group-zone { border: 1px solid var(--zone-line); border-radius: 16px; background: var(--zone-fill);
@@ -469,10 +451,9 @@
   .edge-run { stroke: var(--edge-run); stroke-dasharray: 6 5; animation: edgeflow .6s linear infinite; }
   @keyframes edgeflow { to { stroke-dashoffset: -11; } }
 
-  /* Card 👑 terminal nhúng */
+  /* Card agent: luôn có terminal nhúng */
   .node.sized > .agent-card, .node.sized > .editor-card { width: 100%; height: 100%;
     display: flex; flex-direction: column; }
-  .node.sized .agent-body, .node.sized .agent-actions { flex: none; }
   .node.sized .editor-card .term-slot { flex: 1; height: auto; max-height: none; }
   .node.sized .term-slot { height: auto; }
   .agent-card.orch-term { width: 680px; }
@@ -612,7 +593,6 @@
   <symbol id="i-book" viewBox="0 0 24 24"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v18H6.5A1.5 1.5 0 0 1 5 19.5z"/><path d="M9 3v18"/></symbol>
   <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><path d="M14 3v4h4"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24"><path d="M21 4 3 11.5l7 2.4 2.4 7z"/><path d="m10 14 4-4"/></symbol>
-  <symbol id="i-crown" viewBox="0 0 24 24"><path d="M4 18h16M4 18 3 7l5.2 3.2L12 4l3.8 6.2L21 7l-1 11z"/></symbol>
   <symbol id="i-compress" viewBox="0 0 24 24"><path d="M4 8h16M4 16h16M9 4l3 3 3-3M9 20l3-3 3 3"/></symbol>
   <symbol id="i-rocket" viewBox="0 0 24 24"><path d="M5 15c-1.5 1.5-2 6-2 6s4.5-.5 6-2a3 3 0 0 0-4-4z"/><path d="M9.5 13.5 7 11a12 12 0 0 1 10-8c2 0 4 .3 4 .3s.3 2 .3 4a12 12 0 0 1-8 10l-2.5-2.5z"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 7V4.8A.8.8 0 0 1 10.8 4h2.4a.8.8 0 0 1 .8.8V7M6.5 7l.9 12.2a.8.8 0 0 0 .8.8h7.6a.8.8 0 0 0 .8-.8L17.5 7"/></symbol>

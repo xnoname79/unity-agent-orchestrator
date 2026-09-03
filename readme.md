@@ -69,15 +69,16 @@ and stream their output into a single web UI.
 It does not reimplement an agent. It drives the CLIs you already have installed and logged in,
 so each provider keeps its own subscription, its own auth, and its own tools.
 
-* **One canvas, many agents.** Drag, resize, and open a live terminal inside any card. Arrows
-  animate between cards as signals flow.
+* **One canvas, many agents.** Every card is a live terminal you can type into. Drag and resize
+  them; arrows animate between cards as signals flow.
 * **Agents talk to each other, in parallel.** `send_signal(to_role="...")` resolves the role,
   injects the message, and records the run. Different projects run concurrently; two messages to
   the *same* agent queue behind a lock so transcripts never interleave.
-* **Two workspaces at once.** Open a second workspace as a tab and split the window between
-  them, browser-style. Both canvases stay live, terminals included.
-* **Cards show state, panels hold actions.** A card is role, provider, model and status; select
-  it and everything you can do opens on the right. Ten agents, not ninety buttons.
+* **Two workspaces at once.** Every workspace is a tab; open two and split the window between
+  them, browser-style, picking which one goes in each pane. Both canvases stay live.
+* **Cards hold the terminal, panels hold the actions.** A card is the agent's terminal plus the
+  few controls you reach for while typing; select it and the rest — model, effort, skill, context
+  — opens on the right. Ten agents, not ninety buttons.
 * **OpenAI-compatible API.** Point any OpenAI client at `/v1` and chat with an agent as if it
   were a model. Streaming included.
 * **Dark mode**, a minimap once the canvas outgrows the window, and a single binary with no
