@@ -1771,14 +1771,74 @@ def _build_init_prompt(name, init_prompt, workspace_id):
     return prompt
 
 
+# Id phiên đi THẲNG vào glob (và vào argv của CLI), nên phải chặn ở đây: chỉ chữ-số-._- .
+# Không có chốt này thì một id chứa '/' hay '..' biến glob thành đường đi ra khỏi thư mục
+# transcript — mà hàm ngay dưới xoá file theo đúng đường đó.
+_SID_OK = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
+
+
+def _transcript_path(sid, cli):
+    """Đường dẫn file transcript của phiên này, None nếu CLI đó không có. MỘT chỗ biết bố cục
+    đĩa của hai CLI: claude <projects>/<slug>/<sid>.jsonl, codex <sessions>/…/rollout-*-<sid>.jsonl."""
+    if not sid or not _SID_OK.match(sid):
+        return None
+    if cli == "codex":
+        return next(CODEX_SESSIONS_DIR.rglob(f"rollout-*-{sid}.jsonl"), None)
+    return next(CLAUDE_PROJECTS_DIR.glob(f"*/{sid}.jsonl"), None)
+
+
 def _claude_knows_session(sid):
     """Claude CLI đã có transcript mang id này chưa (bất kể cwd nào)."""
-    return next(CLAUDE_PROJECTS_DIR.glob(f"*/{sid}.jsonl"), None) is not None
+    return _transcript_path(sid, "claude") is not None
 
 
 def _codex_knows_session(sid):
     """Codex CLI đã có rollout mang id này chưa (`codex exec resume <sid>` cần nó)."""
-    return next(CODEX_SESSIONS_DIR.rglob(f"rollout-*-{sid}.jsonl"), None) is not None
+    return _transcript_path(sid, "codex") is not None
+
+
+def sessions_using_transcript(sid):
+    """Card nào đang dựa vào transcript này: chính nó (id = sid) hoặc đang ghim nó (resume_id).
+    Xoá transcript dưới chân một card đang dùng = lần resume sau mất sạch ngữ cảnh mà không báo,
+    nên chỗ gọi phải TỪ CHỐI chứ không phải dọn hộ."""
+    _ensure_db()
+    conn = _conn()
+    rows = conn.execute("SELECT name FROM sessions WHERE id = ? OR resume_id = ?", (sid, sid)).fetchall()
+    conn.close()
+    return [r["name"] for r in rows]
+
+
+def delete_cli_session(sid, cli):
+    """Xoá transcript của MỘT phiên CLI. Trả dict mô tả đã xoá gì, hoặc {'error': …}.
+
+    Chỉ đụng vào file transcript (+ thư mục session-env cùng id của claude). KHÔNG đụng
+    history.jsonl của claude: file đó khoá theo project+timestamp, không có session id, nên không
+    lọc theo phiên được — nói thẳng ở UI thay vì xoá bừa. Của codex thì CÓ session_id nhưng đang
+    được CLI ghi thêm liên tục, viết đè lên là tự chuốc hỏng file."""
+    if not sid or not _SID_OK.match(sid):
+        return {"error": f"'{sid}' is not a valid session id"}
+    used = sessions_using_transcript(sid)
+    if used:
+        return {"error": f"{', '.join(sorted(set(used)))} still resumes this session — "
+                         f"switch that card to another session first"}
+    path = _transcript_path(sid, cli)
+    if not path:
+        return {"error": f"{cli} has no session '{sid}' on this machine"}
+    try:
+        path.unlink()
+    except OSError as e:
+        return {"error": f"could not delete the transcript: {e}"}
+    out = {"id": sid, "cli": cli, "transcript": str(path), "session_env": 0}
+    if cli != "codex":
+        # claude giữ thêm một thư mục env mỗi phiên; không dọn là nó dồn lại mãi.
+        env = CLAUDE_PROJECTS_DIR.parent / "session-env" / sid
+        try:
+            shutil.rmtree(env)
+            out["session_env"] = 1
+        except (OSError, FileNotFoundError):
+            pass
+    print(f"[orchestrator] 🗑 xoá transcript {cli} '{sid}' ({path})")
+    return out
 
 
 async def _adopt_session_for_claude(session):
@@ -3788,6 +3848,32 @@ def build_app():
                              "sessions": list_cli_sessions(cwd, cli,
                                                            int(limit) if limit.isdigit() else 20)})
 
+    async def api_delete_cli_session(request: Request):
+        """Xoá transcript của MỘT phiên CLI trong cwd của session — dọn ô chọn phiên cho gọn.
+
+        Id phải là phiên THẬT SỰ có trong cwd đó (đối chiếu list_cli_sessions), không phải bất kỳ
+        chuỗi nào gửi lên: id này đi thẳng vào đường dẫn file sắp bị xoá."""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        sid = (body.get("id") or "").strip()
+        s = get_session((body.get("session") or "").strip()) if body.get("session") else None
+        if not s:
+            return JSONResponse({"error": "session is required"}, status_code=400)
+        cli = (body.get("cli") or "").strip().lower()
+        if cli not in ("claude", "codex"):
+            cli = "codex" if engine_name_of_session(s) == "codex" else "claude"
+        cwd = s.get("cwd") or ""
+        if not any(x["id"] == sid for x in list_cli_sessions(cwd, cli)):
+            return JSONResponse(
+                {"error": f"{cli} has no session '{sid}' recorded in {cwd or 'that folder'}"},
+                status_code=400)
+        res = delete_cli_session(sid, cli)
+        if res.get("error"):
+            return JSONResponse(res, status_code=400)
+        return JSONResponse({"deleted": True, **res})
+
     async def api_set_model(request: Request):
         """Đổi model của 1 session ngay trên bảng Sessions (không cần re-register)."""
         sid = request.path_params["sid"]
@@ -4302,6 +4388,7 @@ def build_app():
         Route("/api/available-tools", api_available_tools),
         Route("/api/fs", api_fs_list),
         Route("/api/cli-sessions", api_cli_sessions),
+        Route("/api/cli-sessions/delete", api_delete_cli_session, methods=["POST"]),
         Route("/api/sessions/{sid}/resume-id", api_set_resume, methods=["POST"]),
         WebSocketRoute("/ws/terminal", ws_terminal),
         WebSocketRoute("/ws/editor", ws_editor),

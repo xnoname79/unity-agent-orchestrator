@@ -932,19 +932,27 @@ window.setTermSid = setTermSid;
 // Nhãn của phiên đang ghim. Id thì nhìn không ra gì; câu người dùng gõ đầu tiên thì nhìn ra ngay
 // — mà câu đó chỉ có sau khi quét transcript, nên cache lại theo id.
 // Nạp MỘT lần cho mỗi (cwd, cli): mọi card cùng thư mục dùng chung đúng một lần gọi.
-const resumeTitle = {};
-const resumeLoaded = {};
+const resumeTitle = {};   // id phiên → câu người dùng gõ đầu tiên
+const sessCache = {};     // "cwd|cli" → danh sách phiên đã quét (dùng chung cho header + inspector)
 
+const sessKey = (cwd, cli) => (cwd || "") + "|" + cli;
 const resumeLabel = (rid) => (!rid ? "this session" : resumeTitle[rid] || rid.slice(0, 8));
 
+// MỘT chỗ gọi /api/cli-sessions cho cả ba nơi cần (nhãn header, ô chọn phiên, danh sách dọn dẹp).
+// force = sau khi xoá: danh sách cũ còn dòng vừa biến mất.
+async function loadCliSessions(sid, cwd, cli, force) {
+  const key = sessKey(cwd, cli);
+  if (!force && sessCache[key]) return sessCache[key];
+  const r = await api(`/api/cli-sessions?session=${encodeURIComponent(sid)}&cli=${encodeURIComponent(cli)}`);
+  const rows = r.sessions || [];
+  sessCache[key] = rows;
+  for (const x of rows) if (x.preview) resumeTitle[x.id] = x.preview;
+  return rows;
+}
+
 async function ensureResumeTitles(sid, cwd, cli) {
-  const key = (cwd || "") + "|" + cli;
-  if (resumeLoaded[key]) return;
-  resumeLoaded[key] = true;
-  try {
-    const r = await api(`/api/cli-sessions?session=${encodeURIComponent(sid)}&cli=${encodeURIComponent(cli)}`);
-    for (const x of r.sessions || []) if (x.preview) resumeTitle[x.id] = x.preview;
-  } catch (e) { resumeLoaded[key] = false; return; }
+  if (sessCache[sessKey(cwd, cli)]) return;
+  try { await loadCliSessions(sid, cwd, cli); } catch (e) { return; }
   paintResumeLabels();
 }
 
@@ -964,11 +972,9 @@ async function fillTermSessions(el, sid, cli) {
   if (el.dataset.filled) return;
   el.dataset.filled = "1";
   let list = [];
-  try {
-    const r = await api(`/api/cli-sessions?session=${encodeURIComponent(sid)}&cli=${encodeURIComponent(cli)}`);
-    list = r.sessions || [];
-  } catch (e) { console.error(e); el.dataset.filled = ""; return; }
-  for (const x of list) if (x.preview) resumeTitle[x.id] = x.preview;
+  const cwd = (cvLast.sessions || []).find((x) => x.id === sid);
+  try { list = await loadCliSessions(sid, (cwd && cwd.cwd) || "", cli); }
+  catch (e) { console.error(e); el.dataset.filled = ""; return; }
   const cur = el.value;
   el.innerHTML = `<option value="">this session</option>` + list.map((x) =>
     `<option value="${esc(x.id)}" title="${esc(x.preview || x.id)}">${esc(x.ts.slice(5))} · `
@@ -1317,6 +1323,66 @@ function wsMove(s) {
 
 const wsLabel = (id) => (WORKSPACES.find((w) => w.id === id) || {}).name || id || "default";
 
+// Dọn dẹp phiên CLI của thư mục này. Danh sách nằm ở INSPECTOR chứ không ở ô chọn phiên trên
+// header: <option> không chứa được nút, và chọn một dòng trong ô đó = GHIM nó — bấm để xoá mà
+// lại đổi luôn phiên card đang chat là hai việc khác nhau dính vào một cú click.
+// Quét transcript là việc của đĩa nên chỉ chạy khi người dùng bấm, không theo mỗi lần render.
+function sessCleanup(s, cli) {
+  const rows = sessCache[sessKey(s.cwd || "", cli)];
+  const head = `<div class="insp-sec"><h4>${cli} sessions in this folder</h4>`;
+  if (!(s.cwd || "").trim())
+    return head + `<div class="hint">This agent has no working folder, so there is nothing to
+      list.</div></div>`;
+  if (!rows)
+    return head + `<button class="secondary" onclick="showCliSessions('${esc(s.id)}','${cli}')"
+      >${ic("doc", "sm")} List them</button></div>`;
+  if (!rows.length)
+    return head + `<div class="hint">Nothing recorded in this folder yet.</div></div>`;
+  return head + rows.map((x) => {
+    const mine = x.id === s.id, pinned = x.id === (s.resume_id || "");
+    const why = mine ? "this card's own session" : pinned ? "this card resumes it" : "";
+    return `<div class="sess-row">
+      <span class="sess-when">${esc(x.ts.slice(5))}</span>
+      <span class="sess-title" title="${esc(x.preview || x.id)}">${esc(x.preview || x.id.slice(0, 8))}</span>
+      ${why
+        ? `<span class="sess-keep" title="${esc(why)}">in use</span>`
+        : `<button class="icon-btn danger" title="Delete this session's transcript"
+             onclick="deleteCliSession('${esc(s.id)}','${cli}','${esc(x.id)}')">${ic("trash", "sm")}</button>`}
+    </div>`;
+  }).join("") + `</div>`;
+}
+
+async function showCliSessions(sid, cli) {
+  const s = (cvLast.sessions || []).find((x) => x.id === sid);
+  if (!s) return;
+  try { await loadCliSessions(sid, s.cwd || "", cli, true); }
+  catch (e) { alert("Could not list the sessions: " + e); return; }
+  paintResumeLabels();   // cache vừa đổi → nhãn trên header phải theo, không đợi render sau
+  renderInspector();
+}
+window.showCliSessions = showCliSessions;
+
+// Xoá transcript của MỘT phiên. Backend từ chối phiên đang có card dùng, nên ở đây chỉ cần nói
+// rõ cái gì mất và cái gì KHÔNG mất — prompt đã gõ vẫn nằm trong history của chính CLI đó.
+async function deleteCliSession(sid, cli, id) {
+  const s = (cvLast.sessions || []).find((x) => x.id === sid);
+  if (!s) return;
+  const title = resumeTitle[id] || id;
+  if (!confirm(`Delete this ${cli} session?\n\n${title}\n\nIts transcript file is removed for `
+      + `good — the conversation cannot be resumed again. What you typed still stays in ${cli}'s `
+      + `own history file, which is not keyed by session and cannot be cleaned up from here.`))
+    return;
+  try { await api("/api/cli-sessions/delete", "POST", { session: sid, cli, id }); }
+  catch (e) {
+    let msg = String(e);
+    try { const j = JSON.parse(e); if (j && j.error) msg = j.error; } catch (_) {}
+    alert("Could not delete that session: " + msg);
+    return;
+  }
+  await showCliSessions(sid, cli);   // nạp lại: dòng vừa xoá phải biến mất khỏi cả ô chọn phiên
+}
+window.deleteCliSession = deleteCliSession;
+
 function renderInspector() {
   const box = $("inspector");
   if (!box) return;
@@ -1382,6 +1448,8 @@ ${pairBudget(s)}
       <button class="secondary" onclick="compactSession('${id}','${esc(s.name)}')"
         title="Summarise the transcript so the role stops drifting on long jobs">${ic("compress", "sm")} Compact context</button>
     </div>
+
+    ${sessCleanup(s, engine === "codex" ? "codex" : "claude")}
 
     <div class="insp-sec insp-danger">
       <h4>Danger zone</h4>

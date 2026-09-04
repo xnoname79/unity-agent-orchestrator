@@ -520,6 +520,17 @@
   .insp-pair .num.warn { color: var(--amber); }
   .insp-pair .num.hit { color: var(--red); font-weight: 700; }
   .insp-row { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+  /* Danh sách phiên CLI để dọn dẹp: mỗi dòng một phiên, nút xoá riêng của dòng đó. */
+  .sess-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; min-width: 0;
+    border-bottom: 1px solid var(--border); }
+  .sess-row:last-child { border-bottom: none; }
+  .sess-when { flex: none; font-size: 10.5px; color: var(--faint);
+    font-family: ui-monospace, monospace; }
+  .sess-title { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess-keep { flex: none; font-size: 9.5px; font-weight: 700; letter-spacing: .04em;
+    color: var(--muted); background: var(--gray-soft); border-radius: 4px; padding: 1px 5px; }
+  .sess-row .icon-btn { flex: none; }
   .insp-row button { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center;
     gap: 6px; padding: 6px 8px; font-size: 11.5px; white-space: nowrap; overflow: hidden; }
   .insp-body input, .insp-body select { width: 100%; background: var(--bg); border: 1px solid var(--border);

@@ -157,6 +157,57 @@ async def main():
         r = await c.get("/api/cli-sessions?session=nope")
         check("no session and no cwd is refused", r.status_code == 400, r.text[:200])
 
+        # ── Xoá một phiên để dọn dẹp ────────────────────────────────────────
+        # Id đi thẳng vào đường dẫn file sắp bị xoá, nên chuỗi lạ phải chết ở cổng.
+        async def rm(target, cli="claude", session=None):
+            return await c.post("/api/cli-sessions/delete",
+                                json={"session": session or sid, "cli": cli, "id": target})
+
+        for bad in ("../../../../etc/passwd", "*", "11111111-1111-4111-8111-111111111111/../..",
+                    "44444444-4444-4444-8444-444444444444"):
+            r = await rm(bad)
+            check(f"refuses an id that is not a claude session of this folder ({bad[:18]})",
+                  r.status_code == 400, r.text[:160])
+
+        # Card đang dùng transcript nào thì transcript đó không được biến mất dưới chân nó.
+        so.set_session_resume(sid, pick)
+        r = await rm(pick)
+        check("refuses a session this card resumes",
+              r.status_code == 400 and "term" in r.text, r.text[:200])
+        check("...and the transcript is still there", (SLUG / f"{pick}.jsonl").exists())
+        so.set_session_resume(sid, "")
+
+        # Card mà id CHÍNH là transcript đó: xoá = xoá hội thoại của chính nó.
+        own = "11111111-1111-4111-8111-111111111111"
+        so.register_session(own, "owner", cwd=CWD, model="claude-opus-5")
+        r = await rm(own)
+        check("refuses a transcript that is a card's own session",
+              r.status_code == 400 and "owner" in r.text, r.text[:200])
+        check("...and that transcript is still there too", (SLUG / f"{own}.jsonl").exists())
+        so.unregister_session(own)
+
+        # Đường ngay: phiên có thật, không ai dùng.
+        gone = "22222222-2222-4222-8222-222222222222"
+        env = so.CLAUDE_PROJECTS_DIR.parent / "session-env" / gone
+        env.mkdir(parents=True)
+        r = await rm(gone)
+        check("deletes a session nothing is using", r.status_code == 200, r.text[:200])
+        check("the transcript file is gone", not (SLUG / f"{gone}.jsonl").exists())
+        check("claude's per-session env folder goes with it", not env.exists())
+        check("the picker no longer lists it",
+              [x["id"][:2] for x in so.list_cli_sessions(CWD, "claude")] == ["11"],
+              [x["id"][:8] for x in so.list_cli_sessions(CWD, "claude")])
+        check("the other folder's session was left alone",
+              (SLUG / "33333333-3333-4333-8333-333333333333.jsonl").exists())
+        r = await rm(gone)
+        check("deleting it twice is refused, not a crash", r.status_code == 400, r.text[:160])
+
+        # codex: cùng luật, khác bố cục file trên đĩa.
+        cxid = "44444444-4444-4444-8444-444444444444"
+        cxf = so.CODEX_SESSIONS_DIR / "2026" / "08" / "11" / f"rollout-2026-08-11T21-36-40-{cxid}.jsonl"
+        r = await rm(cxid, cli="codex")
+        check("deletes a codex rollout too", r.status_code == 200 and not cxf.exists(), r.text[:200])
+
 
 asyncio.run(main())
 db.unlink(missing_ok=True)
