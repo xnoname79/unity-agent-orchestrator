@@ -52,10 +52,19 @@ const EFFORT_LADDER = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const CLAUDE_MAX_EFFORT = "max";
 const CODEX_MAX_EFFORT = { "gpt-5.6-terra": "ultra", "gpt-5.6-luna": "max" };
 const CODEX_MAX_EFFORT_DEFAULT = "xhigh";
+// `agy --help`: effort chỉ có low|medium|high, một trần chung cho mọi model của nó.
+const AGY_MAX_EFFORT = "high";
 
 // Mức cao nhất model này nhận (claude theo CLI, codex theo TỪNG model).
 function effortCeiling(model) {
-  if (engineOfModel(model) === "claude") return CLAUDE_MAX_EFFORT;
+  const eng = engineOfModel(model);
+  if (eng === "claude") return CLAUDE_MAX_EFFORT;
+  // Model của agy mang sẵn mức nghĩ ở đuôi ('…-flash-low') và service BỎ --effort khi thấy đuôi
+  // đó — nên trần chính là đuôi, đừng mời chọn mức mà model đã quyết thay.
+  if (eng === "agy") {
+    const slug = (model || "").split(":")[1] || "";
+    return EFFORT_LADDER.find((e) => slug.endsWith("-" + e)) || AGY_MAX_EFFORT;
+  }
   const m = (model || "").trim().toLowerCase();
   return CODEX_MAX_EFFORT[m.includes(":") ? m.split(":")[1].trim() : ""] || CODEX_MAX_EFFORT_DEFAULT;
 }
@@ -901,13 +910,17 @@ let termLock = {};  // session name → true
 // CLI người dùng chọn cho terminal, theo NAME (bền qua xoay session id) — rỗng = theo engine của
 // session. Chọn CLI KHÁC engine thì backend mở phiên MỚI (id của claude không resume được bằng
 // codex và ngược lại), nên đổi lựa chọn = hủy PTY cũ rồi nối lại.
-let termCli = {};   // session name → 'claude' | 'codex'
+let termCli = {};   // session name → 'claude' | 'codex' | 'agy'
+
+const CLI_ICON = { claude: "🅒", codex: "🅞", agy: "🅖" };
 
 // Gương của engine_from_model bên service — model là nguồn sự thật duy nhất của engine.
 // Lệch với backend là UI hiện sai nút (vd mời xóa vĩnh viễn một session Claude rồi ăn 400).
 function engineOfModel(model) {
   const m = (model || "").trim().toLowerCase();
-  return m === "codex" || m.startsWith("codex:") ? "codex" : "claude";
+  if (m === "codex" || m.startsWith("codex:")) return "codex";
+  if (m === "agy" || m.startsWith("agy:")) return "agy";
+  return "claude";
 }
 
 async function setTermCli(sid, name, cli) {
@@ -1183,8 +1196,8 @@ function agentCard(s, needsYou) {
     const cli = termCli[s.name] || eng;
     const cliSel = `<select class="mini cli-sel" title="Which CLI runs in the terminal (session engine: ${eng}) — ✦ = a different engine, opens a NEW session in the same cwd"
       onchange="setTermCli('${esc(s.id)}','${esc(s.name)}', this.value)">
-      ${["claude", "codex"].map((c) => `<option value="${c}"${c === cli ? " selected" : ""}
-        >${c === "claude" ? "🅒" : "🅞"} ${c}${c === eng ? "" : " ✦"}</option>`).join("")}
+      ${["claude", "codex", "agy"].map((c) => `<option value="${c}"${c === cli ? " selected" : ""}
+        >${CLI_ICON[c]} ${c}${c === eng ? "" : " ✦"}</option>`).join("")}
     </select>`;
     // Ghim PHIÊN để chat tiếp: mọi transcript của CLI này trong cwd của session, mới nhất trên
     // cùng. Danh sách chỉ nạp khi mở select (xem fillTermSessions). Ghim ăn cho cả run headless.
@@ -1927,6 +1940,14 @@ const MODEL_TABS = [
     { id: "claude-sonnet-5", name: "Sonnet 5", desc: "Close to Opus on code and agentic work, at Sonnet pricing" },
     { id: "claude-haiku-4-5", name: "Haiku 4.5", desc: "Fastest and cheapest — simple tasks" },
   ] },
+  { engine: "agy", label: "Gemini", note: "agy CLI (Antigravity) · runs on your Google account", models: [
+    { id: "agy", name: "Auto", desc: "Whatever the CLI is configured to use" },
+    { id: "agy:gemini-3.1-pro-high", name: "3.1 Pro · high", desc: "Best Gemini for deep work — the model name already carries its thinking level" },
+    { id: "agy:gemini-3.1-pro-low", name: "3.1 Pro · low", desc: "Same model, less thinking — cheaper and quicker" },
+    { id: "agy:gemini-3.8-flash-high", name: "3.8 Flash · high", desc: "Fast model, full thinking — everyday coding" },
+    { id: "agy:gemini-3.8-flash-medium", name: "3.8 Flash · medium", desc: "Balanced Flash" },
+    { id: "agy:gemini-3.8-flash-low", name: "3.8 Flash · low", desc: "Fastest and cheapest — simple, repetitive work" },
+  ] },
   { engine: "codex", label: "Codex", note: "codex CLI · runs on your ChatGPT plan, spends no API credits", models: [
     { id: "codex", name: "Auto", desc: "Whatever the CLI picks from ~/.codex/config.toml" },
     { id: "codex:gpt-5.6-terra", name: "Terra 5.6", desc: "Balanced for everyday coding (Codex default) · effort up to ultra" },
@@ -1936,7 +1957,7 @@ const MODEL_TABS = [
   ] },
 ];
 const MODEL_CUSTOM = { id: "__custom", name: "Custom…",
-  desc: "Type another model id / alias (claude: opus-4-7, opus-4-6…; codex: 'codex:<slug>')" };
+  desc: "Type another model id / alias (claude: opus-4-7, opus-4-6…; codex: 'codex:<slug>'; agy: 'agy:<slug>' — `agy models` also lists claude-* and gpt-oss-*)" };
 let SP_TEMPLATES = [];                          // cache /api/skills/templates
 let spSel = { ws: "", template: "", model: "" };  // lựa chọn hiện tại của form spawn
 let spTab = MODEL_TABS[0].engine;                 // tab engine đang mở ở picker Model

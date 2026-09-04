@@ -6,8 +6,8 @@ engines must keep the id. Whether that is safe depends on the target CLI:
 
   - claude can adopt a foreign id (`claude -p --session-id <uuid>`), so codex -> claude works,
     but only for an id that is a real UUID (a session registered under some other id is not);
-  - codex has no flag to pick a thread id, so a session may only go back to codex if its
-    rollout file is still on disk;
+  - codex and agy have no flag to pick a thread/conversation id, so a session may only go back
+    to one of them if that CLI's file for the id is still on disk;
   - a session already on the target engine must not be re-adopted (the CLI rejects a
     session id that is already in use).
 
@@ -49,8 +49,10 @@ so._ensure_db()
 fake = Path(tempfile.mkdtemp())
 so.CLAUDE_PROJECTS_DIR = fake / "claude"
 so.CODEX_SESSIONS_DIR = fake / "codex"
+so.AGY_CONVERSATIONS_DIR = fake / "agy" / "conversations"
 (so.CLAUDE_PROJECTS_DIR / "proj").mkdir(parents=True)
 (so.CODEX_SESSIONS_DIR / "2026" / "08" / "11").mkdir(parents=True)
+so.AGY_CONVERSATIONS_DIR.mkdir(parents=True)
 
 fails = []
 
@@ -67,6 +69,10 @@ def codex_born(sid):
 
 def claude_born(sid):
     (so.CLAUDE_PROJECTS_DIR / "proj" / f"{sid}.jsonl").touch()
+
+
+def agy_born(sid):
+    (so.AGY_CONVERSATIONS_DIR / f"{sid}.db").touch()
 
 
 async def main():
@@ -113,7 +119,23 @@ async def main():
         r = await set_model(sid3, "codex:gpt-5.6-terra")
         check("codex -> codex allowed", r.status_code == 200, r.text[:200])
 
-        # 6. adopt KHÔNG chạy lại khi transcript đã có (CLI trả 'already in use').
+        # 6. agy: cùng luật với codex — không có cờ đặt conversation id.
+        sid4 = str(uuid.uuid4())
+        so.register_session(sid4, "gem", model="agy:gemini-3.1-pro-high")
+        agy_born(sid4)
+        r = await set_model(sid4, "claude-opus-5")
+        check("agy -> claude allowed (claude adopts the uuid)", r.status_code == 200, r.text[:200])
+        r = await set_model(sid4, "agy")
+        check("claude -> agy allowed when the conversation file exists", r.status_code == 200,
+              r.text[:200])
+        was = so.get_session(sid2)["model"]
+        r = await set_model(sid2, "agy:gemini-3.8-flash-low")
+        check("claude -> agy blocked without a conversation file",
+              r.status_code == 400 and "agy cannot adopt" in r.text, r.text[:200])
+        check("session unchanged after that block too",
+              so.get_session(sid2)["model"] == was, so.get_session(sid2)["model"])
+
+        # 7. adopt KHÔNG chạy lại khi transcript đã có (CLI trả 'already in use').
         check("adopt is a no-op for a session claude already knows",
               await so._adopt_session_for_claude(so.get_session(sid2)) == "")
 

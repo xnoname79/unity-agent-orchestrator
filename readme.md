@@ -13,7 +13,7 @@
   <h3 align="center">Agent Orchestrator</h3>
 
   <p align="center">
-    Claude Code and Codex CLI, working together on one canvas.
+    Claude Code, Codex and Antigravity CLI, working together on one canvas.
     <br />
     <a href="#usage"><strong>Explore the docs »</strong></a>
     <br />
@@ -63,8 +63,8 @@
 [![Product screenshot][product-screenshot]](images/screenshot-canvas.png)
 
 A harness that puts **agents from different providers on one canvas** and lets them work
-together. Claude Code and Codex CLI sessions run side by side, signal each other, hand off work,
-and stream their output into a single web UI.
+together. Claude Code, Codex CLI and Antigravity (Gemini) sessions run side by side, signal each
+other, hand off work, and stream their output into a single web UI.
 
 It does not reimplement an agent. It drives the CLIs you already have installed and logged in,
 so each provider keeps its own subscription, its own auth, and its own tools.
@@ -117,6 +117,7 @@ not replace them.
 |---|---|
 | **Claude Code** | [code.claude.com/docs/en/quickstart](https://code.claude.com/docs/en/quickstart#native-install-recommended) |
 | **Codex CLI** | [learn.chatgpt.com/docs/codex/cli](https://learn.chatgpt.com/docs/codex/cli#getting-started) |
+| **Antigravity CLI** | [antigravity.google/docs/cli](https://antigravity.google/docs/cli/reference) — the `agy` command, for Google models |
 | **Python 3.10+** | Only if you run from source |
 | **neovim** + **tmux** | Optional — only for the editor card |
 | **diffview.nvim** | Optional — adds the card's **git** tab |
@@ -135,7 +136,8 @@ not replace them.
 
 > The orchestrator finds the CLIs through the **PATH of its own process**. Install one while it
 > is running and you have to restart it. If `where.exe claude` / `which claude` prints a path but
-> the dashboard still says the command was not found, set `CLAUDE_BIN` / `ORCH_CODEX_BIN` — see
+> the dashboard still says the command was not found, set `CLAUDE_BIN` / `ORCH_CODEX_BIN` /
+> `ORCH_AGY_BIN` — see
 > [Configuration](#configuration).
 
 ### Installation
@@ -190,6 +192,7 @@ session afterwards picks it up automatically.
 ```bash
 claude mcp add --transport http --scope user signal http://127.0.0.1:8992/signal/mcp
 codex mcp add signal --url http://127.0.0.1:8992/signal/mcp
+agy mcp add signal http://127.0.0.1:8992/signal/mcp
 ```
 
 The signal server runs **in-process** with the orchestrator — no second service, no extra port.
@@ -238,13 +241,16 @@ Use **Spawn agent** on the dashboard. Four fields matter:
   |---|---|---|
   | Claude | `opus`, `sonnet`, `haiku`, `claude-opus-4-8`, … | Claude Code CLI |
   | Codex | `codex` (auto), `codex:gpt-5.6-terra`, `codex:gpt-5.6-luna`, … | Codex CLI |
+  | Gemini | `agy` (auto), `agy:gemini-3.1-pro-high`, `agy:gemini-3.8-flash-low`, … | Antigravity CLI |
 
-  The `codex:` prefix is required — slugs like `gpt-5.6-terra` are also valid OpenAI API model
-  names, so without it there is no way to tell which you meant.
+  The `codex:` and `agy:` prefixes are required — slugs like `gpt-5.6-terra` are also valid
+  OpenAI API model names, and `agy models` even lists `claude-*` ones, so without a prefix there
+  is no way to tell which CLI you meant.
 
 Reasoning effort uses one ladder across providers, clamped per model rather than failing:
 Claude tops out at `max`, `codex:gpt-5.6-terra` at `ultra`, `codex:gpt-5.6-luna` at `max`, the
-rest at `xhigh`.
+rest at `xhigh`. Antigravity slugs carry their own level (`…-pro-high`, `…-flash-low`), so for
+those the model *is* the setting and no separate effort flag is sent.
 
 ### Self-filling playbooks
 
@@ -253,8 +259,8 @@ agent's `SKILL.md` still contains one, the orchestrator queues a single bootstra
 agent to survey its working directory and fill the blanks in itself.
 
 The placeholders **are** the one-time flag: once gone, the bootstrap never fires again, so
-nothing overwrites a playbook you or the agent has since edited. The result is written to both
-`.claude/skills/` and `.codex/skills/`, since each CLI only reads its own.
+nothing overwrites a playbook you or the agent has since edited. The result is written to
+`.claude/skills/`, `.codex/skills/` and `.agents/skills/`, since each CLI only reads its own.
 
 Peer routing is deliberately *not* baked into playbooks — the roster changes as agents come and
 go, so every signal carries a reminder to call `list_agents` instead of trusting a remembered
@@ -303,7 +309,8 @@ python3 session_orchestrator.py list-sessions   # also: list-signals, list-runs
 | `ORCH_PORT` / `ORCH_HOST` | `8992` / `0.0.0.0` | Where to listen |
 | `ORCH_API_KEY` | *(unset)* | Require a key on `/api/*` and `/v1/*` |
 | `ORCH_CORS_ORIGINS` | `*` | Allowed browser origins; empty disables CORS |
-| `CLAUDE_BIN` / `ORCH_CODEX_BIN` | `claude` / `codex` | Paths to the provider CLIs |
+| `CLAUDE_BIN` / `ORCH_CODEX_BIN` / `ORCH_AGY_BIN` | `claude` / `codex` / `agy` | Paths to the provider CLIs |
+| `ORCH_AGY_HOME` | `~/.gemini/antigravity-cli` | Where the Antigravity CLI keeps its conversations |
 | `ORCH_DEFAULT_EFFORT` | `high` | Reasoning effort when a session sets none |
 | `ORCH_MAX_CONCURRENT` | `3` | Agent runs in flight at once |
 | `ORCH_CHAT_TIMEOUT` | `900` | Seconds one `/v1` turn may take |
@@ -343,6 +350,12 @@ run under `--dangerously-bypass-approvals-and-sandbox`. Every other combination 
 cancelled MCP tool call"* — so a sandboxed Codex agent **cannot signal**. The orchestrator maps
 `permission_mode` directly and prints a warning to the timeline when signalling is off, rather
 than letting the hand-off fail silently.
+
+**Antigravity permissions.** Measured on agy 1.1.26: headless `agy -p` has no one to ask, so any
+tool needing permission is auto-denied — including `call_mcp_tool`, and therefore signalling —
+while the run still reports success with an empty answer. The orchestrator passes
+`--dangerously-skip-permissions` when a session's `permission_mode` is `bypassPermissions` (the
+default), warns on the timeline when it is not, and surfaces the `denied_actions` agy reports.
 
 The sandbox restricts **writes and network, not reads**. Directory boundaries between agents are
 a convention in their prompts, not a kernel-enforced wall.

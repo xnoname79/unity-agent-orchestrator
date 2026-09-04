@@ -27,6 +27,9 @@ Env:
   ORCH_DEFAULT_PERMISSION_MODE  permission mode fallback khi session không set (default "bypassPermissions")
   CLAUDE_BIN           đường dẫn claude CLI (default "claude")
   ORCH_CODEX_BIN       đường dẫn codex CLI (default "codex")
+  ORCH_AGY_BIN         đường dẫn agy CLI (Antigravity, default "agy")
+  ORCH_AGY_HOME        thư mục dữ liệu agy (default ~/.gemini/antigravity-cli)
+  ORCH_AGY_PRINT_TIMEOUT  trần thời gian 1 lượt `agy -p` (default "60m"; agy mặc định 5m)
 
 Usage:
   python3 session_orchestrator.py init            # tạo DB
@@ -131,6 +134,17 @@ CODEX_BIN = os.environ.get("ORCH_CODEX_BIN", "codex")
 # codex: <dir>/sessions/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl.
 CLAUDE_PROJECTS_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
 CODEX_SESSIONS_DIR = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "sessions"
+# agy = Antigravity CLI của Google (thay gemini-cli đã bị khai tử). Mỗi hội thoại là MỘT file
+# SQLite <home>/conversations/<conversation_id>.db — id nằm ngay ở TÊN FILE nên không phải quét
+# nội dung như hai CLI kia. ĐÃ ĐO trên agy 1.1.26.
+AGY_BIN = os.environ.get("ORCH_AGY_BIN", "agy")
+AGY_HOME = Path(os.environ.get("ORCH_AGY_HOME", str(Path.home() / ".gemini" / "antigravity-cli")))
+AGY_CONVERSATIONS_DIR = AGY_HOME / "conversations"
+# Bảng tóm tắt chung (title/preview/workspace_uris). ĐÃ ĐO: chỉ phiên INTERACTIVE mới có dòng ở
+# đây — `agy -p` (đường của orchestrator) không ghi — nên là nguồn PHỤ, thiếu vẫn phải chạy được.
+AGY_SUMMARIES_DB = AGY_HOME / "conversation_summaries.db"
+# `agy -p` tự bỏ cuộc sau --print-timeout (mặc định 5m) — quá ngắn cho một lượt agent thật.
+AGY_PRINT_TIMEOUT = os.environ.get("ORCH_AGY_PRINT_TIMEOUT", "60m")
 ORCH_HOST = os.environ.get("ORCH_HOST", "0.0.0.0")
 ORCH_PORT = int(os.environ.get("ORCH_PORT", "8992"))
 # Service-to-service auth. Để TRỐNG = tắt (localhost/dev như cũ). Set = mọi /api/* yêu cầu
@@ -174,6 +188,8 @@ CLAUDE_MAX_EFFORT = "max"
 # → lấy trần thấp nhất đã biết. Thà hạ nhầm 1 nấc còn hơn gửi mức model không có rồi hỏng run.
 CODEX_MAX_EFFORT = {"gpt-5.6-terra": "ultra", "gpt-5.6-luna": "max"}
 CODEX_MAX_EFFORT_DEFAULT = "xhigh"
+# `agy --help`: "--effort  Reasoning effort for the current CLI session (low|medium|high)".
+AGY_MAX_EFFORT = "high"
 DEFAULT_EFFORT = os.environ.get("ORCH_DEFAULT_EFFORT", "high")  # high mặc định
 
 
@@ -1553,7 +1569,8 @@ def _parse_final(returncode, stdout, stderr, session_id):
 # <cwd>/.codex/skills hiện ra ở section '## Skills', canary trong .claude/skills thì không):
 # mỗi CLI CHỈ đọc thư mục của mình → phải ghi cả hai bản, không share được.
 # '.claude' đứng ĐẦU = bản canon để đọc lại (_role_skill / _prepend_role / drawer Context).
-CLI_SKILL_ROOTS = (".claude", ".codex")
+# .agents = convention chung mà agy quét (ĐÃ ĐO: `agy skills list` đọc <cwd>/.agents/skills).
+CLI_SKILL_ROOTS = (".claude", ".codex", ".agents")
 
 
 def _skills_dir(cwd, root=CLI_SKILL_ROOTS[0]):
@@ -1747,7 +1764,7 @@ def _maybe_bootstrap_skill(session, eng_name):
     """
     cwd = (session or {}).get("cwd") or ""
     name = (session or {}).get("name") or ""
-    if eng_name not in ("claude", "codex") or not _skill_has_placeholder(cwd, name):
+    if eng_name not in TERMINAL_ENGINES or not _skill_has_placeholder(cwd, name):
         return
     # from_session rỗng = người gửi (_HUMAN_SENDERS): không ăn quota PAIR_SIGNAL_CAP của cặp agent
     # nào, và mở vòng việc mới cho vai này thay vì thừa hưởng vòng của ai đó.
@@ -1779,11 +1796,15 @@ _SID_OK = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
 
 def _transcript_path(sid, cli):
     """Đường dẫn file transcript của phiên này, None nếu CLI đó không có. MỘT chỗ biết bố cục
-    đĩa của hai CLI: claude <projects>/<slug>/<sid>.jsonl, codex <sessions>/…/rollout-*-<sid>.jsonl."""
+    đĩa của BA CLI: claude <projects>/<slug>/<sid>.jsonl, codex <sessions>/…/rollout-*-<sid>.jsonl,
+    agy <conversations>/<sid>.db."""
     if not sid or not _SID_OK.match(sid):
         return None
     if cli == "codex":
         return next(CODEX_SESSIONS_DIR.rglob(f"rollout-*-{sid}.jsonl"), None)
+    if cli == "agy":
+        p = AGY_CONVERSATIONS_DIR / f"{sid}.db"
+        return p if p.exists() else None
     return next(CLAUDE_PROJECTS_DIR.glob(f"*/{sid}.jsonl"), None)
 
 
@@ -1797,6 +1818,27 @@ def _codex_knows_session(sid):
     return _transcript_path(sid, "codex") is not None
 
 
+def _agy_knows_session(sid):
+    """agy còn giữ hội thoại mang id này chưa (`agy --conversation <sid>` cần nó)."""
+    return _transcript_path(sid, "agy") is not None
+
+
+# CLI mở được terminal VÀ resume theo id. Tên engine trùng tên CLI nên hai bộ này dùng chung
+# một danh sách — engine nào không có CLI (nếu sau này thêm) rơi về claude, xem cli_of_engine.
+TERMINAL_CLIS = TERMINAL_ENGINES = ("claude", "codex", "agy")
+
+
+def cli_of_engine(eng):
+    """CLI mở được transcript của engine này. Tên engine lạ → claude, tức terminal mở phiên MỚI
+    trong cùng cwd thay vì cố resume một id không ai biết (xem terminal_argv)."""
+    return eng if eng in TERMINAL_CLIS else "claude"
+
+
+def _cli_knows_session(sid, cli):
+    """CLI này còn giữ transcript/hội thoại mang id đó không — một cửa cho cả ba CLI."""
+    return _transcript_path(sid, cli_of_engine(cli)) is not None
+
+
 def sessions_using_transcript(sid):
     """Card nào đang dựa vào transcript này: chính nó (id = sid) hoặc đang ghim nó (resume_id).
     Xoá transcript dưới chân một card đang dùng = lần resume sau mất sạch ngữ cảnh mà không báo,
@@ -1806,6 +1848,27 @@ def sessions_using_transcript(sid):
     rows = conn.execute("SELECT name FROM sessions WHERE id = ? OR resume_id = ?", (sid, sid)).fetchall()
     conn.close()
     return [r["name"] for r in rows]
+
+
+def _agy_forget_summary(sid):
+    """Xoá dòng của hội thoại này khỏi bảng tóm tắt của agy. Trả số dòng đã xoá.
+
+    Bảng chỉ là CHỈ MỤC cho phiên interactive: không có dòng là chuyện thường, và xoá không được
+    (agy đang mở, file bị khoá) cũng KHÔNG được làm hỏng việc xoá — file hội thoại mới là gốc."""
+    if not AGY_SUMMARIES_DB.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(str(AGY_SUMMARIES_DB), timeout=2)
+        try:
+            n = conn.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?",
+                             (sid,)).rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        return max(n, 0)
+    except sqlite3.Error as e:
+        print(f"[orchestrator] ⚠ không xoá được dòng tóm tắt agy '{sid}': {e}")
+        return 0
 
 
 def delete_cli_session(sid, cli):
@@ -1829,7 +1892,13 @@ def delete_cli_session(sid, cli):
     except OSError as e:
         return {"error": f"could not delete the transcript: {e}"}
     out = {"id": sid, "cli": cli, "transcript": str(path), "session_env": 0}
-    if cli != "codex":
+    if cli == "agy":
+        # SQLite để lại -wal/-shm cạnh file chính; bỏ quên là lần sau agy đọc phải mảnh của
+        # hội thoại đã xoá. Bảng tóm tắt cũng phải quên nó, không thì UI của agy còn dòng ma.
+        for suffix in ("-wal", "-shm"):
+            Path(str(path) + suffix).unlink(missing_ok=True)
+        out["summary_row"] = _agy_forget_summary(sid)
+    if cli == "claude":
         # claude giữ thêm một thư mục env mỗi phiên; không dọn là nó dồn lại mãi.
         env = CLAUDE_PROJECTS_DIR.parent / "session-env" / sid
         try:
@@ -2235,14 +2304,60 @@ def _scan_transcript(path, cli, max_lines=200):
     return sid, cwd, " ".join(preview.split())[:120]
 
 
+def _agy_summaries():
+    """{conversation_id: (nhãn, workspace_uris)} đọc từ bảng tóm tắt của agy.
+
+    Nguồn PHỤ: phiên do orchestrator tạo (`agy -p`) không có dòng nào ở đây, nên thiếu là bình
+    thường — chỉ mất cái nhãn, không mất phiên."""
+    if not AGY_SUMMARIES_DB.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(f"file:{AGY_SUMMARIES_DB}?mode=ro", uri=True, timeout=2)
+        try:
+            rows = conn.execute("SELECT conversation_id, title, preview, workspace_uris "
+                                "FROM conversation_summaries").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {}                     # bảng đổi schema / file khoá: coi như không có nhãn
+    return {r[0]: (" ".join((r[1] or r[2] or "").split())[:120], r[3] or "") for r in rows}
+
+
+def _agy_sessions(want, limit, scan_cap):
+    """Hội thoại của agy: mỗi file <conversations>/<id>.db là MỘT phiên, id chính là tên file.
+
+    KHÔNG lọc theo cwd khi không biết cwd: agy không ghi thư mục làm việc vào file hội thoại, chỉ
+    bảng tóm tắt mới có (workspace_uris) mà bảng đó chỉ có dòng cho phiên interactive. Thà hiện
+    thừa một phiên của thư mục khác còn hơn giấu mất phiên người dùng đang tìm."""
+    try:
+        files = sorted(AGY_CONVERSATIONS_DIR.glob("*.db"),
+                       key=lambda f: f.stat().st_mtime, reverse=True)[:scan_cap]
+    except OSError:
+        return []
+    meta = _agy_summaries()
+    out = []
+    for f in files:
+        label, uris = meta.get(f.stem, ("", ""))
+        if want and uris and want not in uris:
+            continue                  # biết chắc phiên này thuộc thư mục khác
+        out.append({"id": f.stem, "cli": "agy", "cwd": want if uris else "", "preview": label,
+                    "ts": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")})
+        if len(out) >= limit:
+            break
+    return out
+
+
 def list_cli_sessions(cwd, cli="claude", limit=20, scan_cap=200):
     """Các phiên CLI đã có transcript trong MỘT thư mục — nguồn cho ô chọn phiên của terminal card.
 
     claude: <projects>/<slug-cwd>/<sid>.jsonl. Slug là LOSSY ('_' và '-' cùng thành '-') nên vẫn
     phải đối chiếu cwd thật đọc trong file, không tin mỗi tên thư mục.
     codex: <sessions>/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl, cwd nằm ở dòng session_meta.
+    agy: <conversations>/<id>.db — xem _agy_sessions (không lọc được theo cwd).
     Sắp theo mtime giảm dần (phiên vừa dùng nằm trên), quét tối đa scan_cap file."""
     want = str(Path(cwd).expanduser()) if cwd else ""
+    if cli == "agy":
+        return _agy_sessions(want, limit, scan_cap)
     if cli == "codex":
         files = CODEX_SESSIONS_DIR.rglob("rollout-*.jsonl")
     else:
@@ -2274,9 +2389,9 @@ def resume_target(session, cli=""):
     if not rid:
         return session["id"]
     cli = (cli or "").strip().lower()
-    if cli not in ("claude", "codex"):
-        cli = "codex" if engine_name_of_session(session) == "codex" else "claude"
-    if _codex_knows_session(rid) if cli == "codex" else _claude_knows_session(rid):
+    if cli not in TERMINAL_CLIS:
+        cli = cli_of_engine(engine_name_of_session(session))
+    if _cli_knows_session(rid, cli):
         return rid
     print(f"[orchestrator] ⚠ {cli} không còn transcript '{rid}' (resume_id của "
           f"'{session.get('name')}') → dùng transcript của chính session")
@@ -2297,14 +2412,27 @@ def terminal_argv(session, cli=""):
     eng = engine_name_of_session(session)
     sid = session["id"]
     cli = (cli or "").strip().lower()
-    if cli not in ("claude", "codex"):
-        cli = "codex" if eng == "codex" else "claude"
+    if cli not in TERMINAL_CLIS:
+        cli = cli_of_engine(eng)
     pinned = resume_target(session, cli)
     if pinned != sid:
-        return [CODEX_BIN, "resume", pinned] if cli == "codex" else [CLAUDE_BIN, "--resume", pinned]
+        return _cli_resume_argv(cli, pinned)
+    # CLI khác engine của session → id này CLI đó không mở được: phiên MỚI trong cùng cwd.
+    return _cli_resume_argv(cli, sid) if cli == cli_of_engine(eng) else _cli_new_argv(cli)
+
+
+def _cli_new_argv(cli):
+    """Lệnh mở một phiên MỚI bằng CLI này."""
+    return {"codex": [CODEX_BIN], "agy": [AGY_BIN]}.get(cli, [CLAUDE_BIN])
+
+
+def _cli_resume_argv(cli, sid):
+    """Lệnh mở LẠI đúng transcript/hội thoại `sid` bằng CLI này."""
     if cli == "codex":
-        return [CODEX_BIN, "resume", sid] if eng == "codex" else [CODEX_BIN]
-    return [CLAUDE_BIN, "--resume", sid] if eng == "claude" else [CLAUDE_BIN]
+        return [CODEX_BIN, "resume", sid]
+    if cli == "agy":
+        return [AGY_BIN, "--conversation", sid]
+    return [CLAUDE_BIN, "--resume", sid]
 
 
 # ─── PTY cho terminal nhúng (xterm.js ↔ CLI interactive) ──────────────────────
@@ -2582,23 +2710,324 @@ class CodexEngine(AgentEngine):
         return {"found": False, "reason": "engine codex không expose compact summary"}
 
 
+# ─── agy engine (Antigravity CLI — model Google, chạy bằng tài khoản đã `agy` login) ──
+# `agy -p` = chế độ headless: chạy 1 lượt tới hết, phát NDJSON ra stdout (--output-format
+# stream-json), resume bằng `agy --conversation <id>`. Auth do NGƯỜI DÙNG lo một lần;
+# orchestrator không đụng vào và không cầm token.
+#
+# KHÁC hai CLI kia ở 4 điểm phải nhớ (ĐÃ ĐO trên 1.1.26):
+#  1. KHÔNG có cờ đặt trước conversation id (claude có --session-id). Id chỉ ĐỌC ĐƯỢC từ event
+#     'init' sau khi phiên đã chạy → engine khác KHÔNG chuyển sang agy giữ nguyên id được,
+#     y hệt codex (xem api_set_model).
+#  2. Tool bị TỰ CHỐI trong headless nếu thiếu --dangerously-skip-permissions: agy trả
+#     'a tool required the "command" permission that headless mode cannot prompt for, so it was
+#     auto-denied' và result kèm denied_actions — agent tưởng đã làm xong mà thật ra không chạy gì.
+#  3. --print-timeout mặc định 5m: hết giờ là cắt giữa chừng → luôn truyền AGY_PRINT_TIMEOUT.
+#  4. MCP khai TOÀN CỤC (`agy mcp add signal <url>`), không có đường per-session như claude.
+#     Và call_mcp_tool cũng là tool → vẫn phải bypass permission mới gọi được signal.
+#
+# Model của agy ('gemini-3.1-pro-high', 'claude-sonnet-4-6', 'gpt-oss-120b-medium'…) TRÙNG không
+# gian tên với model của Claude CLI. Khai TƯỜNG MINH bằng tiền tố:
+#   'agy'                     → agy CLI, model do CLI tự chọn (không truyền --model)
+#   'agy:gemini-3.1-pro-high' → agy CLI, model đó
+#   'claude-sonnet-4-6'       → Claude CLI (không tiền tố = KHÔNG phải agy)
+AGY_AUTO_MODEL = "agy"
+
+
+def _iter_agy_events(ev, acc=None):
+    """Chuyển 1 event NDJSON của `agy -p --output-format stream-json` thành list
+    (kind, summary, payload) — cùng bộ kind với _iter_display_events/_iter_codex_events.
+
+    acc: chỗ gom text_delta theo step_index. ĐÃ ĐO: câu trả lời có thể tới NGUYÊN CỤC ở step DONE
+    (lượt đầu) hoặc nhỏ giọt ACTIVE 'beta' → DONE '\n' (lượt resume). Không gom thì lượt resume
+    mất sạch text ở timeline; gom rồi phát MỘT event lúc DONE thì cả hai kiểu đều đúng."""
+    if not isinstance(ev, dict):
+        return [("text", _trunc(str(ev), 500), {"raw": _trunc(str(ev))})]
+    e = ev.get("event")
+    if e == "init":
+        i = ev.get("init") or {}
+        cid = ev.get("conversation_id") or "?"
+        return [("system", f"session bắt đầu · conversation={cid} · model={i.get('model', '?')}",
+                 {"subtype": "init", "conversation_id": ev.get("conversation_id"),
+                  "model": i.get("model"), "permission_mode": i.get("permission_mode")})]
+    if e == "result":
+        r = ev.get("result") or {}
+        u = r.get("usage") or {}
+        out = []
+        denied = [d for d in (r.get("denied_actions") or []) if isinstance(d, dict)]
+        if denied:
+            names = ", ".join(str(d.get("display_name") or d.get("action")) for d in denied)
+            out.append(("error", f"⚠ agy tự CHỐI {len(denied)} tool ({names}) — headless không hỏi "
+                                 f"được nên auto-deny. Spawn lại với permission_mode=bypassPermissions.",
+                        {"denied_actions": denied, "subtype": "agy_permission_denied"}))
+        if r.get("status") not in (None, "SUCCESS"):
+            # Lý do thật nằm ở result.error ('invalid model selection…'); response thường RỖNG.
+            msg = r.get("error") or r.get("response") or r.get("status")
+            out.append(("error", _trunc(str(msg), 500),
+                        {"status": r.get("status"), "error": r.get("error")}))
+        out.append(("result", f"xong · {u.get('output_tokens', '?')} output tokens",
+                    {"output_tokens": u.get("output_tokens"), "input_tokens": u.get("input_tokens"),
+                     "thinking_tokens": u.get("thinking_tokens"),
+                     "cache_read_tokens": u.get("cache_read_tokens"),
+                     "num_turns": r.get("num_turns")}))
+        return out
+    if e != "step_update":
+        return []
+    s = ev.get("step_update") or {}
+    st, state = s.get("step_type"), s.get("state")
+    if st == "tool":
+        info = s.get("tool_info") or {}
+        name = s.get("tool_name") or info.get("name") or "tool"
+        if state == "ACTIVE":          # pha 1: agent gọi tool
+            args = _trunc(json.dumps(info.get("parameters") or {}, ensure_ascii=False), 300)
+            return [("tool_use", f"{name}({args})", {"name": name, "input": info.get("parameters")})]
+        if state not in ("DONE", "ERROR"):
+            return []                  # trạng thái trung gian: chưa có gì để hiện
+        err = info.get("error")
+        err = err.get("message") if isinstance(err, dict) else err
+        if state == "ERROR" or err:    # pha 2: hỏng
+            msg = _trunc(str(err or "tool failed"), 400)
+            return [("tool_result", "⚠ " + msg, {"result": msg, "is_error": True})]
+        out = _trunc(str(info.get("result") or s.get("text_delta") or ""), 400)
+        return [("tool_result", out, {"result": out, "is_error": False})]
+    if st not in ("agent_response", "thinking"):
+        return []
+    tx = s.get("text_delta") or ""
+    if acc is None:                    # không có chỗ gom: chỉ lấy cục ở DONE
+        full = tx.strip() if state == "DONE" else ""
+    else:
+        buf = acc.setdefault((st, s.get("step_index")), [])
+        if tx:
+            buf.append(tx)
+        if state != "DONE":
+            return []                  # còn đang chảy: đợi trọn câu rồi phát một lần
+        full = "".join(acc.pop((st, s.get("step_index")), [])).strip()
+    if not full:
+        return []
+    # summary cắt (audit); payload['text'] = FULL để publish gắn 'result' đầy đủ.
+    if st == "thinking":
+        return [("thinking", _trunc(full, 500), {"thinking": _trunc(full)})]
+    return [("text", _trunc(full, 500), {"text": full})]
+
+
+def _agy_model(model):
+    """Model id thật để truyền --model. 'agy' → '' (để CLI tự chọn), 'agy:X' → 'X'."""
+    return (model or "").strip().split(":", 1)[1].strip() if ":" in (model or "") else ""
+
+
+# Slug của agy ĐÃ mang sẵn mức nghĩ ở đuôi ('gemini-3.8-flash-low', 'gpt-oss-120b-medium').
+AGY_LEVEL_SUFFIX = ("-low", "-medium", "-high")
+
+
+def agy_effort_ceiling(model=""):
+    """Mức reasoning cao nhất agy nhận cho model này.
+
+    Model có đuôi mức thì CHÍNH nó là trần: ĐÃ ĐO, truyền kèm --effort khác đuôi là agy chết ngay
+    — 'invalid model selection (--model "gemini-3.8-flash-low" --effort "high"): conflicts'."""
+    real = _agy_model(model)
+    for suffix in AGY_LEVEL_SUFFIX:
+        if real.endswith(suffix):
+            return suffix[1:]
+    return AGY_MAX_EFFORT
+
+
+def _agy_tools_ok(permission_mode=""):
+    """Session này có chạy được tool (kể cả call_mcp_tool → send_signal) không.
+
+    ĐÃ ĐO: headless mà không --dangerously-skip-permissions thì MỌI tool cần quyền bị auto-deny,
+    run vẫn trả status SUCCESS với response rỗng — im lặng đúng kiểu agent tưởng mình đã làm."""
+    return (permission_mode or DEFAULT_PERMISSION_MODE) == "bypassPermissions"
+
+
+def _agy_flags(model="", permission_mode="", effort=""):
+    """Cờ dùng chung cho mọi lệnh `agy -p` (spawn lẫn resume)."""
+    flags = ["--output-format", "stream-json", "--print-timeout", AGY_PRINT_TIMEOUT]
+    if _agy_tools_ok(permission_mode):
+        flags.append("--dangerously-skip-permissions")
+    real = _agy_model(model)
+    if real:
+        flags += ["--model", real]
+    # Model tự mang mức nghĩ → BỎ HẲN --effort: gửi kèm là agy từ chối chạy, còn gửi đúng bằng
+    # đuôi thì cũng chỉ nhắc lại điều model đã nói.
+    eff = "" if real.endswith(AGY_LEVEL_SUFFIX) else clamp_effort(effort or DEFAULT_EFFORT,
+                                                                 AGY_MAX_EFFORT)
+    if eff:
+        flags += ["--effort", eff]
+    return flags
+
+
+async def _agy_exec(cmd, cwd, session_id="", on_event=None):
+    """Chạy 1 lệnh agy headless, đọc NDJSON stdout, trả dict kết quả theo contract AgentEngine."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=cwd or None, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            limit=STREAM_LIMIT)
+    except (FileNotFoundError, NotADirectoryError, PermissionError) as e:
+        err = (f"không chạy được agy CLI ('{AGY_BIN}'): {e}. "
+               "Cài Antigravity CLI rồi đăng nhập bằng tài khoản Google.")
+        if on_event:
+            await on_event("error", _trunc(err, 500), {"error": str(e)})
+        return {"ok": False, "result": err, "session_id": session_id, "tokens": 0,
+                "raw": {"engine": "agy", "error": "agy_not_found"}}
+    if session_id:
+        ACTIVE_PROCS[session_id] = proc
+
+    conv_id, text, tokens, failed = "", "", 0, ""
+    deltas: dict = {}                  # step_index → mảnh text đang gom (xem _iter_agy_events)
+    stderr_chunks: list[bytes] = []
+
+    async def _drain_stderr():
+        while True:
+            try:
+                raw = await proc.stderr.readline()
+            except (asyncio.LimitOverrunError, ValueError):
+                continue
+            if not raw:
+                break
+            stderr_chunks.append(raw)
+
+    stderr_task = asyncio.create_task(_drain_stderr())
+    try:
+        while True:
+            try:
+                raw = await proc.stdout.readline()
+            except (asyncio.LimitOverrunError, ValueError):
+                continue                 # dòng vượt STREAM_LIMIT → bỏ mảnh, đọc tiếp
+            if not raw:
+                break
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue                 # agy có thể in dòng người-đọc lẫn vào stdout
+            if not isinstance(ev, dict):
+                continue
+            e = ev.get("event")
+            if e == "init":
+                conv_id = ev.get("conversation_id") or conv_id
+            elif e == "result":
+                r = ev.get("result") or {}
+                conv_id = r.get("conversation_id") or conv_id
+                tokens = int((r.get("usage") or {}).get("output_tokens", 0) or 0)
+                text = (r.get("response") or "").strip() or text
+                if r.get("status") not in (None, "SUCCESS"):
+                    failed = str(r.get("error") or r.get("response") or r.get("status")
+                                 or "run failed")
+            if on_event:
+                for kind, summary, payload in _iter_agy_events(ev, deltas):
+                    try:
+                        await on_event(kind, summary, payload)
+                    except Exception:  # noqa: BLE001 — lỗi UI không được giết run
+                        pass
+    finally:
+        await proc.wait()
+        await stderr_task
+        if session_id:
+            ACTIVE_PROCS.pop(session_id, None)
+
+    stderr_txt = b"".join(stderr_chunks).decode("utf-8", "replace").strip()[:2000]
+    ok = proc.returncode == 0 and not failed
+    if not ok and not text:
+        # agy chết trước khi phát event nào (chưa login, --model lạ): stderr là lý do thật.
+        text = failed or stderr_txt or f"agy exited với mã {proc.returncode}"
+        if on_event and not failed:
+            await on_event("error", _trunc(text, 500),
+                           {"stderr": stderr_txt, "returncode": proc.returncode})
+    return {"ok": ok, "result": text, "session_id": conv_id or session_id, "tokens": tokens,
+            "raw": {"engine": "agy", "returncode": proc.returncode, "conversation_id": conv_id,
+                    "stderr": "" if ok else stderr_txt}}
+
+
+class AgyEngine(AgentEngine):
+    """Engine chạy qua `agy -p` (Antigravity CLI). session id = conversation_id của agy."""
+
+    name = "agy"
+
+    async def spawn(self, name, project="", cwd="", allowed_tools=None, permission_mode="",
+                    init_prompt="", model="", effort="", workspace_id=DEFAULT_WORKSPACE,
+                    shim_url="", session_token="", brand_context=None, skill=""):
+        # Ghim cwd theo workspace y hệt Claude (cwd truyền vào được tôn trọng).
+        if bool(workspace_id) and workspace_id != DEFAULT_WORKSPACE:
+            root = workspace_root(workspace_id)
+            if not root:
+                return {"error": f"workspace '{workspace_id}' does not exist"}
+            if not cwd:
+                cwd = root
+        # Vật thể hoá role thành SKILL cho cả ba CLI (agy quét <cwd>/.agents/skills — ĐÃ ĐO).
+        _write_role_skill(cwd, name, skill or init_prompt)
+        prompt = _build_init_prompt(name, init_prompt, workspace_id, brand_context)
+        # shim_url/session_token bỏ qua y như CodexEngine: agy không nhận MCP per-session.
+        model = model or AGY_AUTO_MODEL
+        if DRY_RUN:
+            sid = f"agy-dry-{name}-{datetime.now().strftime('%H%M%S%f')}"
+        else:
+            res = await _agy_exec([AGY_BIN, *_agy_flags(model, permission_mode, effort),
+                                   f"--prompt={prompt}"], cwd)
+            sid = res["raw"].get("conversation_id")
+            if not sid:
+                return {"error": res.get("result") or "agy returned no conversation_id"}
+        register_session(sid, name, project, cwd, allowed_tools or [], permission_mode,
+                         model, effort, workspace_id, self.name)
+        return get_session(sid)
+
+    async def run(self, session, prompt, on_event=None, dry_run=False, skip_history=False,
+                  run_id=None, emit_box=None, resume_step=""):
+        # skip_history/emit_box/resume_step bỏ qua như CodexEngine: agy tự giữ hội thoại trên đĩa.
+        sid = session["id"]
+        if DRY_RUN or dry_run:
+            if on_event:
+                await on_event("text", f"[dry-run] would inject: {_trunc(prompt, 300)}", {"dry_run": True})
+            return {"ok": True, "result": f"[dry-run] would inject to {session['name']}: {prompt}",
+                    "session_id": sid, "tokens": 0, "raw": {"dry_run": True, "engine": "agy"}}
+        if on_event and not _agy_tools_ok(session.get("permission_mode", "")):
+            await on_event("system",
+                           "⚠ session sandbox: agy sẽ TỰ CHỐI mọi tool cần quyền (kể cả "
+                           "call_mcp_tool → send_signal). Cần signal thì spawn lại với "
+                           "permission_mode=bypassPermissions.",
+                           {"subtype": "agy_tools_blocked"})
+        # Prompt truyền dạng --prompt=<text> (không phải hai token) để prompt mở đầu bằng '-'
+        # (vd frontmatter '---') không bị đọc thành cờ — vai trò y như stdin bên _run_claude.
+        cmd = [AGY_BIN, "--conversation", resume_target(session, "agy"),
+               *_agy_flags(session.get("model", ""), session.get("permission_mode", ""),
+                           session.get("effort", "")),
+               f"--prompt={prompt}"]
+        res = await _agy_exec(cmd, session.get("cwd") or "", sid, on_event)
+        res["session_id"] = sid   # resume giữ nguyên hội thoại → không để id trôi khỏi DB
+        return res
+
+    def get_compact(self, session_id):
+        # agy không phát event nén context ra stream, cũng không ghi mốc nào đọc được từ file .db
+        # → không trích được. Trả found=False để UI hiện "chưa có", không giả vờ có dữ liệu.
+        return {"found": False, "reason": "engine agy không expose compact summary"}
+
+
 # Registry engine + resolver. Thêm engine mới = thêm 1 dòng vào ENGINES.
 ENGINES = {
     "claude": ClaudeEngine(),
     "codex": CodexEngine(),
+    "agy": AgyEngine(),
 }
 DEFAULT_ENGINE = "claude"
 
 
 def engine_from_model(model):
-    """Suy tên engine ('claude'|'codex') TỪ tên model. FE chỉ cần gửi 'model', không cần gửi
-    'engine' — service tự chọn. 'codex' hoặc 'codex:<model>' → codex CLI (tài khoản ChatGPT);
-    MỌI thứ còn lại (kể cả rỗng và model lạ) → claude CLI, vì nhánh này không có engine nào khác.
+    """Suy tên engine ('claude'|'codex'|'agy') TỪ tên model. FE chỉ cần gửi 'model', không cần
+    gửi 'engine' — service tự chọn. 'codex'/'codex:<model>' → codex CLI (tài khoản ChatGPT);
+    'agy'/'agy:<model>' → Antigravity CLI (tài khoản Google); MỌI thứ còn lại (kể cả rỗng và model
+    lạ) → claude CLI, vì nhánh này không có engine nào khác.
 
-    Tiền tố 'codex:' là BẮT BUỘC cho model cụ thể: slug của codex ('gpt-5.6-terra'…) cũng là tên
-    model API hợp lệ, không có tiền tố thì không phân biệt được ý người dùng."""
+    Tiền tố 'codex:'/'agy:' là BẮT BUỘC cho model cụ thể: slug của chúng ('gpt-5.6-terra',
+    'gemini-3.1-pro-high', 'claude-sonnet-4-6'…) cũng là tên model API hợp lệ — không có tiền tố
+    thì không phân biệt được ý người dùng muốn chạy bằng CLI nào."""
     m = (model or "").strip().lower()
-    return "codex" if m == "codex" or m.startswith("codex:") else "claude"
+    if m == "codex" or m.startswith("codex:"):
+        return "codex"
+    if m == "agy" or m.startswith("agy:"):
+        return "agy"
+    return "claude"
 
 
 def resolve_engine_name(body):
@@ -3819,7 +4248,7 @@ def build_app():
         return JSONResponse({"name": name, "removed": removed})
 
     async def ws_terminal(websocket):
-        """Terminal của agent: claude/codex interactive trong PTY (xem terminal_argv)."""
+        """Terminal của agent: claude/codex/agy interactive trong PTY (xem terminal_argv)."""
         return await _ws_pty(
             websocket, lambda s: terminal_argv(s, websocket.query_params.get("cli", "")))
 
@@ -3837,8 +4266,8 @@ def build_app():
         s = get_session((q.get("session") or "").strip()) if q.get("session") else None
         if s:
             cwd = cwd or (s.get("cwd") or "")
-            cli = cli or ("codex" if engine_name_of_session(s) == "codex" else "claude")
-        if cli not in ("claude", "codex"):
+            cli = cli or cli_of_engine(engine_name_of_session(s))
+        if cli not in TERMINAL_CLIS:
             cli = "claude"
         if not cwd:
             return JSONResponse({"error": "cwd (or a session that has one) is required"},
@@ -3862,8 +4291,8 @@ def build_app():
         if not s:
             return JSONResponse({"error": "session is required"}, status_code=400)
         cli = (body.get("cli") or "").strip().lower()
-        if cli not in ("claude", "codex"):
-            cli = "codex" if engine_name_of_session(s) == "codex" else "claude"
+        if cli not in TERMINAL_CLIS:
+            cli = cli_of_engine(engine_name_of_session(s))
         cwd = s.get("cwd") or ""
         if not any(x["id"] == sid for x in list_cli_sessions(cwd, cli)):
             return JSONResponse(
@@ -3888,14 +4317,15 @@ def build_app():
         # Engine suy TỪ model, mà session id là KHOÁ CHÍNH (runs/signals/history đều trỏ vào) nên
         # đổi engine KHÔNG được đổi id. Điều kiện đủ: CLI đích phải mở được ĐÚNG id đó.
         #   claude  → có transcript thì resume, chưa có thì nhận nuôi (_adopt_session_for_claude).
-        #   codex   → KHÔNG có cờ đặt thread id, chỉ quay về được nếu rollout của id còn trên đĩa
-        #             (session sinh ra bởi codex thì luôn còn) — không thì spawn session mới.
+        #   codex/agy → KHÔNG có cờ đặt thread/conversation id, chỉ quay về được nếu file của
+        #             id còn trên đĩa (session sinh ra bởi chính CLI đó thì luôn còn) — không
+        #             thì spawn session mới.
         old, new = engine_name_of_session(s), engine_from_model(model)
         if new != old:
-            if new == "codex" and not _codex_knows_session(sid):
+            if new in ("codex", "agy") and not _cli_knows_session(sid, new):
                 return JSONResponse(
-                    {"error": f"cannot switch from '{old}' to codex — codex cannot adopt a session id "
-                              f"it did not create. Spawn a new codex session instead."},
+                    {"error": f"cannot switch from '{old}' to {new} — {new} cannot adopt a session id "
+                              f"it did not create. Spawn a new {new} session instead."},
                     status_code=400)
             if new == "claude":
                 err = await _adopt_session_for_claude(s)
@@ -3924,7 +4354,7 @@ def build_app():
         rid = (body.get("resume_id") or "").strip()
         eng = engine_name_of_session(s)
         if rid:
-            if not (_codex_knows_session(rid) if eng == "codex" else _claude_knows_session(rid)):
+            if not _cli_knows_session(rid, eng):
                 return JSONResponse(
                     {"error": f"{eng} has no session '{rid}' on this machine — pick one from "
                               f"/api/cli-sessions, or switch this session's model to the other CLI"},

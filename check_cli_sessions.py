@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -52,11 +53,14 @@ so._ensure_db()
 fake = Path(tempfile.mkdtemp())
 so.CLAUDE_PROJECTS_DIR = fake / "claude" / "projects"
 so.CODEX_SESSIONS_DIR = fake / "codex" / "sessions"
+so.AGY_CONVERSATIONS_DIR = fake / "agy" / "conversations"
+so.AGY_SUMMARIES_DB = fake / "agy" / "conversation_summaries.db"
 CWD = "/x/a_b"
 OTHER = "/x/a-b"          # slug trùng CWD ('_' và '-' cùng thành '-') nhưng là thư mục KHÁC
 SLUG = so.CLAUDE_PROJECTS_DIR / "-x-a-b"
 SLUG.mkdir(parents=True)
 (so.CODEX_SESSIONS_DIR / "2026" / "08" / "11").mkdir(parents=True)
+so.AGY_CONVERSATIONS_DIR.mkdir(parents=True)
 
 fails = []
 
@@ -85,12 +89,33 @@ def codex_file(sid, cwd, texts, mtime):
     return f
 
 
+def agy_file(sid, mtime, title="", uris=None):
+    """Hội thoại agy: file <conversations>/<id>.db. Nhãn (nếu có) nằm ở bảng tóm tắt riêng —
+    ĐÃ ĐO: `agy -p` không ghi dòng nào vào bảng đó, nên 'không có nhãn' là trường hợp THƯỜNG."""
+    f = so.AGY_CONVERSATIONS_DIR / f"{sid}.db"
+    f.write_bytes(b"SQLite format 3\x00")
+    os.utime(f, (mtime, mtime))
+    if title or uris:
+        conn = sqlite3.connect(str(so.AGY_SUMMARIES_DB))
+        conn.execute("CREATE TABLE IF NOT EXISTS conversation_summaries (conversation_id text, "
+                     "title text NOT NULL DEFAULT '', preview text NOT NULL DEFAULT '', "
+                     "workspace_uris text NOT NULL DEFAULT '')")
+        conn.execute("INSERT INTO conversation_summaries VALUES (?,?,?,?)",
+                     (sid, title, "", json.dumps(uris or [])))
+        conn.commit()
+        conn.close()
+    return f
+
+
 SEED = "Bạn là agent 'be' trong hệ thống multi-agent được điều phối. Trả lời ngắn gọn 'ready'."
 claude_file("11111111-1111-4111-8111-111111111111", CWD, [SEED, "fix the login bug"], 3000)
 claude_file("22222222-2222-4222-8222-222222222222", CWD, ["<command-name>/init</command-name>",
                                                           "write the readme"], 2000)
 claude_file("33333333-3333-4333-8333-333333333333", OTHER, ["not this folder"], 4000)
 codex_file("44444444-4444-4444-8444-444444444444", CWD, [SEED, "port the parser"], 1000)
+agy_file("66666666-6666-4666-8666-666666666666", 3000, "ship the picker", [f"file://{CWD}"])
+agy_file("77777777-7777-4777-8777-777777777777", 2000)          # phiên headless: không có nhãn
+agy_file("88888888-8888-4888-8888-888888888888", 4000, "other folder", [f"file://{OTHER}"])
 
 
 async def main():
@@ -207,6 +232,76 @@ async def main():
         cxf = so.CODEX_SESSIONS_DIR / "2026" / "08" / "11" / f"rollout-2026-08-11T21-36-40-{cxid}.jsonl"
         r = await rm(cxid, cli="codex")
         check("deletes a codex rollout too", r.status_code == 200 and not cxf.exists(), r.text[:200])
+
+        # ── agy: id nằm ở tên file, cwd thì KHÔNG có trên đĩa ───────────────
+        ag = so.list_cli_sessions(CWD, "agy")
+        check("agy conversations list newest first, id from the file name",
+              [x["id"][:2] for x in ag] == ["66", "77"], [x["id"][:8] for x in ag])
+        check("a conversation the summary pins to another folder is filtered out",
+              all(not x["id"].startswith("88") for x in ag), [x["id"][:8] for x in ag])
+        check("a headless conversation with no summary row still shows",
+              any(x["id"].startswith("77") for x in ag), [x["id"][:8] for x in ag])
+        check("the label comes from the summary table",
+              ag and ag[0]["preview"] == "ship the picker", ag and ag[0]["preview"])
+
+        # Ghim: y hệt hai CLI kia, chỉ khác lệnh resume.
+        agsid = "99999999-9999-4999-8999-999999999999"
+        agpick = "66666666-6666-4666-8666-666666666666"
+        so.register_session(agsid, "gem", cwd=CWD, model="agy:gemini-3.1-pro-high")
+        check("a model with the agy: prefix routes to the agy engine",
+              so.engine_name_of_session(so.get_session(agsid)) == "agy",
+              so.engine_name_of_session(so.get_session(agsid)))
+        check("a model with no agy: prefix is not the agy CLI",
+              so.engine_from_model("gemini-3.1-pro-high") != "agy",
+              so.engine_from_model("gemini-3.1-pro-high"))
+        check("agy's claude-named models do not fall through to the claude CLI",
+              so.engine_from_model("agy:claude-sonnet-4-6") == "agy",
+              so.engine_from_model("agy:claude-sonnet-4-6"))
+        r = await c.post(f"/api/sessions/{agsid}/resume-id", json={"resume_id": agpick})
+        check("pinning an agy conversation is accepted", r.status_code == 200, r.text[:200])
+        check("the terminal resumes it with --conversation",
+              so.terminal_argv(so.get_session(agsid)) == [so.AGY_BIN, "--conversation", agpick],
+              so.terminal_argv(so.get_session(agsid)))
+        r = await c.post(f"/api/sessions/{sid}/resume-id", json={"resume_id": agpick})
+        check("an agy conversation is refused for a claude session", r.status_code == 400,
+              r.text[:200])
+        r = await rm(agpick, cli="agy", session=agsid)
+        check("refuses an agy conversation its own card resumes",
+              r.status_code == 400 and "gem" in r.text, r.text[:200])
+        so.set_session_resume(agsid, "")
+
+        # Xoá: file chính + mảnh -wal/-shm + dòng ở bảng tóm tắt.
+        (so.AGY_CONVERSATIONS_DIR / f"{agpick}.db-wal").write_bytes(b"x")
+        r = await rm(agpick, cli="agy", session=agsid)
+        check("deletes an agy conversation", r.status_code == 200, r.text[:200])
+        check("the .db and its -wal go together",
+              not (so.AGY_CONVERSATIONS_DIR / f"{agpick}.db").exists()
+              and not (so.AGY_CONVERSATIONS_DIR / f"{agpick}.db-wal").exists())
+        check("the summary row is forgotten too", r.json().get("summary_row") == 1, r.text[:200])
+        check("claude's session-env is NOT touched for an agy delete",
+              r.json().get("session_env") == 0, r.text[:200])
+
+        # Text của agy tới HAI kiểu: nguyên cục ở step DONE (lượt đầu) hoặc nhỏ giọt ACTIVE→DONE
+        # (lượt resume, ĐÃ ĐO). Cả hai phải ra đúng MỘT event text đủ câu — gom hụt thì timeline
+        # của lượt resume trống trơn dù agent đã trả lời.
+        def mapped(evs):
+            acc, out = {}, []
+            for e in evs:
+                out += [(k, s) for k, s, _ in so._iter_agy_events(e, acc)]
+            return out
+
+        def step(state, tx):
+            return {"event": "step_update", "step_update": {
+                "step_index": 1, "state": state, "step_type": "agent_response", "text_delta": tx}}
+
+        one = mapped([step("DONE", "alpha\n")])
+        check("an answer that lands whole is one text event", one == [("text", "alpha")], one)
+        many = mapped([step("ACTIVE", "be"), step("ACTIVE", "ta"), step("DONE", "\n")])
+        check("a streamed answer is joined into one text event", many == [("text", "beta")], many)
+        bad = mapped([{"event": "result", "result": {"status": "ERROR", "response": "",
+                                                     "error": "invalid model selection"}}])
+        check("a failed run reports agy's own reason",
+              ("error", "invalid model selection") in bad, bad)
 
 
 asyncio.run(main())
