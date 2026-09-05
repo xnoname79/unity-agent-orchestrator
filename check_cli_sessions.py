@@ -259,9 +259,22 @@ async def main():
               so.engine_from_model("agy:claude-sonnet-4-6"))
         r = await c.post(f"/api/sessions/{agsid}/resume-id", json={"resume_id": agpick})
         check("pinning an agy conversation is accepted", r.status_code == 200, r.text[:200])
-        check("the terminal resumes it with --conversation",
-              so.terminal_argv(so.get_session(agsid)) == [so.AGY_BIN, "--conversation", agpick],
+        check("the terminal resumes it with --conversation, and names the workspace",
+              so.terminal_argv(so.get_session(agsid))
+              == [so.AGY_BIN, "--conversation", agpick, "--add-dir", CWD],
               so.terminal_argv(so.get_session(agsid)))
+        # agy KHÔNG suy workspace từ cwd của process: thiếu --add-dir là .agents/skills của
+        # project không được nạp, phiên chạy không playbook mà không báo gì.
+        check("headless agy names the workspace too",
+              "--add-dir" in so._agy_flags("agy", "bypassPermissions", "", CWD),
+              so._agy_flags("agy", "bypassPermissions", "", CWD))
+        check("no workspace flag when the session has no cwd",
+              "--add-dir" not in so._agy_flags("agy", "bypassPermissions", "", ""),
+              so._agy_flags("agy", "bypassPermissions", "", ""))
+        check("claude and codex terminals are untouched by that flag",
+              "--add-dir" not in so.terminal_argv(so.get_session(sid), "claude")
+              and "--add-dir" not in so.terminal_argv(so.get_session(sid), "codex"),
+              so.terminal_argv(so.get_session(sid), "codex"))
         r = await c.post(f"/api/sessions/{sid}/resume-id", json={"resume_id": agpick})
         check("an agy conversation is refused for a claude session", r.status_code == 400,
               r.text[:200])

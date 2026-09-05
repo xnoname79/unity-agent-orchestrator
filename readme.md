@@ -261,6 +261,8 @@ agent to survey its working directory and fill the blanks in itself.
 The placeholders **are** the one-time flag: once gone, the bootstrap never fires again, so
 nothing overwrites a playbook you or the agent has since edited. The result is written to
 `.claude/skills/`, `.codex/skills/` and `.agents/skills/`, since each CLI only reads its own.
+Antigravity is launched with `--add-dir <project>`, since it takes its workspace from that flag
+rather than from the working directory — without it the `.agents` copy is ignored.
 
 Those copies are written when the agent is spawned and when you save its SKILL, so a card created
 before a CLI was supported never got that CLI's copy. Such a card shows a 🕮 button that copies the

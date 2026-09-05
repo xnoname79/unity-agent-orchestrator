@@ -2431,9 +2431,24 @@ def terminal_argv(session, cli=""):
         cli = cli_of_engine(eng)
     pinned = resume_target(session, cli)
     if pinned != sid:
-        return _cli_resume_argv(cli, pinned)
-    # CLI khác engine của session → id này CLI đó không mở được: phiên MỚI trong cùng cwd.
-    return _cli_resume_argv(cli, sid) if cli == cli_of_engine(eng) else _cli_new_argv(cli)
+        argv = _cli_resume_argv(cli, pinned)
+    elif cli == cli_of_engine(eng):
+        argv = _cli_resume_argv(cli, sid)
+    else:
+        # CLI khác engine của session → id này CLI đó không mở được: phiên MỚI trong cùng cwd.
+        argv = _cli_new_argv(cli)
+    return argv + _cli_workspace_argv(cli, session.get("cwd") or "")
+
+
+def _cli_workspace_argv(cli, cwd):
+    """Cờ nói cho CLI biết thư mục project — chỉ agy cần.
+
+    ĐÃ ĐO agy 1.1.26: chạy `agy -p` NGAY TẠI repo root có .agents/skills/<vai>/SKILL.md thì skill
+    KHÔNG được nạp (/skills không liệt kê, hỏi nội dung thì agent không biết); thêm
+    `--add-dir <root>` là nạp ngay. Tức workspace của agy KHÔNG suy từ cwd của process mà từ danh
+    sách thư mục truyền vào — thiếu cờ này thì mọi phiên agy chạy không có playbook mà không báo
+    gì. claude/codex quét thẳng cwd nên không cần."""
+    return ["--add-dir", cwd] if cli == "agy" and cwd.strip() else []
 
 
 def _cli_new_argv(cli):
@@ -2854,9 +2869,11 @@ def _agy_tools_ok(permission_mode=""):
     return (permission_mode or DEFAULT_PERMISSION_MODE) == "bypassPermissions"
 
 
-def _agy_flags(model="", permission_mode="", effort=""):
+def _agy_flags(model="", permission_mode="", effort="", cwd=""):
     """Cờ dùng chung cho mọi lệnh `agy -p` (spawn lẫn resume)."""
-    flags = ["--output-format", "stream-json", "--print-timeout", AGY_PRINT_TIMEOUT]
+    # --add-dir: không có thì agy bỏ qua .agents/skills của project (xem _cli_workspace_argv).
+    flags = _cli_workspace_argv("agy", cwd) + [
+        "--output-format", "stream-json", "--print-timeout", AGY_PRINT_TIMEOUT]
     if _agy_tools_ok(permission_mode):
         flags.append("--dangerously-skip-permissions")
     real = _agy_model(model)
@@ -2979,7 +2996,7 @@ class AgyEngine(AgentEngine):
         if DRY_RUN:
             sid = f"agy-dry-{name}-{datetime.now().strftime('%H%M%S%f')}"
         else:
-            res = await _agy_exec([AGY_BIN, *_agy_flags(model, permission_mode, effort),
+            res = await _agy_exec([AGY_BIN, *_agy_flags(model, permission_mode, effort, cwd),
                                    f"--prompt={prompt}"], cwd)
             sid = res["raw"].get("conversation_id")
             if not sid:
@@ -3007,7 +3024,7 @@ class AgyEngine(AgentEngine):
         # (vd frontmatter '---') không bị đọc thành cờ — vai trò y như stdin bên _run_claude.
         cmd = [AGY_BIN, "--conversation", resume_target(session, "agy"),
                *_agy_flags(session.get("model", ""), session.get("permission_mode", ""),
-                           session.get("effort", "")),
+                           session.get("effort", ""), session.get("cwd") or ""),
                f"--prompt={prompt}"]
         res = await _agy_exec(cmd, session.get("cwd") or "", sid, on_event)
         res["session_id"] = sid   # resume giữ nguyên hội thoại → không để id trôi khỏi DB
