@@ -262,6 +262,11 @@ The placeholders **are** the one-time flag: once gone, the bootstrap never fires
 nothing overwrites a playbook you or the agent has since edited. The result is written to
 `.claude/skills/`, `.codex/skills/` and `.agents/skills/`, since each CLI only reads its own.
 
+Those copies are written when the agent is spawned and when you save its SKILL, so a card created
+before a CLI was supported never got that CLI's copy. Such a card shows a 🕮 button that copies the
+playbook into whichever roots are missing it — the check runs against the CLI list itself, so
+adding a fourth CLI later lights the button on every old card.
+
 Peer routing is deliberately *not* baked into playbooks — the roster changes as agents come and
 go, so every signal carries a reminder to call `list_agents` instead of trusting a remembered
 role name.

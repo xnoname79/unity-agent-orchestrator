@@ -1604,6 +1604,21 @@ def _skill_has_placeholder(cwd, name):
     return bool(_PLACEHOLDER_RE.search(_role_skill(cwd, name)))
 
 
+def _skill_missing_roots(cwd, name):
+    """Root nào trong CLI_SKILL_ROOTS chưa có bản SKILL của vai này.
+
+    _write_role_skill ghi ĐỦ mọi root, nhưng chỉ tại lúc spawn / lúc bấm Save. Card ra đời
+    TRƯỚC khi một root được thêm (.agents ra sau .claude/.codex) thì thiếu bản của root đó
+    vĩnh viễn — CLI mới chạy trong cwd đó không có playbook mà không báo gì. Hàm này là mắt
+    của cái nút resync trên card.
+
+    Canon (.claude) rỗng → [] : không có gì để nhân bản nên cũng không có nút. Lái theo
+    CLI_SKILL_ROOTS nên thêm CLI thứ 4 là nút tự sáng trên mọi card cũ, không phải sửa UI."""
+    if not _role_skill(cwd, name).strip():
+        return []
+    return [r for r in CLI_SKILL_ROOTS if not _skill_path(cwd, name, r).exists()]
+
+
 def _skill_frontmatter(name, content):
     """CẢ claude lẫn codex chỉ nhận SKILL.md có frontmatter YAML (name + description) — thiếu thì
     file nằm đó mà CLI không đưa vào catalog, tức là im lặng vô hiệu. init_prompt gõ tay thường
@@ -3855,7 +3870,11 @@ def build_app():
                 ({"peer": b if a == name else a, "n": n}
                  for (a, b), n in pairs.items() if name in (a, b)),
                 key=lambda p: (-p["n"], p["peer"]))
-            out.append({**s, **daily_stats(s["id"]), "pairs": peers})
+            # skill_missing đi kèm LIST chứ không phải endpoint riêng cho từng card: dashboard
+            # poll /api/sessions mỗi 5s và đã sát trần 6 kết nối/origin (xem note ở trên), thêm
+            # N request nữa mỗi vòng là tự bóp mình. Giá ở đây = 3 stat() / session / vòng.
+            out.append({**s, **daily_stats(s["id"]), "pairs": peers,
+                        "skill_missing": _skill_missing_roots(s.get("cwd") or "", name)})
         return JSONResponse(out)
 
     async def api_session_detail(request: Request):
@@ -4086,6 +4105,22 @@ def build_app():
         return JSONResponse({"path": str(_skill_path(cwd, name)),
                              "paths": [str(_skill_path(cwd, name, r)) for r in CLI_SKILL_ROOTS],
                              "bytes": len(content.encode("utf-8"))})
+
+    async def api_sync_skill(request: Request):
+        """Nhân bản SKILL canon sang các root CLI còn thiếu (vd .agents ra đời sau card).
+
+        Không có đường ghi mới: _write_role_skill đã ghi đủ mọi root, đã chèn frontmatter, và
+        ghi đè bản đã đúng bằng chính nội dung đó nên chạy lại vô hại."""
+        s = get_session(request.path_params["sid"])
+        if not s:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        cwd, name = s.get("cwd") or "", s.get("name") or ""
+        missing = _skill_missing_roots(cwd, name)
+        if not missing:
+            return JSONResponse({"error": "nothing to sync — no canonical SKILL, or every CLI "
+                                          "root already has it"}, status_code=400)
+        _write_role_skill(cwd, name, _role_skill(cwd, name))
+        return JSONResponse({"written": [str(_skill_path(cwd, name, r)) for r in missing]})
 
     async def _ws_pty(websocket, argv_for):
         """PTY thật trong browser (xterm.js): spawn argv_for(session) tại cwd của session, bơm 2
@@ -4840,6 +4875,7 @@ def build_app():
         Route("/api/editor/close", api_editor_close, methods=["POST"]),
         Route("/api/sessions/{sid}/skill", api_get_skill),
         Route("/api/sessions/{sid}/skill", api_put_skill, methods=["POST"]),
+        Route("/api/sessions/{sid}/skill/sync", api_sync_skill, methods=["POST"]),
         Route("/api/sessions/{sid}/compact", api_get_compact),
         Route("/api/sessions/{sid}/compact", api_compact, methods=["POST"]),
         Route("/api/sessions/{sid}/model", api_set_model, methods=["POST"]),

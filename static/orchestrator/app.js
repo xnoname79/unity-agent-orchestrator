@@ -1260,6 +1260,11 @@ function quickBtns(s, id) {
   if (s.daily_blocked)
     b.push(btn("warn", `Daily run limit hit — allow ${DAILY_STEP} more`,
       `allowMore('${id}','${esc(s.name)}')`, "+" + DAILY_STEP));
+  // SKILL của vai thiếu ở root của một CLI nào đó (vd .agents thêm sau khi card ra đời) →
+  // CLI đó chạy trong cwd này mà không có playbook. act() tự refresh nên nút biến mất khi xong.
+  if (s.skill_missing?.length)
+    b.push(btn("warn", `SKILL missing in ${s.skill_missing.join(", ")} — copy it from .claude`,
+      `act('/api/sessions/${id}/skill/sync')`, ic("book", "sm")));
   if ((s.cwd || "").trim())
     b.push(btn("", "Open this session's project folder in nvim — as many editors as you like",
       `openEditor('${id}')`, ic("edit", "sm")));
