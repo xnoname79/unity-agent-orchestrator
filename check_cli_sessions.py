@@ -276,8 +276,25 @@ async def main():
               and "--add-dir" not in so.terminal_argv(so.get_session(sid), "codex"),
               so.terminal_argv(so.get_session(sid), "codex"))
         r = await c.post(f"/api/sessions/{sid}/resume-id", json={"resume_id": agpick})
-        check("an agy conversation is refused for a claude session", r.status_code == 400,
-              r.text[:200])
+        check("an agy conversation is refused when the card's own engine would open it",
+              r.status_code == 400, r.text[:200])
+        # Terminal cho chọn CLI khác engine của card. Mỗi CLI chỉ mở được transcript của chính nó,
+        # nên ghim phải kiểm theo CLI sẽ mở — bắt buộc trùng engine thì ô chọn phiên của terminal
+        # agy trên card claude mời xong lại từ chối.
+        r = await c.post(f"/api/sessions/{sid}/resume-id",
+                         json={"resume_id": agpick, "cli": "agy"})
+        check("pinning it FOR the agy terminal is accepted", r.status_code == 200, r.text[:200])
+        check("the agy terminal opens that conversation",
+              so.terminal_argv(so.get_session(sid), "agy")
+              == [so.AGY_BIN, "--conversation", agpick, "--add-dir", CWD],
+              so.terminal_argv(so.get_session(sid), "agy"))
+        check("the card's own engine falls back to its own session instead of dying",
+              so.resume_target(so.get_session(sid), "claude") == sid,
+              so.resume_target(so.get_session(sid), "claude"))
+        r = await c.post(f"/api/sessions/{sid}/resume-id",
+                         json={"resume_id": "44444444-4444-4444-8444-444444444444", "cli": "agy"})
+        check("an id no CLI has is still refused", r.status_code == 400, r.text[:200])
+        await c.post(f"/api/sessions/{sid}/resume-id", json={"resume_id": ""})
         r = await rm(agpick, cli="agy", session=agsid)
         check("refuses an agy conversation its own card resumes",
               r.status_code == 400 and "gem" in r.text, r.text[:200])

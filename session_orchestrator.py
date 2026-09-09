@@ -4392,9 +4392,15 @@ def build_app():
     async def api_set_resume(request: Request):
         """Ghim session này chat tiếp một transcript CŨ trong cwd của nó (xem /api/cli-sessions).
 
-        Ghim ăn cho CẢ terminal LẪN run headless. Phải là phiên mà ENGINE của session mở được:
-        ghim transcript codex trong khi session chạy claude thì terminal nhìn thì thật, còn signal
-        chạy nền lại rơi về transcript cũ — lệch kiểu đó chỉ lộ ra khi đã muộn. Rỗng = bỏ ghim."""
+        Kiểm theo CLI sẽ MỞ nó ('cli' trong body, mặc định = engine của session), không phải theo
+        engine: terminal cho phép chọn CLI khác engine của card, mà mỗi CLI chỉ mở được transcript
+        do chính nó tạo. Bắt buộc trùng engine thì ô chọn phiên của terminal agy trên card claude
+        mời xong lại từ chối — ngõ cụt.
+
+        Ghim ăn cho CẢ terminal LẪN run headless, nhưng chỉ cho CLI thật sự có transcript đó:
+        resume_target kiểm lại theo từng CLI, nên ghim một hội thoại agy lên card claude thì
+        terminal agy vào đúng hội thoại còn run nền (claude) rơi về session của chính card —
+        rơi có ghi log, không phải chết. Rỗng = bỏ ghim."""
         sid = request.path_params["sid"]
         s = get_session(sid)
         if not s:
@@ -4404,12 +4410,14 @@ def build_app():
         except Exception:  # noqa: BLE001
             body = {}
         rid = (body.get("resume_id") or "").strip()
-        eng = engine_name_of_session(s)
+        cli = (body.get("cli") or "").strip().lower()
+        if cli not in TERMINAL_CLIS:
+            cli = cli_of_engine(engine_name_of_session(s))
         if rid:
-            if not _cli_knows_session(rid, eng):
+            if not _cli_knows_session(rid, cli):
                 return JSONResponse(
-                    {"error": f"{eng} has no session '{rid}' on this machine — pick one from "
-                              f"/api/cli-sessions, or switch this session's model to the other CLI"},
+                    {"error": f"{cli} has no session '{rid}' on this machine — pick one from "
+                              f"/api/cli-sessions?cli={cli}"},
                     status_code=400)
         set_session_resume(sid, rid)
         s = get_session(sid)

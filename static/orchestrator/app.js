@@ -931,8 +931,8 @@ window.setTermCli = setTermCli;
 
 // Ghim phiên cũ để chat tiếp. State nằm ở DB (cột resume_id) chứ KHÔNG ở client: run headless
 // (signal chạy nền) phải mở cùng transcript với terminal, mà nó thì không đọc được biến của tab.
-async function setTermSid(sid, name, chosen) {
-  try { await api(`/api/sessions/${encodeURIComponent(sid)}/resume-id`, "POST", { resume_id: chosen }); }
+async function setTermSid(sid, name, chosen, cli) {
+  try { await api(`/api/sessions/${encodeURIComponent(sid)}/resume-id`, "POST", { resume_id: chosen, cli }); }
   catch (e) {
     let msg = String(e);
     try { const j = JSON.parse(e); if (j && j.error) msg = j.error; } catch (_) {}
@@ -1203,12 +1203,15 @@ function agentCard(s, needsYou) {
     // cùng. Danh sách chỉ nạp khi mở select (xem fillTermSessions). Ghim ăn cho cả run headless.
     // Nằm trên HEADER chứ không ở cột trái 46px: cột đó chỉ đủ chỗ cho 8 ký tự đầu của id, mà
     // nhìn 8 ký tự hex thì không biết mình đang ở phiên nào — thứ cần đọc là câu đã gõ trong đó.
+    // Liệt kê theo CLI đang chọn ở terminal, và gửi kèm CLI đó khi ghim: mỗi CLI chỉ mở được
+    // transcript do chính nó tạo, nên danh sách và bên nhận phải cùng một CLI. Ghim hội thoại của
+    // CLI khác engine card thì terminal vào đúng hội thoại, còn run nền rơi về session của card.
     const psid = s.resume_id || "";
     if (psid) ensureResumeTitles(s.id, s.cwd || "", cli);
     const plabel = resumeLabel(psid);
-    const sidSel = `<select class="mini sid-sel" title="Which past ${cli} session this card resumes — terminal AND background runs. Lists every ${cli} session recorded in this folder"
+    const sidSel = `<select class="mini sid-sel" title="Which past ${cli} session this card resumes. Lists every ${cli} session recorded in this folder${cli === eng ? " — terminal AND background runs" : ` — the terminal opens it with ${cli}, but background runs (engine: ${eng}) fall back to this card's own session`}"
       onmousedown="fillTermSessions(this,'${esc(s.id)}','${cli}')"
-      onchange="setTermSid('${esc(s.id)}','${esc(s.name)}', this.value)">
+      onchange="setTermSid('${esc(s.id)}','${esc(s.name)}', this.value, '${cli}')">
       <option value="${esc(psid)}" title="${esc(plabel)}">${esc(plabel)}</option>
     </select>`;
     const head = `<div class="node-head">
