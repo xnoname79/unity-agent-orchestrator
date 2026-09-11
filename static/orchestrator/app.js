@@ -1001,7 +1001,14 @@ function startTerm(t) {
   t.started = true;
   // Nền terminal đọc từ token --term-bg để đổi theme không để lại một ô lệch màu.
   const bg = getComputedStyle(document.documentElement).getPropertyValue("--term-bg").trim();
+  // fontFamily: mặc định của xterm.js là 'courier-new, courier, monospace' — không có glyph
+  // Nerd Font, nên nvim/lazygit trong terminal vẽ ô vuông rỗng chỗ icon. Font đọc ở máy chạy
+  // TRÌNH DUYỆT, không phải máy chạy orchestrator; máy nào không có Nerd Font thì rơi về
+  // ui-monospace, vẫn đọc được chữ.
   t.term = new Terminal({ fontSize: 12, cursorBlink: true, scrollback: 5000,
+                          fontFamily: '"Iosevka Nerd Font", "JetBrainsMono Nerd Font", '
+                                      + '"FiraCode Nerd Font", "Hack Nerd Font", '
+                                      + '"Symbols Nerd Font Mono", ui-monospace, monospace',
                           theme: { background: bg || "#0c0e12", foreground: "#e6e8eb" } });
   t.fit = new FitAddon.FitAddon();
   t.term.loadAddon(t.fit);
