@@ -1001,14 +1001,15 @@ function startTerm(t) {
   t.started = true;
   // Nền terminal đọc từ token --term-bg để đổi theme không để lại một ô lệch màu.
   const bg = getComputedStyle(document.documentElement).getPropertyValue("--term-bg").trim();
-  // fontFamily: mặc định của xterm.js là 'courier-new, courier, monospace' — không có glyph
-  // Nerd Font, nên nvim/lazygit trong terminal vẽ ô vuông rỗng chỗ icon. Font đọc ở máy chạy
-  // TRÌNH DUYỆT, không phải máy chạy orchestrator; máy nào không có Nerd Font thì rơi về
-  // ui-monospace, vẫn đọc được chữ.
+  // fontFamily: giữ NGUYÊN mặc định của xterm.js ('courier-new, courier, monospace') làm font
+  // CHÍNH, chỉ nối thêm Nerd Font ở CUỐI. Lý do phải cuối: xterm.js đo bề rộng/cao một ô chữ
+  // bằng font ĐẦU danh sách, nên đưa một font hẹp (Iosevka) lên đầu là đổi cả lưới terminal —
+  // chữ cao hơn, hàng hở ra thành vạch ngang. Ở cuối thì trình duyệt chỉ với tới nó cho glyph mà
+  // các font trước KHÔNG có, tức đúng mấy icon Nerd Font của nvim/lazygit.
+  // Font đọc ở máy chạy TRÌNH DUYỆT, không phải máy chạy orchestrator.
   t.term = new Terminal({ fontSize: 12, cursorBlink: true, scrollback: 5000,
-                          fontFamily: '"Iosevka Nerd Font", "JetBrainsMono Nerd Font", '
-                                      + '"FiraCode Nerd Font", "Hack Nerd Font", '
-                                      + '"Symbols Nerd Font Mono", ui-monospace, monospace',
+                          fontFamily: 'courier-new, courier, monospace, "Iosevka Nerd Font", '
+                                      + '"Symbols Nerd Font Mono", "JetBrainsMono Nerd Font"',
                           theme: { background: bg || "#0c0e12", foreground: "#e6e8eb" } });
   t.fit = new FitAddon.FitAddon();
   t.term.loadAddon(t.fit);
