@@ -37,8 +37,18 @@
     <li>
       <a href="#getting-started">Getting Started</a>
       <ul>
-        <li><a href="#prerequisites">Prerequisites</a></li>
-        <li><a href="#installation">Installation</a></li>
+        <li><a href="#1-install-a-provider-cli">Install a provider CLI</a></li>
+        <li><a href="#2-install-the-orchestrator">Install the orchestrator</a></li>
+        <li><a href="#3-run-it">Run it</a></li>
+        <li><a href="#4-register-the-signal-mcp">Register the signal MCP</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#run-at-startup">Run at startup</a>
+      <ul>
+        <li><a href="#linux--systemd-user-service">Linux — systemd</a></li>
+        <li><a href="#macos--launchd">macOS — launchd</a></li>
+        <li><a href="#windows--task-scheduler">Windows — Task Scheduler</a></li>
       </ul>
     </li>
     <li>
@@ -108,39 +118,28 @@ so each provider keeps its own subscription, its own auth, and its own tools.
 
 ## Getting Started
 
-### Prerequisites
+### 1. Install a provider CLI
 
-Install and log in to at least one provider CLI first — the orchestrator drives them, it does
-not replace them.
+The orchestrator drives the CLIs you already have installed and logged in — it does not replace
+them. Install at least one.
 
 | | Install |
 |---|---|
 | **Claude Code** | [code.claude.com/docs/en/quickstart](https://code.claude.com/docs/en/quickstart#native-install-recommended) |
 | **Codex CLI** | [learn.chatgpt.com/docs/codex/cli](https://learn.chatgpt.com/docs/codex/cli#getting-started) |
 | **Antigravity CLI** | [antigravity.google/docs/cli](https://antigravity.google/docs/cli/reference) — the `agy` command, for Google models |
-| **Python 3.10+** | Only if you run from source |
-| **neovim** + **tmux** | Optional — only for the editor card |
-| **diffview.nvim** | Optional — adds the card's **git** tab |
 
-> The editor card runs `nvim` inside a tmux session, so closing the browser tab detaches instead
-> of discarding your buffer. Without tmux the card still works, but the nvim process ends with the
-> tab. Without `nvim` there is simply no editor card; everything else is unaffected.
->
-> The card's **git** tab runs `:DiffviewOpen`, so it needs
-> [diffview.nvim](https://github.com/sindrets/diffview.nvim) in your neovim config — a
-> side-by-side diff of the working tree, the index, or any revision, inside the same nvim. It is
-> a plugin, not a program, so there is nothing extra to put on PATH; without it the tab just
-> reports an unknown command.
->
-> Override the binaries with `ORCH_NVIM_BIN` / `ORCH_TMUX_BIN`.
+Optional: **neovim** + **tmux** give you the editor card (tmux keeps nvim alive when you close
+the browser tab), and [diffview.nvim](https://github.com/sindrets/diffview.nvim) adds that card's
+**git** tab. Without them the card is simply absent — nothing else changes. Override the binaries
+with `ORCH_NVIM_BIN` / `ORCH_TMUX_BIN`.
 
-> The orchestrator finds the CLIs through the **PATH of its own process**. Install one while it
-> is running and you have to restart it. If `where.exe claude` / `which claude` prints a path but
-> the dashboard still says the command was not found, set `CLAUDE_BIN` / `ORCH_CODEX_BIN` /
-> `ORCH_AGY_BIN` — see
+> The orchestrator finds the CLIs through the **PATH of its own process**. Install one while it is
+> running and you have to restart it. If `which claude` prints a path but the dashboard still says
+> the command was not found, set `CLAUDE_BIN` / `ORCH_CODEX_BIN` / `ORCH_AGY_BIN` — see
 > [Configuration](#configuration).
 
-### Installation
+### 2. Install the orchestrator
 
 **Prebuilt binary** — no Python needed. Grab it from [Releases](../../releases).
 
@@ -149,45 +148,56 @@ chmod +x agent-orch-linux-x64
 ./agent-orch-linux-x64            # no argument = serve
 ```
 
-On Windows, unzip `agent-orch-windows-x64.zip` and double-click `agent-orch.exe` inside the
-folder. Keep the folder together — the `_internal` directory beside the `.exe` is the program,
-and the `.exe` will not start on its own. The console window that opens *is* the server; closing
-it stops the orchestrator.
+On Windows, unzip `agent-orch-windows-x64.zip` and run `agent-orch.exe` from inside the folder.
+Keep the folder together — the `_internal` directory beside the `.exe` is the program. The console
+window that opens *is* the server; closing it stops the orchestrator.
 
-> [!NOTE]
-> These builds are not code-signed, so Windows SmartScreen has no reputation for them and may
-> offer to **delete** the download. Verify the hash against `SHA256SUMS.txt`, then clear the
-> download mark — do this on the `.zip`, *before* extracting, since every file inside inherits
-> the mark:
->
-> ```powershell
-> Get-FileHash agent-orch-windows-x64.zip -Algorithm SHA256
-> Unblock-File agent-orch-windows-x64.zip
-> ```
->
-> If Defender quarantines it outright, that is a false positive on the PyInstaller bundle — it
-> can be reported at [Microsoft's submission portal](https://www.microsoft.com/en-us/wdsi/filesubmission).
-> Do not disable Defender or add an exclusion for it; the next release is a different file and
-> the exclusion will not cover it.
+<details>
+<summary>Windows SmartScreen may offer to <b>delete</b> the download</summary>
 
-**From source:**
+These builds are not code-signed, so SmartScreen has no reputation for them. Verify the hash
+against `SHA256SUMS.txt`, then clear the download mark — do this on the `.zip`, *before*
+extracting, since every file inside inherits the mark:
 
-```bash
-pip install -r requirements.txt
-python3 session_orchestrator.py serve
+```powershell
+Get-FileHash agent-orch-windows-x64.zip -Algorithm SHA256
+Unblock-File agent-orch-windows-x64.zip
 ```
 
-Then open:
+If Defender quarantines it outright, that is a false positive on the PyInstaller bundle — report
+it at [Microsoft's submission portal](https://www.microsoft.com/en-us/wdsi/filesubmission). Do not
+disable Defender or add an exclusion; the next release is a different file and the exclusion will
+not cover it.
+</details>
+
+**From source** — Python 3.10 or newer:
+
+```bash
+git clone https://github.com/xnoname79/unity-agent-orchestrator.git
+cd unity-agent-orchestrator
+python3 -m venv .venv
+source .venv/bin/activate         # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 3. Run it
+
+```bash
+python3 session_orchestrator.py serve
+```
 
 | URL | What |
 |---|---|
 | `http://localhost:8992/` | Canvas dashboard |
 | `http://localhost:8992/docs` | API documentation (Swagger UI) |
 
-Databases are created on first run under `~/.session_orch_db/`.
+The database is created on first run under `~/.session_orch_db/`; there is no migration step.
+Change the port with `ORCH_PORT` — see [Configuration](#configuration).
 
-**Register the signal MCP — once per CLI.** This is what lets agents reach each other; every
-session afterwards picks it up automatically.
+### 4. Register the signal MCP
+
+Once per CLI. This is what lets agents reach each other; every session afterwards picks it up
+automatically.
 
 ```bash
 claude mcp add --transport http --scope user signal http://127.0.0.1:8992/signal/mcp
@@ -221,6 +231,98 @@ Servers registered as stdio are listed but not probed — there is no URL to cal
 | `ORCH_MCP_TIMEOUT` | `6` | seconds to wait for `tools/list` |
 
 Guard: `python3 check_mcp.py`.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Run at startup
+
+Run it as **your own user**, never root — the provider CLIs read their logins from your home
+directory. Replace the paths below with wherever you cloned or unzipped it.
+
+### Linux — systemd user service
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/orchestrator.service <<'EOF'
+[Unit]
+Description=Agent Orchestrator (dashboard + MCP, port 8992)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/unity-agent-orchestrator
+ExecStart=%h/unity-agent-orchestrator/.venv/bin/python %h/unity-agent-orchestrator/session_orchestrator.py serve
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now orchestrator
+loginctl enable-linger "$USER"     # start at boot, not only when you log in
+```
+
+Using the prebuilt binary instead? Point `ExecStart` straight at it:
+`ExecStart=%h/agent-orch/agent-orch-linux-x64 serve`, and set `WorkingDirectory` to its folder so
+the `.env` beside it is found.
+
+Day to day:
+
+```bash
+systemctl --user status orchestrator
+systemctl --user restart orchestrator     # after pulling changes
+journalctl --user -u orchestrator -f      # live log
+```
+
+`Environment=` lines in the unit win over the `.env` file.
+
+### macOS — launchd
+
+```bash
+cat > ~/Library/LaunchAgents/com.agent-orch.plist <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.agent-orch</string>
+  <key>ProgramArguments</key><array>
+    <string>$HOME/unity-agent-orchestrator/.venv/bin/python</string>
+    <string>$HOME/unity-agent-orchestrator/session_orchestrator.py</string>
+    <string>serve</string>
+  </array>
+  <key>WorkingDirectory</key><string>$HOME/unity-agent-orchestrator</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$HOME/Library/Logs/agent-orch.log</string>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/agent-orch.err</string>
+</dict></plist>
+EOF
+
+launchctl load -w ~/Library/LaunchAgents/com.agent-orch.plist
+```
+
+Stop it with `launchctl unload -w ~/Library/LaunchAgents/com.agent-orch.plist`.
+
+### Windows — Task Scheduler
+
+```powershell
+$exe = "$HOME\agent-orch-windows-x64\agent-orch.exe"
+Register-ScheduledTask -TaskName "AgentOrchestrator" `
+  -Action  (New-ScheduledTaskAction -Execute $exe -WorkingDirectory (Split-Path $exe)) `
+  -Trigger (New-ScheduledTaskTrigger -AtLogOn) `
+  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable `
+               -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1))
+```
+
+Remove it with `Unregister-ScheduledTask -TaskName "AgentOrchestrator"`.
+
+> [!WARNING]
+> Starting on boot means the port is open for as long as the machine is up. `ORCH_CORS_ORIGINS`
+> defaults to `*` and there is no API key unless you set one — read [Safety](#safety) first.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
