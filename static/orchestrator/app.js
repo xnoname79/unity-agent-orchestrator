@@ -671,15 +671,20 @@ function unpinWindow(keep) {
 
 // Mọi "cửa sổ" của workspace này: card 👑 (terminal nhúng) + card VS Code đang mở.
 // Card agent thường không có gì để ghim — nội dung là vài dòng meta.
+// Xếp theo NHÓM: terminal của session rồi ngay sau là editor của chính nó. Trước đây gom hết
+// terminal trước, editor dồn xuống cuối — cùng một session mà hai chip nằm hai đầu thanh, đọc
+// tên trùng nhau xong vẫn phải quét cả thanh mới thấy cái còn lại.
 function winList() {
   const sessions = cvLast.sessions || [];
-  const out = sessions.map((s) => ({
-    nid: "s:" + s.id, kind: "Terminal", icon: ic("terminal", "sm"),
-    name: s.name, sub: s.cwd || "" }));
-  for (const c of editorCards)
-    if (sessions.some((s) => s.id === c.session))
-      out.push({ nid: "editor:" + c.session, kind: "nvim", icon: ic("edit", "sm"), ed: true,
-                 name: c.name || c.session, sub: c.cwd || "" });
+  const out = [];
+  for (const s of sessions) {
+    out.push({ nid: "s:" + s.id, kind: "Terminal", icon: ic("terminal", "sm"), head: true,
+               name: s.name, sub: s.cwd || "" });
+    for (const c of editorCards)
+      if (c.session === s.id)
+        out.push({ nid: "editor:" + c.session, kind: "nvim", icon: ic("edit", "sm"), ed: true,
+                   name: c.name || c.session, sub: c.cwd || "" });
+  }
   return out;
 }
 
@@ -697,7 +702,10 @@ function renderWinBar() {
       agent (${ic("terminal", "sm")}) or open an editor, then pin it here.</span>`;
     return;
   }
-  chips.innerHTML = `<span class="win-sep"></span>` + list.map((w) =>
+  // Vạch ngăn trước mỗi nhóm (trừ nhóm đầu, đã có vạch tách khỏi nhãn bar): trong nhóm các chip
+  // dính nhau, giữa hai nhóm có đường kẻ — nhìn phát biết chip nào đi với chip nào.
+  chips.innerHTML = `<span class="win-sep"></span>` + list.map((w, i) =>
+    (w.head && i ? `<span class="win-sep"></span>` : "") +
     `<button class="win-chip${w.ed ? " ed" : ""}${w.nid === pinnedNid ? " on" : ""}"
       onclick="pinWindow('${esc(w.nid)}')"
       title="${esc(w.kind)}${w.sub ? " · " + esc(w.sub) : ""} — pin it to the left edge at full
