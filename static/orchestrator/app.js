@@ -269,6 +269,36 @@ async function moveWorkspace(id, name, wid, label) {
 }
 window.moveWorkspace = moveWorkspace;
 
+// Ô model của inspector. <select> chứ KHÔNG <input list>: datalist lọc option theo chữ đang có
+// trong ô, nên card đang để 'agy' thì bấm mũi tên ra danh sách rỗng — muốn thấy gì phải xoá trắng
+// ô, mà xoá trắng rồi rời ô là onchange bắn model rỗng và card lặng lẽ nhảy về claude.
+// Nguồn là MODEL_TABS, chung với form spawn, để không phải sửa hai nơi khi thêm model.
+function modelSel(s, id) {
+  const cur = s.model || "";
+  const known = MODEL_TABS.some((t) => t.models.some((m) => m.id === cur));
+  return `<select onchange="pickModel('${id}', this)">
+    <option value=""${cur ? "" : " selected"}>auto — claude CLI picks the model</option>
+    ${cur && !known ? `<option value="${esc(cur)}" selected>${esc(cur)} — custom</option>` : ""}
+    ${MODEL_TABS.map((t) => `<optgroup label="${esc(t.label)} · ${esc(t.engine)}">${
+      t.models.map((m) => `<option value="${esc(m.id)}"${m.id === cur ? " selected" : ""}
+        title="${esc(m.desc)}">${esc(m.name)}</option>`).join("")
+    }</optgroup>`).join("")}
+    <option value="__other__">Other model id…</option>
+  </select>`;
+}
+
+// "Other…" = id không có trong danh sách (vd model litellm). Huỷ prompt thì vẽ lại inspector để ô
+// quay về giá trị cũ, không mắc kẹt ở dòng "Other".
+async function pickModel(id, el) {
+  const sid = decodeURIComponent(id);
+  if (el.value !== "__other__") return setModel(id, el.value);
+  const s = (cvLast.sessions || []).find((x) => x.id === sid);
+  const m = prompt("Model id (empty = let the claude CLI pick):", (s && s.model) || "");
+  if (m === null) return renderInspector();
+  await setModel(id, m.trim());
+}
+window.pickModel = pickModel;
+
 async function setModel(id, model) {
   try { await api(`/api/sessions/${id}/model`, "POST", { model }); await refreshAll(); }
   catch (e) { console.error(e); alert("Could not change model: " + e); }
@@ -1506,8 +1536,7 @@ ${pairBudget(s)}
 
     <div class="insp-sec">
       <h4>Model</h4>
-      <input list="model-list" value="${esc(s.model || "")}" placeholder="auto — the CLI picks"
-        onchange="setModel('${id}', this.value.trim())">
+      ${modelSel(s, id)}
       ${effortSel}
     </div>
 
@@ -1533,7 +1562,7 @@ ${pairBudget(s)}
         title="Summarise the transcript so the role stops drifting on long jobs">${ic("compress", "sm")} Compact context</button>
     </div>
 
-    ${sessCleanup(s, engine === "codex" ? "codex" : "claude")}
+    ${sessCleanup(s, CLI_ICON[engine] ? engine : "claude")}
 
     <div class="insp-sec insp-danger">
       <h4>Danger zone</h4>
@@ -2050,6 +2079,14 @@ window.spRoleSlug = spRoleSlug;
 function pickCard(group, val, inner, title) {
   return `<div class="pick-card${spSel[group] === val ? " sel" : ""}"` +
     `${title ? ` title="${esc(title)}"` : ""} onclick="spPick('${group}','${esc(val)}')">${inner}</div>`;
+}
+
+// Datalist của ô model tự do (form spawn) dựng TỪ MODEL_TABS. Danh sách cứng trong HTML trước
+// đây chỉ có model Claude, nên gõ 'agy'/'codex' vào ô không gợi ý được gì.
+{
+  const dl = $("model-list");
+  if (dl) dl.innerHTML = MODEL_TABS.flatMap((t) => t.models.map((m) =>
+    `<option value="${esc(m.id)}" label="${esc(t.label + " — " + m.name)}">`)).join("");
 }
 
 function renderSpawnPickers() {
