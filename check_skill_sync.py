@@ -73,6 +73,21 @@ async def main():
               (await sessions())[sid]["skill_missing"] == [],
               (await sessions())[sid]["skill_missing"])
 
+        # 1b. Drawer phải nói ĐỦ ba đường và chỉ đúng cái engine của card đọc — card agy mà chỉ
+        #     thấy đường .claude thì tưởng Upsert ghi sai chỗ.
+        g = (await c.get(f"/api/sessions/{sid}/skill")).json()
+        check("the skill drawer names one path per CLI",
+              g["paths"] == {cli: str(skill_of("dev", root))
+                             for cli, root in so.CLI_SKILL_ROOT.items()}, str(g.get("paths"))[:200])
+        check("and says which CLI this card reads with", g.get("cli") == "claude", str(g.get("cli")))
+        agid = str(uuid.uuid4())
+        so.register_session(agid, "dev", cwd=CWD, model="agy:gemini-3.1-pro-high")
+        g = (await c.get(f"/api/sessions/{agid}/skill")).json()
+        check("an agy card points at the .agents copy, not .claude",
+              g.get("cli") == "agy" and g["paths"]["agy"] == str(skill_of("dev", ".agents")),
+              f"{g.get('cli')} {g.get('paths', {}).get('agy')}")
+        so.unregister_session(agid)
+
         # 2. Card kiểu cũ: xoá bản .agents = card ra đời trước khi root đó tồn tại.
         canon = skill_of("dev", ".claude").read_text(encoding="utf-8")
         skill_of("dev", ".agents").unlink()

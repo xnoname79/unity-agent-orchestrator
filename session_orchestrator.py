@@ -1590,7 +1590,9 @@ def _parse_final(returncode, stdout, stderr, session_id):
 # mỗi CLI CHỈ đọc thư mục của mình → phải ghi cả hai bản, không share được.
 # '.claude' đứng ĐẦU = bản canon để đọc lại (_role_skill / _prepend_role / drawer Context).
 # .agents = convention chung mà agy quét (ĐÃ ĐO: `agy skills list` đọc <cwd>/.agents/skills).
-CLI_SKILL_ROOTS = (".claude", ".codex", ".agents")
+CLI_SKILL_ROOT = {"claude": ".claude", "codex": ".codex", "agy": ".agents"}
+# '.claude' đứng ĐẦU (dict giữ thứ tự chèn) = bản canon để đọc lại (_role_skill / drawer Context).
+CLI_SKILL_ROOTS = tuple(CLI_SKILL_ROOT.values())
 
 
 def _skills_dir(cwd, root=CLI_SKILL_ROOTS[0]):
@@ -1601,6 +1603,12 @@ def _skills_dir(cwd, root=CLI_SKILL_ROOTS[0]):
 
 def _skill_path(cwd, name, root=CLI_SKILL_ROOTS[0]):
     return _skills_dir(cwd, root) / name / "SKILL.md"
+
+
+def _skill_paths(cwd, name):
+    """Bản SKILL của TỪNG CLI: {cli: path}. Mỗi CLI chỉ đọc root của mình nên drawer phải nói
+    đủ ba, không thì card agy nhìn thấy mỗi đường .claude rồi tưởng Upsert ghi sai chỗ."""
+    return {cli: str(_skill_path(cwd, name, root)) for cli, root in CLI_SKILL_ROOT.items()}
 
 
 def _role_skill(cwd, name):
@@ -4143,13 +4151,14 @@ def build_app():
                              "dirs": dirs})
 
     async def api_get_skill(request: Request):
-        """SKILL hiện tại của role + path đích (<cwd>/.claude/skills/<name>/SKILL.md)."""
+        """SKILL hiện tại của role + các path đích (mỗi CLI 1 bản, xem CLI_SKILL_ROOT)."""
         s = get_session(request.path_params["sid"])
         if not s:
             return JSONResponse({"error": "not found"}, status_code=404)
         cwd, name = s.get("cwd") or "", s.get("name") or ""
         return JSONResponse({"skill": _role_skill(cwd, name), "path": str(_skill_path(cwd, name)),
-                             "paths": [str(_skill_path(cwd, name, r)) for r in CLI_SKILL_ROOTS]})
+                             "cli": cli_of_engine(engine_name_of_session(s)),
+                             "paths": _skill_paths(cwd, name)})
 
     async def api_put_skill(request: Request):
         """Upsert SKILL của role vào project cwd: tạo thư mục nếu chưa có, đè nếu đã có."""
@@ -4163,7 +4172,8 @@ def build_app():
         cwd, name = s.get("cwd") or "", s.get("name") or ""
         _write_role_skill(cwd, name, content)
         return JSONResponse({"path": str(_skill_path(cwd, name)),
-                             "paths": [str(_skill_path(cwd, name, r)) for r in CLI_SKILL_ROOTS],
+                             "cli": cli_of_engine(engine_name_of_session(s)),
+                             "paths": _skill_paths(cwd, name),
                              "bytes": len(content.encode("utf-8"))})
 
     async def api_sync_skill(request: Request):

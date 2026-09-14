@@ -183,8 +183,10 @@ async function viewCompact(id, name) {
 }
 window.viewCompact = viewCompact;
 
-// Editor SKILL của role trong drawer: đọc SKILL hiện tại, sửa, upsert vào
-// <cwd>/.claude/skills/<name>/SKILL.md (tạo thư mục nếu chưa có, đè nếu đã có).
+// Editor SKILL của role trong drawer: đọc SKILL hiện tại, sửa, upsert.
+// Upsert ghi MỘT nội dung vào root của CẢ BA CLI (.claude / .codex / .agents) — mỗi CLI chỉ đọc
+// thư mục của mình. Liệt kê đủ ba và đánh dấu cái mà engine của card đang đọc: hiện mỗi đường
+// .claude thì card agy nhìn vào tưởng Upsert ghi sai chỗ.
 async function editSkill(id, name) {
   openRunId = null;
   $("dr-title").textContent = `SKILL · ${name}`;
@@ -194,8 +196,14 @@ async function editSkill(id, name) {
   $("drawer-overlay").classList.add("open");
   try {
     const r = await api(`/api/sessions/${id}/skill`);
+    const paths = r.paths || { claude: r.path };
     $("dr-body").innerHTML = `
-      <div class="ev system"><div class="k">📘 path</div><div class="s">${esc(r.path)}</div></div>
+      <div class="ev system"><div class="k">📘 paths</div><div class="s">${
+        Object.entries(paths).map(([c, p]) =>
+          `<div class="sk-path${c === r.cli ? " on" : ""}"
+             title="${c === r.cli ? "this card's CLI reads this one" : c + " reads this one"}"
+            >${CLI_ICON[c] || ""} ${esc(c)} <span class="mono">${esc(p)}</span></div>`).join("")
+      }</div></div>
       <textarea id="skill-ta" class="skill-ta" spellcheck="false"
         placeholder="No SKILL yet — paste SKILL.md content here and press Upsert."></textarea>
       <div class="skill-save">
@@ -216,7 +224,8 @@ async function saveSkill(id) {
   msg.textContent = "Writing…";
   try {
     const r = await api(`/api/sessions/${id}/skill`, "POST", { content });
-    msg.textContent = `✔ Wrote ${r.bytes.toLocaleString()} bytes → ${r.path}`;
+    const cs = Object.keys(r.paths || { claude: r.path });
+    msg.textContent = `✔ Wrote ${r.bytes.toLocaleString()} bytes for ${cs.join(", ")}`;
   } catch (e) { console.error(e); msg.textContent = "Write failed: " + e; }
 }
 window.saveSkill = saveSkill;
