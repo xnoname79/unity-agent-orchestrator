@@ -118,12 +118,18 @@ async def main():
 
         # Xoá workspace: gỡ mọi agent rồi xoá cái vỏ. Điểm của nó là không phải Unregister tay
         # từng cái — nên phải chứng minh session biến mất THẬT mà audit thì không.
-        r = await c.delete(f"/api/workspaces/{a['id']}")
+        # Workspace RIÊNG cho phần xoá: dựa vào ai còn sót lại sau các phép move ở trên là đếm
+        # sai ngay khi thêm/bớt một fixture phía trước.
+        doomed = (await c.post("/api/workspaces", json={"name": "team-doomed"})).json()
+        await register("s-doomed", "developer", doomed["id"])
+        await c.post("/api/signals", json={"to_session": "s-doomed", "message": "bye",
+                                           "from_role": "developer"})
+        r = await c.delete(f"/api/workspaces/{doomed['id']}")
         check("deleting a workspace unregisters the agents still in it",
               r.status_code == 200 and r.json().get("sessions") == 1, f"{r.status_code} {r.text[:90]}")
-        check("its agents are gone from the orchestrator", so.get_session("s-llm") is None)
-        check("the workspace itself is gone", so.get_workspace(a["id"]) is None)
-        check("but its signals stay for audit", bool(so.list_signals(50, 0, a["id"])[0]))
+        check("its agents are gone from the orchestrator", so.get_session("s-doomed") is None)
+        check("the workspace itself is gone", so.get_workspace(doomed["id"]) is None)
+        check("but its signals stay for audit", bool(so.list_signals(50, 0, doomed["id"])[0]))
 
         r = await c.delete("/api/workspaces/default")
         check("the default workspace is refused", r.status_code == 400, f"{r.status_code} {r.text[:90]}")
