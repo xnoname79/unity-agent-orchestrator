@@ -976,7 +976,10 @@ const resumeTitle = {};   // id phiên → câu người dùng gõ đầu tiên
 const sessCache = {};     // "cwd|cli" → danh sách phiên đã quét (dùng chung cho header + inspector)
 
 const sessKey = (cwd, cli) => (cwd || "") + "|" + cli;
-const resumeLabel = (rid) => (!rid ? "this session" : resumeTitle[rid] || rid.slice(0, 8));
+// Không ghim gì thì hiện TÊN của chính card, không phải "this session": cả ô này để biết mình
+// đang gõ vào transcript nào, mà "this session" thì đọc xong vẫn không biết là session nào.
+const resumeLabel = (rid, own) => (!rid ? (own || "this session")
+                                        : resumeTitle[rid] || rid.slice(0, 8));
 
 // MỘT chỗ gọi /api/cli-sessions cho cả ba nơi cần (nhãn header, ô chọn phiên, danh sách dọn dẹp).
 // force = sau khi xoá: danh sách cũ còn dòng vừa biến mất.
@@ -997,7 +1000,7 @@ async function ensureResumeTitles(sid, cwd, cli) {
 }
 
 // Vá nhãn TẠI CHỖ, không render lại canvas: render lại là giật focus của terminal đang gõ dở.
-// Bỏ qua select đã mở danh sách đầy đủ (dataset.filled) — options[0] ở đó là "this session".
+// Bỏ qua select đã mở danh sách đầy đủ (dataset.filled) — options[0] ở đó là session của card.
 function paintResumeLabels() {
   for (const el of $("world").querySelectorAll(".sid-sel")) {
     if (el.dataset.filled) continue;
@@ -1012,11 +1015,12 @@ async function fillTermSessions(el, sid, cli) {
   if (el.dataset.filled) return;
   el.dataset.filled = "1";
   let list = [];
-  const cwd = (cvLast.sessions || []).find((x) => x.id === sid);
-  try { list = await loadCliSessions(sid, (cwd && cwd.cwd) || "", cli); }
+  const me = (cvLast.sessions || []).find((x) => x.id === sid);
+  try { list = await loadCliSessions(sid, (me && me.cwd) || "", cli); }
   catch (e) { console.error(e); el.dataset.filled = ""; return; }
   const cur = el.value;
-  el.innerHTML = `<option value="">this session</option>` + list.map((x) =>
+  el.innerHTML = `<option value="" title="This card's own conversation — nothing pinned"
+    >${esc((me && me.name) || "this session")}</option>` + list.map((x) =>
     `<option value="${esc(x.id)}" title="${esc(x.preview || x.id)}">${esc(x.ts.slice(5))} · `
     + `${esc(x.preview || x.id.slice(0, 8))}</option>`).join("");
   el.value = cur;
@@ -1243,7 +1247,7 @@ function agentCard(s, needsYou) {
     // CLI khác engine card thì terminal vào đúng hội thoại, còn run nền rơi về session của card.
     const psid = s.resume_id || "";
     if (psid) ensureResumeTitles(s.id, s.cwd || "", cli);
-    const plabel = resumeLabel(psid);
+    const plabel = resumeLabel(psid, s.name);
     const sidSel = `<select class="mini sid-sel" title="Which past ${cli} session this card resumes. Lists every ${cli} session recorded in this folder${cli === eng ? " — terminal AND background runs" : ` — the terminal opens it with ${cli}, but background runs (engine: ${eng}) fall back to this card's own session`}"
       onmousedown="fillTermSessions(this,'${esc(s.id)}','${cli}')"
       onchange="setTermSid('${esc(s.id)}','${esc(s.name)}', this.value, '${cli}')">
