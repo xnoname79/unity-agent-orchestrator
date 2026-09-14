@@ -416,6 +416,26 @@ def set_workspace_status(workspace_id, status):
     conn.close()
 
 
+def delete_workspace(workspace_id):
+    """Xoá workspace: unregister MỌI session trong đó rồi xoá bản ghi workspace.
+    Soft với session — runs/signals/audit giữ nguyên, y hệt bấm Unregister từng cái một; chỉ
+    khác là không phải bấm n lần rồi mới xoá được cái vỏ rỗng.
+    Thư mục root_dir trên đĩa KHÔNG đụng tới: trong đó là code/dữ liệu người dùng, xoá là mất thật.
+    Trả {"sessions": số session đã gỡ}."""
+    _ensure_db()
+    conn = _conn()
+    sids = [r["id"] for r in conn.execute(
+        "SELECT id FROM sessions WHERE workspace_id = ?", (workspace_id,)).fetchall()]
+    conn.close()
+    for sid in sids:
+        unregister_session(sid)
+    conn = _conn()
+    conn.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
+    conn.commit()
+    conn.close()
+    return {"sessions": len(sids)}
+
+
 def workspace_root(workspace_id):
     """Thư mục ghim của 1 workspace (đảm bảo tồn tại). None nếu workspace không có / thiếu root_dir."""
     ws = get_workspace(workspace_id)
@@ -3867,6 +3887,18 @@ def build_app():
     async def api_activate_workspace(request: Request):
         return await _set_ws_status(request, "active")
 
+    async def api_delete_workspace(request: Request):
+        """DELETE: gỡ mọi session của workspace (soft, giữ audit) rồi xoá workspace rỗng.
+        Không xoá thư mục root_dir — code/dữ liệu trong đó không thuộc về orchestrator."""
+        wid = request.path_params["wid"]
+        if not get_workspace(wid):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        if wid == DEFAULT_WORKSPACE:
+            return JSONResponse({"error": "the default workspace cannot be deleted"}, status_code=400)
+        res = delete_workspace(wid)
+        publish({"type": "workspace", "id": wid, "status": "deleted", "workspace_id": wid})
+        return JSONResponse({"id": wid, "deleted": True, **res})
+
     # Sessions
     async def api_sessions(request: Request):
         # Đính kèm trạng thái cap-theo-ngày để dashboard hiển thị "đã dùng/hạn mức" + nút Allow.
@@ -4870,6 +4902,7 @@ def build_app():
         # lookup phải đứng TRƯỚC "/{wid}" để không bị nuốt thành wid="lookup".
         Route("/api/workspaces/lookup", api_lookup_workspace, methods=["POST"]),
         Route("/api/workspaces/{wid}", api_workspace_detail),
+        Route("/api/workspaces/{wid}", api_delete_workspace, methods=["DELETE"]),
         Route("/api/workspaces/{wid}/suspend", api_suspend_workspace, methods=["POST"]),
         Route("/api/workspaces/{wid}/activate", api_activate_workspace, methods=["POST"]),
         Route("/api/sessions", api_sessions),

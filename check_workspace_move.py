@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guards for moving an agent between workspaces.
+"""Guards for moving an agent between workspaces, and for deleting one.
 
 An agent moves so it can signal the agents in another workspace — routing resolves a signal by
 (role, workspace), so this one column decides who can reach whom. Every check here is a way the
@@ -115,6 +115,20 @@ async def main():
         check("an unknown workspace is refused", r.status_code == 404, str(r.status_code))
         r = await move("nope", a["id"])
         check("an unknown session is refused", r.status_code == 404, str(r.status_code))
+
+        # Xoá workspace: gỡ mọi agent rồi xoá cái vỏ. Điểm của nó là không phải Unregister tay
+        # từng cái — nên phải chứng minh session biến mất THẬT mà audit thì không.
+        r = await c.delete(f"/api/workspaces/{a['id']}")
+        check("deleting a workspace unregisters the agents still in it",
+              r.status_code == 200 and r.json().get("sessions") == 1, f"{r.status_code} {r.text[:90]}")
+        check("its agents are gone from the orchestrator", so.get_session("s-llm") is None)
+        check("the workspace itself is gone", so.get_workspace(a["id"]) is None)
+        check("but its signals stay for audit", bool(so.list_signals(50, 0, a["id"])[0]))
+
+        r = await c.delete("/api/workspaces/default")
+        check("the default workspace is refused", r.status_code == 400, f"{r.status_code} {r.text[:90]}")
+        r = await c.delete("/api/workspaces/ws_does_not_exist")
+        check("an unknown workspace is refused", r.status_code == 404, str(r.status_code))
 
 asyncio.run(main())
 db.unlink(missing_ok=True)

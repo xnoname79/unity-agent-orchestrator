@@ -330,11 +330,30 @@ function renderWorkspaceGrid(list) {
       ${open ? `<span class="open-tag">OPEN</span>` : ""}
       <h3>${esc(w.name || w.id)}</h3>
       <div class="ws-id">${esc(w.id)}</div>
-      <div class="ws-meta"><span class="ws-count">${w.sessions}</span> session · ${st}</div>
+      <div class="ws-meta"><span class="ws-count">${w.sessions}</span> session · ${st}
+        ${w.id === "default" ? "" : `<button class="icon-btn danger ws-del"
+          title="Unregister every agent in this workspace, then delete the empty workspace"
+          onclick="event.stopPropagation();deleteWs('${esc(w.id)}','${esc(w.name || w.id)}',${w.sessions})"
+          >${ic("trash", "sm")}</button>`}</div>
       ${w.root_dir ? `<div class="ws-root" title="${esc(w.root_dir)}">${esc(w.root_dir)}</div>` : ""}
     </div>`;
   }).join("");
 }
+
+// Xoá workspace: backend gỡ mọi session của nó (soft — runs/signals giữ cho audit) rồi xoá cái
+// vỏ rỗng. Trước đây muốn dọn một workspace là phải Unregister từng agent bằng tay, mà xong vẫn
+// còn cái workspace nằm đó vì không có đường xoá.
+async function deleteWs(id, name, n) {
+  if (!confirm(`Delete workspace '${name}'?\n\n`
+      + (n ? `Its ${n} agent${n > 1 ? "s are" : " is"} unregistered first. ` : "")
+      + `Runs, signals and audit records are kept, and the workspace folder on disk is left alone.`))
+    return;
+  try { await api(`/api/workspaces/${encodeURIComponent(id)}`, "DELETE"); }
+  catch (e) { alert("Could not delete that workspace: " + (e.message || e)); return; }
+  closeWs(id);        // tab/pane của nó phải biến mất, không thì trỏ vào workspace đã chết
+  await refreshAll();
+}
+window.deleteWs = deleteWs;
 
 // ── Shell: tab workspace + pane side-by-side ────────────────────────────────
 // Tối đa 2 workspace mở cùng lúc. Mỗi cái là một <iframe> (?pane=1) — xem chú thích
