@@ -2433,6 +2433,17 @@ def resume_target(session, cli=""):
     return session["id"]
 
 
+def pin_is_lifeline(session):
+    """True khi session CHỈ tới được hội thoại của mình qua ghim (resume_id).
+
+    Xảy ra khi engine là codex/agy mà CLI đó không có hội thoại nào mang chính id của session —
+    hai CLI này tự sinh id lúc spawn, không nhận id áp đặt, nên một card claude đổi sang agy chỉ
+    đứng được nhờ hội thoại agy đã ghim. Lúc đó bỏ ghim / xoá transcript = mọi run nền gọi
+    `agy --conversation <id agy chưa từng tạo>` rồi chết câm, không ai biết vì sao."""
+    eng = engine_name_of_session(session)
+    return eng in ("codex", "agy") and not _cli_knows_session(session["id"], eng)
+
+
 def terminal_argv(session, cli=""):
     """Lệnh CLI interactive cho terminal của 1 session (nút 💻 trên dashboard).
 
@@ -4406,10 +4417,17 @@ def build_app():
         #             thì spawn session mới.
         old, new = engine_name_of_session(s), engine_from_model(model)
         if new != old:
-            if new in ("codex", "agy") and not _cli_knows_session(sid, new):
+            # Hỏi CLI mới có mở được hội thoại card này THẬT SỰ sẽ mở hay không — tức cái đã ghim
+            # nếu có, chứ không phải id của card. codex/agy tự sinh id lúc spawn nên card claude
+            # không bao giờ có hội thoại của chúng mang id của mình; ghim một hội thoại agy rồi thì
+            # chính hội thoại đó là thứ CẢ terminal LẪN run nền mở, và nó có thật trên đĩa.
+            # Không ghim gì → target == sid → đúng y điều kiện cũ, vẫn từ chối.
+            target = (s.get("resume_id") or "").strip() or sid
+            if new in ("codex", "agy") and not _cli_knows_session(target, new):
                 return JSONResponse(
                     {"error": f"cannot switch from '{old}' to {new} — {new} cannot adopt a session id "
-                              f"it did not create. Spawn a new {new} session instead."},
+                              f"it did not create. Pin one of its conversations first "
+                              f"(/api/cli-sessions?cli={new}), or spawn a new {new} session."},
                     status_code=400)
             if new == "claude":
                 err = await _adopt_session_for_claude(s)
@@ -4442,15 +4460,25 @@ def build_app():
         except Exception:  # noqa: BLE001
             body = {}
         rid = (body.get("resume_id") or "").strip()
+        eng = engine_name_of_session(s)
         cli = (body.get("cli") or "").strip().lower()
         if cli not in TERMINAL_CLIS:
-            cli = cli_of_engine(engine_name_of_session(s))
+            cli = cli_of_engine(eng)
         if rid:
             if not _cli_knows_session(rid, cli):
                 return JSONResponse(
                     {"error": f"{cli} has no session '{rid}' on this machine — pick one from "
                               f"/api/cli-sessions?cli={cli}"},
                     status_code=400)
+        # Card chỉ đứng được nhờ ghim (xem pin_is_lifeline) thì ghim mới PHẢI là hội thoại engine
+        # của card mở được — bỏ ghim, hay ghim sang CLI khác, là rút thang: run nền còn lại chỉ có
+        # id mà engine chưa từng tạo. Đổi model về claude trước là đường ra (claude nhận nuôi id).
+        if pin_is_lifeline(s) and not (rid and _cli_knows_session(rid, eng)):
+            return JSONResponse(
+                {"error": f"this card reaches its conversation only through the pin — {eng} has no "
+                          f"conversation of its own id '{sid}'. Pin another {eng} conversation, or "
+                          f"switch the card's model back to claude first."},
+                status_code=409)
         set_session_resume(sid, rid)
         s = get_session(sid)
         publish({"type": "session", "id": sid, "status": s["status"],

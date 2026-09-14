@@ -9,7 +9,11 @@ engines must keep the id. Whether that is safe depends on the target CLI:
   - codex and agy have no flag to pick a thread/conversation id, so a session may only go back
     to one of them if that CLI's file for the id is still on disk;
   - a session already on the target engine must not be re-adopted (the CLI rejects a
-    session id that is already in use).
+    session id that is already in use);
+  - a PINNED conversation counts as the card's route, so a claude card that pinned a real agy
+    conversation may move to agy — that is the only way a background run can land in the same
+    conversation as a terminal opened with a different CLI. Once it does, the pin is the card's
+    only route, so unpinning it or deleting that transcript is refused.
 
 Runs the real app in-process over ASGI against a throwaway DB. No CLI is spawned (dry-run).
 
@@ -138,6 +142,61 @@ async def main():
         # 7. adopt KHÔNG chạy lại khi transcript đã có (CLI trả 'already in use').
         check("adopt is a no-op for a session claude already knows",
               await so._adopt_session_for_claude(so.get_session(sid2)) == "")
+
+        # 8. Ghim làm CẦU. codex/agy tự sinh id lúc spawn, nên card claude không bao giờ có hội
+        #    thoại agy mang id của nó — nhưng nếu đã ghim một hội thoại agy CÓ THẬT thì chính nó là
+        #    thứ cả terminal lẫn run nền mở, và đổi engine sang agy là an toàn. Đây là cách duy nhất
+        #    để run nền vào cùng hội thoại với CLI người dùng chọn ở terminal.
+        cwd = os.environ["ORCH_WORKSPACES_ROOT"]
+        sid5 = str(uuid.uuid4())
+        so.register_session(sid5, "bridge", cwd=cwd, model="claude-opus-5")
+        claude_born(sid5)
+        conv = str(uuid.uuid4())
+        agy_born(conv)
+
+        r = await set_model(sid5, "agy")
+        check("claude -> agy still blocked while nothing is pinned",
+              r.status_code == 400, r.text[:200])
+
+        r = await c.post(f"/api/sessions/{sid5}/resume-id", json={"resume_id": conv, "cli": "agy"})
+        check("pinning an agy conversation on a claude card works", r.status_code == 200, r.text[:200])
+        r = await set_model(sid5, "agy")
+        check("claude -> agy allowed once that conversation is pinned",
+              r.status_code == 200, r.text[:200])
+
+        s5 = so.get_session(sid5)
+        check("the session id did not move", s5["id"] == sid5, s5["id"])
+        check("background runs now open the pinned conversation",
+              so.resume_target(s5, "agy") == conv, so.resume_target(s5, "agy"))
+        check("and the terminal opens that same conversation",
+              so.terminal_argv(s5, "agy") == [so.AGY_BIN, "--conversation", conv, "--add-dir", cwd],
+              so.terminal_argv(s5, "agy"))
+
+        # Ghim giờ là đường sống DUY NHẤT — rút ra là mọi run nền gọi một id agy chưa từng tạo.
+        check("the pin is now the card's only route", so.pin_is_lifeline(s5))
+        r = await c.post(f"/api/sessions/{sid5}/resume-id", json={"resume_id": ""})
+        check("unpinning it is refused", r.status_code == 409, r.text[:200])
+        check("and the pin survived that", so.get_session(sid5)["resume_id"] == conv,
+              so.get_session(sid5)["resume_id"])
+        other = str(uuid.uuid4())
+        claude_born(other)
+        r = await c.post(f"/api/sessions/{sid5}/resume-id",
+                         json={"resume_id": other, "cli": "claude"})
+        check("pinning a claude transcript over it is refused too",
+              r.status_code == 409, r.text[:200])
+        r = await c.post("/api/cli-sessions/delete",
+                         json={"session": sid5, "id": conv, "cli": "agy"})
+        check("deleting that conversation is refused (delete_cli_session already guards pins)",
+              r.status_code == 400 and "still resumes" in r.text, r.text[:200])
+        check("so the conversation file is still on disk",
+              (so.AGY_CONVERSATIONS_DIR / f"{conv}.db").exists())
+
+        # Đường ra: về claude (nhận nuôi được id của chính card) rồi mới bỏ ghim.
+        r = await set_model(sid5, "claude-opus-5")
+        check("switching the model back to claude is the way out",
+              r.status_code == 200, r.text[:200])
+        r = await c.post(f"/api/sessions/{sid5}/resume-id", json={"resume_id": ""})
+        check("and unpinning then works", r.status_code == 200, r.text[:200])
 
 
 asyncio.run(main())

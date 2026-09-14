@@ -956,6 +956,20 @@ async function setTermCli(sid, name, cli) {
 }
 window.setTermCli = setTermCli;
 
+// Đưa ENGINE của card về đúng CLI đang chọn ở terminal. Run headless luôn chạy CLI của engine,
+// mà engine suy từ model — không đổi model thì signal/run nền không có đường nào tới hội thoại của
+// CLI khác, nó chỉ mở được session của chính card. Đổi model xong thì cả hai vào cùng một chỗ.
+// Backend vẫn kiểm: CLI mới phải thật sự có hội thoại đã ghim, không thì trả 400.
+async function adoptCli(sid, name, cli) {
+  if (!confirm(`Make background runs use ${cli} for '${name}'?\n\n`
+      + `The card's model becomes '${cli}', so signals and automatic runs open the same `
+      + `conversation the terminal is in.\n\nPick a specific ${cli} model afterwards in the `
+      + `inspector; the session id, its runs and its audit records do not change.`))
+    return;
+  await setModel(sid, cli);
+}
+window.adoptCli = adoptCli;
+
 // Ghim phiên cũ để chat tiếp. State nằm ở DB (cột resume_id) chứ KHÔNG ở client: run headless
 // (signal chạy nền) phải mở cùng transcript với terminal, mà nó thì không đọc được biến của tab.
 async function setTermSid(sid, name, chosen, cli) {
@@ -1253,11 +1267,21 @@ function agentCard(s, needsYou) {
       onchange="setTermSid('${esc(s.id)}','${esc(s.name)}', this.value, '${cli}')">
       <option value="${esc(psid)}" title="${esc(plabel)}">${esc(plabel)}</option>
     </select>`;
+    // Terminal đang ở CLI khác engine card VÀ đã ghim một hội thoại → mời kéo engine theo, không
+    // thì run nền mãi mãi ở một hội thoại khác cái mình đang nhìn. Chưa ghim gì thì không mời:
+    // backend cũng sẽ từ chối, vì CLI mới chẳng có hội thoại nào mang id của card.
+    const adopt = cli !== eng && psid
+      ? `<button class="warn cli-adopt" onclick="adoptCli('${esc(s.id)}','${esc(s.name)}','${cli}')"
+          title="Background runs use engine '${eng}', so they cannot open this ${cli} conversation —
+            they fall back to this card's own session. Switch the card's model to ${cli} and they
+            run in the same conversation as the terminal.">${CLI_ICON[cli]} runs too</button>`
+      : "";
     const head = `<div class="node-head">
       <span class="status-dot dot-${esc(s.status)}"></span>
       <b title="${esc(s.name)}">${esc(s.name)}</b>
       ${needsYou ? `<span class="needs-badge">NEEDS YOU</span>` : ""}
       <span class="spacer"></span>
+      ${adopt}
       ${sidSel}
     </div>`;
     const lock = busy
