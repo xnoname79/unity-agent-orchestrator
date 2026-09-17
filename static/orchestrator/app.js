@@ -1634,6 +1634,7 @@ ${pairBudget(s)}
 }
 
 // ── Zone (cwd) + orchestrator + chat ────────────────────────────────────────
+let cvPairOf = {};    // nid card editor → el card terminal của nó (xem snapPairs)
 let cvGroups = [];    // [{cwd, els:[nodeEl]}] — rebuild mỗi render; drag group đọc từ đây
 let cvNodeEls = {};   // session_id → node element (để vẽ edge)
 let cvEdges = [];     // [{from, to, cls}] resolve từ signal list
@@ -1699,6 +1700,13 @@ function applySize(el, p) {
 // không được xoá w/h, kéo giãn không được xoá x/y (cùng dùng chung pos[nid]).
 function saveNodeGeom(el, pos) {
   const p = pos[el.dataset.nid] = { ...(pos[el.dataset.nid] || {}) };
+  // Editor đang dán cặp: x/y/h suy ra từ card terminal mỗi lần layout. Lưu lại là ghi một bản
+  // sao chỉ chờ lệch — và một mục x/y cũ sót trong store sẽ nhấp nháy ở khung hình đầu tiên.
+  if (cvPairOf[el.dataset.nid]) {
+    p.w = Math.round(parseFloat(el.style.width) || 0);
+    delete p.x; delete p.y; delete p.h;
+    return p;
+  }
   p.x = parseFloat(el.style.left) || 0;
   p.y = parseFloat(el.style.top) || 0;
   // Node không kéo giãn được (card headless, zone): chỉ ghi vị trí. Xoá w/h ở đây thì size của
@@ -1721,8 +1729,43 @@ function refitNode(el) {
   if (t) fitTerm(t);
 }
 
+// Card editor DÁN vào cạnh phải card terminal của nó: cùng y, cùng chiều cao, KHÔNG khe hở.
+// Vị trí và chiều cao là SUY RA từ card terminal, không lưu vào store — nên không có cách nào
+// kéo nó rời ra, và cũng không có mục nào trong store để lệch pha với card terminal. Thứ duy
+// nhất của riêng nó là BỀ NGANG, tức tỉ lệ chia đôi bên trong khung.
+// Không dùng khe hở: người dùng muốn hai mép viền chạm nhau, đọc như một khối.
+function snapPairs() {
+  const world = $("world");
+  for (const nid of Object.keys(cvPairOf)) {
+    const term = cvPairOf[nid];
+    const ed = world.querySelector(`.node[data-nid="${CSS.escape(nid)}"]`);
+    // Card đang ghim có hình học do applyPin tính theo khung nhìn — dán vào đó là nó quét ngang
+    // màn hình theo từng cú pan.
+    if (!ed || !term.isConnected || term.classList.contains("pinned")
+        || ed.classList.contains("pinned")) continue;
+    const w = parseFloat(ed.style.width) || term.offsetWidth;
+    // -1: chồng hai đường viền 1px lên nhau thành MỘT nét. Đặt sát 0 thì chỗ giáp là vạch 2px,
+    // nhìn ra ngay là hai card ghé cạnh nhau chứ không phải một khối.
+    ed.style.left = ((parseFloat(term.style.left) || 0) + term.offsetWidth - 1) + "px";
+    ed.style.top = (parseFloat(term.style.top) || 0) + "px";
+    // xterm không tự biết khung đổi. Kéo tay nắm của CARD TERMINAL đổi chiều cao card editor
+    // qua đúng đường này, mà mode "resize" chỉ refit card đang kéo — không refit ở đây thì nvim
+    // giữ nguyên số dòng cũ trong một cái khung đã cao hơn.
+    const box = w + "px" + term.offsetHeight + "px";
+    const moved = ed.style.width + ed.style.height !== box;
+    ed.style.width = w + "px";
+    ed.style.height = term.offsetHeight + "px";
+    ed.classList.add("sized", "paired");
+    term.classList.add("pair-anchor");
+    if (moved) refitNode(ed);
+  }
+}
+
 // Zone tự bo quanh member: bbox các node member + header. Gọi sau mỗi lần đặt/kéo node.
+// Dán cặp TRƯỚC khi đo: mọi đường làm node đổi hình học đều đã gọi layoutZones, nên gắn ở đây
+// là card editor bám theo trong MỌI trường hợp — khỏi phải nhớ rải lời gọi khắp nơi.
 function layoutZones() {
+  snapPairs();
   for (const z of $("world").querySelectorAll(".group-zone")) {
     const g = cvGroups[+z.dataset.gi];
     if (!g || !g.els.length) continue;
@@ -1904,41 +1947,26 @@ function renderCanvas(sessions, signals) {
     el.style.top = pos[nid].y + "px";
     applySize(el, pos[nid]);
   });
-  // Card editor: mỗi cái một nid riêng nên nhớ được vị trí/kích thước riêng. Card MỚI đứng ngay
-  // BÊN PHẢI card terminal của chính nó — trước đây xếp chéo từ góc (40,40) nên editor rơi vào
-  // đâu đó giữa canvas, chẳng liên quan gì tới terminal mà nó thuộc về, mở ra là phải đi tìm.
-  // Bên phải mà trúng chỗ thì tụt xuống một nấc: lưới cụm bước đúng bằng bề rộng card + 40, nên
-  // "ngay bên phải" của member cột 0 chính là chỗ của member cột 1.
-  const taken = [];   // rect của mọi card ĐÃ đặt xong, để dò chỗ trống
-  for (const [sid, el] of Object.entries(cvNodeEls)) {
-    const p = pos["s:" + sid];
-    if (p && el) taken.push({ x: p.x, y: p.y, w: el.offsetWidth, h: el.offsetHeight });
-  }
-  const GAP = 40;
-  const clash = (r) => taken.some((t) => r.x < t.x + t.w + GAP && t.x < r.x + r.w + GAP
-                                      && r.y < t.y + t.h + GAP && t.y < r.y + r.h + GAP);
+  // Card editor không còn hình học của riêng nó: snapPairs dán nó vào cạnh phải card terminal
+  // cùng session (xem hàm đó). Ở đây chỉ dựng sổ cặp + trả lại bề ngang đã lưu.
+  cvPairOf = {};
   world.querySelectorAll('.node[data-nid^="editor:"]').forEach((vsEl, i) => {
-    const nid = vsEl.dataset.nid;
-    if (!pos[nid]) {
-      const own = pos["s:" + nid.slice(7)], ownEl = cvNodeEls[nid.slice(7)];
-      const w = vsEl.offsetWidth, h = vsEl.offsetHeight;
-      if (own && ownEl) {
-        const x = own.x + ownEl.offsetWidth + GAP;
-        // Dò xuống tối đa 12 nấc rồi thôi: canvas kín đặc tới mức đó thì đặt đại còn hơn treo
-        // vòng lặp, người dùng kéo một cái là xong.
-        let y = own.y;
-        for (let k = 0; k < 12 && clash({ x, y, w, h }); k++) y = own.y + (k + 1) * (h + GAP);
-        pos[nid] = { x, y };
-      } else {
-        pos[nid] = { x: 40 + i * 40, y: 40 + i * 40 };   // terminal chưa có chỗ → xếp chéo như cũ
-      }
-    }
-    taken.push({ x: pos[nid].x, y: pos[nid].y, w: vsEl.offsetWidth, h: vsEl.offsetHeight });
-    const pgi = pairGi.get(nid.slice(7));
+    const nid = vsEl.dataset.nid, sid = nid.slice(7);
+    const pgi = pairGi.get(sid);
     if (pgi !== undefined) cvGroups[pgi].els.push(vsEl);
-    vsEl.style.left = pos[nid].x + "px";
-    vsEl.style.top = pos[nid].y + "px";
-    applySize(vsEl, pos[nid]);
+    const term = cvNodeEls[sid];
+    if (!term) {
+      // Không có card terminal để dán vào (session biến mất giữa chừng): để nó tự do như cũ,
+      // còn hơn đặt vào goc (0,0) chồng lên mọi thứ.
+      if (!pos[nid]) pos[nid] = { x: 40 + i * 40, y: 40 + i * 40 };
+      vsEl.style.left = pos[nid].x + "px";
+      vsEl.style.top = pos[nid].y + "px";
+      applySize(vsEl, pos[nid]);
+      return;
+    }
+    cvPairOf[nid] = term;
+    // Chưa lưu bề ngang → snapPairs lấy đúng bằng bề ngang card terminal, tức chia đôi khung.
+    if (pos[nid] && pos[nid].w) vsEl.style.width = pos[nid].w + "px";
   });
   cvSave({ pos });
   layoutZones();
@@ -2039,8 +2067,11 @@ function cvInit() {
                parts: g.els.map((el) => ({ el, ox: parseFloat(el.style.left) || 0,
                                            oy: parseFloat(el.style.top) || 0 })) };
     } else if (node) {
-      drag = { mode: "node", el: node, nid: node.dataset.nid, sx: e.clientX, sy: e.clientY,
-               ox: parseFloat(node.style.left) || 0, oy: parseFloat(node.style.top) || 0 };
+      // Card editor trong cặp không có vị trí riêng để kéo. Nắm header nó = nắm card terminal
+      // (editor dán theo trong layoutZones) → cả cặp đi cùng nhau, không tách ra được.
+      const anchor = cvPairOf[node.dataset.nid] || node;
+      drag = { mode: "node", el: anchor, nid: anchor.dataset.nid, sx: e.clientX, sy: e.clientY,
+               ox: parseFloat(anchor.style.left) || 0, oy: parseFloat(anchor.style.top) || 0 };
     } else if (!e.target.closest(".node")) {
       drag = { mode: "pan", sx: e.clientX, sy: e.clientY, ox: CV.tx, oy: CV.ty };
     } else return;

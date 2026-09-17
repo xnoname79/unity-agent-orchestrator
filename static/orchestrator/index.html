@@ -482,6 +482,14 @@
   .pair-head .zone-title b { font-size: 12px; }
   /* .group-zone là pointer-events:none, tay nắm phải tự bật lại — không thì kéo góc không ăn. */
   .pair-zone .rz { pointer-events: auto; }
+  /* Hai card trong cặp giáp lưng nhau: bo góc chỗ giáp phải phẳng, không thì giữa khối hở ra
+     hai đường cong. Lớp .paired/.pair-anchor do snapPairs gắn, gỡ theo mỗi lần render. */
+  .node.pair-anchor > .agent-card { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .node.paired > .editor-card { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+  /* Chiều cao card editor suy ra từ card terminal, nên tay nắm hai chiều của riêng nó sẽ bị ghi
+     đè ngay khung hình sau — ẩn đi, đừng để người dùng kéo một thứ không ăn. Đổi tỉ lệ chia đôi
+     bằng tay nắm của chính card terminal, hoặc tay nắm của cả khung. */
+  .node.paired > .rz { display: none; }
 
   /* Edges */
   svg.edges { position: absolute; top: 0; left: 0; width: 10px; height: 10px;

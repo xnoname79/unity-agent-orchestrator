@@ -109,20 +109,21 @@ if "/u-n,(t.clientY-s.top)/d-o]" not in XTERM:
 check("the vendored xterm keeps its mouse-coordinate patch", missing,
       "re-apply it after upgrading xterm, or selection breaks at every zoom level except 100%")
 
-# 7 · Card editor phải neo vị trí vào card terminal của chính nó. Trước đây nó xếp chéo từ góc
-# (40,40), tức mở editor ra là card rơi vào giữa canvas chẳng liên quan gì tới session của nó.
-# Bản vá dễ bị hoàn tác im lặng khi ai đó dọn lại khối đặt vị trí: trên màn hình vẫn có card,
-# chỉ là nằm sai chỗ — không lỗi, không log.
-block = JS[JS.index('.node[data-nid^="editor:"]'):][:1400]
+# 7 · Card editor bị KHOÁ vào cạnh phải card terminal: vị trí + chiều cao là suy ra, không lưu.
+# Ba mảnh phải đi cùng nhau, thiếu một là hỏng im lặng — thiếu snapPairs thì card nằm ở (0,0);
+# thiếu lời gọi trong layoutZones thì nó đứng yên trong lúc kéo rồi mới nhảy về chỗ; thiếu chốt
+# trong saveNodeGeom thì store còn x/y cũ và card nhấp một cái ở khung hình đầu mỗi lần render.
 lost = set()
-if 'pos["s:" + nid.slice(7)]' not in block:
-    lost.add("the owner terminal's saved position")
-if "offsetWidth + GAP" not in block:
-    lost.add("the step that puts it to the RIGHT of that terminal")
-if "clash(" not in block:
-    lost.add("the overlap scan (the grid steps by card width, so 'right' is the next column)")
-check("the editor card is placed beside its terminal", lost,
-      "editor cards must anchor to pos['s:'+session], not cascade from the canvas corner")
+if "function snapPairs(" not in JS:
+    lost.add("snapPairs() — the function that glues the editor to its terminal")
+if "function layoutZones() {\n  snapPairs();" not in JS:
+    lost.add("layoutZones() must call snapPairs() first, or the editor lags every drag")
+if "cvPairOf[el.dataset.nid]" not in JS:
+    lost.add("saveNodeGeom must drop x/y/h for a paired editor (they are derived)")
+if "cvPairOf[node.dataset.nid] || node" not in JS:
+    lost.add("pointerdown must redirect a paired editor's drag to its terminal card")
+check("the editor card is locked to its terminal", lost,
+      "a paired editor has no geometry of its own; only the pair moves")
 
 # 8 · Khung cặp (terminal + editor của cùng session) phải kéo giãn được. .group-zone là
 # pointer-events:none, nên tay nắm .rz bên trong nó CHẾT nếu CSS không bật lại — trên màn hình
