@@ -109,6 +109,21 @@ if "/u-n,(t.clientY-s.top)/d-o]" not in XTERM:
 check("the vendored xterm keeps its mouse-coordinate patch", missing,
       "re-apply it after upgrading xterm, or selection breaks at every zoom level except 100%")
 
+# 7 · Card editor phải neo vị trí vào card terminal của chính nó. Trước đây nó xếp chéo từ góc
+# (40,40), tức mở editor ra là card rơi vào giữa canvas chẳng liên quan gì tới session của nó.
+# Bản vá dễ bị hoàn tác im lặng khi ai đó dọn lại khối đặt vị trí: trên màn hình vẫn có card,
+# chỉ là nằm sai chỗ — không lỗi, không log.
+block = JS[JS.index('.node[data-nid^="editor:"]'):][:1400]
+lost = set()
+if 'pos["s:" + nid.slice(7)]' not in block:
+    lost.add("the owner terminal's saved position")
+if "offsetWidth + GAP" not in block:
+    lost.add("the step that puts it to the RIGHT of that terminal")
+if "clash(" not in block:
+    lost.add("the overlap scan (the grid steps by card width, so 'right' is the next column)")
+check("the editor card is placed beside its terminal", lost,
+      "editor cards must anchor to pos['s:'+session], not cascade from the canvas corner")
+
 if fails:
     print("\n" + "\n\n".join(fails))
     sys.exit(1)

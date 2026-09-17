@@ -332,6 +332,27 @@
   .win-chip.ed { color: var(--amber); }
   .win-chip.ed:hover { color: var(--amber); background: var(--amber-soft); }
   .win-chip.ed.on { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
+  /* Dropdown ô tìm: mỗi dòng là một card bấm được, không phải chữ trần của <datalist>.
+     Màu đi theo đúng quy ước của thanh cửa sổ — terminal xanh accent, editor cam. */
+  .find-pop { position: fixed; z-index: 60; width: 320px; max-height: 340px; overflow-y: auto;
+    padding: 4px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: var(--sh-2); }
+  .find-pop[hidden] { display: none; }
+  .find-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 8px;
+    font-size: 12px; color: var(--muted); background: transparent; border: none;
+    border-radius: 7px; text-align: left; }
+  /* Vạch mở nhóm: dòng terminal và editor của cùng session dính nhau, giữa hai nhóm có đường kẻ. */
+  .find-row.grp { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px;
+    border-radius: 0 0 7px 7px; }
+  .find-row .find-name { font-weight: 600; color: var(--text); }
+  .find-row .find-sub { margin-left: auto; font-size: 10.5px; color: var(--faint);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+  .find-row:hover, .find-row.on { background: var(--accent-soft); color: var(--accent); }
+  .find-row:hover .find-name, .find-row.on .find-name { color: var(--accent); }
+  .find-row.ed, .find-row.ed .find-name { color: var(--amber); }
+  .find-row.ed:hover, .find-row.ed.on { background: var(--amber-soft); color: var(--amber); }
+  .find-row.ed:hover .find-name, .find-row.ed.on .find-name { color: var(--amber); }
+  .find-none { padding: 9px; font-size: 11.5px; color: var(--faint); }
   .tabs { display: flex; gap: 2px; background: var(--panel2); border: 1px solid var(--border);
     border-radius: 9px; padding: 3px; flex: none; }
   .tabs .tab { padding: 3px 13px; font-size: 12px; background: transparent; border: none;
@@ -715,14 +736,17 @@
          trong đó là flex ngang (canvas + inspector); ở đây nó là một hàng của cột #ws-detail-view. -->
     <div id="win-bar" class="win-bar" hidden>
       <!-- Ô tìm nằm TRONG markup tĩnh, không do renderWinBar dựng: mỗi lần SSE refresh mà
-           innerHTML dựng lại là chữ đang gõ và dropdown đang mở bay mất. Danh sách nạp lúc
-           focus (fillFindList) nên nó không bao giờ đổi dưới tay người đang chọn. -->
-      <input id="cv-find" class="mini cv-find" type="search" list="cv-find-list" autocomplete="off"
-        placeholder="Find a card…" oninput="findCard(this)" onfocus="fillFindList()"
+           innerHTML dựng lại là chữ đang gõ và dropdown đang mở bay mất. Danh sách chỉ dựng lúc
+           focus/gõ/bấm phím (renderFindPop) nên không bao giờ đổi dưới tay người đang chọn. -->
+      <input id="cv-find" class="mini cv-find" type="search" autocomplete="off"
+        placeholder="Find a card…" oninput="findFilter()" onfocus="findOpen()"
+        onkeydown="findKey(event)" onblur="findClose()"
         title="Type part of a card's name, then pick it — the canvas centres on that card and selects it">
-      <datalist id="cv-find-list"></datalist>
       <span id="win-chips" class="win-chips"></span>
     </div>
+    <!-- Dropdown của ô tìm. Để NGOÀI #win-bar: thanh đó overflow-x:auto nên popup nằm trong bị
+         cắt cụt ngay dưới mép. position:fixed + toạ độ do findPos() tính từ rect của ô input. -->
+    <div id="cv-find-pop" class="find-pop" hidden onmousedown="findHold(event)"></div>
 
     <div id="tab-agents">
       <div id="canvas" class="canvas">

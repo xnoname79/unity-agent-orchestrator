@@ -773,38 +773,88 @@ function renderWinBar() {
 window.renderWinBar = renderWinBar;
 
 // ── Tìm một card rồi đưa nó vào giữa khung nhìn ──────────────────────────────
-// Workspace đông card thì cuộn canvas đi tìm bằng mắt là việc tệ nhất; ô tìm là <input list=>
-// nên trình duyệt lo phần lọc theo chữ gõ, không cần dropdown tự chế.
-// Danh sách nạp lúc FOCUS chứ không mỗi lần render: SSE refresh chạy liên tục, dựng lại
-// <option> giữa lúc dropdown đang mở là nó tự đóng dưới tay người dùng.
-let findMap = {};   // nhãn hiện trong ô tìm → nid của node
+// Workspace đông card thì cuộn canvas đi tìm bằng mắt là việc tệ nhất. Dropdown TỰ DỰNG chứ
+// không <datalist> nữa: datalist chỉ bày được hai dòng chữ trần — không nhóm được terminal với
+// editor của cùng một session, không tô được màu, và mỗi trình duyệt vẽ một kiểu.
+// Nguồn dòng là CHÍNH winList() của thanh cửa sổ, nên thứ tự nhóm, nhãn và màu luôn khớp thanh
+// trên — sửa một chỗ là cả hai đi theo, không có bản sao nào để lệch.
+// Chỉ dựng lại lúc focus/gõ/bấm phím, KHÔNG theo SSE refresh: dựng lại giữa lúc dropdown đang mở
+// là nó nhảy dưới tay người đang chọn.
+let findRows = [];   // dòng đang hiện SAU khi lọc — findKey chạy theo đúng mảng này
+let findCur = -1;    // con trỏ bàn phím, -1 = chưa chọn dòng nào
 
-function fillFindList() {
-  const dl = $("cv-find-list");
-  if (!dl) return;
-  const sessions = cvLast.sessions || [];
-  const rows = sessions.map((s) => ({ nid: "s:" + s.id, name: s.name,
-    kind: "agent", sub: s.cwd || "" }));
-  // Card editor dùng CHUNG tên với session của nó → thêm hậu tố, không thì hai dòng trùng nhãn
-  // và findMap chỉ giữ được một cái.
-  for (const c of editorCards)
-    if (sessions.some((s) => s.id === c.session))
-      rows.push({ nid: "editor:" + c.session, name: (c.name || c.session) + " · editor",
-                  kind: "editor", sub: c.cwd || "" });
-  findMap = {};
-  dl.innerHTML = rows.map((r) => {
-    findMap[r.name] = r.nid;
-    return `<option value="${esc(r.name)}" label="${esc(r.kind + (r.sub ? " · " + r.sub : ""))}">`;
-  }).join("");
+// Popup dùng position:fixed nên phải tự tính toạ độ: nó nằm ngoài #win-bar (thanh đó
+// overflow-x:auto, popup nằm trong sẽ bị cắt cụt ngay dưới mép).
+function findPos() {
+  const inp = $("cv-find"), pop = $("cv-find-pop");
+  if (!inp || !pop) return;
+  const r = inp.getBoundingClientRect();
+  pop.style.left = r.left + "px";
+  pop.style.top = (r.bottom + 4) + "px";
 }
-window.fillFindList = fillFindList;
 
-// Chỉ nhảy khi chữ trong ô KHỚP HẲN một dòng của danh sách — gõ dở dang thì không đi đâu cả.
-function findCard(el) {
-  const nid = findMap[el.value];
-  if (nid) { el.blur(); focusNode(nid); }
+function renderFindPop() {
+  const pop = $("cv-find-pop"), inp = $("cv-find");
+  if (!pop || !inp) return;
+  const q = (inp.value || "").trim().toLowerCase();
+  findRows = winList().filter((w) =>
+    !q || (w.name + " " + w.sub + " " + w.kind).toLowerCase().includes(q));
+  if (findCur >= findRows.length) findCur = findRows.length - 1;
+  // Vạch ngăn trước mỗi nhóm y như thanh cửa sổ: dòng terminal mở nhóm, editor của nó dính
+  // ngay dưới. Sau khi lọc mà dòng đầu là editor thì không có vạch — đúng, nó không mở nhóm nào.
+  pop.innerHTML = findRows.length
+    ? findRows.map((w, i) =>
+        `<button class="find-row${w.ed ? " ed" : ""}${i === findCur ? " on" : ""}${
+          w.head && i ? " grp" : ""}" onmousedown="findPick(${i})"
+          title="${esc(w.kind)}${w.sub ? " · " + esc(w.sub) : ""}">
+          ${w.icon}<span class="find-name">${esc(w.name)}</span>
+          <span class="find-sub">${esc(w.kind)}${w.sub ? " · " + esc(w.sub) : ""}</span>
+        </button>`).join("")
+    : `<div class="find-none">No card matches that.</div>`;
+  pop.hidden = false;
 }
-window.findCard = findCard;
+
+function findOpen() { findCur = -1; findPos(); renderFindPop(); }
+window.findOpen = findOpen;
+
+function findFilter() { findCur = -1; renderFindPop(); }
+window.findFilter = findFilter;
+
+function findClose() {
+  const pop = $("cv-find-pop");
+  if (pop) pop.hidden = true;
+  findCur = -1;
+}
+window.findClose = findClose;
+
+// Bấm trong popup KHÔNG được làm ô tìm mất focus: mất focus là onblur đóng popup, và thao tác
+// kéo thanh cuộn của chính nó sẽ tự huỷ giữa chừng.
+function findHold(e) { e.preventDefault(); }
+window.findHold = findHold;
+
+function findPick(i) {
+  const w = findRows[i];
+  if (!w) return;
+  const inp = $("cv-find");
+  findClose();
+  if (inp) { inp.value = ""; inp.blur(); }
+  focusNode(w.nid);
+}
+window.findPick = findPick;
+
+function findKey(e) {
+  if (e.key === "Escape") { findClose(); e.target.blur(); return; }
+  if (e.key === "Enter") { e.preventDefault(); findPick(findCur < 0 ? 0 : findCur); return; }
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  e.preventDefault();
+  if (!findRows.length) return;
+  const n = findRows.length;
+  findCur = (findCur + (e.key === "ArrowDown" ? 1 : -1) + n) % n;
+  renderFindPop();
+  const row = $("cv-find-pop").children[findCur];
+  if (row) row.scrollIntoView({ block: "nearest" });
+}
+window.findKey = findKey;
 
 // Đưa node vào giữa khung nhìn + chọn nó. Giữ nguyên mức zoom: người dùng đặt zoom nào là cố ý,
 // tự phóng to giúp chỉ làm họ mất chỗ.
@@ -1818,11 +1868,36 @@ function renderCanvas(sessions, signals) {
     el.style.top = pos[nid].y + "px";
     applySize(el, pos[nid]);
   });
-  // Card editor: mỗi cái một nid riêng nên nhớ được vị trí/kích thước riêng. Card mới xếp
-  // chéo xuống để không chồng khít lên cái đang mở.
+  // Card editor: mỗi cái một nid riêng nên nhớ được vị trí/kích thước riêng. Card MỚI đứng ngay
+  // BÊN PHẢI card terminal của chính nó — trước đây xếp chéo từ góc (40,40) nên editor rơi vào
+  // đâu đó giữa canvas, chẳng liên quan gì tới terminal mà nó thuộc về, mở ra là phải đi tìm.
+  // Bên phải mà trúng chỗ thì tụt xuống một nấc: lưới cụm bước đúng bằng bề rộng card + 40, nên
+  // "ngay bên phải" của member cột 0 chính là chỗ của member cột 1.
+  const taken = [];   // rect của mọi card ĐÃ đặt xong, để dò chỗ trống
+  for (const [sid, el] of Object.entries(cvNodeEls)) {
+    const p = pos["s:" + sid];
+    if (p && el) taken.push({ x: p.x, y: p.y, w: el.offsetWidth, h: el.offsetHeight });
+  }
+  const GAP = 40;
+  const clash = (r) => taken.some((t) => r.x < t.x + t.w + GAP && t.x < r.x + r.w + GAP
+                                      && r.y < t.y + t.h + GAP && t.y < r.y + r.h + GAP);
   world.querySelectorAll('.node[data-nid^="editor:"]').forEach((vsEl, i) => {
     const nid = vsEl.dataset.nid;
-    if (!pos[nid]) pos[nid] = { x: 40 + i * 40, y: 40 + i * 40 };
+    if (!pos[nid]) {
+      const own = pos["s:" + nid.slice(7)], ownEl = cvNodeEls[nid.slice(7)];
+      const w = vsEl.offsetWidth, h = vsEl.offsetHeight;
+      if (own && ownEl) {
+        const x = own.x + ownEl.offsetWidth + GAP;
+        // Dò xuống tối đa 12 nấc rồi thôi: canvas kín đặc tới mức đó thì đặt đại còn hơn treo
+        // vòng lặp, người dùng kéo một cái là xong.
+        let y = own.y;
+        for (let k = 0; k < 12 && clash({ x, y, w, h }); k++) y = own.y + (k + 1) * (h + GAP);
+        pos[nid] = { x, y };
+      } else {
+        pos[nid] = { x: 40 + i * 40, y: 40 + i * 40 };   // terminal chưa có chỗ → xếp chéo như cũ
+      }
+    }
+    taken.push({ x: pos[nid].x, y: pos[nid].y, w: vsEl.offsetWidth, h: vsEl.offsetHeight });
     vsEl.style.left = pos[nid].x + "px";
     vsEl.style.top = pos[nid].y + "px";
     applySize(vsEl, pos[nid]);
