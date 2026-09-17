@@ -473,6 +473,15 @@
   .g-count { font-size: 10.5px; color: var(--muted); flex: none; }
   .g-path { font-family: ui-monospace, monospace; font-size: 10px; color: var(--faint);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Khung CẶP: terminal + card editor của cùng một session. Viền nét đứt để phân biệt với zone
+     cwd (nét liền) khi hai khung lồng nhau, và nền trong suốt để zone cwd bên dưới không bị
+     sẫm gấp đôi ở phần giao nhau. */
+  .pair-zone { border-style: dashed; border-color: var(--border-strong); background: transparent;
+    border-radius: 14px; }
+  .pair-head { padding: 5px 10px; }
+  .pair-head .zone-title b { font-size: 12px; }
+  /* .group-zone là pointer-events:none, tay nắm phải tự bật lại — không thì kéo góc không ăn. */
+  .pair-zone .rz { pointer-events: auto; }
 
   /* Edges */
   svg.edges { position: absolute; top: 0; left: 0; width: 10px; height: 10px;

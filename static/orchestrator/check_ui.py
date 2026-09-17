@@ -124,6 +124,19 @@ if "clash(" not in block:
 check("the editor card is placed beside its terminal", lost,
       "editor cards must anchor to pos['s:'+session], not cascade from the canvas corner")
 
+# 8 · Khung cặp (terminal + editor của cùng session) phải kéo giãn được. .group-zone là
+# pointer-events:none, nên tay nắm .rz bên trong nó CHẾT nếu CSS không bật lại — trên màn hình
+# khung vẫn vẽ ra, góc vẫn có tam giác, kéo thì không có gì xảy ra. Đúng kiểu hỏng im lặng.
+gaps = set()
+if ".pair-zone .rz" not in style or "pointer-events: auto" not in style.split(".pair-zone .rz", 1)[1][:80]:
+    gaps.add(".pair-zone .rz needs pointer-events:auto (the zone itself is pointer-events:none)")
+if 'class="node group-zone pair-zone"' not in JS:
+    gaps.add("pairZoneHtml must keep both group-zone (layout/drag) and pair-zone (style) classes")
+if '"gresize"' not in JS:
+    gaps.add("the pointerdown/pointermove branch that scales every member of the group")
+check("the pair frame can be dragged and resized", gaps,
+      "resizing the frame is the whole point of grouping the two cards")
+
 if fails:
     print("\n" + "\n\n".join(fails))
     sys.exit(1)

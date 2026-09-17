@@ -1656,6 +1656,20 @@ function zoneHtml(gi, cwd, list) {
   </div>`;
 }
 
+// Khung CẶP: terminal của một session + card editor của chính nó. Khác zone cwd ở chỗ nó có tay
+// nắm .rz — kéo góc là CẢ HAI card bên trong to/nhỏ theo cùng tỉ lệ (xem mode "gresize").
+// Hình học vẫn SUY RA từ member y như zone cwd: kéo giãn đổi member, layoutZones bo lại khung.
+// Không lưu riêng w/h cho khung → không có hai nguồn sự thật nào để lệch nhau.
+function pairZoneHtml(gi, s, n) {
+  return `<div class="node group-zone pair-zone" data-nid="pair:${esc(s.id)}" data-gi="${gi}">
+    <div class="zone-head pair-head">
+      <div class="zone-title">${ic("terminal", "sm")}<b>${esc(s.name)}</b>
+        <span class="g-count">terminal + ${n} editor${n > 1 ? "s" : ""}</span></div>
+    </div>
+    <div class="rz" title="Drag to resize the whole group (double-click to reset both cards)"></div>
+  </div>`;
+}
+
 // ── Kéo giãn card trên canvas ────────────────────────────────────────────────
 // Kích thước lưu chung chỗ với vị trí (pos[nid] = {x, y, w, h}) → cùng workspace, cùng
 // localStorage, không thêm store thứ hai phải đồng bộ. Không có w/h = dùng size mặc định của CSS.
@@ -1725,10 +1739,15 @@ function layoutZones() {
     z.hidden = !n;
     if (!n) continue;
     const headH = (z.querySelector(".zone-head") || {}).offsetHeight || 74;
-    z.style.left = (x0 - 18) + "px";
-    z.style.top = (y0 - headH - 14) + "px";
-    z.style.width = Math.max(x1 - x0 + 36, 400) + "px";
-    z.style.height = (y1 - y0 + headH + 32) + "px";
+    // Khung cặp bo sát hơn zone cwd (10 vs 18): một session có cả editor lẫn ≥1 đồng nghiệp cùng
+    // cwd thì hai khung lồng nhau, cùng lề là hai đường viền chồng khít lên nhau, không đọc được
+    // cái nào trong cái nào. minW chỉ có nghĩa với zone cwd (card headless hẹp); cặp luôn rộng.
+    const pad = z.classList.contains("pair-zone") ? 10 : 18;
+    const minW = z.classList.contains("pair-zone") ? 0 : 400;
+    z.style.left = (x0 - pad) + "px";
+    z.style.top = (y0 - headH - (pad - 4)) + "px";
+    z.style.width = Math.max(x1 - x0 + pad * 2, minW) + "px";
+    z.style.height = (y1 - y0 + headH + (pad - 4) + pad) + "px";
   }
 }
 
@@ -1786,6 +1805,14 @@ function renderCanvas(sessions, signals) {
     if (!byCwd.has(k)) byCwd.set(k, []);
     byCwd.get(k).push(s);
   }
+  // CHỈ card của workspace NÀY: /api/editor trả mọi card đang mở của cả orchestrator, không có
+  // khái niệm workspace. Không lọc thì mở editor ở workspace này lại hiện card ở cả pane bên kia
+  // — tức là lộ cây mã nguồn sang tenant khác. `sessions` đã scope theo workspace của pane.
+  // Tính SỚM (trước zonesHtml) vì khung cặp cần biết session nào đang có editor.
+  const myEditors = editorCards.filter((c) => sessions.some((s) => s.id === c.session));
+  const edBySid = new Map();
+  for (const c of myEditors) edBySid.set(c.session, (edBySid.get(c.session) || 0) + 1);
+
   cvGroups = [];
   let zonesHtml = "", nodesHtml = "";
   const nodeMeta = [];  // {sid, cwd, grouped, gi} theo thứ tự render
@@ -1803,16 +1830,24 @@ function renderCanvas(sessions, signals) {
       nodeMeta.push({ sid: s.id, cwd, grouped, gi });
     }
   }
+  // Khung cặp đứng SAU zone cwd trong zonesHtml → vẽ đè lên trên nó, khung con nằm trong khung
+  // cha đúng thứ tự mắt nhìn. Chỉ session ĐANG có editor mới có khung: đóng editor là khung tan,
+  // terminal về lại card lẻ đúng chỗ cũ (hình học của member không hề bị khung đụng tới).
+  const pairGi = new Map();   // session_id → chỉ số trong cvGroups
+  for (const s of sessions) {
+    const n = edBySid.get(s.id) || 0;
+    if (!n) continue;
+    const gi = cvGroups.length;
+    cvGroups.push({ cwd: s.cwd || "", els: [], pair: s.id });
+    pairGi.set(s.id, gi);
+    zonesHtml += pairZoneHtml(gi, s, n);
+  }
   // innerHTML rebuild sẽ detach t.host → textarea của xterm bị BLUR (mất focus giữa lúc gõ).
   // Nhớ terminal nào đang giữ focus để trả lại sau khi attach (SSE re-render rất thường xuyên
   // khi worker đang chạy — không nhớ là user gõ vài phím lại văng focus một lần).
   const focusSid = Object.keys(cvTerms).find((sid) =>
     cvTerms[sid].host.contains(document.activeElement)) || null;
   // Thứ tự vẽ: zone (dưới) → edges (giữa) → agent card (trên) → card editor (sau cùng).
-  // CHỈ dựng card của workspace NÀY: /api/editor trả mọi card đang mở của cả orchestrator, không
-  // có khái niệm workspace. Không lọc thì mở editor ở workspace này lại hiện card ở cả pane bên
-  // kia — tức là lộ cây mã nguồn sang tenant khác. `sessions` đã scope theo workspace của pane.
-  const myEditors = editorCards.filter((c) => sessions.some((s) => s.id === c.session));
   // Card editor đi qua innerHTML như mọi card khác: ruột nó là .term-slot, mà host của xterm là
   // một <div> sống ngoài chu trình render và được attachTerms cắm lại sau — chuyển <div> sang cha
   // mới không mất gì. (Bản VS Code cũ phải giữ node ngoài innerHTML vì iframe đổi cha là tải lại.)
@@ -1839,6 +1874,7 @@ function renderCanvas(sessions, signals) {
     const el = agentEls[i], nid = "s:" + m.sid;
     cvNodeEls[m.sid] = el;
     if (m.grouped) cvGroups[m.gi].els.push(el);
+    if (pairGi.has(m.sid)) cvGroups[pairGi.get(m.sid)].els.push(el);
     if (!pos[nid]) {
       if (m.grouped) {
         let gc = gcur[m.cwd];
@@ -1898,6 +1934,8 @@ function renderCanvas(sessions, signals) {
       }
     }
     taken.push({ x: pos[nid].x, y: pos[nid].y, w: vsEl.offsetWidth, h: vsEl.offsetHeight });
+    const pgi = pairGi.get(nid.slice(7));
+    if (pgi !== undefined) cvGroups[pgi].els.push(vsEl);
     vsEl.style.left = pos[nid].x + "px";
     vsEl.style.top = pos[nid].y + "px";
     applySize(vsEl, pos[nid]);
@@ -1963,6 +2001,26 @@ function cvInit() {
     const rz = e.target.closest(".rz");
     if (rz) {
       const n = rz.closest(".node");
+      // Tay nắm của KHUNG cặp: kéo một góc, cả hai card bên trong giãn theo cùng tỉ lệ. Mốc là
+      // bbox của member (không phải rect của khung — khung có header + lề, lấy nó làm mốc thì
+      // card đầu tiên trượt lên trên ngay cú kéo đầu).
+      if (n.classList.contains("group-zone")) {
+        const g = cvGroups[+n.dataset.gi] || { els: [] };
+        const parts = g.els.filter((el) => !el.classList.contains("pinned")).map((el) => ({
+          el, ox: parseFloat(el.style.left) || 0, oy: parseFloat(el.style.top) || 0,
+          ow: el.offsetWidth, oh: el.offsetHeight }));
+        if (parts.length) {
+          const x0 = Math.min(...parts.map((q) => q.ox)), y0 = Math.min(...parts.map((q) => q.oy));
+          const box = { x: x0, y: y0,
+                        w: Math.max(1, Math.max(...parts.map((q) => q.ox + q.ow)) - x0),
+                        h: Math.max(1, Math.max(...parts.map((q) => q.oy + q.oh)) - y0) };
+          drag = { mode: "gresize", el: n, box, parts, sx: e.clientX, sy: e.clientY };
+          cvInteracting = true;
+          cv.classList.add("grabbing");
+          cv.setPointerCapture(e.pointerId);
+        }
+        return;
+      }
       drag = { mode: "resize", el: n, sx: e.clientX, sy: e.clientY,
                ow: n.offsetWidth, oh: n.offsetHeight };
       cvInteracting = true;
@@ -2008,6 +2066,21 @@ function cvInit() {
       applyPin();
       return;
     }
+    if (drag.mode === "gresize") {
+      // Một hệ số cho mỗi trục, áp cho CẢ khoảng cách tới mốc LẪN kích thước card → khe hở giữa
+      // hai card giãn cùng nhịp, bố cục bên trong giữ nguyên tỉ lệ. Sàn 0.25 để kéo ngược qua
+      // mốc không lật card sang số âm.
+      const kx = Math.max(0.25, (drag.box.w + dx / CV.k) / drag.box.w);
+      const ky = Math.max(0.25, (drag.box.h + dy / CV.k) / drag.box.h);
+      for (const q of drag.parts) {
+        q.el.style.left = (drag.box.x + (q.ox - drag.box.x) * kx) + "px";
+        q.el.style.top = (drag.box.y + (q.oy - drag.box.y) * ky) + "px";
+        applySize(q.el, { w: Math.max(RZ_MIN.w, q.ow * kx), h: Math.max(RZ_MIN.h, q.oh * ky) });
+        refitNode(q.el);
+      }
+      layoutZones(); redrawEdges();
+      return;
+    }
     if (drag.mode === "resize") {
       // chia CV.k: chuột đi 1px màn hình = 1/k px trong toạ độ world (canvas đang zoom)
       applySize(drag.el, { w: Math.max(RZ_MIN.w, drag.ow + dx / CV.k),
@@ -2049,10 +2122,13 @@ function cvInit() {
       if (cvPending) { const p = cvPending; cvPending = null; renderCanvas(p.sessions, p.signals); }
       return;
     }
-    if (drag.mode === "node" || drag.mode === "group" || drag.mode === "resize") {
+    if (drag.mode === "node" || drag.mode === "group" || drag.mode === "resize"
+        || drag.mode === "gresize") {
       const pos = cvLoad().pos || {};
       const save = (el) => saveNodeGeom(el, pos);
-      if (drag.mode === "group") drag.parts.forEach((p) => save(p.el)); else save(drag.el);
+      // group/gresize đổi hình học của MỌI member → lưu từng cái; khung tự suy ra, không lưu.
+      if (drag.mode === "group" || drag.mode === "gresize") drag.parts.forEach((p) => save(p.el));
+      else save(drag.el);
       cvSave({ pos });
     } else cvSave({ view: CV });
     // Click (không kéo) vào header card agent → CHỌN card (inspector mở bên phải).
@@ -2074,11 +2150,17 @@ function cvInit() {
     const rz = e.target.closest(".rz");
     if (!rz) return;
     const el = rz.closest(".node");
-    applySize(el, null);
     const pos = cvLoad().pos || {};
-    if (pos[el.dataset.nid]) { delete pos[el.dataset.nid].w; delete pos[el.dataset.nid].h; }
+    // Tay nắm của khung → trả MỌI card bên trong về cỡ mặc định, không phải riêng một cái.
+    const els = el.classList.contains("group-zone")
+      ? (cvGroups[+el.dataset.gi] || { els: [] }).els : [el];
+    for (const n of els) {
+      applySize(n, null);
+      if (pos[n.dataset.nid]) { delete pos[n.dataset.nid].w; delete pos[n.dataset.nid].h; }
+      refitNode(n);
+    }
     cvSave({ pos });
-    refitNode(el); layoutZones(); redrawEdges();
+    layoutZones(); redrawEdges();
   });
   // Click vào THÂN card (ngoài header — header đi đường pointerup ở trên) → chọn card.
   // Card 👑: terminal (.term-slot) miễn trừ, nhưng overlay khóa (.term-lock) thì mở thẳng
