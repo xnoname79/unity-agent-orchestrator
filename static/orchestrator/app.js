@@ -2206,16 +2206,27 @@ function cvInit() {
   // Chiều cao node ghim đo từ canvas, mà canvas co giãn theo cửa sổ trình duyệt (và theo thanh
   // kéo giữa 2 pane) → không nghe resize thì panel ghim giữ nguyên chiều cao cũ.
   addEventListener("resize", () => { if (pinnedNid) applyPin(); });
+  // capture: true — BẮT BUỘC, không phải cho gọn. xterm tự gắn handler wheel lên chính phần tử
+  // terminal, và Shift+wheel với nó là "cuộn nhanh" (fastScrollSensitivity). Nghe ở pha nổi bọt
+  // thì tới lượt mình buffer đã cuộn mất rồi. Pha capture đi từ gốc xuống nên canvas thấy trước,
+  // chặn lại là xterm không bao giờ nhận.
   cv.addEventListener("wheel", (e) => {
-    if (e.target.closest(".term-slot, .cv-overlay")) return;  // wheel trong terminal/editor/overlay = scroll, không zoom
-    e.preventDefault();  // wheel = zoom quanh con trỏ (không scroll trang)
+    // Shift+wheel = zoom ở MỌI CHỖ, kể cả khi con trỏ đang nằm trên terminal. Card phủ kín canvas
+    // thì không còn mảng nền nào để lăn chuột — không có đường này là kẹt luôn, không zoom ra được.
+    // Wheel trơn giữ nguyên nghĩa cũ: trên nền = zoom, trong terminal/overlay = cuộn nội dung.
+    if (!e.shiftKey && e.target.closest(".term-slot, .cv-overlay")) return;
+    e.preventDefault();
+    e.stopPropagation();   // không cho xterm cuộn thêm một nhịp nữa dưới tay mình
+    // Shift+wheel: nhiều trình duyệt đổi trục, gửi deltaX và để deltaY = 0 (Chrome/Safari) —
+    // đọc mỗi deltaY là zoom đứng im dù bánh xe vẫn quay.
+    const d = e.deltaY || e.deltaX;
     const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
-    const k2 = Math.min(1.6, Math.max(0.35, CV.k * Math.exp(-e.deltaY * 0.0012)));
+    const k2 = Math.min(1.6, Math.max(0.35, CV.k * Math.exp(-d * 0.0012)));
     CV.tx = mx - (mx - CV.tx) * (k2 / CV.k);
     CV.ty = my - (my - CV.ty) * (k2 / CV.k);
     CV.k = k2; applyView();
     clearTimeout(cvInit._t); cvInit._t = setTimeout(() => cvSave({ view: CV }), 300);
-  }, { passive: false });
+  }, { passive: false, capture: true });
 }
 
 // ── Spawn form: picker dạng card (workspace / template / model) + duyệt thư mục ──

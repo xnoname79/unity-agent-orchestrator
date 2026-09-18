@@ -138,6 +138,25 @@ if '"gresize"' not in JS:
 check("the pair frame can be dragged and resized", gaps,
       "resizing the frame is the whole point of grouping the two cards")
 
+# 9 · Shift+wheel phải zoom được kể cả khi con trỏ nằm trên terminal — đó là đường DUY NHẤT để
+# zoom khi một card phủ kín canvas. Hai mảnh dễ bị "dọn cho gọn" mà hỏng im lặng:
+#   - bỏ capture:true → xterm nhận wheel trước, Shift+wheel với nó là cuộn nhanh, nên terminal
+#     vừa cuộn vừa zoom một lúc;
+#   - rút `e.deltaY || e.deltaX` về mỗi deltaY → Chrome/Safari đổi trục khi giữ Shift (deltaY=0),
+#     bánh xe quay mà mức zoom đứng im.
+wheel = JS[JS.index('cv.addEventListener("wheel"'):][:1400]
+gaps = set()
+if "capture: true" not in wheel:
+    gaps.add("capture:true — without it xterm fast-scrolls under the zoom")
+if "e.deltaY || e.deltaX" not in wheel:
+    gaps.add("e.deltaY || e.deltaX — browsers move shift+wheel onto the X axis")
+if "!e.shiftKey && e.target.closest" not in wheel:
+    gaps.add("the shift bypass of the .term-slot guard")
+if "stopPropagation" not in wheel:
+    gaps.add("stopPropagation — the terminal would still scroll a notch")
+check("shift+wheel zooms even over a terminal", gaps,
+      "a card covering the canvas leaves no background to scroll on")
+
 if fails:
     print("\n" + "\n\n".join(fails))
     sys.exit(1)
