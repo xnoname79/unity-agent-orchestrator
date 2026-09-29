@@ -9,7 +9,12 @@ belongs to. Two things can go wrong quietly:
     is the only trustworthy filter;
   - the picked id lands in argv. It must be an id the target CLI actually has on disk, or a
     terminal turns into an arbitrary argument for `claude`/`codex`. A pin whose transcript is
-    later deleted has to fall back, not kill the card.
+    later deleted has to fall back, not kill the card;
+  - the card's OWN transcript is deleted under it. Claude Code clears transcripts on
+    `cleanupPeriodDays` (30 by default) while the card lives in the DB forever, so an agent left
+    alone for a month answers `claude --resume` with "No conversation found" — in the terminal
+    AND in every background signal. `--session-id` re-opens the same id with an empty transcript,
+    and it is refused for an id that still exists, so the two flags must never be swapped.
 
 The pin is one column (sessions.resume_id) precisely so the terminal and the background runs open
 the SAME transcript — split them and you type into one file while signals land in another.
@@ -167,10 +172,28 @@ async def main():
               so.resume_target(so.get_session(sid), "claude") == sid)
         (SLUG / "moved-away").rename(SLUG / f"{pick}.jsonl")
 
+        # Transcript của CHÍNH card bị claude dọn (cleanupPeriodDays): mở lại cùng id, đừng chết.
+        # sid chưa có file nào mang tên nó → đây đúng là trạng thái của một card bị dọn.
+        check("a card whose own transcript is gone opens it again under the same id",
+              so._claude_open_flags(sid) == ["--session-id", sid], so._claude_open_flags(sid))
+        # Ngược lại: transcript CÒN thì phải là --resume. `--session-id` trên id đang có bị claude
+        # từ chối thẳng ('already in use') → đảo hai cờ này là giết mọi card đang sống.
+        check("a card whose transcript is still there resumes it",
+              so._claude_open_flags(pick) == ["--resume", pick], so._claude_open_flags(pick))
+        # codex/agy không nhận id áp đặt → hội thoại mất thì chỉ mở được phiên MỚI.
+        check("codex opens a new session instead of resuming an id it lost",
+              so._cli_open_argv("codex", sid) == [so.CODEX_BIN], so._cli_open_argv("codex", sid))
+
         r = await c.post(f"/api/sessions/{sid}/resume-id", json={"resume_id": ""})
         check("unpinning goes back to the session's own transcript",
               r.status_code == 200 and so.terminal_argv(so.get_session(sid), "claude")[-1] == sid,
               r.text[:200])
+        # …và transcript đó đã bị dọn (sid chưa bao giờ có file), nên terminal phải TẠO LẠI nó
+        # dưới đúng id cũ chứ không --resume vào hư không.
+        check("a card standing on a cleaned-up transcript re-opens it under the same id",
+              so.terminal_argv(so.get_session(sid), "claude")
+              == [so.CLAUDE_BIN, "--session-id", sid],
+              so.terminal_argv(so.get_session(sid), "claude"))
 
         r = await c.get(f"/api/cli-sessions?session={sid}")
         check("endpoint takes cwd + CLI from the session",

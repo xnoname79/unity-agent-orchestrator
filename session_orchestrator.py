@@ -1712,7 +1712,8 @@ async def _run_claude(session, prompt, on_event=None, dry_run=False):
     # dấu '-' (vd YAML frontmatter '---') hoặc chứa ký tự đặc biệt/multiline.
     # Transcript mở ra có thể là phiên GHIM (resume_id), nhưng ACTIVE_PROCS/kết quả vẫn khoá theo
     # session_id: nút 🛑, runs, audit đều tra theo id của session, không theo transcript.
-    cmd = [CLAUDE_BIN, "-p", "--resume", resume_target(session, "claude"), "--output-format", fmt]
+    cmd = [CLAUDE_BIN, "-p", *_claude_open_flags(resume_target(session, "claude")),
+           "--output-format", fmt]
     if stream:
         cmd.append("--verbose")  # bắt buộc cho stream-json trong -p
         if STREAM_PARTIAL:
@@ -2733,6 +2734,9 @@ def terminal_argv(session, cli=""):
 
     Session có ghim phiên cũ (resume_id) thì mở ĐÚNG phiên đó — kể cả khi CLI đang chọn khác engine
     của session, vì resume_target đã kiểm CLI này thật sự có transcript đó (id đi thẳng vào argv).
+
+    Transcript của chính session đã bị CLI dọn mất (claude: cleanupPeriodDays) → _cli_open_argv
+    mở lại thay vì để CLI chết; claude giữ nguyên id, codex/agy phải sang phiên mới.
     """
     eng = engine_name_of_session(session)
     sid = session["id"]
@@ -2743,7 +2747,7 @@ def terminal_argv(session, cli=""):
     if pinned != sid:
         argv = _cli_resume_argv(cli, pinned)
     elif cli == cli_of_engine(eng):
-        argv = _cli_resume_argv(cli, sid)
+        argv = _cli_open_argv(cli, sid)
     else:
         # CLI khác engine của session → id này CLI đó không mở được: phiên MỚI trong cùng cwd.
         argv = _cli_new_argv(cli)
@@ -2773,6 +2777,43 @@ def _cli_resume_argv(cli, sid):
     if cli == "agy":
         return [AGY_BIN, "--conversation", sid]
     return [CLAUDE_BIN, "--resume", sid]
+
+
+# ─── Transcript bị CLI dọn mất: mở lại thay vì chết ───────────────────────────
+# Claude Code tự xoá transcript theo `cleanupPeriodDays` (MẶC ĐỊNH 30 ngày). Card thì sống mãi
+# trong DB, nên một agent im hơn 30 ngày là `claude --resume <id>` chết bằng
+#     No conversation found with session ID: <id>
+# — và chết cho CẢ terminal LẪN mọi signal chạy nền, vì hai đường dùng chung một id. Đo trên máy
+# này: 13/27 card đang ở tình trạng đó, toàn bộ tạo tháng 7–8.
+#
+# `claude --session-id <uuid>` TẠO hội thoại mang ĐÚNG id mình đưa. Nên card giữ nguyên id, runs,
+# signals, audit, vị trí canvas, vai; chỉ mất lịch sử chat — thứ đã mất sẵn trên đĩa rồi. SKILL
+# cũng không mất theo: _prepend_role nhồi lại playbook vào từng signal.
+# ĐÃ ĐO: `--session-id` với id ĐANG CÓ thì claude thoát ngay ('Session ID ... is already in use'),
+# nên BẮT BUỘC hỏi _cli_knows_session trước — không được đoán, không được thử rồi bắt lỗi.
+
+
+def _claude_open_flags(sid):
+    """Cờ để claude mở hội thoại `sid`: resume nếu transcript còn, TẠO LẠI đúng id nếu đã bị dọn."""
+    if _cli_knows_session(sid, "claude"):
+        return ["--resume", sid]
+    print(f"[orchestrator] ⚠ claude không còn transcript '{sid}' (cleanupPeriodDays?) "
+          f"→ mở lại hội thoại rỗng mang đúng id đó")
+    return ["--session-id", sid]
+
+
+def _cli_open_argv(cli, sid):
+    """Lệnh mở hội thoại `sid` bằng CLI này, chịu được việc transcript đã bị dọn.
+
+    codex/agy KHÔNG nhận id áp đặt (chúng tự sinh id lúc spawn, xem AgyEngine/CodexEngine) → mất
+    hội thoại thì chỉ mở được phiên MỚI; ghim lại bằng ô chọn phiên trên header card."""
+    if cli == "claude":
+        return [CLAUDE_BIN, *_claude_open_flags(sid)]
+    if _cli_knows_session(sid, cli):
+        return _cli_resume_argv(cli, sid)
+    print(f"[orchestrator] ⚠ {cli} không còn hội thoại '{sid}' → mở phiên mới (id mới, "
+          f"ghim lại nếu muốn signal nền đi cùng chỗ)")
+    return _cli_new_argv(cli)
 
 
 # ─── PTY cho terminal nhúng (xterm.js ↔ CLI interactive) ──────────────────────
