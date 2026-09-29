@@ -1377,17 +1377,7 @@ function attachTerms() {
   for (const key of Object.keys(cvTerms)) if (!seen.has(key)) destroyTerm(key);
 }
 
-// Gửi signal nhanh tới 1 agent ngay trên card.
-async function sendSignalTo(id, name) {
-  const msg = prompt(`Signal to '${name}':`, "");
-  if (!msg || !msg.trim()) return;
-  try { await api("/api/signals", "POST", { to_session: id, message: msg.trim() }); await refreshAll(); }
-  catch (e) { console.error(e); alert("Could not send signal: " + e); }
-}
-window.sendSignalTo = sendSignalTo;
-
-// Form gửi signal thủ công (tab History) — giữ từ dashboard cũ: chọn role, bật
-// requires_approval / dry_run (sendSignalTo trên card chỉ gửi nhanh, không có 2 flag này).
+// Form gửi signal thủ công (tab History): chọn role, bật requires_approval / dry_run.
 function fillSignalForm(sessions) {
   const sel = $("sg-to");
   if (!sel) return;
@@ -1711,7 +1701,6 @@ ${pairBudget(s)}
       <h4>Work</h4>
       <div class="insp-row">
         <button class="secondary" onclick="openSessionRun('${esc(s.id)}')">${ic("doc", "sm")} Latest run</button>
-        <button class="secondary" onclick="sendSignalTo('${esc(s.id)}','${esc(s.name)}')">${ic("send", "sm")} Signal</button>
       </div>
     </div>
 
