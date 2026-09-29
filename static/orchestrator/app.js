@@ -133,18 +133,6 @@ async function act(path, method = "POST") {
 }
 window.act = act;
 
-// Nén context 1 session: hỏi focus (tùy chọn), enqueue /compact qua endpoint.
-async function compactSession(id, name) {
-  const focus = prompt(`Compact context for '${name}'.\nWhat to keep in focus (leave blank for none):`, "");
-  if (focus === null) return;  // huỷ
-  try {
-    const r = await api(`/api/sessions/${id}/compact`, "POST", { focus: focus.trim() });
-    console.log("compact enqueued", r);
-    await refreshAll();
-  } catch (e) { console.error(e); alert("Compact failed: " + e); }
-}
-window.compactSession = compactSession;
-
 // Xem compact context MỚI NHẤT của 1 session (metadata + full summary) trong drawer.
 async function viewCompact(id, name) {
   openRunId = null;  // rời chế độ xem run-transcript để live-event không chèn nhầm vào đây
@@ -1712,8 +1700,6 @@ ${pairBudget(s)}
         <button class="secondary" onclick="editSkill('${id}','${esc(s.name)}')"
           title="Edit this role's SKILL (upserts into .claude/skills in the project cwd)">${ic("book", "sm")} SKILL</button>
       </div>
-      <button class="secondary" onclick="compactSession('${id}','${esc(s.name)}')"
-        title="Summarise the transcript so the role stops drifting on long jobs">${ic("compress", "sm")} Compact context</button>
     </div>
 
     ${sessCleanup(s, CLI_ICON[engine] ? engine : "claude")}
