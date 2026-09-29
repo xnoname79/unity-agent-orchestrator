@@ -124,6 +124,10 @@ DB_NAME = os.environ.get("ORCH_DB", "orchestrator")
 WORKSPACES_ROOT = Path(os.environ.get("ORCH_WORKSPACES_ROOT", str(Path.home() / ".session_orch_workspaces")))
 # workspace_id gán cho dữ liệu single-tenant cũ khi migrate + fallback khi request không kèm ws.
 DEFAULT_WORKSPACE = "default"
+# Group = lớp XẾP CHỖ trên workspace (work, hobby…). Không cô lập gì cả — cô lập vẫn là việc của
+# workspace. Group này là nơi trú của mọi workspace có sẵn lúc migrate và của workspace tạo qua
+# API mà không nói group nào, nên KHÔNG bao giờ xoá được: xoá là có workspace mồ côi.
+DEFAULT_GROUP = "grp_default"
 DRY_RUN = os.environ.get("ORCH_DRY_RUN", "0") == "1"
 POLL_INTERVAL = int(os.environ.get("ORCH_POLL_INTERVAL", "5"))
 MAX_CONCURRENT = int(os.environ.get("ORCH_MAX_CONCURRENT", "3"))
@@ -224,11 +228,20 @@ def _conn():
 def init_db():
     conn = _conn()
     conn.executescript("""
+        -- Group: một ngăn kéo chứa nhiều workspace (work, hobby…). CHỈ để xếp chỗ trên màn
+        -- Home — không đụng tới routing signal, ngân sách hay cô lập file; tất cả những thứ đó
+        -- vẫn theo workspace. Nên KHÔNG có cột group_id ở sessions/signals/runs.
+        CREATE TABLE IF NOT EXISTS workspace_groups (
+            id TEXT PRIMARY KEY,               -- grp_<random>, orchestrator sinh
+            name TEXT NOT NULL,                 -- nhãn người dùng tự đặt
+            created_at TEXT NOT NULL
+        );
         -- Multi-tenant: mỗi workspace là 1 không gian cô lập (1 thư mục riêng). Mọi session/
         -- signal/run đều thuộc đúng 1 workspace; role chỉ unique trong phạm vi workspace.
         CREATE TABLE IF NOT EXISTS workspaces (
             id TEXT PRIMARY KEY,               -- ws_<random>, orchestrator sinh
             name TEXT NOT NULL DEFAULT '',      -- nhãn hiển thị
+            group_id TEXT NOT NULL DEFAULT 'grp_default',   -- ngăn kéo chứa nó
             root_dir TEXT NOT NULL,             -- WORKSPACES_ROOT/<id> — cwd ghim cho mọi session
             kill_switch INTEGER NOT NULL DEFAULT 0,   -- dừng riêng workspace này
             max_runs_per_day INTEGER,           -- NULL = dùng MAX_RUNS_PER_DAY global
@@ -327,6 +340,15 @@ def init_db():
     rcols = [r[1] for r in conn.execute("PRAGMA table_info(runs)").fetchall()]
     if "workspace_id" not in rcols:
         conn.execute(f"ALTER TABLE runs ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '{DEFAULT_WORKSPACE}'")
+    # migrate: DB cũ chưa biết tới group → mọi workspace đang có về group mặc định.
+    wcols = [r[1] for r in conn.execute("PRAGMA table_info(workspaces)").fetchall()]
+    if "group_id" not in wcols:
+        conn.execute("ALTER TABLE workspaces ADD COLUMN group_id TEXT NOT NULL "
+                     f"DEFAULT '{DEFAULT_GROUP}'")
+    conn.execute(
+        "INSERT OR IGNORE INTO workspace_groups (id, name, created_at) VALUES (?, ?, ?)",
+        (DEFAULT_GROUP, "Workspaces", _now()),
+    )
     # Đảm bảo workspace 'default' luôn tồn tại — nơi trú của mọi dữ liệu single-tenant cũ.
     conn.execute(
         "INSERT OR IGNORE INTO workspaces (id, name, root_dir, status, created_at) VALUES (?, ?, ?, 'active', ?)",
@@ -348,20 +370,89 @@ def _now():
     return datetime.now().isoformat()
 
 
+# groups (ngăn kéo chứa workspace)
+
+def create_group(name=""):
+    """Tạo group mới. Không đụng tới workspace nào — group sinh ra rỗng rồi mới được xếp vào."""
+    _ensure_db()
+    gid = "grp_" + secrets.token_hex(8)
+    conn = _conn()
+    conn.execute("INSERT INTO workspace_groups (id, name, created_at) VALUES (?, ?, ?)",
+                 (gid, name or gid, _now()))
+    conn.commit()
+    conn.close()
+    return get_group(gid)
+
+
+def get_group(group_id):
+    _ensure_db()
+    conn = _conn()
+    row = conn.execute("SELECT * FROM workspace_groups WHERE id = ?", (group_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def list_groups():
+    """Mọi group + số workspace trong đó (màn Home hiện con số này trên card)."""
+    _ensure_db()
+    conn = _conn()
+    counts = {r["group_id"]: r["c"] for r in conn.execute(
+        "SELECT group_id, COUNT(*) c FROM workspaces GROUP BY group_id").fetchall()}
+    rows = conn.execute("SELECT * FROM workspace_groups ORDER BY created_at").fetchall()
+    conn.close()
+    return [{**dict(r), "workspaces": counts.get(r["id"], 0)} for r in rows]
+
+
+def rename_group(group_id, name):
+    conn = _conn()
+    conn.execute("UPDATE workspace_groups SET name = ? WHERE id = ?", (name, group_id))
+    conn.commit()
+    conn.close()
+    return get_group(group_id)
+
+
+def delete_group(group_id):
+    """Xoá cái ngăn kéo, KHÔNG xoá thứ trong đó: workspace của nó về group mặc định. Một group
+    chỉ là nhãn xếp chỗ — xoá nhãn mà mất cả workspace (và mọi session/thư mục bên dưới) thì
+    một cú bấm nhầm là mất việc thật.
+    Trả {"workspaces": số workspace vừa chuyển về group mặc định}."""
+    _ensure_db()
+    conn = _conn()
+    n = conn.execute("UPDATE workspaces SET group_id = ? WHERE group_id = ?",
+                     (DEFAULT_GROUP, group_id)).rowcount
+    conn.execute("DELETE FROM workspace_groups WHERE id = ?", (group_id,))
+    conn.commit()
+    conn.close()
+    return {"workspaces": n}
+
+
+def set_workspace_group(workspace_id, group_id):
+    """Chuyển workspace sang group khác. Chỉ đụng đúng cột group_id — session, thư mục, signal,
+    ngân sách của workspace không biết gì về group nên không có gì phải đi theo."""
+    conn = _conn()
+    conn.execute("UPDATE workspaces SET group_id = ? WHERE id = ?", (group_id, workspace_id))
+    conn.commit()
+    conn.close()
+    return get_workspace(workspace_id)
+
+
 # workspaces (multi-tenant)
 
-def create_workspace(name="", max_runs_per_day=None):
+def create_workspace(name="", max_runs_per_day=None, group_id=DEFAULT_GROUP):
     """Tạo 1 workspace mới: sinh id ws_<random>, mkdir thư mục riêng, insert DB.
-    Trả dict workspace (kèm root_dir đã tạo). cwd của mọi session trong ws bị ghim vào đây."""
+    Trả dict workspace (kèm root_dir đã tạo). cwd của mọi session trong ws bị ghim vào đây.
+    group_id không tồn tại → về group mặc định, chứ không đẻ ra workspace không màn Home nào
+    hiển thị được."""
     _ensure_db()
     wid = "ws_" + secrets.token_hex(8)
     root = WORKSPACES_ROOT / wid
     root.mkdir(parents=True, exist_ok=True)
+    gid = group_id if get_group(group_id) else DEFAULT_GROUP
     conn = _conn()
     conn.execute(
-        "INSERT INTO workspaces (id, name, root_dir, max_runs_per_day, status, created_at) "
-        "VALUES (?, ?, ?, ?, 'active', ?)",
-        (wid, name or wid, str(root), max_runs_per_day, _now()),
+        "INSERT INTO workspaces (id, name, group_id, root_dir, max_runs_per_day, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, 'active', ?)",
+        (wid, name or wid, gid, str(root), max_runs_per_day, _now()),
     )
     conn.commit()
     conn.close()
@@ -1148,16 +1239,24 @@ ACTIVE_PROCS = {}
 # Session user vừa bấm kill — process_signal thấy thì KHÔNG retry run bị giết.
 KILLED_SESSIONS = set()
 
-# ─── MCP servers: đăng ký server MCP cho MỌI session claude, ngay trên dashboard ──
-# Thay cho việc bắt người dùng gõ `claude mcp add` trong terminal. Scope user, tức là mọi phiên
-# claude sau đó đều thấy — không thuộc workspace nào, nên nó nằm ở topbar chứ không ở canvas.
+# ─── MCP servers: đăng ký server MCP cho MỌI session, ngay trên dashboard ────────
+# Thay cho việc bắt người dùng gõ `claude mcp add` trong terminal. Scope user (toàn cục), tức là
+# mọi phiên sau đó đều thấy — không thuộc workspace nào, nên nó nằm ở topbar chứ không ở canvas.
 #
-# Vì sao GHI THẲNG ~/.claude.json thay vì gọi CLI: server có token thì token phải đi trong header
-# Authorization, mà CLI chỉ nhận header qua cờ `--header` — tức là qua ARGV. `ps` đọc được, shell
-# lưu vào history. Đã ĐO shape trên máy này bằng chính CLI rồi đọc lại file:
-#     "<name>": {"type": "http", "url": "…", "headers": {"Authorization": "Bearer …"}}
-# Ghi thẳng cũng tránh cái bẫy commander của `claude mcp add`: `--header` là variadic nên nó NUỐT
-# mọi tham số vị trí đứng sau nó — đặt sai thứ tự thì lệnh sai mà không báo lỗi gì.
+# BA CLI, BA CHỖ CẤT. Agent spawn bằng engine nào thì đọc cấu hình của CLI đó, nên đăng ký một
+# server mà chỉ ghi cho claude là agent codex/agy gọi tool nào cũng "unknown tool". Ghi cho MỌI
+# CLI ĐANG CÀI — cái chưa cài thì không đẻ file cấu hình hộ nó.
+#
+# Vì sao GHI THẲNG file thay vì gọi `claude/codex/agy mcp add`: server có token thì token phải đi
+# trong header Authorization, mà cả ba CLI chỉ nhận header qua cờ (`--header`, `-H`) — tức là qua
+# ARGV. `ps` đọc được, shell lưu vào history. Ghi thẳng cũng tránh cái bẫy commander của
+# `claude mcp add`: `--header` là variadic nên nó NUỐT mọi tham số vị trí đứng sau nó — đặt sai
+# thứ tự thì lệnh sai mà không báo lỗi gì.
+#
+# Shape của từng CLI ĐÃ ĐO trên máy này: chạy chính CLI đó thêm một server rồi đọc lại file.
+#   claude  ~/.claude.json                 mcpServers.<n> = {type:http, url, headers:{Authorization}}
+#   codex   ~/.codex/config.toml           [mcp_servers.<n>] url = "…" / http_headers = { … }
+#   agy     ~/.gemini/config/mcp_config.json  mcpServers.<n> = {serverUrl, disabled, headers}
 MCP_TIMEOUT = float(os.environ.get("ORCH_MCP_TIMEOUT", "6"))
 # Phiên bản khai lúc initialize. Cứ khai bản cũ: server trả về phiên bản CỦA NÓ trong response,
 # thoả thuận xong là dùng được, còn khai bản mới hơn server thì có server từ chối thẳng.
@@ -1167,33 +1266,205 @@ MCP_PROTOCOL = "2024-11-05"
 MCP_OWN_PATHS = ("/signal/mcp", "/unity/mcp")
 # ~/.claude.json, KHÔNG phải ~/.claude/ — CLAUDE_CONFIG_DIR không dời file này.
 CLAUDE_CONFIG_FILE = Path(os.environ.get("ORCH_CLAUDE_CONFIG", str(Path.home() / ".claude.json")))
+# codex: CÙNG file với model/effort/trust-level của người dùng. Chỉ được đụng đúng bảng
+# [mcp_servers.<name>], mọi thứ khác giữ nguyên từng byte.
+CODEX_CONFIG_FILE = Path(os.environ.get(
+    "ORCH_CODEX_CONFIG",
+    str(Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "config.toml")))
+# agy: file RIÊNG cho MCP, KHÔNG nằm trong settings.json của antigravity-cli (chỗ đó chỉ có
+# agentMode/toolPermission). Và nó ở ~/.gemini/config/, không phải ~/.gemini/antigravity-cli/.
+AGY_MCP_CONFIG = Path(os.environ.get(
+    "ORCH_AGY_MCP_CONFIG", str(Path.home() / ".gemini" / "config" / "mcp_config.json")))
 # Tên đăng ký thành KHOÁ trong ~/.claude.json. Chặn ký tự lạ để không đẻ ra khoá kỳ quặc trong
 # file cấu hình của người dùng.
 MCP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
-def _claude_config():
-    """Chưa có file / file hỏng đều coi như rỗng — KHÔNG được ném, vì UI gọi hàm này."""
+def _read_text(path):
+    """Chưa có file / đọc không được đều coi như rỗng — KHÔNG được ném, vì UI gọi hàm này."""
     try:
-        cfg = json.loads(CLAUDE_CONFIG_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        return Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _write_text(path, text):
+    """Ghi qua file tạm rồi os.replace. Mấy file này giữ TOÀN BỘ cấu hình của một CLI (mọi
+    project, mọi MCP server) — ghi dở dang là mất sạch, nên không ghi đè trực tiếp.
+    ponytail: không khoá file. CLI chạy song song mà cùng ghi thì một bên mất update; thêm lock
+    nếu thực tế có va."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".orch-tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _json_config(path):
+    """File JSON cấu hình → dict. Hỏng cũng trả rỗng, KHÔNG ném."""
+    try:
+        cfg = json.loads(_read_text(path) or "{}")
+    except ValueError:
         return {}
     return cfg if isinstance(cfg, dict) else {}
 
 
+def _save_json_config(path, cfg):
+    _write_text(path, json.dumps(cfg, indent=2, ensure_ascii=False))
+
+
+def _claude_config():
+    return _json_config(CLAUDE_CONFIG_FILE)
+
+
 def _save_claude_config(cfg):
-    """Ghi qua file tạm rồi os.replace. File này giữ TOÀN BỘ cấu hình Claude Code của người dùng
-    (mọi project, mọi MCP server) — ghi dở dang là mất sạch, nên không ghi đè trực tiếp.
-    ponytail: không khoá file. `claude` chạy song song mà cùng ghi thì một bên mất update; thêm
-    lock nếu thực tế có va."""
-    tmp = CLAUDE_CONFIG_FILE.with_name(CLAUDE_CONFIG_FILE.name + ".orch-tmp")
-    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, CLAUDE_CONFIG_FILE)
+    _save_json_config(CLAUDE_CONFIG_FILE, cfg)
+
+
+def _mcp_row(kind, url, command, token):
+    """Bản ghi CHUẨN HOÁ — ba CLI ba shape, phần còn lại của file chỉ nhìn thấy shape này."""
+    return {"type": kind, "url": url, "command": command, "token": token}
+
+
+# ── claude ──
+def _mcp_read_claude():
+    out = {}
+    for name, e in (_claude_config().get("mcpServers") or {}).items():
+        e = e if isinstance(e, dict) else {}
+        out[name] = _mcp_row(e.get("type") or ("stdio" if e.get("command") else ""),
+                             e.get("url") or "", e.get("command") or "", _entry_token(e))
+    return out
+
+
+def _mcp_write_claude(name, url, token):
+    cfg = _claude_config()
+    entry = {"type": "http", "url": url}
+    if token:
+        entry["headers"] = {"Authorization": "Bearer " + token}
+    cfg.setdefault("mcpServers", {})[name] = entry
+    _save_claude_config(cfg)
+
+
+def _mcp_remove_claude(name):
+    cfg = _claude_config()
+    if (cfg.get("mcpServers") or {}).pop(name, None) is None:
+        return False
+    _save_claude_config(cfg)
+    return True
+
+
+# ── agy ──
+def _mcp_read_agy():
+    out = {}
+    for name, e in (_json_config(AGY_MCP_CONFIG).get("mcpServers") or {}).items():
+        e = e if isinstance(e, dict) else {}
+        url = e.get("serverUrl") or e.get("url") or ""
+        out[name] = _mcp_row("http" if url else "stdio", url,
+                             e.get("command") or "", _entry_token(e))
+    return out
+
+
+def _mcp_write_agy(name, url, token):
+    cfg = _json_config(AGY_MCP_CONFIG)
+    entry = {"disabled": False, "serverUrl": url}
+    if token:
+        entry["headers"] = {"Authorization": "Bearer " + token}
+    cfg.setdefault("mcpServers", {})[name] = entry
+    _save_json_config(AGY_MCP_CONFIG, cfg)
+
+
+def _mcp_remove_agy(name):
+    cfg = _json_config(AGY_MCP_CONFIG)
+    if (cfg.get("mcpServers") or {}).pop(name, None) is None:
+        return False
+    _save_json_config(AGY_MCP_CONFIG, cfg)
+    return True
+
+
+# ── codex (TOML) ──
+# Python 3.10 không có tomllib và repo không kéo thêm dependency chỉ để sửa một bảng, nên
+# config.toml được cắt theo DÒNG TIÊU ĐỀ BẢNG rồi ghép lại. Đủ cho thứ `codex mcp add` sinh ra.
+# ponytail: không hiểu cấu hình viết bằng khoá chấm ở top level (mcp_servers.x.url = "…") — dạng
+# đó sẽ không bị nhận ra và ghi đè sẽ thành khai hai lần; đổi sang parser TOML thật nếu gặp.
+_CODEX_MCP_SEC = re.compile(r'^\[\s*mcp_servers\s*\.\s*(?:"([^"]*)"|([^\]\s"]+))\s*\]$')
+
+
+def _toml_str(v):
+    return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _codex_split(text):
+    """[(tên server | None, nguyên văn khối)]. None = khối không phải bảng mcp_servers (kể cả
+    phần đầu file trước bảng đầu tiên) — những khối đó đi qua nguyên vẹn."""
+    blocks, cur, name = [], [], None
+    for line in text.splitlines(keepends=True):
+        if line.lstrip().startswith("["):
+            blocks.append((name, "".join(cur)))
+            m = _CODEX_MCP_SEC.match(line.strip())
+            cur, name = [], (m.group(1) or m.group(2)) if m else None
+        cur.append(line)
+    blocks.append((name, "".join(cur)))
+    return [b for b in blocks if b[1]]
+
+
+def _mcp_read_codex():
+    out = {}
+    for name, body in _codex_split(_read_text(CODEX_CONFIG_FILE)):
+        if not name:
+            continue
+        url = re.search(r'^\s*url\s*=\s*"([^"]*)"', body, re.M)
+        cmd = re.search(r'^\s*command\s*=\s*"([^"]*)"', body, re.M)
+        tok = re.search(r'Authorization\s*=\s*"Bearer ([^"]*)"', body)
+        out[name] = _mcp_row("http" if url else "stdio", url.group(1) if url else "",
+                             cmd.group(1) if cmd else "", tok.group(1) if tok else "")
+    return out
+
+
+def _mcp_write_codex(name, url, token):
+    kept = "".join(b for n, b in _codex_split(_read_text(CODEX_CONFIG_FILE)) if n != name)
+    if kept and not kept.endswith("\n\n"):
+        kept += "\n" if kept.endswith("\n") else "\n\n"
+    block = f"[mcp_servers.{_toml_str(name)}]\nurl = {_toml_str(url)}\n"
+    if token:
+        block += "http_headers = { Authorization = " + _toml_str("Bearer " + token) + " }\n"
+    _write_text(CODEX_CONFIG_FILE, kept + block)
+
+
+def _mcp_remove_codex(name):
+    blocks = _codex_split(_read_text(CODEX_CONFIG_FILE))
+    if not any(n == name for n, _ in blocks):
+        return False
+    _write_text(CODEX_CONFIG_FILE, "".join(b for n, b in blocks if n != name))
+    return True
+
+
+# cli → (binary để hỏi "đã cài chưa", đọc, ghi, gỡ)
+MCP_CLIS = {
+    "claude": (CLAUDE_BIN, _mcp_read_claude, _mcp_write_claude, _mcp_remove_claude),
+    "codex": (CODEX_BIN, _mcp_read_codex, _mcp_write_codex, _mcp_remove_codex),
+    "agy": (AGY_BIN, _mcp_read_agy, _mcp_write_agy, _mcp_remove_agy),
+}
+
+
+def _mcp_installed():
+    """CLI nào THẬT SỰ có trên máy. Chưa cài thì không đọc, không ghi — đẻ ra file cấu hình cho
+    một CLI không tồn tại chỉ làm rác home của người dùng."""
+    return [cli for cli, (binary, *_) in MCP_CLIS.items() if shutil.which(binary)]
 
 
 def _mcp_servers():
-    d = _claude_config().get("mcpServers")
-    return d if isinstance(d, dict) else {}
+    """Gộp mọi CLI theo TÊN server. Một server có thể đã đăng ký ở CLI này mà chưa ở CLI kia
+    (đăng ký tay từ trước), nên mỗi bản ghi kèm `clis` = nơi nó đang có mặt."""
+    out = {}
+    for cli in _mcp_installed():
+        for name, row in MCP_CLIS[cli][1]().items():
+            cur = out.setdefault(name, {**row, "clis": []})
+            cur["clis"].append(cli)
+            # Bản ghi đầy đủ hơn thắng: CLI này khai url mà CLI kia để trống thì lấy cái có.
+            for k in ("type", "url", "command", "token"):
+                if row[k] and not cur[k]:
+                    cur[k] = row[k]
+    return out
 
 
 def _entry_token(entry):
@@ -3753,7 +4024,10 @@ def openapi_spec():
                 "post": {"tags": ["agents"], "summary": "Create a workspace",
                          "requestBody": {"content": {"application/json": {"schema": {
                              "type": "object",
-                             "properties": {"name": {"type": "string"}}}}}},
+                             "properties": {"name": {"type": "string"},
+                                            "group_id": {"type": "string",
+                                                         "description": "Group to file it under; "
+                                                                        "omit for the default group"}}}}}},
                          "responses": {"200": _oa_json(desc="The workspace just created")}}},
             "/health": {"get": {"summary": "Liveness check plus the running configuration", "security": [],
                                 "responses": {"200": _oa_json(desc="ok")}}},
@@ -3865,7 +4139,8 @@ def build_app():
         except Exception:  # noqa: BLE001
             body = {}
         mrpd = body.get("max_runs_per_day")
-        ws = create_workspace(body.get("name", ""), int(mrpd) if mrpd is not None else None)
+        ws = create_workspace(body.get("name", ""), int(mrpd) if mrpd is not None else None,
+                              body.get("group_id") or DEFAULT_GROUP)
         publish({"type": "workspace", "id": ws["id"], "status": "active", "workspace_id": ws["id"]})
         return JSONResponse(ws)
 
@@ -3917,6 +4192,50 @@ def build_app():
         res = delete_workspace(wid)
         publish({"type": "workspace", "id": wid, "status": "deleted", "workspace_id": wid})
         return JSONResponse({"id": wid, "deleted": True, **res})
+
+    # Groups (ngăn kéo chứa workspace — chỉ là cách xếp màn Home)
+    async def api_groups(request: Request):
+        """GET: mọi group + số workspace trong đó."""
+        return JSONResponse(list_groups())
+
+    async def api_create_group(request: Request):
+        """POST {name}: tạo group rỗng. Workspace xếp vào sau, bằng /api/workspaces/<id>/group."""
+        body = await _body(request)
+        name = (body.get("name") or "").strip()
+        if not name:
+            return JSONResponse({"error": "name is required"}, status_code=400)
+        return JSONResponse(create_group(name))
+
+    async def api_rename_group(request: Request):
+        """POST {name}: đổi tên group. Không đụng workspace nào."""
+        gid = request.path_params["gid"]
+        if not get_group(gid):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        body = await _body(request)
+        name = (body.get("name") or "").strip()
+        if not name:
+            return JSONResponse({"error": "name is required"}, status_code=400)
+        return JSONResponse(rename_group(gid, name))
+
+    async def api_delete_group(request: Request):
+        """DELETE: xoá group, workspace trong đó về group mặc định (KHÔNG xoá theo)."""
+        gid = request.path_params["gid"]
+        if not get_group(gid):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        if gid == DEFAULT_GROUP:
+            return JSONResponse({"error": "the default group cannot be deleted"}, status_code=400)
+        return JSONResponse({"id": gid, "deleted": True, **delete_group(gid)})
+
+    async def api_move_workspace_group(request: Request):
+        """POST {group_id}: chuyển workspace sang group khác."""
+        wid = request.path_params["wid"]
+        if not get_workspace(wid):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        body = await _body(request)
+        gid = (body.get("group_id") or "").strip() or DEFAULT_GROUP
+        if not get_group(gid):
+            return JSONResponse({"error": "no such group"}, status_code=400)
+        return JSONResponse(set_workspace_group(wid, gid))
 
     # Sessions
     async def api_sessions(request: Request):
@@ -4281,21 +4600,21 @@ def build_app():
             return {}
 
     async def api_mcp(request: Request):
-        """Các server MCP đang đăng ký ở scope user. KHÔNG gọi ra ngoài: danh sách phải hiện
-        ngay, không treo chờ timeout của một server có thể đang tắt. Kiểm thật là /api/mcp/check.
-        `checkable` = có gọi tools/list qua HTTP được không; server stdio thì không."""
+        """Các server MCP đang đăng ký ở scope user, gộp từ MỌI CLI đang cài. KHÔNG gọi ra ngoài:
+        danh sách phải hiện ngay, không treo chờ timeout của một server có thể đang tắt. Kiểm
+        thật là /api/mcp/check. `checkable` = có gọi tools/list qua HTTP được không; server stdio
+        thì không. `clis` ở mỗi dòng = CLI nào đang có server đó (dòng thiếu CLI nào thì agent
+        engine đó chưa thấy tool)."""
         out = []
         for name, entry in sorted(_mcp_servers().items()):
-            entry = entry if isinstance(entry, dict) else {}
-            url = (entry.get("url") or "").split("?")[0].rstrip("/")
+            url = entry["url"].split("?")[0].rstrip("/")
             if url.endswith(MCP_OWN_PATHS):   # server nội bộ của chính orchestrator
                 continue
-            kind = entry.get("type") or ("stdio" if entry.get("command") else "")
-            out.append({"name": name, "type": kind, "url": entry.get("url") or "",
-                        "command": entry.get("command") or "",
-                        "token_hint": _mask(_entry_token(entry)),
-                        "checkable": kind in ("http", "sse") and bool(entry.get("url"))})
-        return JSONResponse(out)
+            out.append({"name": name, "type": entry["type"], "url": entry["url"],
+                        "command": entry["command"], "clis": entry["clis"],
+                        "token_hint": _mask(entry["token"]),
+                        "checkable": entry["type"] in ("http", "sse") and bool(entry["url"])})
+        return JSONResponse({"clis": _mcp_installed(), "servers": out})
 
     async def api_mcp_check(request: Request):
         """Kiểm thật bằng tools/list. Gửi `name` = kiểm cái đang lưu; gửi `url`(+`token`) = thử
@@ -4304,13 +4623,13 @@ def build_app():
         url, token = (b.get("url") or "").strip(), b.get("token")
         if b.get("name") and not url:
             entry = _mcp_servers().get(b["name"])
-            if not isinstance(entry, dict):
+            if not entry:
                 return JSONResponse({"error": "not found"}, status_code=404)
-            if not (entry.get("url") and entry.get("type") in ("http", "sse")):
+            if not (entry["url"] and entry["type"] in ("http", "sse")):
                 return JSONResponse({"name": b["name"], "state": "unsupported", "tools": 0,
                                      "detail": "only http/sse servers can be checked from here",
                                      "checked_at": _now()})
-            url, token = entry["url"], _entry_token(entry)
+            url, token = entry["url"], entry["token"]
         if not url:
             return JSONResponse({"error": "url or a known name is required"}, status_code=400)
         state, tools, detail = await _mcp_probe(url, token or "")
@@ -4333,24 +4652,19 @@ def build_app():
         state, tools, detail = await _mcp_probe(url, token)
         if state != "connected":
             return JSONResponse({"error": detail or state, "state": state}, status_code=400)
-        cfg = _claude_config()
-        entry = {"type": "http", "url": url}
-        if token:
-            entry["headers"] = {"Authorization": "Bearer " + token}
-        cfg.setdefault("mcpServers", {})[name] = entry
-        _save_claude_config(cfg)
+        clis = _mcp_installed()
+        for cli in clis:
+            MCP_CLIS[cli][2](name, url, token)
         return JSONResponse({"name": name, "url": url, "state": state, "tools": tools,
-                             "token_hint": _mask(token), "checked_at": _now()})
+                             "clis": clis, "token_hint": _mask(token), "checked_at": _now()})
 
     async def api_mcp_disconnect(request: Request):
-        """Gỡ đúng một khoá khỏi mcpServers, phần còn lại của ~/.claude.json giữ nguyên."""
+        """Gỡ server khỏi MỌI CLI đang cài. Chỉ đụng đúng khoá/bảng của nó — phần còn lại trong
+        cấu hình của từng CLI giữ nguyên."""
         b = await _body(request)
         name = (b.get("name") or "").strip()
-        cfg = _claude_config()
-        removed = (cfg.get("mcpServers") or {}).pop(name, None) is not None
-        if removed:
-            _save_claude_config(cfg)
-        return JSONResponse({"name": name, "removed": removed})
+        removed = [cli for cli in _mcp_installed() if MCP_CLIS[cli][3](name)]
+        return JSONResponse({"name": name, "removed": bool(removed), "clis": removed})
 
     async def ws_terminal(websocket):
         """Terminal của agent: claude/codex/agy interactive trong PTY (xem terminal_argv)."""
@@ -4935,12 +5249,17 @@ def build_app():
     routes = [
         Route("/health", health),
         # Workspaces (multi-tenant)
+        Route("/api/groups", api_groups),
+        Route("/api/groups", api_create_group, methods=["POST"]),
+        Route("/api/groups/{gid}", api_rename_group, methods=["POST"]),
+        Route("/api/groups/{gid}", api_delete_group, methods=["DELETE"]),
         Route("/api/workspaces", api_workspaces),
         Route("/api/workspaces", api_create_workspace, methods=["POST"]),
         # lookup phải đứng TRƯỚC "/{wid}" để không bị nuốt thành wid="lookup".
         Route("/api/workspaces/lookup", api_lookup_workspace, methods=["POST"]),
         Route("/api/workspaces/{wid}", api_workspace_detail),
         Route("/api/workspaces/{wid}", api_delete_workspace, methods=["DELETE"]),
+        Route("/api/workspaces/{wid}/group", api_move_workspace_group, methods=["POST"]),
         Route("/api/workspaces/{wid}/suspend", api_suspend_workspace, methods=["POST"]),
         Route("/api/workspaces/{wid}/activate", api_activate_workspace, methods=["POST"]),
         Route("/api/sessions", api_sessions),

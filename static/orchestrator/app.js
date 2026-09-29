@@ -81,6 +81,8 @@ let PAIR_WINDOW_MIN = 60;  // cửa sổ đếm, phút; đồng bộ từ /healt
 let openRunId = null;   // run đang mở trong drawer (null = đóng)
 let currentWS = "";     // workspace đang lọc ("" = tất cả, admin view)
 let WORKSPACES = [];    // cache danh sách workspace (đồng bộ mỗi refreshAll)
+let GROUPS = [];        // cache danh sách group (shell; pane không dùng)
+let CURGROUP = "";      // group đang mở ở màn Home ("" = đang xem danh sách group)
 
 const PAGE = 10;        // số record mỗi lần "+"; hiển thị mới nhất trước
 let sigShown = PAGE;    // signal queue: số record đang hiển thị (tăng dần khi bấm +)
@@ -333,14 +335,77 @@ async function allowMore(id, name) {
 }
 window.allowMore = allowMore;
 
-// ── Workspaces (multi-tenant) ────────────────────────────────────────────────
+// ── Groups + workspaces (multi-tenant) ──────────────────────────────────────
+// Màn Home có HAI tầng dùng CHUNG một grid: chưa chọn group thì grid là danh sách group, chọn
+// rồi thì grid là workspace của group đó. Group chỉ là ngăn kéo — nó không đụng vào routing
+// signal hay cô lập file, nên không có gì bên dưới phải biết nó tồn tại.
+
+// Tạo group mới (ngăn kéo rỗng) rồi vào luôn để bỏ workspace vào.
+async function newGroup() {
+  const name = prompt("New group name (e.g. work, hobby):", "");
+  if (name === null || !name.trim()) return;
+  try {
+    const g = await api("/api/groups", "POST", { name: name.trim() });
+    await refreshAll();
+    openGroup(g.id);
+  } catch (e) { console.error(e); alert("Could not create group: " + e); }
+}
+window.newGroup = newGroup;
+
+async function renameGroup(gid, cur) {
+  const name = prompt("Rename group:", cur);
+  if (name === null || !name.trim() || name.trim() === cur) return;
+  try { await api(`/api/groups/${encodeURIComponent(gid)}`, "POST", { name: name.trim() }); }
+  catch (e) { alert("Could not rename that group: " + (e.message || e)); return; }
+  await refreshAll();
+}
+window.renameGroup = renameGroup;
+
+// Xoá group = xoá cái NHÃN. Workspace bên trong về group mặc định, không mất gì — nói rõ điều
+// đó trong lời hỏi, không thì người dùng tưởng mình sắp xoá cả đống agent.
+async function deleteGroup(gid, name, n) {
+  if (!confirm(`Delete group '${name}'?\n\n`
+      + (n ? `Its ${n} workspace${n > 1 ? "s move" : " moves"} back to the default group. ` : "")
+      + `No workspace, agent or folder is deleted.`)) return;
+  try { await api(`/api/groups/${encodeURIComponent(gid)}`, "DELETE"); }
+  catch (e) { alert("Could not delete that group: " + (e.message || e)); return; }
+  if (CURGROUP === gid) CURGROUP = "";
+  await refreshAll();
+}
+window.deleteGroup = deleteGroup;
+
+// Chuyển workspace sang group khác. Không đụng gì ngoài cái nhãn.
+async function moveWsGroup(wid, gid) {
+  try { await api(`/api/workspaces/${encodeURIComponent(wid)}/group`, "POST", { group_id: gid }); }
+  catch (e) { alert("Could not move that workspace: " + (e.message || e)); }
+  await refreshAll();
+}
+window.moveWsGroup = moveWsGroup;
+
+// "" = quay về danh sách group. Đổi tầng thì phải rời pane, không thì bấm xong không thấy gì đổi.
+function openGroup(gid) {
+  CURGROUP = gid;
+  ACTIVE = -1;
+  shellSave(); renderHome(); renderShellTabs(); renderPanes();
+}
+window.openGroup = openGroup;
+
+// Nút "+" ở Home: tầng nào thì thêm thứ của tầng đó.
+function homeNew() { return CURGROUP ? newWorkspace() : newGroup(); }
+window.homeNew = homeNew;
+
+const groupName = (gid) => (GROUPS.find((g) => g.id === gid) || {}).name || gid;
+// Workspace của MỘT group. Chưa chọn group ("") thì rỗng — đang xem danh sách group thì thanh
+// tab chỉ còn cái đang mở dở, chứ không phải toàn bộ máy (renderShellTabs cộng phần đó vào).
+const wsOfGroup = (gid) => (gid ? WORKSPACES.filter((w) => w.group_id === gid) : []);
 
 // Tạo workspace mới (orchestrator sinh id + mkdir thư mục). Hỏi tên hiển thị.
 async function newWorkspace() {
   const name = prompt("New workspace name (display label):", "");
   if (name === null) return;
   try {
-    const w = await api("/api/workspaces", "POST", { name: name.trim() });
+    const w = await api("/api/workspaces", "POST",
+      { name: name.trim(), group_id: CURGROUP || undefined });
     await refreshAll();               // grid phải có card mới trước khi mở nó thành tab
     selectWorkspace(w.id);
     alert(`Created workspace '${w.name}'\nid: ${w.id}\nfolder: ${w.root_dir}`);
@@ -348,35 +413,67 @@ async function newWorkspace() {
 }
 window.newWorkspace = newWorkspace;
 
-// Render: grid card workspace (shell) + dropdown workspace ở form spawn.
+// Render: grid Home (shell) + dropdown workspace ở form spawn.
 function renderWorkspaces(list) {
   WORKSPACES = list;
   if (PANE) { renderWsBanner(); return; }   // pane không có grid/form spawn
-  renderWorkspaceGrid(list);
+  renderHome();
   renderSpawnPickers();   // form spawn: card picker workspace đồng bộ theo list mới
   renderShellTabs();
   renderPanes();
 }
 
-// Grid card: mỗi workspace 1 card, click = mở thành tab.
-function renderWorkspaceGrid(list) {
-  const grid = $("ws-grid");
-  $("ws-grid-empty").hidden = list.length > 0;
-  grid.innerHTML = list.map((w) => {
-    const st = badge(w.status, w.status === "active" ? "b-green" : "b-amber");
-    const open = OPEN.includes(w.id);
-    return `<div class="ws-card${open ? " open" : ""}" onclick="selectWorkspace('${esc(w.id)}')">
-      ${open ? `<span class="open-tag">OPEN</span>` : ""}
-      <h3>${esc(w.name || w.id)}</h3>
-      <div class="ws-id">${esc(w.id)}</div>
-      <div class="ws-meta"><span class="ws-count">${w.sessions}</span> session · ${st}
-        ${w.id === "default" ? "" : `<button class="icon-btn danger ws-del"
-          title="Unregister every agent in this workspace, then delete the empty workspace"
-          onclick="event.stopPropagation();deleteWs('${esc(w.id)}','${esc(w.name || w.id)}',${w.sessions})"
-          >${ic("trash", "sm")}</button>`}</div>
-      ${w.root_dir ? `<div class="ws-root" title="${esc(w.root_dir)}">${esc(w.root_dir)}</div>` : ""}
-    </div>`;
-  }).join("");
+// Grid Home: group (chưa chọn group) hoặc workspace của group đang chọn.
+function renderHome() {
+  const inGroup = !!CURGROUP && GROUPS.some((g) => g.id === CURGROUP);
+  $("grp-back").hidden = !inGroup;
+  $("home-title").textContent = inGroup ? groupName(CURGROUP) : "Groups";
+  $("home-new-lbl").textContent = inGroup ? "New workspace" : "New group";
+  $("ws-grid-empty").textContent = inGroup
+    ? "No workspaces in this group yet — create one, or move one in from another group."
+    : "No groups yet — create one to get started.";
+  const rows = inGroup ? wsOfGroup(CURGROUP) : GROUPS;
+  $("ws-grid-empty").hidden = rows.length > 0;
+  $("ws-grid").innerHTML = (inGroup ? rows.map(wsCardHtml) : rows.map(groupCardHtml)).join("");
+}
+
+function groupCardHtml(g) {
+  const n = g.workspaces;
+  return `<div class="ws-card" onclick="openGroup('${esc(g.id)}')">
+    <h3>${esc(g.name)}</h3>
+    <div class="ws-id">${esc(g.id)}</div>
+    <div class="ws-meta"><span class="ws-count">${n}</span> workspace${n === 1 ? "" : "s"}
+      <button class="icon-btn ws-del" title="Rename this group"
+        onclick="event.stopPropagation();renameGroup('${esc(g.id)}','${esc(g.name)}')"
+        >${ic("edit", "sm")}</button>
+      ${g.id === "grp_default" ? "" : `<button class="icon-btn danger"
+        title="Delete the group — its workspaces move back to the default group"
+        onclick="event.stopPropagation();deleteGroup('${esc(g.id)}','${esc(g.name)}',${n})"
+        >${ic("trash", "sm")}</button>`}</div>
+  </div>`;
+}
+
+// Card workspace: click = mở thành tab. Ô chọn group phải CHẶN click nổi lên card, không thì
+// mỗi lần bấm vào nó là mở luôn workspace.
+function wsCardHtml(w) {
+  const st = badge(w.status, w.status === "active" ? "b-green" : "b-amber");
+  const open = OPEN.includes(w.id);
+  const move = GROUPS.length < 2 ? "" : `<select class="mini ws-grp" title="Move to another group"
+      onclick="event.stopPropagation()" onchange="moveWsGroup('${esc(w.id)}', this.value)">${
+    GROUPS.map((g) => `<option value="${esc(g.id)}"${g.id === w.group_id ? " selected" : ""}
+      >${esc(g.name)}</option>`).join("")}</select>`;
+  return `<div class="ws-card${open ? " open" : ""}" onclick="selectWorkspace('${esc(w.id)}')">
+    ${open ? `<span class="open-tag">OPEN</span>` : ""}
+    <h3>${esc(w.name || w.id)}</h3>
+    <div class="ws-id">${esc(w.id)}</div>
+    <div class="ws-meta"><span class="ws-count">${w.sessions}</span> session · ${st}
+      ${w.id === "default" ? "" : `<button class="icon-btn danger ws-del"
+        title="Unregister every agent in this workspace, then delete the empty workspace"
+        onclick="event.stopPropagation();deleteWs('${esc(w.id)}','${esc(w.name || w.id)}',${w.sessions})"
+        >${ic("trash", "sm")}</button>`}</div>
+    ${w.root_dir ? `<div class="ws-root" title="${esc(w.root_dir)}">${esc(w.root_dir)}</div>` : ""}
+    ${move}
+  </div>`;
 }
 
 // Xoá workspace: backend gỡ mọi session của nó (soft — runs/signals giữ cho audit) rồi xoá cái
@@ -410,12 +507,15 @@ function shellLoad() {
 }
 function shellSave() {
   try {
-    localStorage.setItem("orch-shell",
-      JSON.stringify({ open: OPEN, active: ACTIVE, split: SPLIT, pct: SPLIT_PCT }));
+    localStorage.setItem("orch-shell", JSON.stringify(
+      { open: OPEN, active: ACTIVE, split: SPLIT, pct: SPLIT_PCT, group: CURGROUP }));
   } catch { /* private mode */ }
-  // Deep-link: F5 hoặc chia sẻ URL giữ nguyên tab đang mở.
-  const q = OPEN.length ? "?ws=" + OPEN.map(encodeURIComponent).join(",") + (SPLIT ? "&split=1" : "") : "";
-  history.replaceState(null, "", location.pathname + q);
+  // Deep-link: F5 hoặc chia sẻ URL giữ nguyên tab đang mở + group đang đứng.
+  const parts = [];
+  if (OPEN.length) parts.push("ws=" + OPEN.map(encodeURIComponent).join(","));
+  if (SPLIT && OPEN.length) parts.push("split=1");
+  if (CURGROUP) parts.push("g=" + encodeURIComponent(CURGROUP));
+  history.replaceState(null, "", location.pathname + (parts.length ? "?" + parts.join("&") : ""));
 }
 
 // Thanh tab liệt kê MỌI workspace, không chỉ cái đang mở: mở một workspace khác mà phải quay
@@ -427,8 +527,11 @@ function renderShellTabs() {
   const split = SPLIT && OPEN.length === MAX_PANES;
   // Workspace đang mở mà không còn trong danh sách (vừa bị xoá) vẫn phải có tab, không thì pane
   // của nó nằm đó mà không còn chỗ nào bấm đóng.
-  const rows = WORKSPACES.map((w) => ({ id: w.id, name: w.name || w.id }))
-    .concat(OPEN.filter((id) => !WORKSPACES.some((w) => w.id === id)).map((id) => ({ id, name: id })));
+  // Tab liệt kê workspace của GROUP đang đứng. Cái đang mở mà không thuộc group đó (vừa bị
+  // chuyển, vừa bị xoá) vẫn phải có tab, không thì pane của nó nằm đó mà không còn chỗ bấm đóng.
+  const rows = wsOfGroup(CURGROUP).map((w) => ({ id: w.id, name: w.name || w.id }))
+    .concat(OPEN.filter((id) => !wsOfGroup(CURGROUP).some((w) => w.id === id))
+      .map((id) => ({ id, name: (WORKSPACES.find((w) => w.id === id) || {}).name || id })));
   nav.innerHTML = rows.map(({ id, name }) => {
     const i = OPEN.indexOf(id);
     const open = i >= 0;
@@ -469,7 +572,7 @@ function setPane(i, id) {
   if (id === OPEN[1 - i]) OPEN = [OPEN[1], OPEN[0]];
   else OPEN[i] = id;        // iframe của workspace bị thay do renderPanes dọn
   ACTIVE = i;
-  shellSave(); renderWorkspaceGrid(WORKSPACES); renderShellTabs(); renderPanes();
+  shellSave(); renderHome(); renderShellTabs(); renderPanes();
 }
 window.setPane = setPane;
 
@@ -538,6 +641,9 @@ window.focusWs = focusWs;
 // Mở workspace thành tab. Đã mở → nhảy tới nó. Đầy chỗ → đóng tab hiện hành trước
 // (giữ thứ tự DOM khớp OPEN, xem chú thích khối này).
 function selectWorkspace(id) {
+  // Mở một workspace = đang làm việc trong group của nó → thanh tab phải là group đó.
+  const w = WORKSPACES.find((x) => x.id === id);
+  if (w && w.group_id) CURGROUP = w.group_id;
   const i = OPEN.indexOf(id);
   if (i >= 0) return focusWs(i);
   if (OPEN.length >= MAX_PANES) {
@@ -547,7 +653,7 @@ function selectWorkspace(id) {
     OPEN.push(id);
     ACTIVE = OPEN.length - 1;
   }
-  shellSave(); renderWorkspaceGrid(WORKSPACES); renderShellTabs(); renderPanes();
+  shellSave(); renderHome(); renderShellTabs(); renderPanes();
 }
 window.selectWorkspace = selectWorkspace;
 
@@ -555,7 +661,7 @@ function closeWs(id) {
   OPEN = OPEN.filter((x) => x !== id);
   if (!OPEN.length) { ACTIVE = -1; SPLIT = false; }
   else if (ACTIVE >= OPEN.length) ACTIVE = OPEN.length - 1;
-  shellSave(); renderWorkspaceGrid(WORKSPACES); renderShellTabs(); renderPanes();
+  shellSave(); renderHome(); renderShellTabs(); renderPanes();
 }
 window.closeWs = closeWs;
 
@@ -2443,6 +2549,7 @@ const MCP_STATE = {
   error: "b-red", unsupported: "b-gray",
 };
 let mcpStatus = {};   // name → {state, tools, detail} của lần kiểm gần nhất
+let mcpClis = [];     // CLI đang cài trên máy này — server đăng ký sẽ ghi cho tất cả
 
 function mcpRows(list) {
   if (!list.length) return `<div class="hint">Nothing registered yet.</div>`;
@@ -2452,13 +2559,20 @@ function mcpRows(list) {
       : st.state === "connected" ? `${st.tools} tools` : st.state;
     const meta = [s.type, s.url || s.command, s.token_hint && "token " + s.token_hint]
       .filter(Boolean).join(" · ");
+    // Một server có thể đã khai ở CLI này mà chưa ở CLI kia (đăng ký tay từ trước) — tag mờ là
+    // "agent chạy bằng engine đó KHÔNG thấy tool này", thứ không nhìn ra được từ danh sách trơn.
+    const tags = mcpClis.map((c) => {
+      const on = (s.clis || []).includes(c);
+      return `<span class="cli-tag${on ? " on" : ""}" title="${esc(c)}${
+        on ? " has it" : " does not have it — re-add to write it there"}">${esc(c)}</span>`;
+    }).join("");
     // Tên do người dùng đặt và có thể đã nằm sẵn trong file — KHÔNG nhét vào inline onclick,
     // đi qua data-attribute + listener uỷ quyền như chỗ duyệt thư mục.
     return `<div class="mcp-row">
       <span class="nm">${esc(s.name)}</span>
       ${badge(label, st ? MCP_STATE[st.state] : "b-gray")}
       <span class="meta" title="${esc(meta)}">${esc(meta)}</span>
-      <div class="spacer"></div>
+      <span class="cli-tags">${tags}</span>
       ${s.checkable ? `<button class="secondary" data-mcp-check="${esc(s.name)}">Check</button>` : ""}
       <button class="danger" data-mcp-rm="${esc(s.name)}">Remove</button>
     </div>`;
@@ -2466,7 +2580,10 @@ function mcpRows(list) {
 }
 
 async function mcpLoad(check) {
-  const list = await api("/api/mcp");
+  const r = await api("/api/mcp");
+  const list = r.servers;
+  mcpClis = r.clis;
+  $("mcp-clis").textContent = mcpClis.join(", ") || "none found";
   $("mcp-list").innerHTML = mcpRows(list);
   if (!check) return list;
   // Kiểm SONG SONG khi mở modal. Không kiểm lúc boot: mỗi server tắt là một timeout, và người
@@ -2511,7 +2628,8 @@ $("mcp-list").addEventListener("click", async (ev) => {
       showMsg("mcp-msg", r.state === "connected" ? `${name}: ${r.tools} tools`
         : `${name}: ${r.detail || r.state}`, r.state === "connected");
     } else {
-      if (!confirm(`Remove '${name}' from Claude Code?\n\nAgents already running keep it until they restart.`)) return;
+      if (!confirm(`Remove '${name}' from ${mcpClis.join(", ") || "every CLI"}?\n\n`
+        + `Agents already running keep it until they restart.`)) return;
       await api("/api/mcp/disconnect", "POST", { name });
       delete mcpStatus[name];
       await mcpLoad(false);
@@ -2552,7 +2670,8 @@ async function mcpAdd() {
     $("mcp-name").value = ""; $("mcp-url").value = "";
     $("mcp-token").value = "";   // xong việc là bỏ khỏi DOM, đừng để nằm lại trong form
     await mcpLoad(false);
-    showMsg("mcp-msg", `Added ${r.name} — ${r.tools} tools. New agents pick it up automatically.`, true);
+    showMsg("mcp-msg", `Added ${r.name} — ${r.tools} tools, written for ${r.clis.join(", ")}. `
+      + `New agents pick it up automatically.`, true);
   } catch (e) { showMsg("mcp-msg", mcpErr(e), false); }
 }
 window.mcpAdd = mcpAdd;
@@ -2829,7 +2948,10 @@ function setConn(ok) {
 
 async function refreshAll() {
   try {
-    const [workspaces, health] = await Promise.all([api("/api/workspaces"), api("/health")]);
+    // Group chỉ có ở shell — pane không có màn Home nên không tốn một lượt gọi cho nó.
+    const [workspaces, health, groups] = await Promise.all(
+      [api("/api/workspaces"), api("/health"), PANE ? [] : api("/api/groups")]);
+    if (!PANE) GROUPS = groups;
     if (health.daily_allow_step) DAILY_STEP = health.daily_allow_step;
     if (health.default_effort) DEFAULT_EFFORT = health.default_effort;
     if (health.pair_signal_cap) PAIR_CAP = health.pair_signal_cap;
@@ -2928,6 +3050,7 @@ if (PANE) {
   const st = shellLoad();
   const fromUrl = (qs.get("ws") || "").split(",").filter(Boolean);
   OPEN = (fromUrl.length ? fromUrl : (st.open || [])).slice(0, MAX_PANES);
+  CURGROUP = qs.get("g") || st.group || "";
   SPLIT = qs.has("split") ? qs.get("split") === "1" : !!st.split;
   SPLIT_PCT = st.pct || 50;
   ACTIVE = !OPEN.length ? -1

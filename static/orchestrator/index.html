@@ -181,6 +181,8 @@
   .ws-card .ws-del { margin-left: auto; width: 24px; height: 24px; }
   .ws-card .open-tag { position: absolute; top: 12px; right: 12px; font-size: 9.5px; font-weight: 700;
     letter-spacing: .06em; color: var(--accent); }
+  .ws-card .ws-grp { margin-top: 10px; width: 100%; }
+  .sec-head .crumb { padding: 4px 10px; font-size: 11.5px; }
 
   /* ── Panels / tables ──────────────────────────────────────────────────── */
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-card);
@@ -263,16 +265,27 @@
   .modal-overlay { position: fixed; inset: 0; background: var(--scrim); z-index: 30;
     display: flex; align-items: center; justify-content: center; padding: 20px; }
   .modal-overlay[hidden] { display: none; }
-  .modal { width: min(480px, 100%); max-height: calc(100vh - 40px); overflow-y: auto; }
+  /* overflow-x hidden + min-width:0 ở dưới: một dòng server có url dài đẩy khung rộng ra và
+     modal mọc thanh cuộn NGANG, che mất nút dưới cùng. Chữ phải co lại, không phải khung. */
+  .modal { width: min(660px, 100%); max-height: calc(100vh - 40px);
+    overflow-y: auto; overflow-x: hidden; }
   .modal input + input { margin-top: 6px; }
   .ai-actions button { padding: 8px 16px; }   /* nút trong cột hẹp, 28px là tràn */
-  .mcp-list { margin-top: 12px; display: grid; gap: 6px; }
+  /* minmax(0,1fr) + min-width:0: ô grid mặc định là min-width:auto, tức là KHÔNG co dưới bề
+     rộng nội dung — một url dài trong dòng là cả modal phình ra, chứ không phải chữ co lại. */
+  .mcp-list { margin-top: 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .mcp-row { display: flex; align-items: center; gap: 8px; padding: 7px 9px; background: var(--bg);
-    border: 1px solid var(--border); border-radius: var(--r-ctl); font-size: 12px; }
-  .mcp-row .nm { font-weight: 600; }
-  .mcp-row .meta { color: var(--faint); font-size: 11px; overflow: hidden;
+    border: 1px solid var(--border); border-radius: var(--r-ctl); font-size: 12px; min-width: 0; }
+  .mcp-row .nm { font-weight: 600; flex: 0 1 auto; min-width: 0; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
-  .mcp-row button { padding: 3px 8px; font-size: 11px; }
+  .mcp-row .meta { flex: 1 1 0; min-width: 0; color: var(--faint); font-size: 11px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-row button { padding: 3px 8px; font-size: 11px; flex: none; }
+  /* CLI nào đã có server này. Mờ = CLI có trên máy nhưng chưa đăng ký ở đó. */
+  .cli-tags { display: flex; gap: 3px; flex: none; }
+  .cli-tag { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+    padding: 2px 5px; border-radius: 4px; border: 1px solid var(--border-strong); color: var(--muted); }
+  .cli-tag.on { border-color: var(--green); color: var(--green); }
   select.mini, input.mini { background: var(--bg); border: 1px solid var(--border); color: var(--text);
     border-radius: 6px; padding: 4px 7px; font: inherit; font-size: 11.5px; }
   select.mini:hover, input.mini:hover { border-color: var(--border-strong); }
@@ -683,14 +696,19 @@
   <section id="ws-list-view">
     <div class="home-wrap">
       <div>
+        <!-- Một grid, hai tầng: chưa chọn group thì đây là danh sách group, chọn rồi thì là
+             workspace của group đó. Tiêu đề/nút/ô rỗng do renderHome() trong app.js điền. -->
         <div class="sec-head">
-          <h2>Workspaces</h2>
+          <button id="grp-back" class="secondary crumb" onclick="openGroup('')" hidden
+            title="Back to the group list">
+            <svg class="ic sm"><use href="#i-back"/></svg> Groups</button>
+          <h2 id="home-title">Groups</h2>
           <div class="spacer"></div>
-          <button class="secondary" onclick="newWorkspace()">
-            <svg class="ic sm"><use href="#i-plus"/></svg> New workspace</button>
+          <button class="secondary" onclick="homeNew()">
+            <svg class="ic sm"><use href="#i-plus"/></svg> <span id="home-new-lbl">New group</span></button>
         </div>
         <div id="ws-grid" class="ws-grid"></div>
-        <div id="ws-grid-empty" class="empty" hidden>No workspaces yet — create one to get started.</div>
+        <div id="ws-grid-empty" class="empty" hidden>No groups yet — create one to get started.</div>
       </div>
       <div class="form-card">
         <h3><svg class="ic"><use href="#i-rocket"/></svg> Spawn agent</h3>
@@ -866,9 +884,10 @@
       <span class="spacer"></span>
       <button class="icon-btn" onclick="mcpClose()" title="Close">
         <svg class="ic"><use href="#i-x"/></svg></button></h3>
-    <div class="hint">Registered for <b>every</b> claude session on this machine (user scope, in
-      <code>~/.claude.json</code>). Same thing <code>claude mcp add</code> does — without putting
-      your token on a command line.</div>
+    <div class="hint">Registered for <b>every</b> session on this machine, in every CLI installed
+      here (<span id="mcp-clis">claude</span>) — the same user scope
+      <code>claude mcp add</code> / <code>codex mcp add</code> / <code>agy mcp add</code> write to,
+      but without putting your token on a command line.</div>
     <div id="mcp-list" class="mcp-list"></div>
     <label>Add a server</label>
     <input id="mcp-name" placeholder="name, e.g. story-studio" autocomplete="off" spellcheck="false">
@@ -876,7 +895,7 @@
     <input id="mcp-token" type="password" autocomplete="off" spellcheck="false"
       placeholder="bearer token — leave empty if the server needs none">
     <div class="hint">The server is contacted with <code>tools/list</code> before anything is
-      written. A server that refuses leaves your config untouched.</div>
+      written. A server that refuses leaves every config untouched.</div>
     <div class="spawn-actions ai-actions">
       <button class="secondary" onclick="mcpTest()">Test</button>
       <button class="primary" onclick="mcpAdd()">Add</button>

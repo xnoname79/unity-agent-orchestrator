@@ -86,6 +86,9 @@ so each provider keeps its own subscription, its own auth, and its own tools.
   the *same* agent queue behind a lock so transcripts never interleave.
 * **Two workspaces at once.** Every workspace is a tab; open two and split the window between
   them, browser-style, picking which one goes in each pane. Both canvases stay live.
+* **Groups keep the list short.** Name a drawer — *work*, *hobby* — and file workspaces into it.
+  Home opens on the groups; pick one and you are back to the workspaces you know. Deleting a
+  group deletes the label, never what is filed under it.
 * **Cards hold the terminal, panels hold the actions.** A card is the agent's terminal plus the
   few controls you reach for while typing; select it and the rest — model, effort, skill, context
   — opens on the right. Ten agents, not ninety buttons.
@@ -209,25 +212,33 @@ The signal server runs **in-process** with the orchestrator — no second servic
 
 ### MCP servers panel
 
-The 🔌 button in the topbar registers any HTTP MCP server for **every** claude session on the
-machine — the same user-scope entry `claude mcp add` writes, into the same `~/.claude.json`.
-It lists what is already registered, checks each one, and removes them.
+The 🔌 button in the topbar registers any HTTP MCP server for **every** session on the machine —
+the same user scope `claude mcp add`, `codex mcp add` and `agy mcp add` write to. It lists what is
+already registered, checks each one, and removes them.
 
-Two things it does that the CLI does not:
+Three things it does that the CLIs do not:
 
-- **The token never reaches a command line.** `claude mcp add` only accepts a header through
-  `--header`, so the bearer token ends up in `argv` — readable by `ps`, kept in shell history.
-  The panel writes the entry directly instead. Saved tokens are never handed back out; the API
-  answers with the last four characters.
+- **It writes to every CLI installed here, in one go.** An agent on codex reads
+  `~/.codex/config.toml`, an agent on agy reads `~/.gemini/config/mcp_config.json`, and neither
+  looks at `~/.claude.json` — so a server added for one engine is a tool that silently does not
+  exist for the other two. Each row tags the CLIs that actually have it.
+- **The token never reaches a command line.** All three CLIs only accept a header through a flag
+  (`--header`, `-H`), so the bearer token ends up in `argv` — readable by `ps`, kept in shell
+  history. The panel writes the entry directly instead. Saved tokens are never handed back out;
+  the API answers with the last four characters.
 - **It proves the server works before saving.** Add calls `tools/list` first; a server that
-  refuses the token or does not answer leaves your config **byte-identical**. "Saved" is not a
+  refuses the token or does not answer leaves every config **byte-identical**. "Saved" is not a
   status anyone can act on, so the panel reports the tool count the server actually returned.
 
-Servers registered as stdio are listed but not probed — there is no URL to call.
+Codex keeps its MCP servers in the same `config.toml` as your model, effort and per-project trust
+levels; only the one `[mcp_servers.<name>]` table is touched. Servers registered as stdio are
+listed but not probed — there is no URL to call.
 
 | Env | Default | |
 |---|---|---|
-| `ORCH_CLAUDE_CONFIG` | `~/.claude.json` | the config file that gets written |
+| `ORCH_CLAUDE_CONFIG` | `~/.claude.json` | claude's config file |
+| `ORCH_CODEX_CONFIG` | `$CODEX_HOME/config.toml` | codex's config file |
+| `ORCH_AGY_MCP_CONFIG` | `~/.gemini/config/mcp_config.json` | agy's MCP config file |
 | `ORCH_MCP_TIMEOUT` | `6` | seconds to wait for `tools/list` |
 
 Guard: `python3 check_mcp.py`.
@@ -327,6 +338,22 @@ Remove it with `Unregister-ScheduledTask -TaskName "AgentOrchestrator"`.
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Usage
+
+### Groups and workspaces
+
+A **workspace** is the isolation boundary: its own folder, its own agents, and signals that never
+cross out of it. A **group** is only a drawer you file workspaces into — *work*, *hobby*, one per
+client — so Home stays readable once you have a dozen of them.
+
+Home opens on the groups. Pick one and the grid becomes its workspaces, the tab bar lists that
+group, and **New workspace** creates inside it. The picker on a workspace card moves it to another
+group. Renaming a group renames a label; deleting one deletes the label and re-files its
+workspaces under the default group — no workspace, agent, signal or folder is ever removed by it.
+
+Nothing below the dashboard knows groups exist: routing, budgets and isolation all still resolve
+by workspace, so filing a workspace somewhere else cannot change who can signal whom.
+
+Guard: `python3 check_groups.py`.
 
 ### Spawn an agent
 

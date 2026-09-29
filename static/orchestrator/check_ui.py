@@ -157,6 +157,36 @@ if "stopPropagation" not in wheel:
 check("shift+wheel zooms even over a terminal", gaps,
       "a card covering the canvas leaves no background to scroll on")
 
+# 10 · Màn Home dùng MỘT grid cho hai tầng (group / workspace của group). Hỏng im lặng ở đây là
+# lọc bị bỏ đi: thanh tab hoặc grid lại liệt kê MỌI workspace, trông vẫn chạy, nhưng group thành
+# vô nghĩa — và ở máy nhiều workspace thì đó đúng là cái nó sinh ra để chữa.
+gaps = set()
+if "function renderHome()" not in JS:
+    gaps.add("renderHome() — the one renderer both Home layers go through")
+if "wsOfGroup = (gid)" not in JS:
+    gaps.add("wsOfGroup() — the filter that makes a group mean anything")
+if "wsOfGroup(CURGROUP).map" not in JS:
+    gaps.add("renderShellTabs must list the OPEN GROUP's workspaces, not all of them")
+if "renderWorkspaceGrid" in JS:
+    gaps.add("renderWorkspaceGrid is gone — a call left behind renders the old flat list")
+for fn in ("openGroup", "homeNew", "moveWsGroup"):
+    if f"window.{fn} = {fn}" not in JS:
+        gaps.add(f"{fn} must be exported — it is only reachable from an inline handler")
+check("the Home screen keeps its group layer", gaps,
+      "a group is a filter; drop the filter and it is decoration")
+
+# 11 · Modal MCP ghi cho MỌI CLI đang cài, nên /api/mcp trả {clis, servers} chứ không còn là một
+# mảng trần. Đọc nhầm shape thì modal hiện "Nothing registered yet" trên một máy đầy server.
+gaps = set()
+if 'const r = await api("/api/mcp");' not in JS or "r.servers" not in JS:
+    gaps.add("mcpLoad must read r.servers — /api/mcp is {clis, servers}, not an array")
+if "mcpClis = r.clis" not in JS:
+    gaps.add("mcpClis — the per-row tags have nothing to compare against without it")
+if "cli-tag" not in JS or ".cli-tag" not in style:
+    gaps.add("the per-CLI tag that shows which CLIs actually have a server")
+check("the MCP modal speaks for every CLI", gaps,
+      "an agent on codex or agy reads a different file than claude")
+
 if fails:
     print("\n" + "\n\n".join(fails))
     sys.exit(1)
