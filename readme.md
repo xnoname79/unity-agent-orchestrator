@@ -407,11 +407,12 @@ role name.
 
 ### Browsing a project, and developer mode
 
-The 📁 button on an agent's card opens a **folder card** on the canvas next to it: the agent's
-project folder, browsable in place. Click a folder to go in, the breadcrumb to come back, a file
-to read it — text files show as text, images show as images. It needs nothing installed and it
-works the same whether the orchestrator runs on your own machine or on a server you reach over
-the network.
+The 📁 button on an agent's card opens a **folder card** clipped to the right edge of that
+agent's terminal, the two framed as one block: the project folder, browsable in place. Click a
+folder to go in, the breadcrumb to come back, a file to read it — text files show as text, images
+show as images. Drag either half and the pair moves together; the frame's corner resizes both. It
+needs nothing installed and works the same whether the orchestrator runs on your own machine or
+on a server you reach over the network.
 
 Everything it reads is locked inside that agent's project folder. Hidden entries (`.git`, `.env`)
 are not listed, files are served read-only with a content type the orchestrator picks, and `..`,

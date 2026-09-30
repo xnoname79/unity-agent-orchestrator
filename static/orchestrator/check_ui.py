@@ -122,8 +122,11 @@ if "cvPairOf[el.dataset.nid]" not in JS:
     lost.add("saveNodeGeom must drop x/y/h for a paired editor (they are derived)")
 if "cvPairOf[node.dataset.nid] || node" not in JS:
     lost.add("pointerdown must redirect a paired editor's drag to its terminal card")
-check("the editor card is locked to its terminal", lost,
-      "a paired editor has no geometry of its own; only the pair moves")
+if "byTerm" not in JS or "nids.sort()" not in JS:
+    lost.add("snapPairs must lay several paired cards out in a ROW: an editor and a folder card "
+             "on the same terminal would otherwise land on the exact same spot")
+check("cards paired to a terminal are locked to it", lost,
+      "a paired card has no geometry of its own; only the pair moves")
 
 # 8 · Khung cặp (terminal + editor của cùng session) phải kéo giãn được. .group-zone là
 # pointer-events:none, nên tay nắm .rz bên trong nó CHẾT nếu CSS không bật lại — trên màn hình
@@ -221,6 +224,15 @@ if '"/api/folder/list"' not in JS and "/api/folder/list?session=" not in JS:
     gaps.add("the call to /api/folder/list — the card has nothing to draw without it")
 if "window.openFolder = openFolder" not in JS:
     gaps.add("openFolder stays exported — the card header offers the OS file manager as a way out")
+# Dán cặp: ba mảnh, thiếu một là hỏng im lặng — không đăng ký thì card trôi tự do; không có
+# .sized thì danh sách giữ 340px trong một khung cao hơn và chừa mảng trống; không có .paired thì
+# chỗ giáp hai card hở ra hai đường bo.
+if "cvPairOf[nid] = term;" not in JS:
+    gaps.add("the folder node must register in cvPairOf, or it is not glued to its terminal")
+if ".node.sized > .folder-card" not in style or ".node.sized .folder-card .fld-body" not in style:
+    gaps.add(".node.sized rules for .folder-card — its height is derived, the list must fill it")
+if ".node.paired > .folder-card" not in style:
+    gaps.add(".node.paired > .folder-card — the seam needs square corners, not two curves")
 check("the folder card browses and scrolls inside the canvas", gaps,
       "it replaced a window that opened outside the orchestrator")
 

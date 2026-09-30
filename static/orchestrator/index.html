@@ -498,7 +498,8 @@
   /* Hai card trong cặp giáp lưng nhau: bo góc chỗ giáp phải phẳng, không thì giữa khối hở ra
      hai đường cong. Lớp .paired/.pair-anchor do snapPairs gắn, gỡ theo mỗi lần render. */
   .node.pair-anchor > .agent-card { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-  .node.paired > .editor-card { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+  .node.paired > .editor-card, .node.paired > .folder-card { border-top-left-radius: 0;
+    border-bottom-left-radius: 0; }
   /* Chiều cao card editor suy ra từ card terminal, nên tay nắm hai chiều của riêng nó sẽ bị ghi
      đè ngay khung hình sau — ẩn đi, đừng để người dùng kéo một thứ không ăn. Đổi tỉ lệ chia đôi
      bằng tay nắm của chính card terminal, hoặc tay nắm của cả khung. */
@@ -513,9 +514,12 @@
   @keyframes edgeflow { to { stroke-dashoffset: -11; } }
 
   /* Card agent: luôn có terminal nhúng */
-  .node.sized > .agent-card, .node.sized > .editor-card { width: 100%; height: 100%;
-    display: flex; flex-direction: column; }
+  .node.sized > .agent-card, .node.sized > .editor-card, .node.sized > .folder-card {
+    width: 100%; height: 100%; display: flex; flex-direction: column; }
   .node.sized .editor-card .term-slot { flex: 1; height: auto; max-height: none; }
+  /* Chiều cao card thư mục suy ra từ card terminal → danh sách phải ăn hết phần còn lại, không
+     thì nó giữ 340px cũ và đáy card là một mảng trống. */
+  .node.sized .folder-card .fld-body { flex: 1; height: auto; max-height: none; }
   .node.sized .term-slot { height: auto; }
   .agent-card.orch-term { width: 680px; }
   .orch-body { display: flex; min-height: 0; flex: 1; }
