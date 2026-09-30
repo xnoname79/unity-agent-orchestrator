@@ -97,7 +97,7 @@ so each provider keeps its own subscription, its own auth, and its own tools.
   — opens on the right. Ten agents, not ninety buttons.
 * **OpenAI-compatible API.** Point any OpenAI client at `/v1` and chat with an agent as if it
   were a model. Streaming included.
-* **Dark mode**, a minimap once the canvas outgrows the window, and a single binary with no
+* **Dark mode**, a minimap once the canvas outgrows the window, and a Windows build with no
   Python install required.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -147,16 +147,12 @@ that card's **git** tab. Override the binaries with `ORCH_NVIM_BIN` / `ORCH_TMUX
 
 ### 2. Install the orchestrator
 
-**Prebuilt binary** — no Python needed. Grab it from [Releases](../../releases).
+**Prebuilt binary (Windows)** — no Python needed. Grab `agent-orch-windows-x64.zip` from
+[Releases](../../releases), unzip it, and run `agent-orch.exe` from inside the folder. Keep the
+folder together — the `_internal` directory beside the `.exe` is the program. The console window
+that opens *is* the server; closing it stops the orchestrator.
 
-```bash
-chmod +x agent-orch-linux-x64
-./agent-orch-linux-x64            # no argument = serve
-```
-
-On Windows, unzip `agent-orch-windows-x64.zip` and run `agent-orch.exe` from inside the folder.
-Keep the folder together — the `_internal` directory beside the `.exe` is the program. The console
-window that opens *is* the server; closing it stops the orchestrator.
+macOS and Linux run from source — no binary is published for them.
 
 <details>
 <summary>Windows SmartScreen may offer to <b>delete</b> the download</summary>
@@ -280,10 +276,6 @@ systemctl --user daemon-reload
 systemctl --user enable --now orchestrator
 loginctl enable-linger "$USER"     # start at boot, not only when you log in
 ```
-
-Using the prebuilt binary instead? Point `ExecStart` straight at it:
-`ExecStart=%h/agent-orch/agent-orch-linux-x64 serve`, and set `WorkingDirectory` to its folder so
-the `.env` beside it is found.
 
 Day to day:
 
