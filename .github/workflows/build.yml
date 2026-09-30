@@ -63,12 +63,14 @@ jobs:
           PYTHONUTF8: "0"
         run: python static/orchestrator/check_ui.py
 
-      # All six fail loudly for bugs that are otherwise silent: a second copy of the module
+      # All seven fail loudly for bugs that are otherwise silent: a second copy of the module
       # splitting the in-memory state, the ping-pong cap refusing to lift, the editor card losing its
       # tmux wrapper (which silently turns every tab close into lost unsaved work), a
       # workspace move that lets two agents share one role name, an MCP server registration
       # that writes the user's config before proving the token works — or hands the token back out,
-      # and a Ctrl-C that parks forever because the dashboard's SSE stream never ends.
+      # a Ctrl-C that parks forever because the dashboard's SSE stream never ends, and a slash
+      # command wrapped in a role block, which reaches the CLI as plain text while the run is
+      # still recorded ok.
       - name: Check orchestrator invariants
         env:
           LC_ALL: C
@@ -80,6 +82,7 @@ jobs:
           python check_workspace_move.py
           python check_mcp.py
           python check_shutdown.py
+          python check_inject.py
 
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean

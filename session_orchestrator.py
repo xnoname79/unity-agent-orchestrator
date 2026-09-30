@@ -2138,6 +2138,36 @@ def _prepend_role(cwd, name, message, from_role=""):
             + "\n\n---\n\n".join(parts) + f"\n\n---\n\n{message}")
 
 
+# Slash command của CLI CHỈ chạy khi prompt LÀ đúng cái lệnh đó. Nhồi role vào trước là nó tụt
+# xuống đáy một khối văn bản và thành văn bản luôn: CLI đọc, trả lời, transcript PHỒNG THÊM thay
+# vì co lại. Regression từ 608d8db.
+#
+# Vì sao không ai thấy: run vẫn kết thúc 'ok' (CLI trả lời một câu hỏi, đâu có lỗi gì), VÀ
+# runs.prompt lưu signal["message"] THÔ chứ không phải prompt đã nhồi (xem start_run ở run_loop).
+# Tức là thứ CLI thật sự nhận không được ghi lại ở đâu cả — không có audit nào để đối chiếu, nên
+# guard phải soi thẳng inject_prompt.
+#
+# fullmatch CÓ CHỦ Ý, không phải startswith("/"): "/home/thanh/x" và "run /compact when done"
+# KHÔNG phải lệnh, chúng vẫn phải được nhồi role như mọi signal khác.
+_SLASH_CMD = re.compile(r"/[A-Za-z][\w-]*(\s[\s\S]*)?\Z")
+
+
+def _is_slash_cmd(message):
+    """Message này có PHẢI bản thân một lệnh slash không."""
+    return bool(_SLASH_CMD.match(str(message or "").strip()))
+
+
+def inject_prompt(target, message, from_role=""):
+    """Prompt THỰC SỰ đi vào CLI cho một signal.
+
+    Chỉ claude được đi thẳng: codex/agy nhận `/compact` ra sao thì chưa đo, nên giữ NGUYÊN đường
+    cũ cho chúng — đổi một lỗi đã biết lấy một lỗi chưa biết thì không phải là sửa.
+    Mất khối role đúng một lượt là có chủ ý: lượt compact không làm việc của vai."""
+    if _is_slash_cmd(message) and engine_name_of_session(target) == "claude":
+        return str(message).strip()
+    return _prepend_role(target.get("cwd", ""), target["name"], message, from_role)
+
+
 # ─── Skill templates (liệt kê vai/role cho dropdown spawn) ────────────────────
 
 # Template vai: ưu tiên thư mục CẠNH CHƯƠNG TRÌNH (người dùng bản đóng gói thêm vai của mình vào
@@ -3813,8 +3843,8 @@ async def process_signal(signal):
             # Prepend role + SKILL vào MỖI inject → role không trôi khi history dài (xem _prepend_role).
             # from_session lưu TÊN VAI người gửi (xem enqueue_signal) → đưa thẳng vào prompt để
             # agent biết báo cáo ngược cho ai. Rỗng/'user' = người dùng chat, không phải agent.
-            inject_msg = _prepend_role(target.get("cwd", ""), target["name"], signal["message"],
-                                       signal.get("from_session", ""))
+            # Ngoại lệ DUY NHẤT: signal bản thân nó là một lệnh slash (xem inject_prompt).
+            inject_msg = inject_prompt(target, signal["message"], signal.get("from_session", ""))
             while True:
                 try:
                     res = await engine.run(target, inject_msg, on_event=on_event, dry_run=dry)
