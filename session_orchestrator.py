@@ -18,6 +18,8 @@ An toàn (nền từ Phase A):
 Env:
   ORCH_DB              tên DB (default "orchestrator") → ~/.session_orch_db/<name>.db
   ORCH_DRY_RUN         "1" = không gọi claude thật, trả stub (default "0")
+  ORCH_DEV_MODE        "1" = chế độ dev: nút mở project là card nvim thay vì trình quản lý
+                       file của OS (default "0"; cờ `--dev` cũng bật)
   ORCH_POLL_INTERVAL   giây giữa các lần poll (default 5)
   ORCH_MAX_CONCURRENT  số session chạy song song tối đa (default 3)
   ORCH_STREAM          "1" = stream transcript (thinking/tool_use/text) real-time (default 1)
@@ -129,6 +131,12 @@ DEFAULT_WORKSPACE = "default"
 # API mà không nói group nào, nên KHÔNG bao giờ xoá được: xoá là có workspace mồ côi.
 DEFAULT_GROUP = "grp_default"
 DRY_RUN = os.environ.get("ORCH_DRY_RUN", "0") == "1"
+# Chế độ dev: nút "mở project" của một session mở card nvim (xem editor_start) thay vì trình
+# quản lý file của OS (xem folder_open). MẶC ĐỊNH TẮT — người dùng không lập trình mở nvim ra
+# là mắc cạn ở đó. Chọn lúc KHỞI ĐỘNG, không có công tắc trên UI: chế độ quyết định card nào
+# mở được, mà card thì sống trong tmux qua cả restart — bật tắt giữa phiên là dashboard nói một
+# đằng, tmux giữ một nẻo.
+DEV_MODE = os.environ.get("ORCH_DEV_MODE", "0") == "1"
 POLL_INTERVAL = int(os.environ.get("ORCH_POLL_INTERVAL", "5"))
 MAX_CONCURRENT = int(os.environ.get("ORCH_MAX_CONCURRENT", "3"))
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
@@ -1532,6 +1540,62 @@ async def _mcp_probe(url, token):
     except httpx.HTTPError:
         return "unreachable", 0, "could not reach the server"
     return _probe_http_error(r) or ("connected", _count_tools(r.text), "")
+
+
+# ─── Mở thư mục project bằng trình quản lý file CỦA HỆ ĐIỀU HÀNH ──────────────
+# Đây là hành vi MẶC ĐỊNH của nút "mở project"; card nvim ngay bên dưới chỉ dành cho DEV_MODE.
+# Finder / File Explorer / Nautilus là thứ người dùng đã biết dùng từ trước khi gặp phần mềm này.
+#
+# Path LẤY TỪ DB theo session id, KHÔNG BAO GIỜ nhận từ body request: nhận path của client là
+# biến endpoint này thành "mở giùm tôi thư mục bất kỳ trên máy chủ" cho bất cứ ai gọi được
+# dashboard. Client chỉ được nói MỞ CỦA SESSION NÀO.
+
+
+def folder_open_argv():
+    """Lệnh mở thư mục của OS đang chạy."""
+    if sys.platform == "darwin":
+        return ["open"]
+    if sys.platform.startswith("win"):
+        return ["explorer"]
+    return ["xdg-open"]
+
+
+def folder_open_why():
+    """'' nếu mở được, ngược lại là lý do NGẮN cho người dùng đọc.
+
+    Linux không có DISPLAY/WAYLAND_DISPLAY (Docker, server headless, ssh không -X) thì xdg-open
+    thoát êm mà chẳng mở gì cả — nút thành nút chết KHÔNG báo lỗi, là kiểu hỏng tệ nhất. Thà nói
+    thẳng là máy chạy orchestrator không có desktop nào để mở."""
+    argv = folder_open_argv()
+    if not shutil.which(argv[0]):
+        return f"could not find '{argv[0]}' on the machine running the orchestrator"
+    if argv[0] == "xdg-open" and not (os.environ.get("DISPLAY")
+                                      or os.environ.get("WAYLAND_DISPLAY")):
+        return ("the orchestrator is running without a desktop session (headless server, or a "
+                "container), so it has no file manager to open — open the folder on your own "
+                "machine instead")
+    return ""
+
+
+async def folder_open(path):
+    """Mở `path` trong trình quản lý file. OSError kèm lý do đọc được nếu không mở được."""
+    why = folder_open_why()
+    if why:
+        raise OSError(why)
+    argv = [*folder_open_argv(), str(path)]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        rc = await asyncio.wait_for(proc.wait(), 5)
+    except asyncio.TimeoutError:
+        return          # cửa sổ đã mở, chỉ là lệnh chưa chịu thoát — không phải lỗi
+    except OSError as e:
+        raise OSError(f"could not start {argv[0]}: {e}") from e
+    # explorer.exe TRẢ 1 KHI THÀNH CÔNG — hành vi có thật của Windows, không phải bug ở đây. Kiểm
+    # returncode trên Windows là mọi lần bấm đều báo lỗi dù cửa sổ đã hiện ra.
+    if rc and not sys.platform.startswith("win"):
+        raise OSError(f"{argv[0]} exited {rc}")
 
 
 # ─── Neovim trong trình duyệt (card trên canvas) ──────────────────────────────
@@ -4136,6 +4200,7 @@ def build_app():
         _pty, _pty_why = pty_backend()
         return JSONResponse({"status": "ok", "server": "Session-Orchestrator",
                              "dry_run": DRY_RUN,
+                             "dev_mode": DEV_MODE,
                              "embedded_terminal": _pty is not None,
                              "embedded_terminal_reason": _pty_why,
                              "default_effort": DEFAULT_EFFORT,
@@ -4336,6 +4401,24 @@ def build_app():
 
     async def api_stop(request: Request):
         return await _set_status(request, "stopped")
+
+    async def api_folder_open(request: Request):
+        """Mở thư mục project của session trong trình quản lý file của OS (chế độ mặc định).
+
+        Path lấy từ DB theo session id, KHÔNG từ body — xem chú thích ở folder_open."""
+        body = await request.json()
+        s = get_session(body.get("session") or "")
+        if not s:
+            return JSONResponse({"error": "session does not exist"}, status_code=404)
+        cwd = (s.get("cwd") or "").strip()
+        if not cwd or not Path(cwd).is_dir():
+            return JSONResponse({"error": f"not a folder: {cwd or '(session has no cwd)'}"},
+                                status_code=400)
+        try:
+            await folder_open(cwd)
+        except OSError as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"ok": True, "path": cwd})
 
     async def api_editor(request: Request):
         """Các card editor đang mở (list rỗng = chưa mở cái nào)."""
@@ -5325,6 +5408,7 @@ def build_app():
         Route("/api/sessions/{sid}/resume", api_resume, methods=["POST"]),
         Route("/api/sessions/{sid}/stop", api_stop, methods=["POST"]),
         Route("/api/sessions/{sid}/kill", api_kill, methods=["POST"]),
+        Route("/api/folder/open", api_folder_open, methods=["POST"]),
         Route("/api/editor", api_editor),
         Route("/api/editor/open", api_editor_open, methods=["POST"]),
         Route("/api/editor/focus", api_editor_focus, methods=["POST"]),
@@ -5448,6 +5532,10 @@ def main():
     # KHÔNG required: chạy không tham số = `serve`. Người dùng Windows double-click file .exe
     # không truyền được argv — argparse required=True sẽ in usage rồi exit(2), cửa sổ console
     # nháy một cái là mất, không kịp đọc gì. 'serve' cũng là lệnh thực tế 99% người dùng cần.
+    # Cờ ở parser gốc chứ không ở subparser 'serve': chạy không tham số cũng là serve, nên
+    # `--dev` phải dùng được mà không cần gõ 'serve' (dùng: `... --dev` hoặc `... --dev serve`).
+    p.add_argument("--dev", action="store_true",
+                   help="chế độ dev: nút mở project mở card nvim thay vì trình quản lý file")
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("init")
     sub.add_parser("once")
@@ -5458,6 +5546,9 @@ def main():
     sub.add_parser("list-runs")
 
     args = p.parse_args()
+    if args.dev:
+        global DEV_MODE
+        DEV_MODE = True
     cmd = args.cmd or "serve"
     if cmd == "init":
         init_db()

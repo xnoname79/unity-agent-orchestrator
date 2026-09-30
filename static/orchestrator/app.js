@@ -77,6 +77,9 @@ let DAILY_STEP = 10;  // số run cộng thêm mỗi lần bấm Allow; đồng 
 let DEFAULT_EFFORT = "high";  // nhãn cho option "" ở picker effort; đồng bộ từ /health lúc load.
 let PAIR_CAP = 4;        // trần ping-pong mỗi cặp agent; đồng bộ từ /health.
 let PAIR_WINDOW_MIN = 60;  // cửa sổ đếm, phút; đồng bộ từ /health.
+// Chế độ dev (cờ `--dev` / ORCH_DEV_MODE ở server, đồng bộ từ /health): nút mở project mở
+// card nvim thay vì trình quản lý file của OS. Mặc định TẮT — xem DEV_MODE ở backend.
+let DEV = false;
 
 let openRunId = null;   // run đang mở trong drawer (null = đóng)
 let currentWS = "";     // workspace đang lọc ("" = tất cả, admin view)
@@ -1295,6 +1298,15 @@ async function openEditor(sid) {
 }
 window.openEditor = openEditor;
 
+// Chế độ mặc định của nút mở project: trình quản lý file của OS (Finder/Explorer/Nautilus),
+// KHÔNG phải card trên canvas. Không refreshAll — server không đổi state nào cả, chỉ mở một cửa
+// sổ trên máy đang chạy orchestrator. Máy đó không có desktop thì lỗi nói rõ (xem folder_open_why).
+async function openFolder(sid) {
+  try { await api("/api/folder/open", "POST", { session: sid }); }
+  catch (e) { alert("Could not open the folder: " + e); }
+}
+window.openFolder = openFolder;
+
 async function closeEditor(sid, name) {
   if (!confirm(`Close the editor for '${name}'?\n\nIts nvim session is killed — unsaved buffers `
                + `are lost (nvim leaves a swap file to :recover from).`))
@@ -1504,9 +1516,14 @@ function quickBtns(s, id) {
   if (s.skill_missing?.length)
     b.push(btn("warn", `SKILL missing in ${s.skill_missing.join(", ")} — copy it from .claude`,
       `act('/api/sessions/${id}/skill/sync')`, ic("book", "sm")));
+  // Một nút, hai chế độ (xem DEV). Người dùng thường mở thư mục bằng trình quản lý file của
+  // máy họ; chỉ chế độ dev mới mở card nvim trên canvas.
   if ((s.cwd || "").trim())
-    b.push(btn("", "Open this session's project folder in nvim — as many editors as you like",
-      `openEditor('${id}')`, ic("edit", "sm")));
+    b.push(DEV
+      ? btn("", "Open this session's project folder in nvim — as many editors as you like",
+            `openEditor('${id}')`, ic("edit", "sm"))
+      : btn("", "Open this project folder in your file manager",
+            `openFolder('${id}')`, ic("folder", "sm")));
   return b.join("");
 }
 
@@ -2931,6 +2948,7 @@ async function refreshAll() {
     if (health.default_effort) DEFAULT_EFFORT = health.default_effort;
     if (health.pair_signal_cap) PAIR_CAP = health.pair_signal_cap;
     if (health.pair_signal_window_min) PAIR_WINDOW_MIN = health.pair_signal_window_min;
+    DEV = !!health.dev_mode;
     $("dry").hidden = !health.dry_run;
 
     if (!PANE) {

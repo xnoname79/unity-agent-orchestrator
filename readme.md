@@ -132,10 +132,10 @@ them. Install at least one.
 | **Codex CLI** | [learn.chatgpt.com/docs/codex/cli](https://learn.chatgpt.com/docs/codex/cli#getting-started) |
 | **Antigravity CLI** | [antigravity.google/docs/cli](https://antigravity.google/docs/cli/reference) — the `agy` command, for Google models |
 
-Optional: **neovim** + **tmux** give you the editor card (tmux keeps nvim alive when you close
-the browser tab), and [diffview.nvim](https://github.com/sindrets/diffview.nvim) adds that card's
-**git** tab. Without them the card is simply absent — nothing else changes. Override the binaries
-with `ORCH_NVIM_BIN` / `ORCH_TMUX_BIN`.
+Nothing else is required. **neovim** + **tmux** are optional and only matter in
+[developer mode](#developer-mode): there they turn the project button into an editor card on the
+canvas, and [diffview.nvim](https://github.com/sindrets/diffview.nvim) adds that card's **git**
+tab. Override the binaries with `ORCH_NVIM_BIN` / `ORCH_TMUX_BIN`.
 
 > The orchestrator finds the CLIs through the **PATH of its own process**. Install one while it is
 > running and you have to restart it. If `which claude` prints a path but the dashboard still says
@@ -402,6 +402,32 @@ Peer routing is deliberately *not* baked into playbooks — the roster changes a
 go, so every signal carries a reminder to call `list_agents` instead of trusting a remembered
 role name.
 
+### Developer mode
+
+Select an agent's card and the 📁 button opens its project folder in **your own file manager** —
+Finder on macOS, File Explorer on Windows, whatever handles folders on Linux. That is the default,
+and it needs nothing installed.
+
+Start the orchestrator with `--dev` (or `ORCH_DEV_MODE=1`) and the same button instead opens the
+project in an **editor card** on the canvas: neovim in a terminal, wrapped in tmux so closing the
+browser tab only detaches, with a **git** tab that is
+[diffview.nvim](https://github.com/sindrets/diffview.nvim) side-by-side over the working tree.
+
+```bash
+python3 session_orchestrator.py --dev serve
+```
+
+The mode is chosen at startup and there is no switch in the UI. Editor cards live in tmux and
+outlive the orchestrator, so a card opened in developer mode is still there after a plain
+restart — the flag only decides what the button opens next.
+
+Two things the folder button cannot do. It opens the folder on the machine **running the
+orchestrator**, so it does nothing useful when you reach the dashboard from another computer; and
+a headless install (a container, a remote server) has no file manager at all, which it will tell
+you rather than failing quietly.
+
+Guard: `python3 check_editor.py`.
+
 ### OpenAI-compatible API
 
 ```python
@@ -431,6 +457,7 @@ Two ways it differs from OpenAI:
 ```bash
 python3 session_orchestrator.py init            # create the database
 python3 session_orchestrator.py serve           # dashboard + API + MCP
+python3 session_orchestrator.py --dev serve      # …with the nvim editor card
 python3 session_orchestrator.py once            # process pending signals once
 python3 session_orchestrator.py loop            # polling daemon, no web server
 python3 session_orchestrator.py list-sessions   # also: list-signals, list-runs
@@ -451,6 +478,7 @@ python3 session_orchestrator.py list-sessions   # also: list-signals, list-runs
 | `ORCH_MAX_CONCURRENT` | `3` | Agent runs in flight at once |
 | `ORCH_CHAT_TIMEOUT` | `900` | Seconds one `/v1` turn may take |
 | `ORCH_DRY_RUN` | `0` | Simulate runs without calling any CLI |
+| `ORCH_DEV_MODE` | `0` | Open projects in an nvim card instead of the OS file manager (same as `--dev`) |
 
 Values can also live in a `.env` file placed **next to the executable** — on Windows that means
 inside the unzipped folder, beside `agent-orch.exe`. Full list in the header of

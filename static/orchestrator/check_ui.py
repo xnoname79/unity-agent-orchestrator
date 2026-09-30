@@ -187,6 +187,21 @@ if "cli-tag" not in JS or ".cli-tag" not in style:
 check("the MCP modal speaks for every CLI", gaps,
       "an agent on codex or agy reads a different file than claude")
 
+# 12 · Nút "mở project" có HAI chế độ và mặc định KHÔNG phải nvim. Hỏng im lặng: DEV không còn
+# được nạp từ /health, nên nó mãi là false và người chạy `--dev` mất card nvim; hoặc nhánh DEV bị
+# gộp lại thành một nút, và người dùng không lập trình bấm vào là rơi thẳng vào nvim.
+gaps = set()
+if "DEV = !!health.dev_mode" not in JS:
+    gaps.add("DEV must come from /health — hardcoded, --dev on the server changes nothing")
+if "window.openFolder = openFolder" not in JS:
+    gaps.add("openFolder must be exported — it is only reachable from an inline handler")
+if '"/api/folder/open"' not in JS:
+    gaps.add("the call to /api/folder/open — the OS file manager is the DEFAULT mode")
+if "b.push(DEV" not in JS:
+    gaps.add("the card's quick button must branch on DEV, not open nvim for everyone")
+check("the project button opens a folder unless the server is in dev mode", gaps,
+      "nvim is a dead end for someone who does not know :q")
+
 if fails:
     print("\n" + "\n\n".join(fails))
     sys.exit(1)

@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Guards for the editor card (nvim).
+"""Guards for the editor card (nvim) and the folder button that replaced it by default.
+
+The "open this project" button has two modes. Without `--dev` it hands the folder to the OS file
+manager; with `--dev` it opens the nvim card. The nvim half must keep its old promises, and the
+folder half fails in ways nobody notices:
+
+  - every OS needs its own command, and a developer can only run one of the three. `explorer.exe`
+    returning 1 ON SUCCESS is the trap: check the exit code there and every click reports an error
+    while the window is already open;
+  - a headless orchestrator (container, remote server) has no file manager. `xdg-open` exits
+    quietly, so the button becomes a dead button that never says why — it has to say why;
+  - the folder comes from the session row in the DB. The moment a path in the request body can
+    reach the file manager, the endpoint opens ANY folder on the host for anyone who can reach
+    the dashboard.
 
 The card replaced `code serve-web`, and the whole point was to stop owning process state:
 
@@ -105,6 +118,126 @@ check("odd session ids cannot produce an illegal tmux name",
 check("a session with no cwd falls back to HOME",
       str(Path.home()) in so.editor_argv({"id": SID, "name": "x", "cwd": ""}) + [str(Path.home())],
       str(so.editor_argv({"id": SID, "name": "x", "cwd": ""})))
+
+
+# ── mở thư mục bằng OS: chế độ MẶC ĐỊNH, chạy ở mọi máy vì không cần nvim ────
+# Giả lập cả ba OS. Người viết code chỉ chạy được một cái, mà cả ba đều phải đúng — và cái sai
+# im lặng nhất (explorer.exe trả 1 khi thành công) chỉ lộ ra trên Windows.
+_PLAT, _WHICH = sys.platform, shutil.which
+BIN = tmp / "bin"
+BIN.mkdir()
+LOG = tmp / "opened.log"
+# Trình quản lý file giả: GHI LẠI path nó được đưa (để chứng minh path lấy từ DB, không từ body)
+# và trả đúng mã lỗi mà test yêu cầu qua FAKE_RC.
+for nm in ("xdg-open", "explorer", "open"):
+    (BIN / nm).write_text(f'#!/bin/sh\necho "$1" >> {LOG}\nexit ${{FAKE_RC:-0}}\n',
+                          encoding="utf-8")
+    (BIN / nm).chmod(0o755)
+os.environ["PATH"] = str(BIN) + os.pathsep + os.environ.get("PATH", "")
+for _k in ("DISPLAY", "WAYLAND_DISPLAY"):
+    os.environ.pop(_k, None)
+
+
+def _bin_which(n):
+    """shutil.which() ĐỌC sys.platform: giả lập win32 là nó đi tìm explorer.EXE theo PATHEXT và
+    không thấy script /bin/sh của test. Quirk CỦA TEST, không phải của tính năng — Windows thật
+    có explorer.EXE nằm sẵn trên PATH. Nên tra thẳng trong BIN trước."""
+    return str(BIN / n) if (BIN / n).exists() else _WHICH(n)
+
+
+def _as(platform, which=None):
+    """Chạy tiếp như thể đang trên OS này (và tuỳ chọn: không tìm thấy binary nào)."""
+    so.sys.platform = platform
+    so.shutil.which = which or _bin_which
+
+
+def _restore_platform():
+    so.sys.platform, so.shutil.which = _PLAT, _WHICH
+
+
+_as("darwin")
+check("mac hands the folder to Finder", so.folder_open_argv() == ["open"],
+      str(so.folder_open_argv()))
+check("and does not ask mac for a DISPLAY", so.folder_open_why() == "", so.folder_open_why())
+_as("win32")
+check("Windows hands it to File Explorer", so.folder_open_argv() == ["explorer"],
+      str(so.folder_open_argv()))
+check("and does not ask Windows for a DISPLAY either", so.folder_open_why() == "",
+      so.folder_open_why())
+_as("linux")
+check("Linux goes through xdg-open", so.folder_open_argv() == ["xdg-open"],
+      str(so.folder_open_argv()))
+check("a headless orchestrator SAYS it has no desktop instead of opening nothing",
+      "desktop" in so.folder_open_why(), so.folder_open_why() or "(said nothing)")
+os.environ["DISPLAY"] = ":0"
+check("with a desktop session it goes ahead", so.folder_open_why() == "", so.folder_open_why())
+_as("linux", lambda n: None)
+check("a file manager that is not installed is named, not swallowed",
+      "xdg-open" in so.folder_open_why(), so.folder_open_why() or "(said nothing)")
+
+if os.name == "posix":
+    _as("win32")
+    os.environ["FAKE_RC"] = "1"
+    try:
+        asyncio.run(so.folder_open(tmp))
+        win_ok, win_why = True, ""
+    except OSError as e:
+        win_ok, win_why = False, str(e)
+    check("explorer.exe exiting 1 is SUCCESS on Windows — the window is already open",
+          win_ok, win_why)
+    _as("linux")
+    try:
+        asyncio.run(so.folder_open(tmp))
+        lin_ok = False
+    except OSError:
+        lin_ok = True
+    check("but a non-zero exit anywhere else is a real failure", lin_ok,
+          "exit 1 was swallowed — a broken xdg-open would look like success")
+    os.environ.pop("FAKE_RC", None)
+else:
+    print("SKIP the exit-code checks — the fake file manager needs a POSIX shell")
+_restore_platform()
+
+FSID = "folder-guard-1"
+
+
+async def main_folder():
+    """Endpoint mở thư mục. Không cần nvim, nên chạy ở mọi máy."""
+    app = so.build_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://test") as c:
+        check("/health tells the dashboard which mode the server is in",
+              "dev_mode" in (await c.get("/health")).json(),
+              str((await c.get("/health")).json())[:160])
+
+        r = await c.post("/api/folder/open", json={"session": "does-not-exist"})
+        check("opening the folder of an unknown session is 404", r.status_code == 404,
+              f"{r.status_code} {r.text[:80]}")
+
+        await c.post("/api/sessions", json={"id": FSID, "name": "folder", "cwd": str(tmp)})
+        if os.name == "posix":
+            LOG.unlink(missing_ok=True)
+            # Gửi kèm một path KHÁC trong body: nó phải bị bỏ qua hoàn toàn. Nếu không, endpoint
+            # này mở được thư mục bất kỳ trên máy chủ cho bất cứ ai gọi được dashboard.
+            r = await c.post("/api/folder/open", json={"session": FSID, "path": "/etc"})
+            opened = LOG.read_text(encoding="utf-8").split() if LOG.exists() else []
+            check("it opens the folder recorded on the session",
+                  r.status_code == 200 and r.json().get("path") == str(tmp),
+                  f"{r.status_code} {r.text[:120]}")
+            check("a path in the request body reaches nothing",
+                  opened == [str(tmp)], str(opened))
+
+        # cwd trỏ vào thư mục không tồn tại → 400 nói rõ, không phải mở im lặng thất bại.
+        conn = so._conn()
+        conn.execute("UPDATE sessions SET cwd = ? WHERE id = ?", (str(tmp / "gone"), FSID))
+        conn.commit()
+        conn.close()
+        r = await c.post("/api/folder/open", json={"session": FSID})
+        check("a session whose folder is gone is refused with a reason",
+              r.status_code == 400 and "not a folder" in r.text, f"{r.status_code} {r.text[:100]}")
+
+
+asyncio.run(main_folder())
 
 
 # Runner CI không cài neovim, và Windows cũng không có tmux. Phần argv/tên phiên vẫn kiểm được
