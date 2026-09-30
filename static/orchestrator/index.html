@@ -749,9 +749,12 @@
       <div class="form-card">
         <h3><svg class="ic"><use href="#i-rocket"/></svg> Spawn agent</h3>
         <div class="hint">The orchestrator runs <code>claude -p</code> to create a new session.</div>
+        <label>Group</label>
+        <div id="sp-group-cards" class="pick-grid"></div>
         <label>Workspace</label>
         <div id="sp-ws-cards" class="pick-grid"></div>
-        <div class="hint">Leave Working dir empty on a non-default workspace and the agent runs in that workspace's folder.</div>
+        <div class="hint">Leave Working dir empty and the agent runs in the
+          workspace's own folder.</div>
         <label>Role name</label>
         <input id="sp-role" placeholder="e.g. Backend Dev" oninput="spRoleSlug()">
         <div class="hint" id="sp-role-hint"></div>

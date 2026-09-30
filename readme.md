@@ -356,11 +356,18 @@ workspaces under the default group — no workspace, agent, signal or folder is 
 Nothing below the dashboard knows groups exist: routing, budgets and isolation all still resolve
 by workspace, so filing a workspace somewhere else cannot change who can signal whom.
 
+There is also a workspace literally named `default`. It is not one of yours — it is where the API
+puts anything sent without a `workspace_id`, and where a pre-workspaces database was migrated to.
+The dashboard hides it while it is empty. Put an agent in it and it reappears, because a hidden
+workspace holding agents would mean no terminal and no way to delete them.
+
 Guard: `python3 check_groups.py`.
 
 ### Spawn an agent
 
-Use **Spawn agent** on the dashboard. Four fields matter:
+Use **Spawn agent** on the dashboard. It starts with **where**: pick a group, then one of that
+group's workspaces — the form never lists every workspace on the machine at once, which is the
+thing groups exist to avoid. The group defaults to whichever one you have open. Then four fields:
 
 * **Role name** — the agent's identity. Signals are routed by it, so it must be unique in the
   workspace. It also names the skill directory the playbook is written to.

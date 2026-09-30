@@ -4330,14 +4330,25 @@ def build_app():
 
     # Workspaces (multi-tenant)
     async def api_workspaces(request: Request):
-        """GET: list mọi workspace (kèm số session để dashboard hiển thị)."""
+        """GET: list workspace cho dashboard (kèm số session).
+
+        Workspace 'default' KHÔNG phải thứ người dùng tạo: nó là chỗ trú của dữ liệu
+        single-tenant cũ và là fallback cho mọi request không kèm workspace_id (xem
+        DEFAULT_WORKSPACE, _validate_workspace). Rỗng thì nó chỉ là một card thừa trên màn Home,
+        nên giấu đi.
+
+        CÒN SESSION thì PHẢI hiện: giấu một workspace đang có agent là làm mấy agent đó vô hình —
+        không mở được terminal, không xoá được, mà signal vẫn chạy. Nên điều kiện là "rỗng", không
+        phải "là default". Bản ghi trong DB không đụng tới: nó được seed lại mỗi lần init_db, và
+        34 chỗ trong file này vẫn rơi về nó."""
         counts = {}
         conn = _conn()
         for r in conn.execute("SELECT workspace_id, COUNT(*) c FROM sessions GROUP BY workspace_id").fetchall():
             counts[r["workspace_id"]] = r["c"]
         conn.close()
         out = [{**w, "sessions": counts.get(w["id"], 0)} for w in list_workspaces()]
-        return JSONResponse(out)
+        return JSONResponse([w for w in out
+                             if w["id"] != DEFAULT_WORKSPACE or w["sessions"]])
 
     async def api_create_workspace(request: Request):
         """POST: tạo workspace mới — orchestrator sinh id + mkdir thư mục ghim. Trả {id, root_dir}."""

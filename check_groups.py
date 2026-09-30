@@ -10,6 +10,10 @@ The ways that goes wrong are all quiet ones:
   - every workspace must always be in a group that exists. A workspace filed under a group id
     nobody has is invisible on Home while still running agents;
   - the default group is where migrated and API-created workspaces land, so it cannot be deleted;
+  - the default WORKSPACE is a different thing with a similar name: an internal fallback, seeded
+    on every startup and referenced from three dozen places. The dashboard hides it while it is
+    empty, but hiding one that still holds agents would make those agents unreachable — no
+    terminal, no way to delete them, while their signals keep running;
   - a group is not a tenancy boundary. Moving a workspace between groups must leave its sessions,
     its folder and its signals exactly where they were.
 
@@ -129,6 +133,26 @@ async def main():
         left = {g["id"] for g in (await c.get("/api/groups")).json()}
         check("only the groups that should be left are left",
               left == {so.DEFAULT_GROUP, hobby["id"]}, str(sorted(left)))
+
+        # ── workspace 'default': ẩn khi rỗng, HIỆN khi có người ở ────────────
+        listed = (await c.get("/api/workspaces")).json()
+        check("the default workspace stays off the dashboard while it is empty",
+              not any(w["id"] == so.DEFAULT_WORKSPACE for w in listed),
+              str([w["id"] for w in listed]))
+        so.register_session("grp-orphan-1", "orphan", workspace_id=so.DEFAULT_WORKSPACE)
+        listed = (await c.get("/api/workspaces")).json()
+        row = [w for w in listed if w["id"] == so.DEFAULT_WORKSPACE]
+        check("but an agent living in it brings it straight back",
+              len(row) == 1 and row[0]["sessions"] == 1,
+              "hiding it now would leave that agent with no terminal and no way to delete it")
+        so.unregister_session("grp-orphan-1")
+        listed = (await c.get("/api/workspaces")).json()
+        check("and it goes away again once that agent is gone",
+              not any(w["id"] == so.DEFAULT_WORKSPACE for w in listed),
+              str([w["id"] for w in listed]))
+        check("the row itself was never deleted — it is the fallback for every request "
+              "that carries no workspace_id",
+              so.get_workspace(so.DEFAULT_WORKSPACE) is not None)
 
 asyncio.run(main())
 db.unlink(missing_ok=True)

@@ -236,6 +236,28 @@ if ".node.paired > .folder-card" not in style:
 check("the folder card browses and scrolls inside the canvas", gaps,
       "it replaced a window that opened outside the orchestrator")
 
+# 14 · Form spawn phải đi HAI bước: group rồi mới workspace. Hỏng im lặng theo hai kiểu:
+#   - quay lại danh sách phẳng mọi workspace của cả máy — vẫn spawn được, chỉ là dễ spawn nhầm
+#     chỗ, đúng thứ group sinh ra để chữa;
+#   - workspace lại có mặc định. Card 'default' đã bỏ khỏi form, nên không chọn mà vẫn gửi được
+#     là agent rơi vào workspace fallback, nơi không hiện trên màn Home.
+gaps = set()
+if 'pickCard("group"' not in JS:
+    gaps.add("the group step — without it the form is a flat list again")
+if "wsOfGroup(spSel.group)" not in JS:
+    gaps.add("the workspace list must be filtered by the picked group")
+if "spSel = { group:" not in JS:
+    gaps.add("spSel must carry the picked group")
+if '!spSel.ws ? "Pick a workspace"' not in JS:
+    gaps.add("workspace has no default any more, so the form must refuse an empty one")
+if 'name: "default"' in JS:
+    gaps.add("the 'default' workspace card is gone — a leftover puts it back in the picker")
+if "wsOfGroup(g.id).length" not in JS:
+    gaps.add("a group card must count the workspaces the grid actually shows, "
+             "not the server's count of every row")
+check("spawning goes through a group first", gaps,
+      "a flat list of every workspace on the machine is what groups exist to replace")
+
 if fails:
     print("\n" + "\n\n".join(fails))
     sys.exit(1)

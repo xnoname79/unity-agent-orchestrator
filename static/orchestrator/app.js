@@ -429,7 +429,10 @@ function renderHome() {
 }
 
 function groupCardHtml(g) {
-  const n = g.workspaces;
+  // Đếm từ WORKSPACES chứ không dùng g.workspaces của server: server đếm MỌI hàng, còn
+  // /api/workspaces giấu workspace 'default' lúc nó rỗng. Lấy hai nguồn khác nhau là card ghi
+  // "3 workspaces" mà mở ra chỉ thấy 2.
+  const n = wsOfGroup(g.id).length;
   return `<div class="ws-card" onclick="openGroup('${esc(g.id)}')">
     <h3>${esc(g.name)}</h3>
     <div class="ws-id">${esc(g.id)}</div>
@@ -2599,7 +2602,7 @@ const MODEL_TABS = [
 const MODEL_CUSTOM = { id: "__custom", name: "Custom…",
   desc: "Type another model id / alias (claude: opus-4-7, opus-4-6…; codex: 'codex:<slug>'; agy: 'agy:<slug>' — `agy models` also lists claude-* and gpt-oss-*)" };
 let SP_TEMPLATES = [];                          // cache /api/skills/templates
-let spSel = { ws: "", template: "", model: "" };  // lựa chọn hiện tại của form spawn
+let spSel = { group: "", ws: "", template: "", model: "" };  // lựa chọn hiện tại của form spawn
 let spTab = MODEL_TABS[0].engine;                 // tab engine đang mở ở picker Model
 
 // Format tên role thành slug kiểu folder: bỏ dấu tiếng Việt, chữ thường, [a-z0-9-].
@@ -2632,13 +2635,25 @@ function pickCard(group, val, inner, title) {
 function renderSpawnPickers() {
   const wsBox = $("sp-ws-cards");
   if (!wsBox) return;
-  const wsItems = [{ id: "", name: "default", note: "shared workspace — pick the cwd below" }]
-    .concat(WORKSPACES.filter((w) => w.id !== "default").map((w) => ({
-      id: w.id, name: w.name || w.id,
-      note: w.id + (w.status !== "active" ? " · " + w.status : ""),
-    })));
+  // Hai bước: group trước, workspace của group đó sau. Danh sách phẳng mọi workspace của cả máy
+  // là thứ group sinh ra để chữa — và ở đây nó còn mời người dùng spawn nhầm chỗ.
+  // Group đang chọn bám theo group đang MỞ trên màn Home: người dùng vừa vào "Hobby" rồi spawn
+  // thì gần như chắc chắn là spawn vào Hobby.
+  if (!GROUPS.some((g) => g.id === spSel.group))
+    spSel.group = GROUPS.some((g) => g.id === CURGROUP) ? CURGROUP : (GROUPS[0] || {}).id || "";
+  $("sp-group-cards").innerHTML = GROUPS.map((g) => {
+    const n = wsOfGroup(g.id).length;
+    return pickCard("group", g.id,
+      `<b>${esc(g.name)}</b><div class="pd">${n} workspace${n === 1 ? "" : "s"}</div>`);
+  }).join("") || `<div class="hint">No groups yet — create one on the left.</div>`;
+  const wsItems = wsOfGroup(spSel.group).map((w) => ({
+    id: w.id, name: w.name || w.id,
+    note: w.id + (w.status !== "active" ? " · " + w.status : ""),
+  }));
   wsBox.innerHTML = wsItems.map((w) =>
-    pickCard("ws", w.id, `<b>${esc(w.name)}</b><div class="pd">${esc(w.note)}</div>`)).join("");
+    pickCard("ws", w.id, `<b>${esc(w.name)}</b><div class="pd">${esc(w.note)}</div>`)).join("")
+    || `<div class="hint">No workspaces in this group yet — open it on the left and use
+        <b>New workspace</b>.</div>`;
   $("sp-template-cards").innerHTML = SP_TEMPLATES.length
     ? SP_TEMPLATES.map((t) => pickCard("template", t.name,
         `<b>${esc(t.name)}</b><div class="pd">${esc(t.description || "")}</div>`, t.description)).join("")
@@ -2688,6 +2703,9 @@ window.onModelCustomInput = onModelCustomInput;
 
 function spPick(group, val) {
   spSel[group] = val;
+  // Đổi group: workspace đang chọn thường không nằm trong group mới → bỏ chọn, đừng để form gửi
+  // một workspace không còn hiện trên màn hình.
+  if (group === "group" && !wsOfGroup(val).some((w) => w.id === spSel.ws)) spSel.ws = "";
   renderSpawnPickers();
 }
 window.spPick = spPick;
@@ -2910,8 +2928,10 @@ async function spawnAgent() {
   const model = spModel();
   const effort = $("sp-effort").value;
   // Mọi field phải có giá trị: agent thiếu cấu hình chỉ lộ ra ở run đầu tiên, lúc đó sửa đã tốn
-  // một session. Chặn ở đây rẻ hơn nhiều. (Workspace luôn có card 'default' được chọn sẵn.)
-  const missing = !name ? "Role name is required"
+  // một session. Chặn ở đây rẻ hơn nhiều. Workspace KHÔNG còn mặc định nữa — card 'default' đã
+  // bỏ, nên không chọn là không spawn.
+  const missing = !spSel.ws ? "Pick a workspace"
+    : !name ? "Role name is required"
     : !spSel.template ? "Pick a playbook template"
     : !cwd ? "Working dir is required"
     : !model ? (spSel.model === "__custom" ? "Type a custom model id" : "Pick a model")
@@ -2921,7 +2941,7 @@ async function spawnAgent() {
   try {
     const r = await api("/api/sessions/spawn", "POST", {
       name, cwd,
-      workspace_id: spSel.ws,               // "" = default; ≠ default thì cwd tự ghim
+      workspace_id: spSel.ws,               // luôn là workspace thật; cwd rỗng → thư mục của nó
       model,
       effort,
       // allowed_tools KHÔNG gửi: backend mặc định [] → bỏ cờ --allowedTools → CLI cho phép mọi
