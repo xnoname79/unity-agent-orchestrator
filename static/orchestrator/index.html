@@ -548,6 +548,38 @@
     text-overflow: ellipsis; white-space: nowrap; }
   .editor-card .term-slot { height: 560px; max-height: 72vh; }
 
+  /* Card thư mục — duyệt project ngay trong dashboard, không phải cửa sổ của OS */
+  .folder-card { width: 560px; max-width: 92vw; display: flex; flex-direction: column; padding: 0; }
+  .folder-head { display: flex; gap: 6px; align-items: center; padding: 7px 10px; min-width: 0;
+    border-bottom: 1px solid var(--border); font-size: 11.5px; cursor: grab; }
+  .folder-head .fld-ic { color: var(--blue); flex: none; }
+  .fld-crumb { display: flex; align-items: center; gap: 1px; min-width: 0; overflow: hidden; }
+  .fld-crumb button { padding: 1px 5px; font-size: 11.5px; background: transparent; border: none;
+    border-radius: 5px; color: var(--muted); white-space: nowrap; }
+  .fld-crumb button:hover { color: var(--text); background: var(--panel2); }
+  .fld-crumb button:last-child { color: var(--text); font-weight: 600; }
+  .fld-crumb .sep { color: var(--faint); flex: none; }
+  /* overflow: auto ĐI KÈM với .fld-body trong guard của listener wheel: lăn chuột ở đây là cuộn
+     danh sách, không phải zoom canvas. Bỏ một trong hai là danh sách dài thành không đọc được. */
+  .fld-body { height: 340px; max-height: 60vh; overflow: auto; padding: 4px; }
+  .fld-item { display: flex; align-items: center; gap: 7px; padding: 4px 8px; min-width: 0;
+    border-radius: 6px; cursor: pointer; font-size: 11.5px; }
+  .fld-item:hover { background: var(--panel2); }
+  .fld-item svg { color: var(--muted); flex: none; }
+  .fld-item.up svg { color: var(--blue); }
+  .fld-item .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fld-item .sz { margin-left: auto; flex: none; color: var(--faint);
+    font-variant-numeric: tabular-nums; }
+  /* 116px chứ không phải 104: đo ra "2026-09-18 15:18" cần đúng 104, tức là không còn
+     chút dư nào cho font khác hay locale khác. */
+  .fld-item .mt { flex: none; width: 116px; text-align: right; color: var(--faint); }
+  .fld-prev { padding: 6px 8px; }
+  .fld-prev pre { margin: 0; font-size: 11px; line-height: 1.55; white-space: pre-wrap;
+    word-break: break-word; color: var(--text); }
+  .fld-prev img { max-width: 100%; border: 1px solid var(--border);
+    border-radius: var(--r-ctl); }
+  .fld-note { padding: 6px 10px; color: var(--faint); font-size: 11px; line-height: 1.6; }
+
   /* ── Inspector (bên phải canvas) ──────────────────────────────────────── */
   .inspector { flex: none; width: 300px; background: var(--panel); border-left: 1px solid var(--border);
     display: flex; flex-direction: column; min-height: 0; }

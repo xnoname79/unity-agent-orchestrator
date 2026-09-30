@@ -193,14 +193,36 @@ check("the MCP modal speaks for every CLI", gaps,
 gaps = set()
 if "DEV = !!health.dev_mode" not in JS:
     gaps.add("DEV must come from /health — hardcoded, --dev on the server changes nothing")
-if "window.openFolder = openFolder" not in JS:
-    gaps.add("openFolder must be exported — it is only reachable from an inline handler")
-if '"/api/folder/open"' not in JS:
-    gaps.add("the call to /api/folder/open — the OS file manager is the DEFAULT mode")
+if "window.openFolderCard = openFolderCard" not in JS:
+    gaps.add("openFolderCard must be exported — it is only reachable from an inline handler")
 if "b.push(DEV" not in JS:
     gaps.add("the card's quick button must branch on DEV, not open nvim for everyone")
 check("the project button opens a folder unless the server is in dev mode", gaps,
       "nvim is a dead end for someone who does not know :q")
+
+# 13 · Card thư mục đọc cây qua HTTP và nằm trên canvas, nên nó dính hai cái bẫy riêng:
+#   - path nhồi vào inline onclick: một dấu nháy trong tên file là phá cả attribute, và tên file
+#     thì do project quyết chứ không do mình;
+#   - .fld-body phải có mặt ở CẢ guard của listener wheel LẪN CSS (overflow). Thiếu guard thì lăn
+#     chuột trong danh sách là zoom canvas; thiếu overflow thì danh sách dài không cuộn được.
+gaps = set()
+if "data-fdir" not in JS or "data-ffile" not in JS:
+    gaps.add("folder and file paths belong in data attributes, not in an inline onclick")
+if 'addEventListener("click", folderClick)' not in JS:
+    gaps.add("the delegated folderClick listener — cards are rebuilt on every canvas render")
+if "data-fcrumb" not in JS or "folderCrumbHtml(sid)" not in JS:
+    gaps.add("folderPaint must redraw the breadcrumb: it sits in the header, outside .fld-body, "
+             "so painting only the body leaves the path stuck at the project root")
+if '".term-slot, .fld-body, .cv-overlay"' not in JS:
+    gaps.add(".fld-body in the wheel guard — scrolling the list would zoom the canvas instead")
+if ".fld-body" not in style or "overflow: auto" not in style:
+    gaps.add(".fld-body { overflow: auto } — a long listing would have no way to scroll")
+if '"/api/folder/list"' not in JS and "/api/folder/list?session=" not in JS:
+    gaps.add("the call to /api/folder/list — the card has nothing to draw without it")
+if "window.openFolder = openFolder" not in JS:
+    gaps.add("openFolder stays exported — the card header offers the OS file manager as a way out")
+check("the folder card browses and scrolls inside the canvas", gaps,
+      "it replaced a window that opened outside the orchestrator")
 
 if fails:
     print("\n" + "\n\n".join(fails))

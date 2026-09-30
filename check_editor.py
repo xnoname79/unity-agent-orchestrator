@@ -12,7 +12,13 @@ folder half fails in ways nobody notices:
     quietly, so the button becomes a dead button that never says why — it has to say why;
   - the folder comes from the session row in the DB. The moment a path in the request body can
     reach the file manager, the endpoint opens ANY folder on the host for anyone who can reach
-    the dashboard.
+    the dashboard;
+  - the folder CARD reads the tree over HTTP, so its two endpoints are the ones that must stay
+    locked inside the project: `..`, an absolute path and a symlink out of the tree are all the
+    same bug, which is "read any file on the host over a GET". resolve() catches all three, a
+    string check on ".." catches only the first;
+  - a file is served with a content type THIS code picks. Hand a project's .html or .svg back as
+    itself and the browser runs it same-origin with the dashboard, which is stored XSS.
 
 The card replaced `code serve-web`, and the whole point was to stop owning process state:
 
@@ -227,6 +233,90 @@ async def main_folder():
             check("a path in the request body reaches nothing",
                   opened == [str(tmp)], str(opened))
 
+        # ── card thư mục: liệt kê + đọc file, KHOÁ trong cwd của session ──────
+        (tmp / "sub").mkdir(exist_ok=True)
+        (tmp / "sub" / "deep.txt").write_text("deeper\n", encoding="utf-8")
+        (tmp / "page.html").write_text("<script>alert(1)</script>", encoding="utf-8")
+        (tmp / "pic.svg").write_text('<svg onload="alert(1)"/>', encoding="utf-8")
+        (tmp / "img.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 32)
+        (tmp / "blob.bin").write_bytes(b"MZ\0\0binary junk")
+
+        r = (await c.get(f"/api/folder/list?session={FSID}")).json()
+        names = [d["name"] for d in r["dirs"]] + [f["name"] for f in r["files"]]
+        check("the card lists the project's own folders and files",
+              "sub" in names and "tracked.txt" in names, str(names)[:160])
+        check("hidden entries stay out of the browser — .git and .env are not for reading here",
+              not any(n.startswith(".") for n in names), str(names)[:160])
+        check("files carry a size and a timestamp to show",
+              all("size" in f and f["mtime"] for f in r["files"]), str(r["files"])[:160])
+        check("the root reports itself as the empty path", r["rel"] == "", str(r["rel"]))
+
+        r = (await c.get(f"/api/folder/list?session={FSID}&path=sub")).json()
+        check("descending a level works and says where it is",
+              r["rel"] == "sub" and [f["name"] for f in r["files"]] == ["deep.txt"], str(r)[:160])
+
+        # ── cả ba đường thoát khỏi project, cùng một cái chốt ─────────────────
+        for bad, why in ((".." , "a parent directory"), ("../..", "two levels up"),
+                         ("sub/../../etc", "a detour back out through .."),
+                         ("/etc", "an absolute path")):
+            r = await c.get(f"/api/folder/list?session={FSID}&path={bad}")
+            check(f"listing {why} is refused", r.status_code == 404,
+                  f"{bad} → {r.status_code} {r.text[:80]}")
+        try:
+            (tmp / "escape").symlink_to("/etc")
+        except OSError:
+            print("SKIP the symlink escape check — this machine will not create one")
+        else:
+            r = await c.get(f"/api/folder/list?session={FSID}&path=escape")
+            check("a symlink pointing out of the project is refused too",
+                  r.status_code == 404, f"{r.status_code} {r.text[:80]}")
+            r = await c.get(f"/api/folder/file?session={FSID}&path=escape/hostname")
+            check("and nothing can be read through it", r.status_code == 404,
+                  f"{r.status_code} {r.text[:80]}")
+
+        # ── đọc file: content-type do MÌNH chọn ──────────────────────────────
+        r = await c.get(f"/api/folder/file?session={FSID}&path=tracked.txt")
+        check("a text file comes back as text", r.status_code == 200
+              and r.headers["content-type"].startswith("text/plain") and "two" in r.text,
+              f"{r.status_code} {r.headers.get('content-type')} {r.text[:40]!r}")
+        check("with nosniff, so the browser cannot guess a richer type back",
+              r.headers.get("x-content-type-options") == "nosniff", str(dict(r.headers))[:160])
+
+        for name in ("page.html", "pic.svg"):
+            r = await c.get(f"/api/folder/file?session={FSID}&path={name}")
+            check(f"{name} is served as PLAIN TEXT, never as itself",
+                  r.headers["content-type"].startswith("text/plain"),
+                  f"{name} → {r.headers.get('content-type')} — same-origin with the dashboard, "
+                  f"so serving it as itself is stored XSS")
+
+        r = await c.get(f"/api/folder/file?session={FSID}&path=img.png")
+        check("an image is served as an image so the card can show it",
+              r.headers["content-type"] == "image/png", str(r.headers.get("content-type")))
+
+        r = await c.get(f"/api/folder/file?session={FSID}&path=blob.bin")
+        check("a binary file SAYS it is binary instead of dumping bytes into the page",
+              r.json().get("binary") is True, r.text[:80])
+
+        r = await c.get(f"/api/folder/file?session={FSID}&path=sub")
+        check("asking for a folder as a file is 404", r.status_code == 404, str(r.status_code))
+
+        # ── trần: hạ tạm xuống để không phải đẻ 501 file / một file 2MB ───────
+        _ents, _read = so.FOLDER_MAX_ENTRIES, so.FOLDER_MAX_READ
+        so.FOLDER_MAX_ENTRIES = 2
+        r = (await c.get(f"/api/folder/list?session={FSID}")).json()
+        check("a huge folder is cut and SAYS it was cut",
+              r["truncated"] and len(r["dirs"]) + len(r["files"]) == 2, str(r)[:140])
+        so.FOLDER_MAX_ENTRIES = _ents
+        so.FOLDER_MAX_READ = 2          # tracked.txt dài 4 byte, nên 2 là CHẮC CHẮN bị cắt
+        r = await c.get(f"/api/folder/file?session={FSID}&path=tracked.txt")
+        check("a long file is cut and the header says so",
+              len(r.content) == 2 and r.headers.get("x-orch-truncated") == "1",
+              f"{len(r.content)}B {r.headers.get('x-orch-truncated')}")
+        so.FOLDER_MAX_READ = _read
+
+        r = await c.get("/api/folder/list?session=does-not-exist")
+        check("browsing an unknown session is 404", r.status_code == 404, str(r.status_code))
+
         # cwd trỏ vào thư mục không tồn tại → 400 nói rõ, không phải mở im lặng thất bại.
         conn = so._conn()
         conn.execute("UPDATE sessions SET cwd = ? WHERE id = ?", (str(tmp / "gone"), FSID))
@@ -235,6 +325,9 @@ async def main_folder():
         r = await c.post("/api/folder/open", json={"session": FSID})
         check("a session whose folder is gone is refused with a reason",
               r.status_code == 400 and "not a folder" in r.text, f"{r.status_code} {r.text[:100]}")
+        r = await c.get(f"/api/folder/list?session={FSID}")
+        check("and the card refuses it too, rather than falling back to some other folder",
+              r.status_code == 400, f"{r.status_code} {r.text[:100]}")
 
 
 asyncio.run(main_folder())

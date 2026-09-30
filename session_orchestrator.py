@@ -1598,6 +1598,77 @@ async def folder_open(path):
         raise OSError(f"{argv[0]} exited {rc}")
 
 
+# ─── Card thư mục: duyệt project NGAY TRONG dashboard ─────────────────────────
+# Cửa sổ Finder/Explorer ở trên mở RA KHỎI orchestrator: mất canvas, mất chỗ đang đứng, và trên
+# máy remote thì chẳng có cửa sổ nào mở ra cả. Card này là bản mặc định; folder_open giữ lại làm
+# một nút nhỏ trong card, cho ai thật sự cần cửa sổ của OS.
+#
+# Mọi đường dẫn KHOÁ trong cwd của session, và `path` là TƯƠNG ĐỐI so với cwd đó. Không khoá thì
+# hai endpoint này là "liệt kê và đọc file bất kỳ trên máy chủ" qua một GET.
+FOLDER_MAX_ENTRIES = 500              # thư mục quá đông: cắt, và nói là đã cắt
+FOLDER_MAX_READ = 2 * 1024 * 1024     # trần 1 file: đây là XEM TRƯỚC, không phải tải về
+# Ảnh gửi ĐÚNG kiểu để <img> hiện được. SVG CỐ Ý không có trong danh sách: nó là tài liệu chạy
+# được script, phục vụ cùng origin với dashboard là XSS lưu sẵn — svg đi đường text như mọi file
+# chữ khác.
+FOLDER_IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                      ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+                      ".ico": "image/x-icon"}
+
+
+def folder_root(session):
+    """Gốc của card = cwd của session. None nếu session không có cwd (hoặc cwd đã mất)."""
+    cwd = (session.get("cwd") or "").strip()
+    if not cwd:
+        return None
+    root = Path(cwd).resolve()
+    return root if root.is_dir() else None
+
+
+def folder_resolve(root, rel):
+    """root/rel đã chuẩn hoá, None nếu nó nằm ngoài root.
+
+    resolve() ĐI THEO symlink, nên một link trỏ ra ngoài project cũng bị chặn ở đây — đó đúng là
+    đường thoát mà kiểm chuỗi '..' không nhìn thấy."""
+    p = (root / rel).resolve() if rel else root
+    return p if p == root or p.is_relative_to(root) else None
+
+
+def folder_list(root, rel):
+    """Một cấp trong cây: thư mục trước, file sau, bỏ mục ẩn. None nếu rel không hợp lệ.
+
+    Bỏ mục ẩn không phải để cho gọn: .env và .git của project không có việc gì xuất hiện trong
+    trình duyệt. /api/fs cũng đã bỏ ẩn từ trước, nên hai bên nhìn cây giống nhau."""
+    p = folder_resolve(root, rel)
+    if p is None or not p.is_dir():
+        return None
+    dirs, files = [], []
+    try:
+        with os.scandir(p) as it:
+            for e in it:
+                if e.name.startswith("."):
+                    continue
+                try:
+                    is_dir, st = e.is_dir(), e.stat()
+                except OSError:
+                    continue      # quyền, hoặc link chết: bỏ một entry, đừng giết cả listing
+                if is_dir:
+                    dirs.append({"name": e.name})
+                else:
+                    files.append({"name": e.name, "size": st.st_size,
+                                  "mtime": datetime.fromtimestamp(st.st_mtime).isoformat(
+                                      timespec="minutes")})
+    except OSError:
+        return None
+    dirs.sort(key=lambda d: d["name"].lower())
+    files.sort(key=lambda f: f["name"].lower())
+    total = len(dirs) + len(files)
+    dirs = dirs[:FOLDER_MAX_ENTRIES]
+    files = files[:max(0, FOLDER_MAX_ENTRIES - len(dirs))]
+    return {"root": str(root), "rel": p.relative_to(root).as_posix() if p != root else "",
+            "name": p.name or str(p), "dirs": dirs, "files": files,
+            "truncated": total > len(dirs) + len(files)}
+
+
 # ─── Neovim trong trình duyệt (card trên canvas) ──────────────────────────────
 # nvim là TUI, nên card editor chạy trên ĐÚNG hạ tầng terminal đã có: PTY + xterm.js. Không
 # server HTTP, không cấp cổng, không iframe khác origin, không tải 100MB server lúc mở lần đầu —
@@ -4176,7 +4247,7 @@ def build_app():
     from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.requests import Request
-    from starlette.responses import JSONResponse, StreamingResponse
+    from starlette.responses import JSONResponse, Response, StreamingResponse
     from starlette.routing import Mount, Route, WebSocketRoute
     from starlette.staticfiles import StaticFiles
 
@@ -4419,6 +4490,57 @@ def build_app():
         except OSError as e:
             return JSONResponse({"error": str(e)}, status_code=500)
         return JSONResponse({"ok": True, "path": cwd})
+
+    def _folder_target(request):
+        """((root, rel), None) hoặc (None, lỗi HTTP). Dùng chung cho listing và đọc file."""
+        s = get_session(request.query_params.get("session") or "")
+        if not s:
+            return None, JSONResponse({"error": "session does not exist"}, status_code=404)
+        root = folder_root(s)
+        if not root:
+            return None, JSONResponse({"error": "this agent has no project folder on disk"},
+                                      status_code=400)
+        return (root, request.query_params.get("path") or ""), None
+
+    async def api_folder_list(request: Request):
+        """Một cấp trong project của session. `path` TƯƠNG ĐỐI so với cwd, ngoài cwd là 404."""
+        got, err = _folder_target(request)
+        if err:
+            return err
+        out = folder_list(*got)
+        if out is None:
+            return JSONResponse({"error": "no such folder inside this project"}, status_code=404)
+        return JSONResponse(out)
+
+    async def api_folder_file(request: Request):
+        """Nội dung 1 file để xem trước trong card.
+
+        Ảnh gửi đúng kiểu, mọi thứ khác gửi text/plain; file nhị phân thì TRẢ LỜI là nhị phân chứ
+        không dội byte rác vào trình duyệt."""
+        got, err = _folder_target(request)
+        if err:
+            return err
+        root, rel = got
+        p = folder_resolve(root, rel) if rel else None
+        if p is None or not p.is_file():
+            return JSONResponse({"error": "no such file inside this project"}, status_code=404)
+        try:
+            size = p.stat().st_size
+            with p.open("rb") as fh:
+                data = fh.read(FOLDER_MAX_READ)   # đọc CÓ TRẦN: một file 2GB không vào RAM
+        except OSError as e:
+            return JSONResponse({"error": f"could not read it: {e}"}, status_code=403)
+        ctype = FOLDER_IMAGE_TYPES.get(p.suffix.lower())
+        if not ctype:
+            if b"\0" in data[:8192]:
+                return JSONResponse({"binary": True, "name": p.name, "size": size})
+            ctype = "text/plain; charset=utf-8"
+        # nosniff: kiểu MÌNH chọn là kiểu cuối cùng. Không có nó, trình duyệt vẫn được phép đoán
+        # lại theo nội dung và chạy một file .html trong project như trang cùng origin dashboard.
+        return Response(data, media_type=ctype,
+                        headers={"X-Content-Type-Options": "nosniff",
+                                 "Cache-Control": "no-store",
+                                 "X-Orch-Truncated": "1" if size > len(data) else "0"})
 
     async def api_editor(request: Request):
         """Các card editor đang mở (list rỗng = chưa mở cái nào)."""
@@ -5409,6 +5531,8 @@ def build_app():
         Route("/api/sessions/{sid}/stop", api_stop, methods=["POST"]),
         Route("/api/sessions/{sid}/kill", api_kill, methods=["POST"]),
         Route("/api/folder/open", api_folder_open, methods=["POST"]),
+        Route("/api/folder/list", api_folder_list),
+        Route("/api/folder/file", api_folder_file),
         Route("/api/editor", api_editor),
         Route("/api/editor/open", api_editor_open, methods=["POST"]),
         Route("/api/editor/focus", api_editor_focus, methods=["POST"]),

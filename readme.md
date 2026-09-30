@@ -89,6 +89,9 @@ so each provider keeps its own subscription, its own auth, and its own tools.
 * **Groups keep the list short.** Name a drawer — *work*, *hobby* — and file workspaces into it.
   Home opens on the groups; pick one and you are back to the workspaces you know. Deleting a
   group deletes the label, never what is filed under it.
+* **The project folder is on the canvas.** Browse an agent's files without leaving the
+  dashboard — folders, sizes, timestamps, text and image previews — or hand the folder to your
+  own file manager with one button.
 * **Cards hold the terminal, panels hold the actions.** A card is the agent's terminal plus the
   few controls you reach for while typing; select it and the rest — model, effort, skill, context
   — opens on the right. Ten agents, not ninety buttons.
@@ -133,9 +136,9 @@ them. Install at least one.
 | **Antigravity CLI** | [antigravity.google/docs/cli](https://antigravity.google/docs/cli/reference) — the `agy` command, for Google models |
 
 Nothing else is required. **neovim** + **tmux** are optional and only matter in
-[developer mode](#developer-mode): there they turn the project button into an editor card on the
-canvas, and [diffview.nvim](https://github.com/sindrets/diffview.nvim) adds that card's **git**
-tab. Override the binaries with `ORCH_NVIM_BIN` / `ORCH_TMUX_BIN`.
+[developer mode](#browsing-a-project-and-developer-mode): there they turn the project button into
+an editor card on the canvas, and [diffview.nvim](https://github.com/sindrets/diffview.nvim) adds
+that card's **git** tab. Override the binaries with `ORCH_NVIM_BIN` / `ORCH_TMUX_BIN`.
 
 > The orchestrator finds the CLIs through the **PATH of its own process**. Install one while it is
 > running and you have to restart it. If `which claude` prints a path but the dashboard still says
@@ -402,16 +405,27 @@ Peer routing is deliberately *not* baked into playbooks — the roster changes a
 go, so every signal carries a reminder to call `list_agents` instead of trusting a remembered
 role name.
 
-### Developer mode
+### Browsing a project, and developer mode
 
-Select an agent's card and the 📁 button opens its project folder in **your own file manager** —
-Finder on macOS, File Explorer on Windows, whatever handles folders on Linux. That is the default,
-and it needs nothing installed.
+The 📁 button on an agent's card opens a **folder card** on the canvas next to it: the agent's
+project folder, browsable in place. Click a folder to go in, the breadcrumb to come back, a file
+to read it — text files show as text, images show as images. It needs nothing installed and it
+works the same whether the orchestrator runs on your own machine or on a server you reach over
+the network.
 
-Start the orchestrator with `--dev` (or `ORCH_DEV_MODE=1`) and the same button instead opens the
-project in an **editor card** on the canvas: neovim in a terminal, wrapped in tmux so closing the
-browser tab only detaches, with a **git** tab that is
-[diffview.nvim](https://github.com/sindrets/diffview.nvim) side-by-side over the working tree.
+Everything it reads is locked inside that agent's project folder. Hidden entries (`.git`, `.env`)
+are not listed, files are served read-only with a content type the orchestrator picks, and `..`,
+an absolute path or a symlink pointing out of the tree are all refused.
+
+The card's ⧉ button opens the same folder in **your computer's own file manager** instead —
+Finder, File Explorer, Nautilus — for the things a browser cannot do, like dragging a file out or
+opening it in another app. That one only works when the orchestrator runs on the machine you are
+sitting at; a headless install will say so rather than doing nothing.
+
+Start the orchestrator with `--dev` (or `ORCH_DEV_MODE=1`) and the 📁 button becomes an **editor
+card**: neovim in a terminal, wrapped in tmux so closing the browser tab only detaches, with a
+**git** tab that is [diffview.nvim](https://github.com/sindrets/diffview.nvim) side-by-side over
+the working tree.
 
 ```bash
 python3 session_orchestrator.py --dev serve
@@ -420,11 +434,6 @@ python3 session_orchestrator.py --dev serve
 The mode is chosen at startup and there is no switch in the UI. Editor cards live in tmux and
 outlive the orchestrator, so a card opened in developer mode is still there after a plain
 restart — the flag only decides what the button opens next.
-
-Two things the folder button cannot do. It opens the folder on the machine **running the
-orchestrator**, so it does nothing useful when you reach the dashboard from another computer; and
-a headless install (a container, a remote server) has no file manager at all, which it will tell
-you rather than failing quietly.
 
 Guard: `python3 check_editor.py`.
 

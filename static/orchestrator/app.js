@@ -831,6 +831,7 @@ function unpinWindow(keep) {
 // tên trùng nhau xong vẫn phải quét cả thanh mới thấy cái còn lại.
 function winList() {
   const sessions = cvLast.sessions || [];
+  const openF = folderMap();
   const out = [];
   for (const s of sessions) {
     out.push({ nid: "s:" + s.id, kind: "Terminal", icon: ic("terminal", "sm"), head: true,
@@ -839,6 +840,9 @@ function winList() {
       if (c.session === s.id)
         out.push({ nid: "editor:" + c.session, kind: "nvim", icon: ic("edit", "sm"), ed: true,
                    name: c.name || c.session, sub: c.cwd || "" });
+    if (openF[s.id] !== undefined)
+      out.push({ nid: "folder:" + s.id, kind: "Folder", icon: ic("folder", "sm"), ed: true,
+                 name: s.name, sub: s.cwd || "" });
   }
   return out;
 }
@@ -1298,14 +1302,194 @@ async function openEditor(sid) {
 }
 window.openEditor = openEditor;
 
-// Chế độ mặc định của nút mở project: trình quản lý file của OS (Finder/Explorer/Nautilus),
-// KHÔNG phải card trên canvas. Không refreshAll — server không đổi state nào cả, chỉ mở một cửa
-// sổ trên máy đang chạy orchestrator. Máy đó không có desktop thì lỗi nói rõ (xem folder_open_why).
+// Mở thư mục bằng trình quản lý file CỦA OS. Không còn là hành vi mặc định của nút trên card —
+// cửa sổ Finder/Explorer mở ra là ra khỏi orchestrator, và trên máy remote thì chẳng mở gì. Giữ
+// lại thành một nút trong header card thư mục, cho lúc thật sự cần cửa sổ của OS (kéo file ra,
+// mở bằng app khác). Không refreshAll: server không đổi state nào cả.
 async function openFolder(sid) {
   try { await api("/api/folder/open", "POST", { session: sid }); }
   catch (e) { alert("Could not open the folder: " + e); }
 }
 window.openFolder = openFolder;
+
+// ── Card thư mục (duyệt project NGAY TRONG dashboard) ───────────────────────
+// Khác card editor — cái đó là một phiên tmux thật trên server, nên phải hỏi /api/editor xem cái
+// nào đang mở. Card này KHÔNG có state nào ở server: mở/đóng và thư mục đang đứng nằm trong store
+// canvas của workspace, nên F5 hay đổi pane vẫn về đúng chỗ, và đóng card không gọi API nào.
+// Server chỉ trả lời hai câu hỏi (liệt kê / đọc file) và KHOÁ mọi đường dẫn trong cwd của session.
+let folderList = {};   // sid → listing đang hiện (cache: SSE re-render không được nháy)
+let folderPrev = {};   // sid → {name, kind, ...} đang xem trước; không có = đang xem cây
+
+const folderMap = () => cvLoad().folders || {};
+const fldJoin = (rel, name) => (rel ? rel + "/" + name : name);
+const fldUp = (rel) => rel.split("/").slice(0, -1).join("/");
+
+function fmtBytes(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + " KB";
+  return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + " MB";
+}
+
+function folderStore(sid, rel) {
+  const f = { ...folderMap() };
+  if (rel === null) delete f[sid]; else f[sid] = rel;
+  cvSave({ folders: f });
+}
+
+function openFolderCard(sid) {
+  folderStore(sid, folderMap()[sid] || "");
+  renderCanvas(cvLast.sessions, cvLast.signals);
+}
+window.openFolderCard = openFolderCard;
+
+function closeFolderCard(sid) {
+  folderStore(sid, null);
+  delete folderList[sid];
+  delete folderPrev[sid];
+  renderCanvas(cvLast.sessions, cvLast.signals);
+}
+window.closeFolderCard = closeFolderCard;
+
+// Đi tới một thư mục. `rel` LUÔN tương đối so với cwd của session — server chặn mọi thứ trỏ ra
+// ngoài, nên client không phải tự canh biên.
+async function folderGo(sid, rel) {
+  delete folderPrev[sid];
+  folderStore(sid, rel);
+  try {
+    folderList[sid] = await api("/api/folder/list?session=" + encodeURIComponent(sid)
+      + (rel ? "&path=" + encodeURIComponent(rel) : ""));
+  } catch (e) {
+    folderList[sid] = { rel, dirs: [], files: [], error: String(e) };
+  }
+  folderPaint(sid);
+}
+window.folderGo = folderGo;
+
+// Xem trước một file. Ảnh thì <img> tải thẳng qua chính endpoint này; file chữ đọc ra text; file
+// nhị phân server trả JSON {binary:true} — đừng dội byte rác vào DOM.
+async function folderOpenFile(sid, rel, name) {
+  const url = "/api/folder/file?session=" + encodeURIComponent(sid)
+            + "&path=" + encodeURIComponent(rel);
+  folderPrev[sid] = { name, kind: "text", text: "Loading…" };
+  folderPaint(sid);
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw await r.text();
+    const ct = r.headers.get("content-type") || "";
+    if (ct.startsWith("image/")) folderPrev[sid] = { name, kind: "image", url };
+    else if (ct.includes("application/json")) {
+      const j = await r.json();
+      folderPrev[sid] = { name, kind: "binary", size: j.size || 0 };
+    } else {
+      const cut = r.headers.get("X-Orch-Truncated") === "1";
+      folderPrev[sid] = { name, kind: "text", text: await r.text(), cut };
+    }
+  } catch (e) {
+    folderPrev[sid] = { name, kind: "text", text: "Could not read it — " + e };
+  }
+  folderPaint(sid);
+}
+
+// Click trong card đi qua MỘT listener ủy quyền (cắm ở cvInit): path nằm ở data-attribute, không
+// nhồi vào inline onclick — một dấu nháy trong tên file là đủ phá cả attribute. Cùng lý do với
+// picker Working dir ở form spawn.
+function folderClick(ev) {
+  const el = ev.target.closest("[data-fdir], [data-ffile], [data-freload]");
+  if (!el) return;
+  const card = el.closest("[data-fld]");
+  if (!card) return;
+  const sid = card.dataset.fld;
+  // Reload lấy thư mục đang đứng TỪ STORE, không từ attribute: attribute ở header là thứ dễ cũ.
+  if (el.dataset.freload !== undefined) folderGo(sid, folderMap()[sid] || "");
+  else if (el.dataset.fdir !== undefined) folderGo(sid, el.dataset.fdir);
+  else folderOpenFile(sid, el.dataset.ffile, el.dataset.fname || "");
+}
+
+// Breadcrumb + tooltip đường dẫn nằm ở HEADER, tức NGOÀI .fld-body. Vẽ lại mỗi mình body là đi
+// sâu vào thư mục con mà đường dẫn trên card vẫn đứng ở gốc — đã dính đúng lỗi này một lần.
+function folderPaint(sid) {
+  const box = document.querySelector(`[data-fbody="${CSS.escape(sid)}"]`);
+  if (box) box.innerHTML = folderBodyHtml(sid);
+  const cr = document.querySelector(`[data-fcrumb="${CSS.escape(sid)}"]`);
+  if (cr) cr.innerHTML = folderCrumbHtml(sid);
+  const hd = document.querySelector(`[data-fhead="${CSS.escape(sid)}"]`);
+  if (hd) hd.title = folderPath(sid);
+}
+
+// Đường dẫn đang đứng. Nguồn sự thật là listing của server (nó trả root + rel); chưa nạp xong thì
+// tạm dùng cwd của session + rel đã lưu, để card không nháy một cái tiêu đề rỗng.
+function folderPath(sid, fallbackCwd) {
+  const d = folderList[sid] || {};
+  const root = String(d.root || fallbackCwd
+    || ((cvLast.sessions || []).find((s) => s.id === sid) || {}).cwd || "").replace(/[\\/]+$/, "");
+  const rel = d.rel !== undefined ? d.rel : (folderMap()[sid] || "");
+  return root + (rel ? "/" + rel : "");
+}
+
+function folderCrumbHtml(sid, fallbackCwd) {
+  const full = folderPath(sid, fallbackCwd);
+  const d = folderList[sid] || {};
+  const rel = d.rel !== undefined ? d.rel : (folderMap()[sid] || "");
+  const root = rel ? full.slice(0, full.length - rel.length - 1) : full;
+  // Gốc hiện TÊN thư mục project, không phải đường dẫn đầy đủ: người dùng không lập trình không
+  // cần đọc /home/…, và card thì hẹp. Đường dẫn đầy đủ vẫn ở tooltip của header.
+  const segs = [root.split(/[\\/]/).pop() || root, ...(rel ? rel.split("/") : [])];
+  return segs.map((seg, i) =>
+    `<button data-fdir="${esc(segs.slice(1, i + 1).join("/"))}"
+      title="Back to this folder">${esc(seg)}</button>`).join(`<span class="sep">/</span>`);
+}
+
+function folderBodyHtml(sid) {
+  const pv = folderPrev[sid];
+  const d = folderList[sid];
+  const back = (rel, label) =>
+    `<div class="fld-item up" data-fdir="${esc(rel)}">${ic("back", "sm")} ${esc(label)}</div>`;
+  if (pv) {
+    const home = back(d ? d.rel : "", "back to the folder");
+    if (pv.kind === "image")
+      return home + `<div class="fld-prev"><img src="${esc(pv.url)}" alt=""></div>`;
+    if (pv.kind === "binary")
+      return home + `<div class="fld-note">${esc(pv.name)} is not a text file
+        (${fmtBytes(pv.size)}) — use the ${ic("window", "sm")} button to open this folder in your
+        file manager.</div>`;
+    return home + `<div class="fld-prev"><pre>${esc(pv.text)}</pre></div>`
+      + (pv.cut ? `<div class="fld-note">Only the first 2 MB are shown.</div>` : "");
+  }
+  if (!d) return `<div class="fld-note">Loading…</div>`;
+  if (d.error) return `<div class="fld-note">Could not read this folder — ${esc(d.error)}</div>`;
+  const rows = d.dirs.map((x) =>
+      `<div class="fld-item" data-fdir="${esc(fldJoin(d.rel, x.name))}">${ic("folder", "sm")}
+        <span class="nm">${esc(x.name)}</span></div>`)
+    .concat(d.files.map((f) =>
+      `<div class="fld-item" data-ffile="${esc(fldJoin(d.rel, f.name))}"
+        data-fname="${esc(f.name)}">${ic("doc", "sm")}
+        <span class="nm">${esc(f.name)}</span>
+        <span class="sz">${fmtBytes(f.size)}</span>
+        <span class="mt">${esc((f.mtime || "").replace("T", " "))}</span></div>`));
+  return (d.rel ? back(fldUp(d.rel), "..") : "")
+    + (rows.join("") || `<div class="fld-note">This folder is empty.</div>`)
+    + (d.truncated ? `<div class="fld-note">Only the first 500 entries are listed.</div>` : "");
+}
+
+function folderCardHtml(s) {
+  const sid = esc(s.id);
+  return `<div class="agent-card folder-card" data-fld="${sid}">
+    <div class="node-head folder-head" data-fhead="${sid}"
+      title="${esc(folderPath(s.id, s.cwd))}">
+      <span class="fld-ic">${ic("folder", "sm")}</span>
+      <span class="fld-crumb" data-fcrumb="${sid}">${folderCrumbHtml(s.id, s.cwd)}</span>
+      <span class="spacer"></span>
+      <button class="icon-btn" data-freload=""
+        title="Reload this folder">${ic("refresh", "sm")}</button>
+      <button class="icon-btn" onclick="openFolder('${sid}')"
+        title="Open this folder in your computer's own file manager instead">
+        ${ic("window", "sm")}</button>
+      <button class="icon-btn danger" onclick="closeFolderCard('${sid}')"
+        title="Close this folder card">${ic("x", "sm")}</button>
+    </div>
+    <div class="fld-body" data-fbody="${sid}">${folderBodyHtml(s.id)}</div>
+  </div>`;
+}
 
 async function closeEditor(sid, name) {
   if (!confirm(`Close the editor for '${name}'?\n\nIts nvim session is killed — unsaved buffers `
@@ -1522,8 +1706,8 @@ function quickBtns(s, id) {
     b.push(DEV
       ? btn("", "Open this session's project folder in nvim — as many editors as you like",
             `openEditor('${id}')`, ic("edit", "sm"))
-      : btn("", "Open this project folder in your file manager",
-            `openFolder('${id}')`, ic("folder", "sm")));
+      : btn("", "Browse this project's folder on the canvas",
+            `openFolderCard('${id}')`, ic("folder", "sm")));
   return b.join("");
 }
 
@@ -1995,6 +2179,13 @@ function renderCanvas(sessions, signals) {
   for (const c of myEditors)
     nodesHtml += `<div class="node" data-nid="editor:${esc(c.session)}" data-rz="1">`
                + editorCardHtml(c) + RZ + `</div>`;
+  // Card thư mục: node TỰ DO, có vị trí riêng trong store. KHÔNG dán vào card terminal như card
+  // editor — nó không phải nửa còn lại của một cặp, mở/đóng hoàn toàn độc lập.
+  const openF = st.folders || {};
+  const myFolders = sessions.filter((s) => openF[s.id] !== undefined);
+  for (const s of myFolders)
+    nodesHtml += `<div class="node" data-nid="folder:${esc(s.id)}" data-rz="1">`
+               + folderCardHtml(s) + RZ + `</div>`;
   world.replaceChildren();
   world.insertAdjacentHTML("afterbegin",
     zonesHtml + `<svg id="edges" class="edges"></svg>` + nodesHtml);
@@ -2066,6 +2257,22 @@ function renderCanvas(sessions, signals) {
     // Chưa lưu bề ngang → snapPairs lấy đúng bằng bề ngang card terminal, tức chia đôi khung.
     if (pos[nid] && pos[nid].w) vsEl.style.width = pos[nid].w + "px";
   });
+  // Card thư mục mới: xếp BÊN PHẢI card terminal của chính session, ngang hàng. Không xếp bên
+  // dưới: card terminal cao hơn nửa màn hình, nên "ngay dưới" là ngoài khung nhìn — mở ra mà
+  // không thấy nó ở đâu thì coi như nút không chạy (đã đo đúng như vậy).
+  world.querySelectorAll('.node[data-nid^="folder:"]').forEach((el, i) => {
+    const nid = el.dataset.nid, sid = nid.slice(7);
+    const term = cvNodeEls[sid];
+    if (!pos[nid])
+      pos[nid] = term
+        ? { x: (parseFloat(term.style.left) || 0) + term.offsetWidth + 24,
+            y: parseFloat(term.style.top) || 0 }
+        : { x: 40 + 40 * (i + 1), y: 40 + 40 * (i + 1) };
+    el.style.left = pos[nid].x + "px";
+    el.style.top = pos[nid].y + "px";
+    applySize(el, pos[nid]);
+    if (!folderList[sid] && !folderPrev[sid]) folderGo(sid, openF[sid] || "");
+  });
   cvSave({ pos });
   layoutZones();
 
@@ -2106,6 +2313,9 @@ function renderCanvas(sessions, signals) {
 // Gắn 1 lần lúc load.
 function cvInit() {
   const cv = $("canvas");
+  // Một listener cho MỌI card thư mục: card bị dựng lại sau mỗi innerHTML của #world, nhưng
+  // #world thì không — cắm ở đây là không phải cắm lại sau từng render (xem folderClick).
+  $("world").addEventListener("click", folderClick);
   let drag = null;  // {mode:'pan'|'node'|'group', ...}
   cv.addEventListener("pointerdown", (e) => {
     if (e.target.closest("button, select, input, textarea, option")) return;
@@ -2312,7 +2522,7 @@ function cvInit() {
     // Shift+wheel = zoom ở MỌI CHỖ, kể cả khi con trỏ đang nằm trên terminal. Card phủ kín canvas
     // thì không còn mảng nền nào để lăn chuột — không có đường này là kẹt luôn, không zoom ra được.
     // Wheel trơn giữ nguyên nghĩa cũ: trên nền = zoom, trong terminal/overlay = cuộn nội dung.
-    if (!e.shiftKey && e.target.closest(".term-slot, .cv-overlay")) return;
+    if (!e.shiftKey && e.target.closest(".term-slot, .fld-body, .cv-overlay")) return;
     e.preventDefault();
     e.stopPropagation();   // không cho xterm cuộn thêm một nhịp nữa dưới tay mình
     // Shift+wheel: nhiều trình duyệt đổi trục, gửi deltaX và để deltaY = 0 (Chrome/Safari) —
