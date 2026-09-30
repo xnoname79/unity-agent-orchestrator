@@ -3552,6 +3552,96 @@ class AgyEngine(AgentEngine):
         return {"found": False, "reason": "engine agy không expose compact summary"}
 
 
+# ─── Ảnh (tool generate_image của agy) ───────────────────────────────────────
+# `agy models` chỉ có model chat, nhưng AGENT của agy có tool generate_image — vẽ bằng quota tài
+# khoản Google đang login ở agy, không cần API key. ĐÃ ĐO trên agy 1.2.14:
+#  1. Tool chạy headless KHÔNG cần --dangerously-skip-permissions → phiên vẽ chạy KHÔNG bypass:
+#     agent không có shell, ngoài vẽ ra không làm được gì.
+#  2. Tool chỉ nhận ImageName + Prompt: không chọn được kích thước (ra JPEG 1024x1024), không chọn
+#     được chỗ lưu — file luôn nằm ở <AGY_HOME>/brain/<conversation_id>/<ImageName>_<ms>.jpg.
+#     Bảo agent "lưu vào X" là nó đi lùng cách chép, không có shell thì hỏng mà vẫn báo xong.
+#     → orchestrator tự nhặt file ở brain/ sau khi run xong.
+IMAGES_DIR = DB_DIR / "images"
+IMAGE_PROMPT_MAX = 4000
+# Tên file đến từ URL: chỉ nhận tên PHẲNG (không '/', không '..'); đuôi còn phải là ảnh.
+_IMAGE_NAME_OK = re.compile(r"^[A-Za-z0-9_-]{1,80}\.[a-z]{3,4}$")
+# conversation_id của agy là UUID. KHÔNG dùng _SID_OK: nó nhận '..', mà id này được ghép thành
+# đường dẫn rồi rmtree.
+_AGY_CONV_OK = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+# Gọi đúng một tool rồi thôi. ĐÃ ĐO: prompt để ngỏ là agent đi đọc file MCP, đọc transcript của
+# chính nó — mỗi bước là thêm một lượt chat ăn quota.
+IMAGE_INSTRUCTION = ("Call your generate_image tool exactly once, passing the description below "
+                     "unchanged as its prompt. Do not call any other tool. When it returns, reply "
+                     "with the single word: done.\n\nDescription:\n")
+
+
+def image_path(name):
+    """File ảnh trong IMAGES_DIR mang tên này, hoặc None."""
+    if not _IMAGE_NAME_OK.match(name or "") or Path(name).suffix not in FOLDER_IMAGE_TYPES:
+        return None
+    p = IMAGES_DIR / name
+    return p if p.is_file() else None
+
+
+def list_images():
+    """Ảnh đã vẽ, mới nhất trước (tên file mở đầu bằng thời điểm vẽ). Prompt nằm ở file .json
+    cùng tên — thiếu hay hỏng thì ảnh vẫn hiện, chỉ mất chú thích."""
+    out = []
+    for p in IMAGES_DIR.glob("*"):
+        if p.suffix not in FOLDER_IMAGE_TYPES:
+            continue
+        try:
+            meta = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        out.append({"name": p.name, "prompt": meta.get("prompt", ""),
+                    "created": meta.get("created", "")})
+    return sorted(out, key=lambda i: i["name"], reverse=True)
+
+
+def _harvest_images(conv_id, prompt):
+    """Chép ảnh agy vừa vẽ từ brain/<conv_id>/ về IMAGES_DIR, rồi xoá hội thoại đó.
+
+    Hội thoại chỉ là giấy nháp của MỘT lần vẽ: để lại thì mỗi ảnh thêm một dòng rác vào ô chọn
+    phiên agy của terminal card, đẩy phiên thật của người dùng xuống dưới."""
+    brain = AGY_HOME / "brain" / conv_id
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    made = []
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    for src in sorted(brain.glob("*")):
+        ext = src.suffix.lower()
+        if ext not in FOLDER_IMAGE_TYPES or not src.is_file():
+            continue
+        dst = IMAGES_DIR / f"{stamp}-{secrets.token_hex(3)}{ext}"
+        shutil.copyfile(src, dst)
+        meta = {"prompt": prompt, "created": _now()}
+        dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        made.append({"name": dst.name, **meta})
+    delete_cli_session(conv_id, "agy")
+    shutil.rmtree(brain, ignore_errors=True)
+    return made
+
+
+async def generate_images(prompt):
+    """Một lần vẽ = một `agy -p` riêng, chờ tới khi xong (cỡ một phút). Trả (ảnh[], lỗi)."""
+    if DRY_RUN:
+        return [], "dry-run: agy was not called"
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    # "default" chứ không để trống: trống là rơi về DEFAULT_PERMISSION_MODE, mà mặc định là bypass.
+    flags = _agy_flags(permission_mode="default", effort="low", cwd=str(IMAGES_DIR))
+    res = await _agy_exec([AGY_BIN, *flags, f"--prompt={IMAGE_INSTRUCTION}{prompt}"],
+                          str(IMAGES_DIR))
+    said = (res.get("result") or "").strip()
+    conv_id = res["raw"].get("conversation_id") or ""
+    if not _AGY_CONV_OK.match(conv_id):
+        return [], said or "agy did not start a conversation"
+    made = _harvest_images(conv_id, prompt)
+    if made:
+        return made, ""
+    # Không có ảnh: agent từ chối (chính sách nội dung, hết quota…) — lời nó nói là lý do.
+    return [], f"no image came back — agy said: {said}" if said else "no image came back"
+
+
 # Registry engine + resolver. Thêm engine mới = thêm 1 dòng vào ENGINES.
 ENGINES = {
     "claude": ClaudeEngine(),
@@ -4277,7 +4367,7 @@ def build_app():
     from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.requests import Request
-    from starlette.responses import JSONResponse, Response, StreamingResponse
+    from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
     from starlette.routing import Mount, Route, WebSocketRoute
     from starlette.staticfiles import StaticFiles
 
@@ -4885,6 +4975,35 @@ def build_app():
             return await request.json()
         except (ValueError, TypeError):
             return {}
+
+    async def api_images(request: Request):
+        return JSONResponse(list_images())
+
+    async def api_images_generate(request: Request):
+        """Vẽ ảnh bằng tài khoản Google của agy. Request CHỜ tới khi agy xong, cỡ một phút."""
+        prompt = str((await _body(request)).get("prompt") or "").strip()
+        if not prompt or len(prompt) > IMAGE_PROMPT_MAX:
+            return JSONResponse({"error": f"describe the image in 1 to {IMAGE_PROMPT_MAX} "
+                                          "characters"}, status_code=400)
+        made, err = await generate_images(prompt)
+        if err:
+            return JSONResponse({"error": err}, status_code=502)
+        return JSONResponse(made)
+
+    async def api_image_file(request: Request):
+        p = image_path(request.path_params["name"])
+        if not p:
+            return JSONResponse({"error": "no such image"}, status_code=404)
+        return FileResponse(p, media_type=FOLDER_IMAGE_TYPES[p.suffix],
+                            headers={"X-Content-Type-Options": "nosniff"})
+
+    async def api_image_delete(request: Request):
+        p = image_path(request.path_params["name"])
+        if not p:
+            return JSONResponse({"error": "no such image"}, status_code=404)
+        p.unlink()
+        p.with_suffix(".json").unlink(missing_ok=True)
+        return JSONResponse({"deleted": p.name})
 
     async def api_mcp(request: Request):
         """Các server MCP đang đăng ký ở scope user, gộp từ MỌI CLI đang cài. KHÔNG gọi ra ngoài:
@@ -5564,6 +5683,10 @@ def build_app():
         Route("/api/mcp/check", api_mcp_check, methods=["POST"]),
         Route("/api/mcp/connect", api_mcp_connect, methods=["POST"]),
         Route("/api/mcp/disconnect", api_mcp_disconnect, methods=["POST"]),
+        Route("/api/images", api_images),
+        Route("/api/images", api_images_generate, methods=["POST"]),
+        Route("/api/images/{name}", api_image_file),
+        Route("/api/images/{name}", api_image_delete, methods=["DELETE"]),
         Route("/api/sessions/{sid}", api_session_detail),
         Route("/api/sessions/{sid}/unregister", api_unregister, methods=["POST"]),
         Route("/api/sessions/{sid}/runs", api_session_runs),

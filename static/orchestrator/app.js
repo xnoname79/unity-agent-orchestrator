@@ -2856,6 +2856,7 @@ window.mcpClose = mcpClose;
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
+  if (e.key === "Escape" && !$("img-modal").hidden) imgClose();
 });
 
 // Nút trong danh sách: tên đi qua data-attribute, không qua inline onclick.
@@ -2919,6 +2920,63 @@ async function mcpAdd() {
   } catch (e) { showMsg("mcp-msg", mcpErr(e), false); }
 }
 window.mcpAdd = mcpAdd;
+
+// ── Images ───────────────────────────────────────────────────────────────────
+// Vẽ bằng tool generate_image của agy. Một lần vẽ dưới một phút và request CHỜ tới khi xong —
+// nút khoá suốt lúc đó để một cú bấm đúp không thành hai lần ăn quota.
+function imgRows(list) {
+  if (!list.length) return `<div class="hint">No images yet.</div>`;
+  return list.map((i) => {
+    const url = "/api/images/" + encodeURIComponent(i.name);
+    // Tên file đi qua data-attribute, không qua inline onclick — cùng lối như danh sách MCP.
+    return `<figure class="img-item">
+      <a href="${url}" target="_blank" rel="noopener" title="Open full size">
+        <img src="${url}" alt="${esc(i.prompt)}" loading="lazy"></a>
+      <figcaption title="${esc(i.prompt)}">${esc(i.prompt)}</figcaption>
+      <button class="icon-btn" data-img-rm="${esc(i.name)}" title="Delete">
+        <svg class="ic sm"><use href="#i-trash"/></svg></button>
+    </figure>`;
+  }).join("");
+}
+
+async function imgLoad() {
+  $("img-grid").innerHTML = imgRows(await api("/api/images"));
+}
+
+function imgOpen() {
+  $("img-modal").hidden = false;
+  $("img-prompt").focus();
+  imgLoad().catch((e) => showMsg("img-msg", "Error: " + e, false));
+}
+window.imgOpen = imgOpen;
+
+function imgClose() {
+  $("img-modal").hidden = true;
+}
+window.imgClose = imgClose;
+
+async function imgGenerate() {
+  const prompt = $("img-prompt").value.trim();
+  if (!prompt) return showMsg("img-msg", "Describe the image first.", false);
+  $("img-go").disabled = true;
+  showMsg("img-msg", "Drawing… usually under a minute.", true);
+  try {
+    const made = await api("/api/images", "POST", { prompt });
+    showMsg("img-msg", made.length > 1 ? `Done — ${made.length} images.` : "Done.", true);
+    await imgLoad();
+  } catch (e) { showMsg("img-msg", mcpErr(e), false); }
+  finally { $("img-go").disabled = false; }
+}
+window.imgGenerate = imgGenerate;
+
+$("img-grid").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-img-rm]");
+  if (!btn || !confirm("Delete this image?")) return;
+  try {
+    await api("/api/images/" + encodeURIComponent(btn.dataset.imgRm), "DELETE");
+    await imgLoad();
+  } catch (e) { showMsg("img-msg", mcpErr(e), false); }
+});
 
 async function spawnAgent() {
   // Tên vai và template là HAI thứ khác nhau: template chỉ là playbook NGUỒN (nhiều agent dùng

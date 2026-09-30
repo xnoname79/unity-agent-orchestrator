@@ -71,6 +71,7 @@ jobs:
           python check_mcp.py
           python check_shutdown.py
           python check_inject.py
+          python check_images.py
 
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean

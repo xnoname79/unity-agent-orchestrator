@@ -186,6 +186,18 @@ The mode is picked at startup; there is no switch in the UI. Editor cards live i
 the orchestrator, so one opened in developer mode is still there after a plain restart — the flag
 only decides what the button opens next.
 
+## Make images
+
+The picture button in the top bar opens **Images**. Describe what you want, press **Generate**,
+and the image lands in the gallery below, usually in under a minute. Click one to open it full
+size and save it from there.
+
+It draws with the image tool built into the Antigravity CLI, so it runs on the Google account
+`agy` is signed in with: no API key, and it counts against that account's quota. `agy` must be
+installed and signed in. Every image is square, 1024 × 1024 — the tool takes no size.
+
+Images are kept in `~/.session_orch_db/images/`, each beside a `.json` with its prompt.
+
 ## Talk to an agent over the OpenAI API
 
 ```python
@@ -377,6 +389,7 @@ python3 check_groups.py                     # the default workspace hides only w
 python3 check_pair_cap.py                   # the ping-pong budget reopens on new work
 python3 check_workspace_move.py             # a move cannot duplicate a role name
 python3 check_shutdown.py                   # Ctrl-C returns, even with an SSE stream open
+python3 check_images.py                     # a drawing is picked up, its agy scratch is cleared
 ```
 
 ## License
