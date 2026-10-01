@@ -269,8 +269,8 @@ python3 session_orchestrator.py list-sessions   # also: list-signals, list-runs
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ORCH_PORT` / `ORCH_HOST` | `8992` / `0.0.0.0` | Where to listen |
-| `ORCH_CORS_ORIGINS` | `*` | Allowed browser origins; empty disables CORS |
+| `ORCH_PORT` / `ORCH_HOST` | `8992` / `127.0.0.1` | Where to listen; `0.0.0.0` opens it to your network |
+| `ORCH_CORS_ORIGINS` | *(empty)* | Browser origins allowed to read the API; empty disables CORS |
 | `CLAUDE_BIN` / `ORCH_CODEX_BIN` / `ORCH_AGY_BIN` | `claude` / `codex` / `agy` | Paths to the provider CLIs |
 | `ORCH_AGY_HOME` | `~/.gemini/antigravity-cli` | Where the Antigravity CLI keeps its conversations |
 | `ORCH_DEFAULT_EFFORT` | `high` | Reasoning effort when a session sets none |
@@ -376,10 +376,10 @@ Stop it with `launchctl unload -w ~/Library/LaunchAgents/com.agent-orch.plist`.
 ## Safety
 
 > [!WARNING]
-> There is no API key: this is a local app, and anything that can reach its port can drive the
-> agents, which run shell commands with permissions bypassed. `ORCH_CORS_ORIGINS` defaults to
-> `*`, which lets **any website you visit** do that too — narrow it, or leave it empty. Do not
-> expose the port beyond your own machine.
+> There is no API key. The defaults keep it to your own machine: it listens on `127.0.0.1`,
+> CORS is off, and a request carrying another website's `Origin` is refused — a page you visit
+> cannot reach it even though it runs on localhost. Agents here run shell commands with
+> permissions bypassed, so setting `ORCH_HOST=0.0.0.0` hands that to everyone on your network.
 
 ![Signal queue and audit log](images/screenshot-history.png)
 
@@ -425,6 +425,7 @@ python3 check_pair_cap.py                   # the ping-pong budget reopens on ne
 python3 check_workspace_move.py             # a move cannot duplicate a role name
 python3 check_shutdown.py                   # Ctrl-C returns, even with an SSE stream open
 python3 check_images.py                     # drawings are picked up, references stay in the gallery
+python3 check_origin.py                     # a website you visit cannot drive the orchestrator
 ```
 
 ## License

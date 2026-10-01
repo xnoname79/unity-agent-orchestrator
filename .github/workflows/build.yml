@@ -72,6 +72,7 @@ jobs:
           python check_shutdown.py
           python check_inject.py
           python check_images.py
+          python check_origin.py
 
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean
@@ -193,10 +194,10 @@ jobs:
 
             Open `http://localhost:8992` (dashboard) or `http://localhost:8992/docs` (API).
 
-            > **Security:** this is a local app with no API key. Agents run shell commands with
-            > permissions bypassed, and `ORCH_CORS_ORIGINS` defaults to `*`, which lets any website
-            > you visit drive them. Narrow it in a `.env` next to the executable, and do not expose
-            > the port beyond your own machine.
+            > **Security:** this is a local app with no API key, and the defaults keep it on your
+            > own machine — it listens on `127.0.0.1`, CORS is off, and requests carrying another
+            > website's `Origin` are refused. Agents run shell commands with permissions bypassed,
+            > so `ORCH_HOST=0.0.0.0` hands that to everyone on your network.
 
             Configure via environment variables, or a `.env` file placed **next to the
             executable** (on Windows, inside the unzipped folder, beside `agent-orch.exe`).

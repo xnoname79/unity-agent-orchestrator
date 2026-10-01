@@ -159,15 +159,20 @@ AGY_CONVERSATIONS_DIR = AGY_HOME / "conversations"
 AGY_SUMMARIES_DB = AGY_HOME / "conversation_summaries.db"
 # `agy -p` tự bỏ cuộc sau --print-timeout (mặc định 5m) — quá ngắn cho một lượt agent thật.
 AGY_PRINT_TIMEOUT = os.environ.get("ORCH_AGY_PRINT_TIMEOUT", "60m")
-ORCH_HOST = os.environ.get("ORCH_HOST", "0.0.0.0")
+# Mặc định CHỈ loopback: app chạy trên máy của chính người dùng, không có bản hosting. Đặt
+# 0.0.0.0 để mở ra LAN (Docker, mở dashboard từ máy khác) — lúc đó mọi host cùng mạng gọi được
+# /api mà KHÔNG cần key nào, xem cảnh báo lúc khởi động.
+ORCH_HOST = os.environ.get("ORCH_HOST", "127.0.0.1")
 ORCH_PORT = int(os.environ.get("ORCH_PORT", "8992"))
+_LOOPBACK_ONLY = ORCH_HOST in ("127.0.0.1", "::1", "localhost")
 # CORS cho app chạy TRONG TRÌNH DUYỆT gọi /v1 (React/Vue…). Trình duyệt gửi preflight OPTIONS
 # trước mọi request có header lạ (Authorization, Content-Type: application/json) — không trả lời
 # preflight thì nó chặn, log hiện "OPTIONS ... 405".
-# Danh sách origin ngăn cách bằng dấu phẩy; '*' = mọi origin; để TRỐNG = tắt hẳn CORS.
-# CẢNH BÁO: '*' nghĩa là BẤT KỲ trang web nào người dùng mở cũng sai khiến được agent trên máy
-# này (agent chạy shell với bypassPermissions) — không có API key nào chặn. Xem cảnh báo lúc khởi động.
-CORS_ORIGINS = [o.strip() for o in os.environ.get("ORCH_CORS_ORIGINS", "*").split(",") if o.strip()]
+# Danh sách origin ngăn cách bằng dấu phẩy; '*' = mọi origin; để TRỐNG (mặc định) = tắt hẳn CORS.
+# Mặc định TẮT: dashboard gọi API cùng origin với chính nó nên không cần CORS; chỉ app web NGOÀI
+# mới cần, và mở '*' là cho mọi trang người dùng ghé ĐỌC được kết quả (xem thêm OriginGuard —
+# CORS không chặn request được GỬI, chỉ chặn đọc response).
+CORS_ORIGINS = [o.strip() for o in os.environ.get("ORCH_CORS_ORIGINS", "").split(",") if o.strip()]
 # Phase D — safety caps (0 = tắt/không giới hạn)
 MAX_RUNS_PER_SESSION = int(os.environ.get("ORCH_MAX_RUNS_PER_SESSION", "0"))
 # Trần số run/NGÀY cho mỗi session (reset mỗi ngày). Đạt trần → signal bị blocked, chờ người
@@ -371,6 +376,61 @@ def init_db():
 def _ensure_db():
     if not os.path.exists(_db_path()):
         init_db()
+
+
+def _same_origin(scope):
+    """Request này có đến từ CHÍNH trang dashboard không.
+
+    CORS KHÔNG phải rào: trình duyệt vẫn GỬI một 'simple request' (POST text/plain) đi rồi mới
+    chặn phần ĐỌC response — ĐÃ ĐO: với CORS tắt hẳn, POST /api/images từ origin lạ vẫn chạy vào
+    handler. Kẻ tấn công không cần đọc trả lời, chỉ cần lệnh được thực thi (spawn agent, vẽ ảnh
+    tiêu quota). Bind 127.0.0.1 cũng không cứu: trình duyệt của chính người dùng NẰM trên máy đó.
+    Thứ duy nhất phân biệt được là header Origin, cái mà trình duyệt luôn gắn và không trang nào
+    giả được.
+
+    Không có Origin = không phải trình duyệt (curl, SDK OpenAI, n8n, agent) → cho qua.
+    'null' (file://, iframe sandbox) → CHẶN: không có trang hợp lệ nào của app này mang origin đó.
+    """
+    headers = dict(scope.get("headers") or [])
+    origin = headers.get(b"origin", b"").decode("latin-1").strip()
+    if not origin:
+        return True
+    host = headers.get(b"host", b"").decode("latin-1").strip()
+    return bool(host) and origin.split("//", 1)[-1] == host
+
+
+# Method ĐỔI TRẠNG THÁI. GET để ngoài: đọc xuyên site vẫn bị chính CORS chặn, mà bắt luôn GET thì
+# <img src="http://localhost:8992/api/images/x.jpg"> trong dashboard cũng chết oan.
+_UNSAFE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+# Đường bị canh: API, chat/ảnh, và WS terminal (WS KHÔNG theo CORS — một trang bất kỳ mở được
+# ws:// tới localhost, mà /ws/terminal là shell thật).
+_GUARDED_PREFIXES = ("/api/", "/v1/", "/ws/")
+
+
+class OriginGuard:
+    """ASGI THUẦN, không phải BaseHTTPMiddleware: cái kia bọc cả response stream, mà ở đây có SSE
+    và WebSocket — thêm một lớp bọc quanh chúng là chuốc rủi ro cho một cái header."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        kind, path = scope.get("type"), scope.get("path", "")
+        guarded = path.startswith(_GUARDED_PREFIXES) and (
+            kind == "websocket" or scope.get("method") in _UNSAFE_METHODS)
+        if guarded and not _same_origin(scope):
+            if kind == "websocket":
+                await send({"type": "websocket.close", "code": 4403})
+                return
+            body = json.dumps({"error": {
+                "message": "cross-site request refused: this orchestrator only answers its own "
+                           "dashboard and non-browser clients",
+                "type": "invalid_request_error", "code": "cross_origin"}}).encode()
+            await send({"type": "http.response.start", "status": 403,
+                        "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body", "body": body})
+            return
+        await self.app(scope, receive, send)
 
 
 def _now():
@@ -5886,14 +5946,21 @@ def build_app():
             # bất kỳ trang web nào người dùng mở cũng POST được /v1 và sai khiến agent trên máy này.
             # In thành KHỐI có viền: người double-click .exe chỉ thấy console vài giây trước khi
             # log uvicorn đẩy trôi, một dòng lẫn giữa log khác là không ai đọc.
-            if CORS_ORIGINS == ["*"]:
+            # Chỉ kêu khi NGƯỜI DÙNG tự mở ra ngoài máy mình — mặc định đã là loopback.
+            if not _LOOPBACK_ONLY or CORS_ORIGINS == ["*"]:
                 bar = "!" * 78
+                why = ([f"ORCH_HOST={ORCH_HOST} — every host on your network can reach this port"]
+                       if not _LOOPBACK_ONLY else [])
+                why += ["ORCH_CORS_ORIGINS=* — any website you open can read what it returns"
+                        ] if CORS_ORIGINS == ["*"] else []
                 print(f"\n{bar}\n"
-                      "!! SECURITY: CORS is open to ANY origin.\n"
-                      "!! Agents here run shell commands with permissions bypassed, so ANY website\n"
-                      "!! you visit can drive them and read/write files on this machine.\n"
-                      "!! Fix: set ORCH_CORS_ORIGINS=http://localhost:3000 (or leave it empty)\n"
-                      "!! in a .env file next to the executable.\n"
+                      "!! SECURITY: this orchestrator is reachable beyond this machine.\n"
+                      + "".join(f"!!   {w}\n" for w in why)
+                      + "!! Agents here run shell commands with permissions bypassed, and there is\n"
+                      "!! no API key. Anyone who can reach the port can drive them, read every\n"
+                      "!! generated image, and spend your Google image quota.\n"
+                      "!! Fix: unset ORCH_HOST and ORCH_CORS_ORIGINS in the .env next to the\n"
+                      "!! executable to go back to this machine only.\n"
                       f"{bar}\n", file=sys.stderr)
             try:
                 yield
@@ -6004,7 +6071,8 @@ def build_app():
 
         routes.append(Mount("/", app=NoCacheStatic(directory=str(static_dir), html=True)))
 
-    middleware = []
+    # OriginGuard NGOÀI CÙNG: chặn trước khi CORS kịp trả lời preflight hộ một origin lạ.
+    middleware = [Middleware(OriginGuard)]
     if CORS_ORIGINS:
         from starlette.middleware.cors import CORSMiddleware
         middleware.append(Middleware(
