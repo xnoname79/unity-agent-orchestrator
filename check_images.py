@@ -14,7 +14,10 @@ data folder once the run ends. Every way that goes wrong is a quiet one:
     orchestrator's default mode is bypass. Picking a model to rewrite the prompt must not change
     that, and a "model" that is really a flag must never reach argv;
   - reference images go to agy as absolute paths. They may only come from the gallery;
-  - an upload is judged by its bytes, not by its name, and is read with a ceiling.
+  - an upload is judged by its bytes, not by its name, and is read with a ceiling;
+  - /v1/images speaks OpenAI's shape — an SDK reads `error.message` and `data[0].b64_json`, and
+    anything else it swallows. `size` and `model` mean something different here (nearest shape,
+    prompt writer), and that mapping must hold.
 
 agy itself is not called: _agy_exec is replaced by a fake that lays files out the way
 agy 1.2.14 does.
@@ -22,6 +25,7 @@ agy 1.2.14 does.
     python3 check_images.py
 """
 import asyncio
+import base64
 import logging
 import os
 import sys
@@ -64,6 +68,9 @@ async def fake_agy(cmd, cwd, session_id="", on_event=None):
     if on_event:
         await on_event("tool_use", "generate_image(...)",
                        {"name": "generate_image", "input": {"Prompt": agy["drawn"]}})
+        if agy.get("tool_error"):
+            await on_event("tool_result", "⚠ " + agy["tool_error"],
+                           {"result": agy["tool_error"], "is_error": True})
     brain = so.AGY_HOME / "brain" / agy["cid"]
     (brain / ".system_generated" / "logs").mkdir(parents=True, exist_ok=True)
     (brain / ".system_generated" / "logs" / "transcript.jsonl").write_text("{}")
@@ -170,6 +177,99 @@ async def main():
                     {"refs": [name] * (so.IMAGE_REFS_MAX + 1)}):
             r = await c.post("/api/images", json={"prompt": "x", **bad})
             check(f"{bad} is refused", r.status_code == 400, f"{r.status_code} {r.text[:80]}")
+
+        # ── /v1/images: shape OpenAI ──────────────────────────────────────────
+        agy.update(drawn="a paper crane")
+        r = await c.post("/v1/images/generations", json={"prompt": "a paper crane",
+                                                         "size": "1536x1024"})
+        d = r.json().get("data", [{}])[0] if r.status_code == 200 else {}
+        check("generations returns the image as b64_json",
+              base64.b64decode(d.get("b64_json", "")) == JPEG and "created" in r.json(),
+              f"{r.status_code} {r.text[:120]}")
+        check("1536x1024 becomes 3:2", '"3:2"' in agy["cmd"][-1], agy["cmd"][-1][:120])
+        check("no revised_prompt when nothing rewrote it", "revised_prompt" not in d, str(d)[:80])
+        for size, ratio in (("1792x1024", "16:9"), ("1024x1792", "9:16"), ("auto", "1:1"),
+                            ("1024x1024", "1:1"), ("1024x1536", "2:3")):
+            check(f"size {size} maps to {ratio}", so.image_ratio_for_size(size) == ratio,
+                  str(so.image_ratio_for_size(size)))
+
+        agy.update(drawn="A paper crane, rewritten")
+        r = await c.post("/v1/images/generations", json={
+            "prompt": "a paper crane", "model": "agy:gemini-3.8-flash-low", "response_format": "url"})
+        d = r.json().get("data", [{}])[0] if r.status_code == 200 else {}
+        check("model agy:<slug> rewrites and reports revised_prompt",
+              "--model" in agy["cmd"] and d.get("revised_prompt") == agy["drawn"], str(d)[:160])
+        got = await c.get(d.get("url", "http://test/none").replace("http://test", ""))
+        check("response_format url points at a fetchable image",
+              got.status_code == 200 and got.content == JPEG, f"{d.get('url')} {got.status_code}")
+        await c.post("/v1/images/generations", json={"prompt": "x", "model": "dall-e-3"})
+        check("an OpenAI model name draws from the prompt as given", "--model" not in agy["cmd"],
+              str(agy["cmd"][:10]))
+
+        for bad in ({"prompt": "x", "n": 2}, {"prompt": "x", "size": "huge"}, {"prompt": ""},
+                    {"prompt": "x", "response_format": "png"},
+                    {"prompt": "x", "model": "agy:--dangerously-skip-permissions"}):
+            r = await c.post("/v1/images/generations", json=bad)
+            check(f"generations refuses {bad} in OpenAI's error shape",
+                  r.status_code == 400 and r.json().get("error", {}).get("message"),
+                  f"{r.status_code} {r.text[:100]}")
+
+        before = {p.name for p in so.IMAGES_DIR.iterdir()}
+        r = await c.post("/v1/images/edits", data={"prompt": "fold it from red paper"},
+                         files=[("image[]", ("crane.png", PNG, "image/png")),
+                                ("image[]", ("bird.jpg", JPEG, "image/jpeg"))])
+        new = {p.name for p in so.IMAGES_DIR.iterdir()} - before
+        uploads = [so.IMAGES_DIR / n for n in new if n.endswith((".png", ".jpg"))
+                   and '"uploaded": "' in (so.IMAGES_DIR / n).with_suffix(".json").read_text()]
+        check("edits takes image[] files as references",
+              r.status_code == 200 and len(uploads) == 2
+              and all(str(u) in agy["cmd"][-1] for u in uploads),
+              f"{r.status_code} {r.text[:100]} uploads={len(uploads)}")
+        r = await c.post("/v1/images/edits", data={"prompt": "x"},
+                         files=[("image", ("one.png", PNG, "image/png"))])
+        check("edits takes a single `image` too", r.status_code == 200, r.text[:100])
+
+        form_only = (b'--b\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nx\r\n'
+                     b'--b--\r\n')
+        for name, files in (("no image", form_only), ("a broken form", b"prompt=x"),
+                            ("a file that is not an image", [("image", ("a.png", b"hello", "image/png"))]),
+                            ("four images", [("image[]", (f"{i}.png", PNG, "image/png"))
+                                             for i in range(4)])):
+            before = {p.name for p in so.IMAGES_DIR.iterdir()}
+            r = await (c.post("/v1/images/edits", content=files,
+                              headers={"content-type": "multipart/form-data; boundary=b"})
+                       if isinstance(files, bytes)
+                       else c.post("/v1/images/edits", data={"prompt": "x"}, files=files))
+            check(f"edits refuses {name}, and stores nothing",
+                  r.status_code == 400 and r.json().get("error", {}).get("message")
+                  and {p.name for p in so.IMAGES_DIR.iterdir()} == before,
+                  f"{r.status_code} {r.text[:100]}")
+        r = await c.post("/v1/images/edits", json={"prompt": "x"})
+        check("edits refuses a JSON body", r.status_code == 400, f"{r.status_code} {r.text[:80]}")
+
+        # Hết quota: ĐÃ ĐO đúng thân lỗi này, agent vẫn đáp "done".
+        agy.update(draw=False, said="done", tool_error=(
+            'failed to generate content: 429 Too Many Requests, body: {\n  "error": {\n'
+            '    "code": 429,\n    "message": "You have exhausted your capacity on this model. '
+            'Your quota will reset after 4h36m40s.",\n    "status": "RESOURCE_EXHAUSTED"'))
+        r = await c.post("/api/images", json={"prompt": "x"})
+        check("the dashboard says the quota ran out and when it resets, not 'done'",
+              r.status_code == 502 and "reset after 4h36m40s" in r.json().get("error", "")
+              and "done" not in r.json().get("error", ""), r.text[:160])
+        r = await c.post("/v1/images/generations", json={"prompt": "x"})
+        check("/v1 answers 429 insufficient_quota and tells the SDK not to retry",
+              r.status_code == 429 and r.json()["error"]["type"] == "insufficient_quota"
+              and r.headers.get("x-should-retry") == "false", f"{r.status_code} {r.text[:120]}")
+        agy.update(tool_error='failed to generate content: 500 Internal error')
+        r = await c.post("/v1/images/generations", json={"prompt": "x"})
+        check("any other tool failure is a 502 that says so, also not retried",
+              r.status_code == 502 and "500 Internal error" in r.json()["error"]["message"]
+              and r.headers.get("x-should-retry") == "false", f"{r.status_code} {r.text[:120]}")
+        agy.update(draw=True, tool_error="")
+
+        spec = (await c.get("/openapi.json")).json()["paths"]
+        check("both endpoints are on /docs",
+              "/v1/images/generations" in spec and "/v1/images/edits" in spec, str(list(spec)))
 
         # ── tải ảnh lên ─────────────────────────────────────────────────────────
         r = await c.post("/api/images/upload?name=cat.png", content=PNG)

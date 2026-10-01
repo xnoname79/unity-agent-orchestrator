@@ -106,10 +106,18 @@ jobs:
           # The ConPTY backend (pywinpty) is imported lazily inside the request handler, so a
           # missing bundle would otherwise only surface when a user opens a terminal.
           $h = Invoke-RestMethod http://127.0.0.1:8999/health
+          # python-multipart is reached only inside starlette's form parser, so a bundle without
+          # it still starts, and then /v1/images/edits fails with a 500 for every client. A form
+          # with no image must get OUR 400, which proves the parser ran.
+          $form = Invoke-WebRequest http://127.0.0.1:8999/v1/images/edits -Method Post `
+                    -Form @{ prompt = "x" } -SkipHttpErrorCheck
           Stop-Process -Id $p.Id -Force
           if (-not $spec.paths.'/v1/chat/completions') { throw "/v1 missing from openapi" }
           if ($page.Content -notmatch '<title>') { throw "static dashboard missing from bundle" }
           if (-not $h.embedded_terminal) { throw "embedded terminal unavailable: $($h.embedded_terminal_reason)" }
+          if ($form.StatusCode -ne 400 -or $form.Content -notmatch 'image') {
+            throw "multipart form parsing missing from bundle: $($form.StatusCode) $($form.Content)"
+          }
 
           # Double-click path: Explorer launches the .exe with NO arguments. Started life as an
           # argparse usage error that exited(2) and closed the window instantly, so guard it.

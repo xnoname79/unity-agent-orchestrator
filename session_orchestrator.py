@@ -44,7 +44,9 @@ Usage:
 
 import argparse
 import asyncio
+import base64
 import json
+import math
 import os
 import re
 import secrets
@@ -3571,6 +3573,35 @@ IMAGE_REFS_MAX = 3                     # giới hạn của chính tool (ImagePa
 IMAGE_UPLOAD_MAX = 10 * 1024 * 1024
 # Model viết lại lời mô tả đi thẳng vào argv sau --model: không cho mở đầu bằng '-', kẻo thành cờ.
 _AGY_MODEL_OK = re.compile(r"^[a-z0-9][a-z0-9.-]{0,80}$")
+# Mỗi lần vẽ là một tiến trình agy + một phiên model. /v1 mở cho app ngoài, mà app ngoài (n8n,
+# script chạy lô…) bắn song song thoải mái → giới hạn số lần vẽ CÙNG LÚC, phần còn lại xếp hàng.
+# ponytail: con số cố định; thành biến môi trường khi có máy cần nhiều hơn.
+_IMAGE_SLOTS = asyncio.Semaphore(2)
+# Lỗi mở đầu bằng câu này = hết quota vẽ của tài khoản Google. /v1 đổi nó thành 429.
+IMAGE_QUOTA_ERR = "out of image quota"
+
+
+def image_ratio_for_size(size):
+    """`size` kiểu OpenAI ('1536x1024', 'auto'…) → hình dạng gần nhất tool nhận, hoặc None nếu sai
+    cú pháp. So theo LOG của tỉ lệ để 2:1 và 1:2 cách 1:1 bằng nhau."""
+    size = (size or "auto").strip().lower()
+    if size == "auto":
+        return "1:1"
+    m = re.fullmatch(r"(\d{1,5})x(\d{1,5})", size)
+    if not m or not int(m[1]) or not int(m[2]):
+        return None
+    want = math.log(int(m[1]) / int(m[2]))
+    return min(IMAGE_RATIOS, key=lambda r: abs(math.log(int(r.split(":")[0]) / int(r.split(":")[1]))
+                                                - want))
+
+
+def image_writer_for_model(model):
+    """`model` kiểu OpenAI → model agy viết lại lời mô tả. 'agy:<slug>' → slug (cùng luật tiền tố
+    với chat API); mọi thứ khác ('agy', 'gpt-image-1', 'dall-e-3', rỗng) → '' = vẽ đúng lời gửi.
+    KHÔNG từ chối model lạ: nhiều tool dựng sẵn gửi cứng tên model OpenAI, người dùng không sửa
+    được — mà model vẽ thì đằng nào cũng do Google chọn."""
+    m = (model or "").strip()
+    return m.split(":", 1)[1].strip() if m.lower().startswith("agy:") else ""
 # Tên file đến từ URL: chỉ nhận tên PHẲNG (không '/', không '..'); đuôi còn phải là ảnh.
 _IMAGE_NAME_OK = re.compile(r"^[A-Za-z0-9_-]{1,80}\.[a-z]{3,4}$")
 # conversation_id của agy là UUID. KHÔNG dùng _SID_OK: nó nhận '..', mà id này được ghép thành
@@ -3663,19 +3694,24 @@ async def generate_images(prompt, ratio="1:1", refs=(), writer=""):
     if DRY_RUN:
         return [], "dry-run: agy was not called"
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    drawn = {}
+    drawn, failed = {}, []
 
     async def on_event(kind, summary, payload):
         # Tham số THẬT đi vào tool: khi đã nhờ model viết lại thì Prompt khác lời người dùng.
         if kind == "tool_use" and payload.get("name") == "generate_image":
             drawn.update(payload.get("input") or {})
+        # Lỗi của CHÍNH tool. ĐÃ ĐO: hết quota thì tool trả 429 RESOURCE_EXHAUSTED mà agent vẫn
+        # đáp "done" — chỉ đọc lời agent là người dùng không bao giờ biết vì sao không có ảnh.
+        if kind == "tool_result" and payload.get("is_error"):
+            failed.append(str(payload.get("result") or ""))
 
     # "default" chứ không để trống: trống là rơi về DEFAULT_PERMISSION_MODE, mà mặc định là bypass.
     flags = _agy_flags(model=f"agy:{writer}" if writer else "", permission_mode="default",
                        effort="low", cwd=str(IMAGES_DIR))
     text = image_instruction(prompt, ratio, refs, rewrite=bool(writer))
-    res = await _agy_exec([AGY_BIN, *flags, f"--prompt={text}"], str(IMAGES_DIR),
-                          on_event=on_event)
+    async with _IMAGE_SLOTS:
+        res = await _agy_exec([AGY_BIN, *flags, f"--prompt={text}"], str(IMAGES_DIR),
+                              on_event=on_event)
     said = (res.get("result") or "").strip()
     conv_id = res["raw"].get("conversation_id") or ""
     if not _AGY_CONV_OK.match(conv_id):
@@ -3686,7 +3722,15 @@ async def generate_images(prompt, ratio="1:1", refs=(), writer=""):
     made = _harvest_images(conv_id, meta)
     if made:
         return made, ""
-    # Không có ảnh: agent từ chối (chính sách nội dung, hết quota…) — lời nó nói là lý do.
+    if failed:
+        # Thân lỗi là JSON của Google: câu "message" mới là thứ người đọc được ("…quota will
+        # reset after 4h36m").
+        m = re.search(r'"message":\s*"([^"]+)"', failed[0])
+        why = m[1] if m else failed[0]
+        if "RESOURCE_EXHAUSTED" in failed[0] or " 429 " in failed[0]:
+            return [], f"{IMAGE_QUOTA_ERR}: {why}"
+        return [], f"agy's image tool failed: {why}"
+    # Tool không lỗi mà vẫn không có ảnh: agent từ chối (chính sách nội dung…) — lời nó là lý do.
     return [], f"no image came back — agy said: {said}" if said else "no image came back"
 
 
@@ -4258,6 +4302,15 @@ def _oa_intro():
         "Enabled by setting the `ORCH_API_KEY` environment variable. Send it as "
         "`Authorization: Bearer <key>`, `X-API-Key`, or `?api_key=`. Leaving it unset means any "
         "client can drive your agents — only reasonable when bound to localhost.\n\n"
+        "### Images\n"
+        "`/v1/images/generations` and `/v1/images/edits` draw with the image tool inside the "
+        "Antigravity CLI, on the Google account `agy` is signed in with — no image API key. One "
+        "request is one drawing, usually under a minute, so `n` must be 1. `size` picks the "
+        "nearest of seven shapes; `model: 'agy:<model>'` has that model rewrite the prompt first "
+        "(Google picks the drawing model either way). Every image also lands in the dashboard "
+        "gallery.\n\n"
+        "```python\nimg = cli.images.generate(prompt='a paper crane', size='1536x1024')\n"
+        "cli.images.edit(image=[open('crane.png', 'rb')], prompt='fold it from red paper')\n```\n\n"
         "### Out of scope here\n"
         "The dashboard uses many more `/api/*` routes (signals, runs, terminal…). They change with "
         "the UI and are deliberately not specified.")
@@ -4332,6 +4385,57 @@ def _oa_path_chat():
                       "502": dict(_OA_ERR_RESP, description="The agent run failed")}}}
 
 
+def _oa_image_fields():
+    return {
+        "prompt": {"type": "string", "maxLength": IMAGE_PROMPT_MAX},
+        "model": {"type": "string", "examples": ["agy", "agy:gemini-3.1-pro-high"],
+                  "description": "`agy:<model>` has that agy model rewrite the prompt first. "
+                                 "Anything else, `gpt-image-1` included, draws from the prompt "
+                                 "as given. Google picks the drawing model either way."},
+        "size": {"type": "string", "default": "auto",
+                 "examples": ["1024x1024", "1536x1024", "1024x1536", "1792x1024"],
+                 "description": "Mapped to the nearest shape: 1:1, 4:3, 3:2, 16:9, 3:4, 2:3, 9:16. "
+                                "The pixel size is Google's (16:9 came back 1376x768)."},
+        "n": {"type": "integer", "enum": [1], "default": 1},
+        "response_format": {"type": "string", "enum": ["b64_json", "url"], "default": "b64_json",
+                            "description": "`url` points at this server and needs the same API "
+                                           "key to fetch"}}
+
+
+def _oa_path_images(edit=False):
+    fields = _oa_image_fields()
+    if edit:
+        fields["image"] = {"type": "array", "minItems": 1, "maxItems": IMAGE_REFS_MAX,
+                           "items": {"type": "string", "format": "binary"},
+                           "description": f"1 to {IMAGE_REFS_MAX} PNG, JPEG or WebP images, "
+                                          f"{IMAGE_UPLOAD_MAX // 2**20} MB each, to edit, combine "
+                                          "or follow. Sent as `image` or `image[]`. `mask` is "
+                                          "ignored: the prompt says what to change."}
+        content = {"multipart/form-data": {"schema": {
+            "type": "object", "required": ["prompt", "image"], "properties": fields}}}
+    else:
+        content = {"application/json": {"schema": {
+            "type": "object", "required": ["prompt"], "properties": fields}}}
+    ok = _oa_json({"type": "object", "properties": {
+        "created": {"type": "integer"},
+        "data": {"type": "array", "items": {"type": "object", "properties": {
+            "b64_json": {"type": "string"}, "url": {"type": "string"},
+            "revised_prompt": {"type": "string",
+                               "description": "Only when a model rewrote the prompt (agy may "
+                                              "shorten a long one)"}}}}}},
+        "The image — also saved to the dashboard gallery")
+    return {"post": {
+        "tags": ["images"],
+        "summary": "Edit or combine images" if edit else "Draw an image",
+        "requestBody": {"required": True, "content": content},
+        "responses": {"200": ok, "400": _OA_ERR_RESP, "401": _OA_ERR_RESP,
+                      "413": dict(_OA_ERR_RESP, description="An image is over the size limit"),
+                      "429": dict(_OA_ERR_RESP, description="The Google account is out of image "
+                                                            "quota; the message says when it resets"),
+                      "502": dict(_OA_ERR_RESP, description="agy drew nothing — the message says "
+                                                            "why (refusal, not signed in)")}}}
+
+
 def openapi_spec():
     """Đặc tả OpenAPI 3.1. Dựng trong hàm để hằng runtime (host/port/timeout) luôn khớp thực tế."""
     return {
@@ -4344,9 +4448,12 @@ def openapi_spec():
             "bearerAuth": {"type": "http", "scheme": "bearer"},
             "apiKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key"}}},
         "tags": [{"name": "chat", "description": "OpenAI-compatible"},
+                 {"name": "images", "description": "OpenAI-compatible, drawn by agy"},
                  {"name": "agents", "description": "Create and inspect agents"}],
         "paths": {
             "/v1/chat/completions": _oa_path_chat(),
+            "/v1/images/generations": _oa_path_images(),
+            "/v1/images/edits": _oa_path_images(edit=True),
             "/v1/models": {"get": {
                 "tags": ["chat"], "summary": "List agents as OpenAI models",
                 "parameters": [_oa_query("workspace_id", "Empty means every workspace")],
@@ -4417,6 +4524,7 @@ def build_app():
     from starlette.requests import Request
     from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
     from starlette.routing import Mount, Route, WebSocketRoute
+    from starlette.formparsers import MultiPartException
     from starlette.staticfiles import StaticFiles
 
     import signal_mcp
@@ -5676,6 +5784,97 @@ def build_app():
              "engine": engine_name_of_session(s), "status": s["status"]}
             for s in items]})
 
+    # ── /v1/images: vẽ ảnh, shape OpenAI (lõi chung với dashboard: generate_images) ──
+
+    def _oa_image_args(f):
+        """Field OpenAI (body JSON hoặc form) → ((prompt, ratio, writer, fmt), None) | (None, lỗi)."""
+        prompt = str(f.get("prompt") or "").strip()
+        if not prompt or len(prompt) > IMAGE_PROMPT_MAX:
+            return None, _oa_err(f"prompt must be 1 to {IMAGE_PROMPT_MAX} characters")
+        if f.get("n") not in (None, "", 1, "1"):
+            return None, _oa_err("n must be 1: each request draws one image")
+        ratio = image_ratio_for_size(str(f.get("size") or "auto"))
+        if not ratio:
+            return None, _oa_err("size must be 'auto' or '<width>x<height>'")
+        writer = image_writer_for_model(str(f.get("model") or ""))
+        if writer and not _AGY_MODEL_OK.match(writer):
+            return None, _oa_err(f"'{writer}' is not an agy model")
+        fmt = str(f.get("response_format") or "b64_json")
+        if fmt not in ("b64_json", "url"):
+            return None, _oa_err("response_format must be 'b64_json' or 'url'")
+        return (prompt, ratio, writer, fmt), None
+
+    async def _oa_image_draw(request, prompt, ratio, writer, fmt, refs=()):
+        made, err = await generate_images(prompt, ratio, refs, writer)
+        if err:
+            resp = (_oa_err(err, 429, typ="insufficient_quota", code="insufficient_quota")
+                    if err.startswith(IMAGE_QUOTA_ERR) else _oa_err(err, 502, typ="upstream_error"))
+            # SDK OpenAI tự thử lại 429/5xx tới 2 lần — mỗi lần là một lượt agy, một lần ăn quota,
+            # một bản ảnh mẫu nữa vào thư viện. ĐÃ ĐO: edit hỏng = 3 lần chạy. Header này SDK nghe.
+            resp.headers["x-should-retry"] = "false"
+            return resp
+        data = []
+        for m in made:
+            item = {"revised_prompt": m["drawn"]} if m.get("drawn") else {}
+            if fmt == "url":
+                item["url"] = f"{request.base_url}api/images/{m['name']}"
+            else:
+                item["b64_json"] = base64.b64encode((IMAGES_DIR / m["name"]).read_bytes()).decode()
+            data.append(item)
+        return JSONResponse({"created": _chat_created(), "data": data})
+
+    async def api_v1_images_generations(request: Request):
+        """POST /v1/images/generations — client.images.generate()."""
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            return _oa_err("body must be a JSON object")
+        args, err = _oa_image_args(body)
+        return err or await _oa_image_draw(request, *args)
+
+    async def api_v1_images_edits(request: Request):
+        """POST /v1/images/edits — client.images.edit(): multipart, ảnh ở field `image` (`image[]`
+        khi gửi nhiều). Ảnh vào thư viện như nút Add image… rồi thành ảnh mẫu (ImagePaths).
+
+        Starlette đọc HẾT multipart ra file tạm trước khi tới đây, nên chặn theo content-length
+        từ trước — không thì một body cỡ GB lấp đầy đĩa rồi mới bị từ chối."""
+        cap = IMAGE_UPLOAD_MAX * IMAGE_REFS_MAX + 2**20
+        if int(request.headers.get("content-length") or 0) > cap:
+            return _oa_err(f"images up to {IMAGE_UPLOAD_MAX // 2**20} MB each", 413)
+        try:
+            # +1 file: client có thể gửi kèm mask (bị bỏ qua, nhưng vẫn là một file).
+            form = await request.form(max_files=IMAGE_REFS_MAX + 1, max_fields=20)
+        # ValueError: python-multipart ném MultipartParseError (con của ValueError) với body hỏng,
+        # starlette không bọc lại. KHÔNG bắt rộng hơn: thiếu hẳn gói thì starlette assert, và lỗi
+        # đó phải là 500 cho smoke test ở CI thấy, không được giả làm "form sai".
+        except (MultiPartException, ValueError) as e:
+            return _oa_err(f"could not read the form: {e}")
+        args, err = _oa_image_args(form)
+        if err:
+            return err
+        files = [v for k, v in form.multi_items()
+                 if k in ("image", "image[]") and hasattr(v, "read")]
+        if not files:
+            return _oa_err("send at least one image in the 'image' field")
+        if len(files) > IMAGE_REFS_MAX:
+            return _oa_err(f"up to {IMAGE_REFS_MAX} images")
+        # Kiểm HẾT trước rồi mới lưu: ảnh thứ ba hỏng thì hai ảnh đầu không được nằm lại thư viện.
+        ups = []
+        for f in files:
+            data = await f.read(IMAGE_UPLOAD_MAX + 1)
+            if len(data) > IMAGE_UPLOAD_MAX:
+                return _oa_err(f"{f.filename}: images up to {IMAGE_UPLOAD_MAX // 2**20} MB", 413)
+            ext = image_ext(data)
+            if not ext:
+                return _oa_err(f"{f.filename}: only PNG, JPEG or WebP images")
+            ups.append((ext, data, (f.filename or "")[:120]))
+        refs = [str(IMAGES_DIR / store_image(ext, {"prompt": "", "uploaded": name},
+                                             lambda dst, d=data: dst.write_bytes(d))["name"])
+                for ext, data, name in ups]
+        return await _oa_image_draw(request, *args, refs=refs)
+
     @asynccontextmanager
     async def lifespan(app):
         init_db()  # idempotent — cũng migrate bảng/cột mới cho DB cũ (vd run_events)
@@ -5806,6 +6005,8 @@ def build_app():
         # Chat tương thích OpenAI cho app ngoài (base_url = http://<host>:<port>/v1)
         Route("/v1/chat/completions", api_chat_completions, methods=["POST"]),
         Route("/v1/models", api_chat_models),
+        Route("/v1/images/generations", api_v1_images_generations, methods=["POST"]),
+        Route("/v1/images/edits", api_v1_images_edits, methods=["POST"]),
         # Tài liệu: /docs xem bằng Swagger UI, /openapi.json để import vào Postman/codegen.
         # KHÔNG nằm sau ApiKeyMiddleware (chỉ chặn /api/ + /v1/) — đọc tài liệu không cần key.
         Route("/openapi.json", api_openapi),

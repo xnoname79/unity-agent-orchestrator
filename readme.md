@@ -200,10 +200,38 @@ open it full size and save it from there.
   follows them: keep a character across scenes, or change one thing in a picture.
 
 It draws with the image tool built into the Antigravity CLI, so it runs on the Google account
-`agy` is signed in with: no API key, and it counts against that account's quota. Google decides
-which model draws; the one you pick only writes the prompt. `agy` must be installed and signed in.
+`agy` is signed in with: no API key, and it counts against that account's quota. That quota is
+small — in testing it ran out after a handful of images and reset a few hours later; the error
+says when. Google decides which model draws; the one you pick only writes the prompt. `agy` must
+be installed and signed in.
 
 Images are kept in `~/.session_orch_db/images/`, each beside a `.json` with its prompt.
+
+### From another app
+
+The same drawing is served OpenAI-style, so an app on the OpenAI SDK only changes `base_url`:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8992/v1", api_key="<ORCH_API_KEY>")
+
+img = client.images.generate(prompt="a paper crane", size="1536x1024")
+png = img.data[0].b64_json                         # base64 image bytes
+
+client.images.edit(                                # 1-3 images to edit, combine or follow
+    image=[open("crane.png", "rb")],
+    prompt="fold it from red paper",
+    model="agy:gemini-3.1-pro-high",               # optional: this model rewrites the prompt
+)
+```
+
+- `size` picks the nearest of the seven shapes; Google decides the pixels.
+- `model` is `agy:<model>` to have that model rewrite the prompt first. Anything else, an OpenAI
+  model name included, draws from the prompt as given.
+- `n` must be 1. `response_format="url"` returns a link on this server instead of the bytes.
+- Out of quota answers `429 insufficient_quota` with the reset time, and tells the SDK not to
+  retry. Every result also lands in the dashboard gallery. Full spec at `/docs`.
 
 ## Talk to an agent over the OpenAI API
 
