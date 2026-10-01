@@ -161,15 +161,12 @@ AGY_SUMMARIES_DB = AGY_HOME / "conversation_summaries.db"
 AGY_PRINT_TIMEOUT = os.environ.get("ORCH_AGY_PRINT_TIMEOUT", "60m")
 ORCH_HOST = os.environ.get("ORCH_HOST", "0.0.0.0")
 ORCH_PORT = int(os.environ.get("ORCH_PORT", "8992"))
-# Service-to-service auth. Để TRỐNG = tắt (localhost/dev như cũ). Set = mọi /api/* yêu cầu
-# header 'X-API-Key' (hoặc query ?api_key= cho SSE) khớp. Web app backend giữ key này.
-ORCH_API_KEY = os.environ.get("ORCH_API_KEY", "")
 # CORS cho app chạy TRONG TRÌNH DUYỆT gọi /v1 (React/Vue…). Trình duyệt gửi preflight OPTIONS
 # trước mọi request có header lạ (Authorization, Content-Type: application/json) — không trả lời
 # preflight thì nó chặn, log hiện "OPTIONS ... 405".
 # Danh sách origin ngăn cách bằng dấu phẩy; '*' = mọi origin; để TRỐNG = tắt hẳn CORS.
-# CẢNH BÁO: '*' + ORCH_API_KEY trống nghĩa là BẤT KỲ trang web nào người dùng mở cũng sai khiến
-# được agent trên máy này (agent chạy shell với bypassPermissions). Xem cảnh báo lúc khởi động.
+# CẢNH BÁO: '*' nghĩa là BẤT KỲ trang web nào người dùng mở cũng sai khiến được agent trên máy
+# này (agent chạy shell với bypassPermissions) — không có API key nào chặn. Xem cảnh báo lúc khởi động.
 CORS_ORIGINS = [o.strip() for o in os.environ.get("ORCH_CORS_ORIGINS", "*").split(",") if o.strip()]
 # Phase D — safety caps (0 = tắt/không giới hạn)
 MAX_RUNS_PER_SESSION = int(os.environ.get("ORCH_MAX_RUNS_PER_SESSION", "0"))
@@ -4281,7 +4278,7 @@ def _oa_intro():
         "Talk to an orchestrated agent through an **OpenAI-compatible API** — an existing app "
         "only has to change its `base_url`.\n\n"
         "```python\nfrom openai import OpenAI\n"
-        f"cli = OpenAI(base_url='http://{ORCH_HOST}:{ORCH_PORT}/v1', api_key='<ORCH_API_KEY>')\n"
+        f"cli = OpenAI(base_url='http://{ORCH_HOST}:{ORCH_PORT}/v1', api_key='local')\n"
         "cli.chat.completions.create(\n"
         "    model='<workspace_id>/<agent_alias>',\n"
         "    messages=[{'role': 'user', 'content': 'hello'}], stream=True)\n```\n\n"
@@ -4298,10 +4295,10 @@ def _oa_intro():
         "`agent_alias` and `workspace_id` are accepted in the body, as query parameters, or packed "
         "into `model` as `\"<workspace_id>/<agent_alias>\"` (the OpenAI SDKs can only send "
         "`model`).\n\n"
-        "### Authentication\n"
-        "Enabled by setting the `ORCH_API_KEY` environment variable. Send it as "
-        "`Authorization: Bearer <key>`, `X-API-Key`, or `?api_key=`. Leaving it unset means any "
-        "client can drive your agents — only reasonable when bound to localhost.\n\n"
+        "### No API key\n"
+        "The orchestrator runs on your own machine and checks no key. The OpenAI SDKs refuse an "
+        "empty `api_key`, so pass any string. Anything that can reach this port can drive your "
+        "agents.\n\n"
         "### Images\n"
         "`/v1/images/generations` and `/v1/images/edits` draw with the image tool inside the "
         "Antigravity CLI, on the Google account `agy` is signed in with — no image API key. One "
@@ -4379,7 +4376,7 @@ def _oa_path_chat():
         "requestBody": {"required": True,
                         "content": {"application/json": {"schema": _oa_chat_body()}}},
         "responses": {"200": ok,
-                      "400": _OA_ERR_RESP, "401": _OA_ERR_RESP, "404": _OA_ERR_RESP,
+                      "400": _OA_ERR_RESP, "404": _OA_ERR_RESP,
                       "409": dict(_OA_ERR_RESP, description="Agent is paused/stopped, or the "
                                                             "workspace is suspended"),
                       "502": dict(_OA_ERR_RESP, description="The agent run failed")}}}
@@ -4428,7 +4425,7 @@ def _oa_path_images(edit=False):
         "tags": ["images"],
         "summary": "Edit or combine images" if edit else "Draw an image",
         "requestBody": {"required": True, "content": content},
-        "responses": {"200": ok, "400": _OA_ERR_RESP, "401": _OA_ERR_RESP,
+        "responses": {"200": ok, "400": _OA_ERR_RESP,
                       "413": dict(_OA_ERR_RESP, description="An image is over the size limit"),
                       "429": dict(_OA_ERR_RESP, description="The Google account is out of image "
                                                             "quota; the message says when it resets"),
@@ -4443,10 +4440,6 @@ def openapi_spec():
         "info": {"title": "Session Orchestrator API", "version": "1.0.0",
                  "description": _oa_intro()},
         "servers": [{"url": f"http://{ORCH_HOST}:{ORCH_PORT}"}],
-        "security": [{"bearerAuth": []}, {"apiKeyHeader": []}],
-        "components": {"securitySchemes": {
-            "bearerAuth": {"type": "http", "scheme": "bearer"},
-            "apiKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key"}}},
         "tags": [{"name": "chat", "description": "OpenAI-compatible"},
                  {"name": "images", "description": "OpenAI-compatible, drawn by agy"},
                  {"name": "agents", "description": "Create and inspect agents"}],
@@ -4520,7 +4513,6 @@ def build_app():
     from contextlib import AsyncExitStack, asynccontextmanager
     from starlette.applications import Starlette
     from starlette.middleware import Middleware
-    from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.requests import Request
     from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
     from starlette.routing import Mount, Route, WebSocketRoute
@@ -5055,11 +5047,6 @@ def build_app():
 
         PTY lấy từ pty_backend(): pty.fork() trên POSIX, ConPTY trên Windows. Thiếu backend thì
         BÁO THẲNG ra màn hình xterm — để import lỗi rồi WS đứt câm là kiểu hỏng khó đoán nhất."""
-        # Cùng chính sách auth với /api/*: ORCH_API_KEY set thì bắt ?api_key= khớp.
-        if ORCH_API_KEY and not secrets.compare_digest(
-                websocket.query_params.get("api_key", ""), ORCH_API_KEY):
-            await websocket.close(code=4401)
-            return
         sid = websocket.query_params.get("session", "")
         s = get_session(sid)
         if not s:
@@ -5888,17 +5875,17 @@ def build_app():
             print(f"[orchestrator] API docs:  http://{ORCH_HOST}:{ORCH_PORT}/docs"
                   + (f"  (dry_run={DRY_RUN})" if DRY_RUN else ""))
             print("[orchestrator] MCP mounted: /signal/mcp, /unity/mcp")
-            # Agent chạy shell với bypassPermissions. CORS mở + không có key = bất kỳ trang web
-            # nào người dùng mở cũng POST được /v1/chat/completions và sai khiến agent trên máy này.
+            # Agent chạy shell với bypassPermissions. CORS mở (không có API key nào khác chặn) =
+            # bất kỳ trang web nào người dùng mở cũng POST được /v1 và sai khiến agent trên máy này.
             # In thành KHỐI có viền: người double-click .exe chỉ thấy console vài giây trước khi
             # log uvicorn đẩy trôi, một dòng lẫn giữa log khác là không ai đọc.
-            if CORS_ORIGINS == ["*"] and not ORCH_API_KEY:
+            if CORS_ORIGINS == ["*"]:
                 bar = "!" * 78
                 print(f"\n{bar}\n"
-                      "!! SECURITY: CORS is open to ANY origin and ORCH_API_KEY is not set.\n"
+                      "!! SECURITY: CORS is open to ANY origin.\n"
                       "!! Agents here run shell commands with permissions bypassed, so ANY website\n"
                       "!! you visit can drive them and read/write files on this machine.\n"
-                      "!! Fix: set ORCH_API_KEY=<secret>, or ORCH_CORS_ORIGINS=http://localhost:3000\n"
+                      "!! Fix: set ORCH_CORS_ORIGINS=http://localhost:3000 (or leave it empty)\n"
                       "!! in a .env file next to the executable.\n"
                       f"{bar}\n", file=sys.stderr)
             try:
@@ -5909,29 +5896,6 @@ def build_app():
                 # restart — mở lại dashboard là còn nguyên buffer. Đây chính là chỗ bản VS Code cũ
                 # phải dọn tay: serve-web mồ côi mà UI không còn thấy để đóng. tmux không có vấn
                 # đề đó vì `tmux ls` luôn tìm lại được chúng.
-
-    class ApiKeyMiddleware(BaseHTTPMiddleware):
-        """Chặn /api/* và /v1/* nếu thiếu/sai API key. Chỉ bật khi ORCH_API_KEY được set (mặc định
-        tắt để dev localhost như cũ). Key nhận qua header 'X-API-Key', 'Authorization: Bearer <key>'
-        (SDK OpenAI chỉ gửi được kiểu này), hoặc query '?api_key=' (cho EventSource/SSE không gắn
-        được custom header). Không đụng dashboard tĩnh, /health, MCP mount."""
-        async def dispatch(self, request, call_next):
-            path = request.url.path
-            # OPTIONS = preflight, chuẩn CORS cấm gửi kèm Authorization → không đòi key ở đây
-            # (CORSMiddleware ở ngoài đã trả lời trước, đây chỉ là rào phòng khi tắt CORS).
-            if ORCH_API_KEY and request.method != "OPTIONS" and path.startswith(("/api/", "/v1/")):
-                bearer = request.headers.get("authorization", "")
-                bearer = bearer[7:].strip() if bearer[:7].lower() == "bearer " else ""
-                key = (request.headers.get("x-api-key") or bearer
-                       or request.query_params.get("api_key", ""))
-                if not secrets.compare_digest(key, ORCH_API_KEY):
-                    # Shape lỗi của OpenAI cho /v1 (SDK bóc e.message), shape cũ cho /api.
-                    if path.startswith("/v1/"):
-                        return JSONResponse({"error": {"message": "invalid or missing API key",
-                                                       "type": "invalid_request_error",
-                                                       "code": "invalid_api_key"}}, status_code=401)
-                    return JSONResponse({"error": "unauthorized"}, status_code=401)
-            return await call_next(request)
 
     routes = [
         Route("/health", health),
@@ -6008,7 +5972,6 @@ def build_app():
         Route("/v1/images/generations", api_v1_images_generations, methods=["POST"]),
         Route("/v1/images/edits", api_v1_images_edits, methods=["POST"]),
         # Tài liệu: /docs xem bằng Swagger UI, /openapi.json để import vào Postman/codegen.
-        # KHÔNG nằm sau ApiKeyMiddleware (chỉ chặn /api/ + /v1/) — đọc tài liệu không cần key.
         Route("/openapi.json", api_openapi),
         Route("/docs", api_docs),
         # MCP server nội bộ mount chung port (đặt trước static "/"): /signal/mcp, /unity/mcp.
@@ -6025,8 +5988,8 @@ def build_app():
             ("/?pane=1&ws=<id>") nên mỗi cái là một entry cache riêng — refresh cứng chỉ làm mới
             pane đang mở, pane mở sau đó vẫn ăn bản cũ, thành ra UI mới đứng cạnh UI cũ mà nhìn
             không ra vì sao. no-cache = luôn hỏi lại server; ETag vẫn trả 304 nên không tốn thêm
-            băng thông. Đặt ở đây chứ không ở middleware: middleware chỉ được lắp khi có API key,
-            và bọc BaseHTTPMiddleware quanh SSE là chuốc thêm rủi ro cho một cái header."""
+            băng thông. Đặt ở đây chứ không ở middleware: bọc BaseHTTPMiddleware quanh SSE là
+            chuốc thêm rủi ro cho một cái header."""
             def file_response(self, *args, **kwargs):
                 resp = super().file_response(*args, **kwargs)
                 resp.headers.setdefault("cache-control", "no-cache")
@@ -6034,21 +5997,17 @@ def build_app():
 
         routes.append(Mount("/", app=NoCacheStatic(directory=str(static_dir), html=True)))
 
-    # THỨ TỰ QUAN TRỌNG: CORS phải NGOÀI CÙNG. Preflight OPTIONS của trình duyệt KHÔNG mang
-    # Authorization (theo chuẩn), nên nếu ApiKeyMiddleware chạy trước thì preflight ăn 401 và
-    # request thật không bao giờ được gửi.
     middleware = []
     if CORS_ORIGINS:
         from starlette.middleware.cors import CORSMiddleware
         middleware.append(Middleware(
             CORSMiddleware, allow_origins=CORS_ORIGINS,
             allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-            allow_headers=["authorization", "content-type", "x-api-key"],
-            # False: dùng '*' kèm credentials là trình duyệt tự chặn, và API này xác thực bằng
-            # header tường minh chứ không bằng cookie.
+            # authorization: SDK OpenAI chạy trong trình duyệt LUÔN gửi Bearer (key gì cũng được,
+            # không ai kiểm) — preflight không cho header này là request thật không đi.
+            allow_headers=["authorization", "content-type"],
+            # False: dùng '*' kèm credentials là trình duyệt tự chặn; API này không dùng cookie.
             allow_credentials=False, max_age=600))
-    if ORCH_API_KEY:
-        middleware.append(Middleware(ApiKeyMiddleware))
     return Starlette(routes=routes, lifespan=lifespan, middleware=middleware)
 
 

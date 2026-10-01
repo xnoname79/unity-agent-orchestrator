@@ -214,7 +214,7 @@ The same drawing is served OpenAI-style, so an app on the OpenAI SDK only change
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8992/v1", api_key="<ORCH_API_KEY>")
+client = OpenAI(base_url="http://localhost:8992/v1", api_key="local")  # any string, none is checked
 
 img = client.images.generate(prompt="a paper crane", size="1536x1024")
 png = img.data[0].b64_json                         # base64 image bytes
@@ -238,7 +238,7 @@ client.images.edit(                                # 1-3 images to edit, combine
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8992/v1", api_key="<ORCH_API_KEY>")
+client = OpenAI(base_url="http://localhost:8992/v1", api_key="local")  # any string, none is checked
 
 stream = client.chat.completions.create(
     model="<workspace_id>/<agent_alias>",          # e.g. "ws_3b99a7/backend"
@@ -270,7 +270,6 @@ python3 session_orchestrator.py list-sessions   # also: list-signals, list-runs
 | Variable | Default | Purpose |
 |---|---|---|
 | `ORCH_PORT` / `ORCH_HOST` | `8992` / `0.0.0.0` | Where to listen |
-| `ORCH_API_KEY` | *(unset)* | Require a key on `/api/*` and `/v1/*` |
 | `ORCH_CORS_ORIGINS` | `*` | Allowed browser origins; empty disables CORS |
 | `CLAUDE_BIN` / `ORCH_CODEX_BIN` / `ORCH_AGY_BIN` | `claude` / `codex` / `agy` | Paths to the provider CLIs |
 | `ORCH_AGY_HOME` | `~/.gemini/antigravity-cli` | Where the Antigravity CLI keeps its conversations |
@@ -377,9 +376,10 @@ Stop it with `launchctl unload -w ~/Library/LaunchAgents/com.agent-orch.plist`.
 ## Safety
 
 > [!WARNING]
-> `ORCH_CORS_ORIGINS` defaults to `*` and there is no API key unless you set one. Agents here run
-> shell commands with permissions bypassed, so that combination lets **any website you visit**
-> drive them. Set `ORCH_API_KEY`, or narrow `ORCH_CORS_ORIGINS`, before exposing the port.
+> There is no API key: this is a local app, and anything that can reach its port can drive the
+> agents, which run shell commands with permissions bypassed. `ORCH_CORS_ORIGINS` defaults to
+> `*`, which lets **any website you visit** do that too — narrow it, or leave it empty. Do not
+> expose the port beyond your own machine.
 
 ![Signal queue and audit log](images/screenshot-history.png)
 

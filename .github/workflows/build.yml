@@ -193,15 +193,15 @@ jobs:
 
             Open `http://localhost:8992` (dashboard) or `http://localhost:8992/docs` (API).
 
-            > **Security:** `ORCH_CORS_ORIGINS` defaults to `*` and there is no API key unless you
-            > set one. Agents run shell commands with permissions bypassed, so that combination
-            > lets any website you visit drive them. Set `ORCH_API_KEY` in a `.env` next to the
-            > executable before using this on a shared or untrusted network.
+            > **Security:** this is a local app with no API key. Agents run shell commands with
+            > permissions bypassed, and `ORCH_CORS_ORIGINS` defaults to `*`, which lets any website
+            > you visit drive them. Narrow it in a `.env` next to the executable, and do not expose
+            > the port beyond your own machine.
 
             Configure via environment variables, or a `.env` file placed **next to the
             executable** (on Windows, inside the unzipped folder, beside `agent-orch.exe`).
-            Notable ones: `ORCH_PORT`, `ORCH_HOST`, `ORCH_API_KEY` (enables auth on `/api` + `/v1`),
-            `CLAUDE_BIN`, `ORCH_CODEX_BIN`.
+            Notable ones: `ORCH_PORT`, `ORCH_HOST`, `ORCH_CORS_ORIGINS`, `CLAUDE_BIN`,
+            `ORCH_CODEX_BIN`.
 
             ## Prerequisites
 
