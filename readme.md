@@ -188,13 +188,20 @@ only decides what the button opens next.
 
 ## Make images
 
-The picture button in the top bar opens **Images**. Describe what you want, press **Generate**,
-and the image lands in the gallery below, usually in under a minute. Click one to open it full
-size and save it from there.
+The picture button in the top bar opens **Images**. Describe what you want, pick a shape, press
+**Generate**, and the image lands in the gallery below, usually in under a minute. Click one to
+open it full size and save it from there.
+
+- **Shape** — square, landscape (4:3, 3:2), wide 16:9, portrait (3:4, 2:3) or tall 9:16.
+- **Description** — leave it on *My words, exactly*, or let a Gemini model rewrite your text into
+  a fuller prompt first. Hover a picture to see the prompt it was drawn from.
+- **Reference images** — up to three. Press **Reference** on a picture in the gallery, or
+  **Add image…** for your own (PNG, JPEG or WebP, up to 10 MB). The new image edits, combines or
+  follows them: keep a character across scenes, or change one thing in a picture.
 
 It draws with the image tool built into the Antigravity CLI, so it runs on the Google account
-`agy` is signed in with: no API key, and it counts against that account's quota. `agy` must be
-installed and signed in. Every image is square, 1024 × 1024 — the tool takes no size.
+`agy` is signed in with: no API key, and it counts against that account's quota. Google decides
+which model draws; the one you pick only writes the prompt. `agy` must be installed and signed in.
 
 Images are kept in `~/.session_orch_db/images/`, each beside a `.json` with its prompt.
 
@@ -389,7 +396,7 @@ python3 check_groups.py                     # the default workspace hides only w
 python3 check_pair_cap.py                   # the ping-pong budget reopens on new work
 python3 check_workspace_move.py             # a move cannot duplicate a role name
 python3 check_shutdown.py                   # Ctrl-C returns, even with an SSE stream open
-python3 check_images.py                     # a drawing is picked up, its agy scratch is cleared
+python3 check_images.py                     # drawings are picked up, references stay in the gallery
 ```
 
 ## License

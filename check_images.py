@@ -11,7 +11,10 @@ data folder once the run ends. Every way that goes wrong is a quiet one:
   - every drawing leaves an agy conversation behind. Left there, they bury the user's real
     sessions in the terminal card's session picker;
   - the drawing run needs no permissions, so it must not get them — even though the
-    orchestrator's default mode is bypass.
+    orchestrator's default mode is bypass. Picking a model to rewrite the prompt must not change
+    that, and a "model" that is really a flag must never reach argv;
+  - reference images go to agy as absolute paths. They may only come from the gallery;
+  - an upload is judged by its bytes, not by its name, and is read with a ceiling.
 
 agy itself is not called: _agy_exec is replaced by a fake that lays files out the way
 agy 1.2.14 does.
@@ -50,12 +53,17 @@ so._ensure_db()
 
 CID = "0b7e6a52-1c3d-4e5f-8a9b-0c1d2e3f4a5b"
 JPEG = b"\xff\xd8\xff\xe0 not really a jpeg"
-agy = {"cid": CID, "draw": True, "said": "done", "cmd": []}
+PNG = b"\x89PNG\r\n\x1a\n not really a png"
+agy = {"cid": CID, "draw": True, "said": "done", "cmd": [], "drawn": "a red apple"}
 
 
 async def fake_agy(cmd, cwd, session_id="", on_event=None):
-    """Bày file đúng như agy 1.2.14: ảnh ở brain/<cid>/, kèm log và ghi chú KHÔNG phải ảnh."""
+    """Bày file đúng như agy 1.2.14: ảnh ở brain/<cid>/, kèm log và ghi chú KHÔNG phải ảnh. Phát
+    event tool_use như _iter_agy_events — đó là chỗ duy nhất biết Prompt thật đã vẽ."""
     agy["cmd"] = cmd
+    if on_event:
+        await on_event("tool_use", "generate_image(...)",
+                       {"name": "generate_image", "input": {"Prompt": agy["drawn"]}})
     brain = so.AGY_HOME / "brain" / agy["cid"]
     (brain / ".system_generated" / "logs").mkdir(parents=True, exist_ok=True)
     (brain / ".system_generated" / "logs" / "transcript.jsonl").write_text("{}")
@@ -135,10 +143,51 @@ async def main():
         check("the prompt file is not served as an image", r.status_code == 404,
               str(r.status_code))
 
-        r = await c.delete(f"/api/images/{name}")
-        check("deleting takes the image and its prompt",
-              r.status_code == 200 and not any(so.IMAGES_DIR.iterdir()),
-              f"{r.status_code} {list(so.IMAGES_DIR.iterdir())}")
+        # ── hình dạng, ảnh mẫu, model viết lại ─────────────────────────────────
+        ref = so.IMAGES_DIR / name
+        agy.update(drawn="A glossy red apple, studio light, 35mm")
+        r = await c.post("/api/images", json={"prompt": "an apple, wide", "ratio": "16:9",
+                                              "refs": [name], "writer": "gemini-3.8-flash-low"})
+        got = r.json()[0] if r.status_code == 200 else {}
+        said = agy["cmd"][-1]
+        check("the shape reaches the tool", '"16:9"' in said, said[:160])
+        check("a reference reaches the tool as an absolute path",
+              str(ref.resolve()) in said or str(ref) in said, said[:200])
+        check("a chosen model rewrites, with --model and still no bypass",
+              agy["cmd"][agy["cmd"].index("--model") + 1] == "gemini-3.8-flash-low"
+              and "--dangerously-skip-permissions" not in agy["cmd"] and "Rewrite" in said,
+              str(agy["cmd"][:10]))
+        check("the gallery keeps both the user's words and what was drawn",
+              got.get("prompt") == "an apple, wide" and got.get("drawn") == agy["drawn"]
+              and got.get("ratio") == "16:9", str(got))
+        r = await c.post("/api/images", json={"prompt": "exact words"})
+        check("no model chosen = the user's words, unchanged",
+              "unchanged" in agy["cmd"][-1] and "--model" not in agy["cmd"]
+              and "drawn" not in r.json()[0], agy["cmd"][-1][:120])
+
+        for bad in ({"ratio": "5:4"}, {"writer": "--dangerously-skip-permissions"},
+                    {"refs": ["../check_images.db"]}, {"refs": "not-a-list"},
+                    {"refs": [name] * (so.IMAGE_REFS_MAX + 1)}):
+            r = await c.post("/api/images", json={"prompt": "x", **bad})
+            check(f"{bad} is refused", r.status_code == 400, f"{r.status_code} {r.text[:80]}")
+
+        # ── tải ảnh lên ─────────────────────────────────────────────────────────
+        r = await c.post("/api/images/upload?name=cat.png", content=PNG)
+        up = r.json() if r.status_code == 200 else {}
+        check("an upload lands in the gallery, judged by its bytes",
+              up.get("name", "").endswith(".png") and up.get("uploaded") == "cat.png",
+              f"{r.status_code} {r.text[:120]}")
+        r = await c.post("/api/images/upload?name=evil.png", content=b"<script>alert(1)</script>")
+        check("a file that is not an image is refused, whatever its name", r.status_code == 400,
+              str(r.status_code))
+        so.IMAGE_UPLOAD_MAX = 64
+        r = await c.post("/api/images/upload?name=big.png", content=PNG + b"x" * 100)
+        check("an upload over the ceiling is refused", r.status_code == 413, str(r.status_code))
+
+        for i in (await c.get("/api/images")).json():
+            await c.delete(f"/api/images/{i['name']}")
+        check("deleting takes every image and its prompt", not any(so.IMAGES_DIR.iterdir()),
+              str(list(so.IMAGES_DIR.iterdir())))
 
 
 asyncio.run(main())

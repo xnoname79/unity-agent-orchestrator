@@ -2924,23 +2924,52 @@ window.mcpAdd = mcpAdd;
 // ── Images ───────────────────────────────────────────────────────────────────
 // Vẽ bằng tool generate_image của agy. Một lần vẽ dưới một phút và request CHỜ tới khi xong —
 // nút khoá suốt lúc đó để một cú bấm đúp không thành hai lần ăn quota.
+const IMG_REFS_MAX = 3;   // = IMAGE_REFS_MAX ở server: giới hạn của chính tool (ImagePaths)
+let imgList = [];         // thư viện lần tải gần nhất — bấm Reference vẽ lại từ đây, khỏi gọi server
+let imgRefs = [];         // tên ảnh đang chọn làm ảnh mẫu cho lần vẽ tới
+
+// Model chỉ VIẾT LẠI lời mô tả — model vẽ do server Google chọn. Lấy từ tab agy của MODEL_TABS,
+// chung với form spawn; bỏ "Auto" vì giá trị rỗng ở đây nghĩa là "giữ nguyên lời người dùng".
+$("img-writer").innerHTML = `<option value="">My words, exactly</option>` + MODEL_TABS
+  .find((t) => t.engine === "agy").models.filter((m) => m.id.startsWith("agy:"))
+  .map((m) => `<option value="${esc(m.id.slice(4))}">Improved by Gemini ${esc(m.name)}</option>`)
+  .join("");
+
+const imgUrl = (name) => "/api/images/" + encodeURIComponent(name);
+
 function imgRows(list) {
   if (!list.length) return `<div class="hint">No images yet.</div>`;
   return list.map((i) => {
-    const url = "/api/images/" + encodeURIComponent(i.name);
+    const on = imgRefs.includes(i.name);
+    const cap = i.prompt || (i.uploaded ? "Uploaded · " + i.uploaded : "");
+    const tip = i.drawn ? `${cap}\n\nDrawn from (${i.writer}): ${i.drawn}` : cap;
     // Tên file đi qua data-attribute, không qua inline onclick — cùng lối như danh sách MCP.
-    return `<figure class="img-item">
-      <a href="${url}" target="_blank" rel="noopener" title="Open full size">
-        <img src="${url}" alt="${esc(i.prompt)}" loading="lazy"></a>
-      <figcaption title="${esc(i.prompt)}">${esc(i.prompt)}</figcaption>
+    return `<figure class="img-item${on ? " ref" : ""}">
+      <a href="${imgUrl(i.name)}" target="_blank" rel="noopener" title="Open full size">
+        <img src="${imgUrl(i.name)}" alt="${esc(cap)}" loading="lazy"></a>
+      <div class="img-foot"><span title="${esc(tip)}">${esc(cap)}</span>
+        <button class="secondary${on ? " on" : ""}" data-img-ref="${esc(i.name)}"
+          title="Use this image as a reference for the next one">${on ? "Selected" : "Reference"}</button></div>
       <button class="icon-btn" data-img-rm="${esc(i.name)}" title="Delete">
         <svg class="ic sm"><use href="#i-trash"/></svg></button>
     </figure>`;
   }).join("");
 }
 
+function imgPaint() {
+  $("img-grid").innerHTML = imgRows(imgList);
+  $("img-refs").innerHTML = imgRefs.length ? imgRefs.map((n) => `<span class="img-ref">
+      <img src="${imgUrl(n)}" alt="">
+      <button class="icon-btn" data-img-ref="${esc(n)}" title="Remove from references">
+        <svg class="ic sm"><use href="#i-x"/></svg></button></span>`).join("")
+    : `<span class="hint">None — drawn from the description alone.</span>`;
+}
+
 async function imgLoad() {
-  $("img-grid").innerHTML = imgRows(await api("/api/images"));
+  imgList = await api("/api/images");
+  // Ảnh mẫu đã bị xoá (tab khác, xoá tay) thì bỏ khỏi lựa chọn — server sẽ từ chối nó.
+  imgRefs = imgRefs.filter((n) => imgList.some((i) => i.name === n));
+  imgPaint();
 }
 
 function imgOpen() {
@@ -2955,13 +2984,49 @@ function imgClose() {
 }
 window.imgClose = imgClose;
 
+function imgToggleRef(name) {
+  if (imgRefs.includes(name)) imgRefs = imgRefs.filter((n) => n !== name);
+  else if (imgRefs.length >= IMG_REFS_MAX) {
+    return showMsg("img-msg", `Up to ${IMG_REFS_MAX} reference images.`, false);
+  } else imgRefs.push(name);
+  imgPaint();
+}
+
+function imgPick() {
+  $("img-file").click();
+}
+window.imgPick = imgPick;
+
+// Ảnh tải lên vào thư viện rồi thành ảnh mẫu luôn — tải lên chỉ để làm việc đó.
+async function imgUpload(input) {
+  const files = [...input.files];
+  input.value = "";   // chọn lại đúng file đó lần nữa vẫn phải bắn onchange
+  for (const f of files) {
+    if (imgRefs.length >= IMG_REFS_MAX) {
+      showMsg("img-msg", `Up to ${IMG_REFS_MAX} reference images — the rest were not added.`, false);
+      break;
+    }
+    try {
+      const r = await fetch("/api/images/upload?name=" + encodeURIComponent(f.name),
+                            { method: "POST", body: f });
+      if (!r.ok) throw await r.text();
+      imgRefs.push((await r.json()).name);
+    } catch (e) { showMsg("img-msg", `${f.name}: ${mcpErr(e)}`, false); }
+  }
+  await imgLoad().catch((e) => showMsg("img-msg", "Error: " + e, false));
+}
+window.imgUpload = imgUpload;
+
 async function imgGenerate() {
   const prompt = $("img-prompt").value.trim();
   if (!prompt) return showMsg("img-msg", "Describe the image first.", false);
+  const writer = $("img-writer").value;
   $("img-go").disabled = true;
-  showMsg("img-msg", "Drawing… usually under a minute.", true);
+  showMsg("img-msg", writer ? "Rewriting the description, then drawing… usually under a minute."
+    : "Drawing… usually under a minute.", true);
   try {
-    const made = await api("/api/images", "POST", { prompt });
+    const made = await api("/api/images", "POST",
+      { prompt, writer, ratio: $("img-ratio").value, refs: imgRefs });
     showMsg("img-msg", made.length > 1 ? `Done — ${made.length} images.` : "Done.", true);
     await imgLoad();
   } catch (e) { showMsg("img-msg", mcpErr(e), false); }
@@ -2969,14 +3034,18 @@ async function imgGenerate() {
 }
 window.imgGenerate = imgGenerate;
 
-$("img-grid").addEventListener("click", async (ev) => {
-  const btn = ev.target.closest("button[data-img-rm]");
-  if (!btn || !confirm("Delete this image?")) return;
+async function imgClick(ev) {
+  const btn = ev.target.closest("button[data-img-ref], button[data-img-rm]");
+  if (!btn) return;
+  if (btn.dataset.imgRef) return imgToggleRef(btn.dataset.imgRef);
+  if (!confirm("Delete this image?")) return;
   try {
-    await api("/api/images/" + encodeURIComponent(btn.dataset.imgRm), "DELETE");
+    await api(imgUrl(btn.dataset.imgRm), "DELETE");
     await imgLoad();
   } catch (e) { showMsg("img-msg", mcpErr(e), false); }
-});
+}
+$("img-grid").addEventListener("click", imgClick);
+$("img-refs").addEventListener("click", imgClick);
 
 async function spawnAgent() {
   // Tên vai và template là HAI thứ khác nhau: template chỉ là playbook NGUỒN (nhiều agent dùng

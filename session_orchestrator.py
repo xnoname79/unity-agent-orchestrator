@@ -3557,12 +3557,20 @@ class AgyEngine(AgentEngine):
 # khoản Google đang login ở agy, không cần API key. ĐÃ ĐO trên agy 1.2.14:
 #  1. Tool chạy headless KHÔNG cần --dangerously-skip-permissions → phiên vẽ chạy KHÔNG bypass:
 #     agent không có shell, ngoài vẽ ra không làm được gì.
-#  2. Tool chỉ nhận ImageName + Prompt: không chọn được kích thước (ra JPEG 1024x1024), không chọn
-#     được chỗ lưu — file luôn nằm ở <AGY_HOME>/brain/<conversation_id>/<ImageName>_<ms>.jpg.
+#  2. Tham số của tool (ĐỌC từ jsonschema trong binary): ImageName, Prompt, AspectRatio ('1:1',
+#     '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'; mặc định 1:1) và ImagePaths (đường dẫn tuyệt đối,
+#     tối đa 3 — ảnh để sửa, ghép hay làm mẫu). KHÔNG có tham số chọn model ảnh: id model do
+#     server Google trả về (getImageGenerationModelID), theo tài khoản.
+#  3. Không chọn được chỗ lưu — file luôn nằm ở <AGY_HOME>/brain/<conversation_id>/<ImageName>_<ms>.jpg.
 #     Bảo agent "lưu vào X" là nó đi lùng cách chép, không có shell thì hỏng mà vẫn báo xong.
 #     → orchestrator tự nhặt file ở brain/ sau khi run xong.
 IMAGES_DIR = DB_DIR / "images"
 IMAGE_PROMPT_MAX = 4000
+IMAGE_RATIOS = ("1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9")
+IMAGE_REFS_MAX = 3                     # giới hạn của chính tool (ImagePaths maxItems=3)
+IMAGE_UPLOAD_MAX = 10 * 1024 * 1024
+# Model viết lại lời mô tả đi thẳng vào argv sau --model: không cho mở đầu bằng '-', kẻo thành cờ.
+_AGY_MODEL_OK = re.compile(r"^[a-z0-9][a-z0-9.-]{0,80}$")
 # Tên file đến từ URL: chỉ nhận tên PHẲNG (không '/', không '..'); đuôi còn phải là ảnh.
 _IMAGE_NAME_OK = re.compile(r"^[A-Za-z0-9_-]{1,80}\.[a-z]{3,4}$")
 # conversation_id của agy là UUID. KHÔNG dùng _SID_OK: nó nhận '..', mà id này được ghép thành
@@ -3570,9 +3578,32 @@ _IMAGE_NAME_OK = re.compile(r"^[A-Za-z0-9_-]{1,80}\.[a-z]{3,4}$")
 _AGY_CONV_OK = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 # Gọi đúng một tool rồi thôi. ĐÃ ĐO: prompt để ngỏ là agent đi đọc file MCP, đọc transcript của
 # chính nó — mỗi bước là thêm một lượt chat ăn quota.
-IMAGE_INSTRUCTION = ("Call your generate_image tool exactly once, passing the description below "
-                     "unchanged as its prompt. Do not call any other tool. When it returns, reply "
-                     "with the single word: done.\n\nDescription:\n")
+def image_instruction(prompt, ratio="1:1", refs=(), rewrite=False):
+    """Lời dặn cho agent vẽ. rewrite=False: lời người dùng vào tool NGUYÊN VĂN — model chat lúc
+    đó chỉ là người bấm nút, không ảnh hưởng gì tới ảnh."""
+    how = ("Rewrite the description below into one detailed image prompt (subject, setting, "
+           "composition, lighting, style), keeping everything it asks for, then call your "
+           "generate_image tool exactly once with that prompt"
+           if rewrite else
+           "Call your generate_image tool exactly once, passing the description below unchanged "
+           "as its prompt")
+    args = f"AspectRatio to {json.dumps(ratio)}"
+    if refs:
+        args += f" and ImagePaths to {json.dumps(list(refs))}"
+    return (f"{how}. Set {args}. Do not call any other tool. When it returns, reply with the "
+            f"single word: done.\n\nDescription:\n{prompt}")
+
+
+def image_ext(data):
+    """Đuôi file theo byte đầu: PNG, JPEG hay WebP — ba loại model ảnh của Gemini nhận làm ảnh
+    mẫu. Loại khác → ''. Không tin tên file hay content-type của client."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return ""
 
 
 def image_path(name):
@@ -3594,48 +3625,65 @@ def list_images():
             meta = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             meta = {}
-        out.append({"name": p.name, "prompt": meta.get("prompt", ""),
-                    "created": meta.get("created", "")})
+        out.append({"prompt": "", "created": "", **meta, "name": p.name})
     return sorted(out, key=lambda i: i["name"], reverse=True)
 
 
-def _harvest_images(conv_id, prompt):
+def store_image(ext, meta, write):
+    """Một ảnh mới trong thư viện: write(dst) ghi file, meta đi vào .json cùng tên."""
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    dst = IMAGES_DIR / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}{ext}"
+    write(dst)
+    meta = {**meta, "created": _now()}
+    dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return {**meta, "name": dst.name}
+
+
+def _harvest_images(conv_id, meta):
     """Chép ảnh agy vừa vẽ từ brain/<conv_id>/ về IMAGES_DIR, rồi xoá hội thoại đó.
 
     Hội thoại chỉ là giấy nháp của MỘT lần vẽ: để lại thì mỗi ảnh thêm một dòng rác vào ô chọn
     phiên agy của terminal card, đẩy phiên thật của người dùng xuống dưới."""
     brain = AGY_HOME / "brain" / conv_id
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     made = []
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     for src in sorted(brain.glob("*")):
         ext = src.suffix.lower()
-        if ext not in FOLDER_IMAGE_TYPES or not src.is_file():
-            continue
-        dst = IMAGES_DIR / f"{stamp}-{secrets.token_hex(3)}{ext}"
-        shutil.copyfile(src, dst)
-        meta = {"prompt": prompt, "created": _now()}
-        dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-        made.append({"name": dst.name, **meta})
+        if ext in FOLDER_IMAGE_TYPES and src.is_file():
+            made.append(store_image(ext, meta, lambda dst: shutil.copyfile(src, dst)))
     delete_cli_session(conv_id, "agy")
     shutil.rmtree(brain, ignore_errors=True)
     return made
 
 
-async def generate_images(prompt):
-    """Một lần vẽ = một `agy -p` riêng, chờ tới khi xong (cỡ một phút). Trả (ảnh[], lỗi)."""
+async def generate_images(prompt, ratio="1:1", refs=(), writer=""):
+    """Một lần vẽ = một `agy -p` riêng, chờ tới khi xong (dưới một phút). Trả (ảnh[], lỗi).
+
+    refs: đường dẫn tuyệt đối của ảnh mẫu (đã kiểm là nằm trong thư viện). writer: model agy viết
+    lại lời mô tả trước khi vẽ; rỗng = vẽ đúng lời người dùng."""
     if DRY_RUN:
         return [], "dry-run: agy was not called"
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    drawn = {}
+
+    async def on_event(kind, summary, payload):
+        # Tham số THẬT đi vào tool: khi đã nhờ model viết lại thì Prompt khác lời người dùng.
+        if kind == "tool_use" and payload.get("name") == "generate_image":
+            drawn.update(payload.get("input") or {})
+
     # "default" chứ không để trống: trống là rơi về DEFAULT_PERMISSION_MODE, mà mặc định là bypass.
-    flags = _agy_flags(permission_mode="default", effort="low", cwd=str(IMAGES_DIR))
-    res = await _agy_exec([AGY_BIN, *flags, f"--prompt={IMAGE_INSTRUCTION}{prompt}"],
-                          str(IMAGES_DIR))
+    flags = _agy_flags(model=f"agy:{writer}" if writer else "", permission_mode="default",
+                       effort="low", cwd=str(IMAGES_DIR))
+    text = image_instruction(prompt, ratio, refs, rewrite=bool(writer))
+    res = await _agy_exec([AGY_BIN, *flags, f"--prompt={text}"], str(IMAGES_DIR),
+                          on_event=on_event)
     said = (res.get("result") or "").strip()
     conv_id = res["raw"].get("conversation_id") or ""
     if not _AGY_CONV_OK.match(conv_id):
         return [], said or "agy did not start a conversation"
-    made = _harvest_images(conv_id, prompt)
+    meta = {"prompt": prompt, "ratio": ratio}
+    if writer and drawn.get("Prompt"):
+        meta.update(writer=writer, drawn=str(drawn["Prompt"]))
+    made = _harvest_images(conv_id, meta)
     if made:
         return made, ""
     # Không có ảnh: agent từ chối (chính sách nội dung, hết quota…) — lời nó nói là lý do.
@@ -4980,15 +5028,49 @@ def build_app():
         return JSONResponse(list_images())
 
     async def api_images_generate(request: Request):
-        """Vẽ ảnh bằng tài khoản Google của agy. Request CHỜ tới khi agy xong, cỡ một phút."""
-        prompt = str((await _body(request)).get("prompt") or "").strip()
+        """Vẽ ảnh bằng tài khoản Google của agy. Request CHỜ tới khi agy xong, dưới một phút."""
+        b = await _body(request)
+        prompt = str(b.get("prompt") or "").strip()
+        ratio = str(b.get("ratio") or "1:1")
+        writer = str(b.get("writer") or "").strip()
+        names = b.get("refs") or []
         if not prompt or len(prompt) > IMAGE_PROMPT_MAX:
             return JSONResponse({"error": f"describe the image in 1 to {IMAGE_PROMPT_MAX} "
                                           "characters"}, status_code=400)
-        made, err = await generate_images(prompt)
+        if ratio not in IMAGE_RATIOS:
+            return JSONResponse({"error": f"shape must be one of {', '.join(IMAGE_RATIOS)}"},
+                                status_code=400)
+        if writer and not _AGY_MODEL_OK.match(writer):
+            return JSONResponse({"error": f"'{writer}' is not an agy model"}, status_code=400)
+        if not isinstance(names, list) or len(names) > IMAGE_REFS_MAX:
+            return JSONResponse({"error": f"up to {IMAGE_REFS_MAX} reference images"},
+                                status_code=400)
+        # Ảnh mẫu CHỈ lấy từ thư viện: tên phẳng, kiểm bằng image_path như lúc phục vụ file.
+        refs = [image_path(str(n)) for n in names]
+        if None in refs:
+            return JSONResponse({"error": "a reference image is no longer in the gallery"},
+                                status_code=400)
+        made, err = await generate_images(prompt, ratio, [str(p) for p in refs], writer)
         if err:
             return JSONResponse({"error": err}, status_code=502)
         return JSONResponse(made)
+
+    async def api_images_upload(request: Request):
+        """Đưa ảnh của người dùng vào thư viện, để dùng làm ảnh mẫu. Body là byte thô của file —
+        không multipart, khỏi kéo thêm python-multipart. Đọc CÓ TRẦN: dừng ngay khi vượt cỡ chứ
+        không nuốt hết vào RAM rồi mới đếm."""
+        data = b""
+        async for chunk in request.stream():
+            data += chunk
+            if len(data) > IMAGE_UPLOAD_MAX:
+                return JSONResponse({"error": f"images up to {IMAGE_UPLOAD_MAX // 2**20} MB"},
+                                    status_code=413)
+        ext = image_ext(data)
+        if not ext:
+            return JSONResponse({"error": "only PNG, JPEG or WebP images"}, status_code=400)
+        name = request.query_params.get("name", "")[:120]
+        return JSONResponse(store_image(ext, {"prompt": "", "uploaded": name},
+                                        lambda dst: dst.write_bytes(data)))
 
     async def api_image_file(request: Request):
         p = image_path(request.path_params["name"])
@@ -5685,6 +5767,7 @@ def build_app():
         Route("/api/mcp/disconnect", api_mcp_disconnect, methods=["POST"]),
         Route("/api/images", api_images),
         Route("/api/images", api_images_generate, methods=["POST"]),
+        Route("/api/images/upload", api_images_upload, methods=["POST"]),
         Route("/api/images/{name}", api_image_file),
         Route("/api/images/{name}", api_image_delete, methods=["DELETE"]),
         Route("/api/sessions/{sid}", api_session_detail),
