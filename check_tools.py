@@ -56,12 +56,12 @@ def check(name, ok, detail=""):
 def with_path(*names):
     """media_tools() as it would read on a machine where exactly `names` are installed.
 
-    `apt` is always in there: without it _install_cmd goes quiet on Linux (correctly — it will
-    not hand a dnf machine an apt command), and then the "missing tools come with a command"
-    checks below would pass on Windows and macOS while saying nothing on Linux.
+    The package managers are always in there. Without them _install_cmd goes quiet on purpose
+    — it does not hand a dnf box an apt command — and the "missing tools come with a command"
+    checks below would then pass by saying nothing. as_os() covers that behaviour on its own.
     """
     d = Path(tempfile.mkdtemp())
-    for n in (*names, "apt"):
+    for n in (*names, "apt", "brew", "winget", "python3", "py"):
         f = d / (n + ".exe" if WIN else n)
         f.write_bytes(b"")
         if not WIN:
@@ -127,18 +127,89 @@ def test_imagemagick_version():
           im["command"] == "magick" and not im["note"] and not im["path"], im["command"])
 
 
-def test_no_guessed_commands():
-    """A wrong install command costs the user a round trip. Silence is better."""
-    if WIN or sys.platform == "darwin":
-        check("winget/brew commands are given on this OS",
-              all(r["install"] for r in with_path()[0].values()), "")
-        return
-    d = Path(tempfile.mkdtemp())            # a Linux box with no apt: dnf, pacman, zypper...
+def as_os(platform, *names):
+    """media_tools() as it reads on `platform` with nothing installed but `names`.
+
+    Every spelling of the name is laid down because shutil.which switches to Windows rules the
+    moment sys.platform says so, and this also runs on Linux, where the filesystem is case
+    sensitive and the default PATHEXT it falls back to is upper case.
+    """
+    d = Path(tempfile.mkdtemp())
+    for n in names:
+        for f in (d / n, d / (n + ".exe"), d / (n + ".EXE")):
+            f.write_bytes(b"")
+            f.chmod(0o755)
     os.environ["PATH"] = str(d)
+    # Windows rules need PATHEXT, and shutil splits it on os.pathsep — ';' on Windows but ':'
+    # here, so the real value would come back as one nonsense extension. Pin it to the one
+    # extension these fakes use; on a Windows runner it is just as true.
+    real_ext = os.environ.get("PATHEXT")
+    if platform == "win32":
+        os.environ["PATHEXT"] = ".EXE"
+    real = so.sys.platform
+    so.sys.platform = platform
     try:
-        rows = {r["name"]: r for r in so.media_tools()["tools"]}
+        return {r["name"]: r for r in so.media_tools()["tools"]}
     finally:
+        so.sys.platform = real
         os.environ["PATH"] = REAL_PATH
+        if real_ext is None:
+            os.environ.pop("PATHEXT", None)
+        else:
+            os.environ["PATHEXT"] = real_ext
+
+
+def test_windows():
+    rows = as_os("win32", "winget")
+    check("Windows: ffmpeg is installed with winget",
+          rows["ffmpeg"]["install"] == "winget install Gyan.FFmpeg", rows["ffmpeg"]["install"])
+    check("Windows: no apt or brew command gets through",
+          not any("apt" in r["install"] or "brew" in r["install"] for r in rows.values()),
+          str([r["install"] for r in rows.values()]))
+    check("Windows: SoX has no winget id, so it is left to its download page",
+          not rows["SoX"]["install"] and rows["SoX"]["site"], rows["SoX"]["install"])
+    rows = as_os("win32")
+    check("Windows without winget: nothing is suggested that cannot run",
+          not any(r["install"] for r in rows.values()),
+          str([n for n, r in rows.items() if r["install"]]))
+
+
+def test_macos():
+    rows = as_os("darwin", "brew", "python3")
+    check("macOS: ffmpeg is installed with Homebrew",
+          rows["ffmpeg"]["install"] == "brew install ffmpeg", rows["ffmpeg"]["install"])
+    check("macOS: SoX and ExifTool come from Homebrew too",
+          rows["SoX"]["install"] == "brew install sox"
+          and rows["ExifTool"]["install"] == "brew install exiftool", "")
+    rows = as_os("darwin")
+    check("macOS without Homebrew: it does not tell you to run brew",
+          not any("brew" in r["install"] for r in rows.values()),
+          str([r["install"] for r in rows.values() if r["install"]]))
+    check("...and the download page is still there to click",
+          all(r["site"].startswith("https://") for r in rows.values()), "")
+
+
+def test_gate_is_per_command_not_per_os():
+    """yt-dlp comes from pip on every OS. Gating by OS instead of by the command itself would
+    have taken the pip line away from a Mac with no Homebrew, which has nothing to do with it."""
+    rows = as_os("darwin", "python3")
+    check("macOS without Homebrew still gets the pip line for yt-dlp",
+          rows["yt-dlp"]["install"] == "python3 -m pip install --upgrade yt-dlp",
+          rows["yt-dlp"]["install"])
+    check("...and ffmpeg, which really does need Homebrew, stays quiet",
+          not rows["ffmpeg"]["install"], rows["ffmpeg"]["install"])
+    rows = as_os("win32", "winget", "py")
+    check("Windows reaches pip through the py launcher",
+          rows["yt-dlp"]["install"] == "py -m pip install --upgrade yt-dlp",
+          rows["yt-dlp"]["install"])
+
+
+def test_no_guessed_commands():
+    """A wrong install command costs the user a round trip they cannot debug. Silence is better."""
+    rows = as_os("linux", "apt")
+    check("Debian/Ubuntu: apt commands are given",
+          rows["ffmpeg"]["install"] == "sudo apt install ffmpeg", rows["ffmpeg"]["install"])
+    rows = as_os("linux")                   # dnf, pacman, zypper...
     apt = [n for n, r in rows.items() if r["install"].startswith("sudo apt")]
     check("no apt on the machine: it does not hand out apt commands", not apt, str(apt))
     check("...but the download page is still there to click",
@@ -162,6 +233,9 @@ async def main():
     test_red_dot_means_something()
     test_imagemagick_version()
     test_no_guessed_commands()
+    test_windows()
+    test_macos()
+    test_gate_is_per_command_not_per_os()
     test_wiring()
     app = so.build_app()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),

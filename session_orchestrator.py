@@ -1665,9 +1665,6 @@ async def folder_open(path):
 # CHỈ shutil.which, KHÔNG chạy thử binary: mở modal mà spawn 6 process là 6 cơ hội treo, trong
 # khi câu cần trả lời chỉ là "có trên PATH chưa".
 
-_PIP_YTDLP = ("py -m pip install --upgrade yt-dlp" if sys.platform.startswith("win")
-              else "python3 -m pip install --upgrade yt-dlp")
-
 # name, binary chấp nhận được (cái ĐẦU là tên lệnh chuẩn), có cần không, công dụng, trang chủ,
 # lệnh cài theo OS (windows, macos, debian/ubuntu). '' = không chắc thì không đoán, UI còn link.
 MEDIA_TOOLS = (
@@ -1689,7 +1686,8 @@ MEDIA_TOOLS = (
     ("yt-dlp", ("yt-dlp",), False,
      "Downloads a video or audio track from a URL so the agent has something to work on.",
      "https://github.com/yt-dlp/yt-dlp#installation",
-     (_PIP_YTDLP, _PIP_YTDLP, _PIP_YTDLP)),
+     ("py -m pip install --upgrade yt-dlp", "python3 -m pip install --upgrade yt-dlp",
+      "python3 -m pip install --upgrade yt-dlp")),
     ("SoX", ("sox",), False,
      "Audio on its own: `sox --i` for a readout, `stat` for levels, `spectrogram` for a picture "
      "of the sound.",
@@ -1704,14 +1702,17 @@ MEDIA_TOOLS = (
 
 
 def _install_cmd(cmds):
-    win, mac, apt = cmds
-    if sys.platform.startswith("win"):
-        return win
-    if sys.platform == "darwin":
-        return mac
-    # Lệnh apt chỉ đúng ở họ Debian. Máy dùng dnf/pacman mà bảo chạy apt là đưa thêm một bước
-    # sai nữa — không có apt thì để trống, UI vẫn còn link trang chủ.
-    return apt if shutil.which("apt") else ""
+    """Lệnh cài cho OS đang chạy, '' nếu máy này không chạy nổi nó.
+
+    Đưa một lệnh không chạy được là đẩy người dùng vào ngõ cụt họ không tự gỡ được: Mac không
+    cài Homebrew mà bảo `brew install`, hay Fedora mà bảo `sudo apt`, đều ra "command not found"
+    và chẳng nói được phải làm gì tiếp. Nên kiểm luôn thứ đứng ĐẦU câu lệnh (bỏ qua sudo) có
+    trên máy không — không có thì im, UI vẫn còn link trang chủ, thứ không bao giờ sai."""
+    cmd = cmds[0 if sys.platform.startswith("win") else 1 if sys.platform == "darwin" else 2]
+    words = cmd.split()
+    if not words:
+        return ""
+    return cmd if shutil.which(words[1] if words[0] == "sudo" else words[0]) else ""
 
 
 def media_tools():
