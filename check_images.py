@@ -189,7 +189,9 @@ async def main():
         check("1536x1024 becomes 3:2", '"3:2"' in agy["cmd"][-1], agy["cmd"][-1][:120])
         check("no revised_prompt when nothing rewrote it", "revised_prompt" not in d, str(d)[:80])
         for size, ratio in (("1792x1024", "16:9"), ("1024x1792", "9:16"), ("auto", "1:1"),
-                            ("1024x1024", "1:1"), ("1024x1536", "2:3")):
+                            ("1024x1024", "1:1"), ("1024x1536", "2:3"),
+                            # caller nghĩ bằng tỉ lệ (story-studio draw_brief trả "3:4")
+                            ("3:4", "3:4"), ("16:9", "16:9"), ("864x1152", "3:4")):
             check(f"size {size} maps to {ratio}", so.image_ratio_for_size(size) == ratio,
                   str(so.image_ratio_for_size(size)))
 

@@ -3584,6 +3584,10 @@ def image_ratio_for_size(size):
     size = (size or "auto").strip().lower()
     if size == "auto":
         return "1:1"
+    # 'W:H' đi thẳng. OpenAI chỉ gửi pixel, nhưng caller nghĩ bằng TỈ LỆ (story-studio trả
+    # aspect "3:4") thì trước đây ăn 400 ngay lần gọi đầu — nhận luôn, không ai phải quy đổi.
+    if size in IMAGE_RATIOS:
+        return size
     m = re.fullmatch(r"(\d{1,5})x(\d{1,5})", size)
     if not m or not int(m[1]) or not int(m[2]):
         return None
@@ -4390,9 +4394,12 @@ def _oa_image_fields():
                                  "Anything else, `gpt-image-1` included, draws from the prompt "
                                  "as given. Google picks the drawing model either way."},
         "size": {"type": "string", "default": "auto",
-                 "examples": ["1024x1024", "1536x1024", "1024x1536", "1792x1024"],
-                 "description": "Mapped to the nearest shape: 1:1, 4:3, 3:2, 16:9, 3:4, 2:3, 9:16. "
-                                "The pixel size is Google's (16:9 came back 1376x768)."},
+                 "examples": ["1024x1024", "1536x1024", "1024x1536", "3:4", "16:9"],
+                 "description": "`<width>x<height>` is mapped to the nearest shape, or pass one of "
+                                "the shapes straight through: 1:1, 4:3, 3:2, 16:9, 3:4, 2:3, 9:16. "
+                                "The pixel size is Google's (16:9 came back 1376x768, 1:1 "
+                                "1024x1024, 3:2 1264x848). The response does not report the pixels "
+                                "it drew — measure the bytes if you need them."},
         "n": {"type": "integer", "enum": [1], "default": 1},
         "response_format": {"type": "string", "enum": ["b64_json", "url"], "default": "b64_json",
                             "description": "`url` points at this server and needs the same API "
