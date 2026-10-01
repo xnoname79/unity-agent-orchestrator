@@ -2783,6 +2783,60 @@ function showMsg(id, text, ok) {
   el.className = "form-msg " + (ok ? "ok" : "err");
 }
 
+// ── Media tools ──────────────────────────────────────────────────────────────
+// ffmpeg & co. KHÔNG đi kèm orchestrator. Agent chỉ với tới được thứ có trên PATH của tiến
+// trình này, nên thiếu là agent chạy một lúc rồi mới chết với "command not found". Chấm đỏ trên
+// nút topbar nói trước khi chuyện đó xảy ra — không ai tự mở modal để kiểm tra thứ mình chưa
+// biết là đang thiếu.
+function toolRows(list) {
+  return list.map((t) => {
+    const ok = !!t.path;
+    const cls = ok ? "b-green" : t.required ? "b-red" : "b-gray";
+    // Thiếu: ưu tiên câu lệnh cài. Không chắc lệnh cho OS này (vd sox trên Windows) thì chỉ đưa
+    // link trang chủ — đoán một câu lệnh sai chỉ tốn thêm của người dùng một vòng thử.
+    const fix = ok ? "" : `<div class="tool-fix">${t.install ? `<code>${esc(t.install)}</code>` : ""}
+      <a href="${esc(t.site)}" target="_blank" rel="noopener">${
+        t.install ? "other ways to install" : "how to install"}</a></div>`;
+    return `<div class="tool-row">
+      <div class="head"><span class="nm">${esc(t.name)}</span>
+        ${badge(ok ? "ready" : t.required ? "missing" : "not installed", cls)}
+        ${t.required ? "" : `<span class="cli-tag">optional</span>`}
+        <span class="meta" title="${esc(t.path)}">${esc(t.path || t.command)}</span></div>
+      <div class="what">${esc(t.what)}${t.note ? " — " + esc(t.note) : ""}</div>
+      ${fix}</div>`;
+  }).join("");
+}
+
+function toolsMark(missing) {
+  const b = $("tools-btn");
+  if (!b) return;                     // pane không có topbar
+  b.classList.toggle("warn", missing > 0);
+  b.title = missing ? `Media tools — ${missing} missing` : "Media tools";
+}
+
+async function toolsLoad() {
+  const r = await api("/api/tools");
+  $("tools-list").innerHTML = toolRows(r.tools);
+  toolsMark(r.missing);
+}
+
+// Lúc boot chỉ hỏi đủ để biết có chấm đỏ hay không. KHÔNG poll: danh sách chỉ đổi khi người dùng
+// đi cài thêm, mà cài xong thì đã có nút Re-check ngay trong modal.
+function toolsBadge() {
+  api("/api/tools").then((r) => toolsMark(r.missing)).catch(() => {});
+}
+
+function toolsOpen() {
+  $("tools-modal").hidden = false;
+  $("tools-msg").textContent = "";
+  $("tools-list").innerHTML = `<div class="hint">Loading…</div>`;
+  toolsLoad().catch((e) => showMsg("tools-msg", "Error: " + e, false));
+}
+window.toolsOpen = toolsOpen;
+
+function toolsClose() { $("tools-modal").hidden = true; }
+window.toolsClose = toolsClose;
+
 // ── MCP servers ──────────────────────────────────────────────────────────────
 // Đăng ký ở scope user nên nó áp cho MỌI session claude, không thuộc workspace nào — vì thế
 // mở từ topbar chứ không từ canvas.
@@ -2857,6 +2911,7 @@ window.mcpClose = mcpClose;
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
   if (e.key === "Escape" && !$("img-modal").hidden) imgClose();
+  if (e.key === "Escape" && !$("tools-modal").hidden) toolsClose();
 });
 
 // Nút trong danh sách: tên đi qua data-attribute, không qua inline onclick.
@@ -3446,6 +3501,7 @@ if (PANE) {
   });
   refreshAll();
   loadTemplates();
+  toolsBadge();
   // Màn Home hiện số session mỗi workspace — poll nhẹ, không cần SSE (xem trên).
   setInterval(() => { if (ACTIVE < 0) refreshAll(); }, 5000);
 }

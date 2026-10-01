@@ -1657,6 +1657,84 @@ async def folder_open(path):
         raise OSError(f"{argv[0]} exited {rc}")
 
 
+# ─── Tool media: máy đã có ffmpeg & co. chưa? ─────────────────────────────────
+# Orchestrator KHÔNG đóng gói ffmpeg. Agent làm việc bằng cách gõ lệnh trong terminal của nó nên
+# chỉ với tới được thứ đã nằm sẵn trên PATH. Thiếu thì agent chạy một lúc rồi mới chết với
+# "command not found" — người dùng nhìn vào không biết vì sao. Màn này nói TRƯỚC, kèm lệnh cài.
+#
+# CHỈ shutil.which, KHÔNG chạy thử binary: mở modal mà spawn 6 process là 6 cơ hội treo, trong
+# khi câu cần trả lời chỉ là "có trên PATH chưa".
+
+_PIP_YTDLP = ("py -m pip install --upgrade yt-dlp" if sys.platform.startswith("win")
+              else "python3 -m pip install --upgrade yt-dlp")
+
+# name, binary chấp nhận được (cái ĐẦU là tên lệnh chuẩn), có cần không, công dụng, trang chủ,
+# lệnh cài theo OS (windows, macos, debian/ubuntu). '' = không chắc thì không đoán, UI còn link.
+MEDIA_TOOLS = (
+    ("ffmpeg", ("ffmpeg",), True,
+     "Trims, joins, scales, re-encodes, crossfades between clips, overlays, filters, pulls out "
+     "frames, adds or strips audio.",
+     "https://ffmpeg.org/download.html",
+     ("winget install Gyan.FFmpeg", "brew install ffmpeg", "sudo apt install ffmpeg")),
+    ("ffprobe", ("ffprobe",), True,
+     "Reads a file without touching it: duration, resolution, frame rate, codecs. Comes with "
+     "ffmpeg — if it is missing, so is ffmpeg.",
+     "https://ffmpeg.org/download.html",
+     ("winget install Gyan.FFmpeg", "brew install ffmpeg", "sudo apt install ffmpeg")),
+    ("ImageMagick", ("magick", "convert"), True,
+     "Stills: crop, resize, composite, annotate, contact sheets, format conversion.",
+     "https://imagemagick.org/script/download.php",
+     ("winget install ImageMagick.ImageMagick", "brew install imagemagick",
+      "sudo apt install imagemagick")),
+    ("yt-dlp", ("yt-dlp",), False,
+     "Downloads a video or audio track from a URL so the agent has something to work on.",
+     "https://github.com/yt-dlp/yt-dlp#installation",
+     (_PIP_YTDLP, _PIP_YTDLP, _PIP_YTDLP)),
+    ("SoX", ("sox",), False,
+     "Audio on its own: `sox --i` for a readout, `stat` for levels, `spectrogram` for a picture "
+     "of the sound.",
+     "https://sourceforge.net/projects/sox/files/sox/",
+     ("", "brew install sox", "sudo apt install sox")),
+    ("ExifTool", ("exiftool",), False,
+     "Reads and writes the metadata ffmpeg leaves alone.",
+     "https://exiftool.org/",
+     ("winget install OliverBetz.ExifTool", "brew install exiftool",
+      "sudo apt install libimage-exiftool-perl")),
+)
+
+
+def _install_cmd(cmds):
+    win, mac, apt = cmds
+    if sys.platform.startswith("win"):
+        return win
+    if sys.platform == "darwin":
+        return mac
+    # Lệnh apt chỉ đúng ở họ Debian. Máy dùng dnf/pacman mà bảo chạy apt là đưa thêm một bước
+    # sai nữa — không có apt thì để trống, UI vẫn còn link trang chủ.
+    return apt if shutil.which("apt") else ""
+
+
+def media_tools():
+    """Tình trạng từng tool media trên máy ĐANG CHẠY orchestrator (không phải máy của browser)."""
+    rows = []
+    for name, binaries, need, what, site, cmds in MEDIA_TOOLS:
+        path = cmd = ""
+        for b in binaries:
+            path = shutil.which(b) or ""
+            if path:
+                cmd = b
+                break
+        rows.append({
+            "name": name, "command": cmd or binaries[0], "path": path, "required": need,
+            "what": what, "site": site, "install": "" if path else _install_cmd(cmds),
+            # ImageMagick 6 (bản Debian/Ubuntu đang ship) KHÔNG có `magick`, chỉ có `convert`.
+            # Agent gõ `magick` là chết ngay — nói thẳng tên lệnh thật trên máy này.
+            "note": (f"this build answers to `{cmd}`, not `{binaries[0]}`"
+                     if path and cmd != binaries[0] else ""),
+        })
+    return {"tools": rows, "missing": sum(1 for r in rows if r["required"] and not r["path"])}
+
+
 # ─── Card thư mục: duyệt project NGAY TRONG dashboard ─────────────────────────
 # Cửa sổ Finder/Explorer ở trên mở RA KHỎI orchestrator: mất canvas, mất chỗ đang đứng, và trên
 # máy remote thì chẳng có cửa sổ nào mở ra cả. Card này là bản mặc định; folder_open giữ lại làm
@@ -5249,6 +5327,10 @@ def build_app():
         p.with_suffix(".json").unlink(missing_ok=True)
         return JSONResponse({"deleted": p.name})
 
+    async def api_tools(request: Request):
+        """Tool media nào đã sẵn sàng. Không nhận tham số — luôn là máy chạy orchestrator."""
+        return JSONResponse(media_tools())
+
     async def api_mcp(request: Request):
         """Các server MCP đang đăng ký ở scope user, gộp từ MỌI CLI đang cài. KHÔNG gọi ra ngoài:
         danh sách phải hiện ngay, không treo chờ timeout của một server có thể đang tắt. Kiểm
@@ -5998,6 +6080,7 @@ def build_app():
         WebSocketRoute("/ws/terminal", ws_terminal),
         WebSocketRoute("/ws/editor", ws_editor),
         Route("/api/skills/templates", api_skill_templates),
+        Route("/api/tools", api_tools),
         Route("/api/mcp", api_mcp),
         Route("/api/mcp/check", api_mcp_check, methods=["POST"]),
         Route("/api/mcp/connect", api_mcp_connect, methods=["POST"]),

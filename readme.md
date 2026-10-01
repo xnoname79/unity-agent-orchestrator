@@ -242,6 +242,10 @@ Nothing for video or audio ships with the orchestrator. The agents work by runni
 their own terminal, so whatever is on your PATH is what they can reach for. Install these once
 and every session afterwards can inspect, cut, scale and re-mix media.
 
+The wrench in the top bar checks for you: it lists each tool, whether this machine has it, and
+the command to install the ones it does not. A red dot on the button means something an agent
+will reach for is not there.
+
 | Tool | What an agent does with it |
 |---|---|
 | **ffmpeg** | Everything that changes a file: trim, join, scale, re-encode, crossfade between clips (`xfade`), overlay, speed, colour and blur filters, pull out frames, add or strip audio. |
@@ -282,19 +286,16 @@ python3 -m pip install --upgrade yt-dlp
 
 ### Check they are ready
 
-From the same shell you start the orchestrator in:
+Open the wrench, install what it says is missing, then press **Re-check**. Three things to know
+when one of them still misbehaves:
 
-```bash
-ffmpeg -version && ffprobe -version && magick -version
-```
-
-Three things to know when one of them misbehaves:
-
-- **The orchestrator reads your PATH when it starts.** Install a tool while it is running and the
-  agents will not see it until you restart it — same as the provider CLIs.
+- **PATH is read from the orchestrator's own process.** A tool installed into a folder already on
+  that PATH appears as soon as you press Re-check. An installer that *adds a new folder* to PATH —
+  winget usually does — is invisible until the orchestrator is restarted, same as the provider
+  CLIs.
 - **`magick` is ImageMagick 7.** Debian and Ubuntu still ship version 6, where the command is
-  `convert` and `magick` does not exist. An agent that writes `magick` on those machines gets
-  *command not found*; tell it to use `convert`, or install version 7.
+  `convert` and `magick` does not exist. The panel names whichever one your machine answers to;
+  pass that name on to the agent, because one of them is *command not found*.
 - **ffmpeg builds differ.** A build can be missing an encoder or filter your task needs.
   `ffmpeg -encoders` and `ffmpeg -filters` list what yours actually has — worth checking before
   blaming the command when `libx264` or `drawtext` turns up missing.
@@ -492,6 +493,7 @@ python3 check_workspace_move.py             # a move cannot duplicate a role nam
 python3 check_shutdown.py                   # Ctrl-C returns, even with an SSE stream open
 python3 check_images.py                     # drawings are picked up, references stay in the gallery
 python3 check_origin.py                     # a website you visit cannot drive the orchestrator
+python3 check_tools.py                      # the media tool panel tells the truth about this machine
 ```
 
 ## License

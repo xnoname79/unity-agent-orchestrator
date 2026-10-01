@@ -286,6 +286,23 @@
   .cli-tag { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
     padding: 2px 5px; border-radius: 4px; border: 1px solid var(--border-strong); color: var(--muted); }
   .cli-tag.on { border-color: var(--green); color: var(--green); }
+  /* Modal Tools. Mỗi tool là một khối hai tầng (tên + trạng thái, rồi công dụng), không
+     phải một dòng như .mcp-row: thiếu tool thì còn phải chứa cả câu lệnh cài. */
+  .tool-row { padding: 8px 10px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; margin-bottom: 6px; }
+  .tool-row .head { display: flex; align-items: center; gap: 8px; }
+  .tool-row .nm { font-weight: 600; }
+  .tool-row .meta { flex: 1 1 0; min-width: 0; color: var(--faint); font-size: 11px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+  .tool-row .what { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+  .tool-fix { margin-top: 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .tool-fix code { user-select: all; background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 3px 7px; font-size: 11.5px; }
+  /* Chấm trên nút topbar: thiếu tool BẮT BUỘC. Người dùng không tự mở modal để kiểm tra —
+     phải có gì đó đập vào mắt thì mới biết mà mở. */
+  .icon-btn.warn { position: relative; }
+  .icon-btn.warn::after { content: ""; position: absolute; top: 4px; right: 4px;
+    width: 7px; height: 7px; border-radius: 50%; background: var(--red); }
   /* Thư viện của modal Images. min-width:0 cùng lý do như .mcp-row: chú thích dài phải co lại,
      không được đẩy khung rộng ra. */
   .img-grid { margin-top: 12px; display: grid; gap: 8px;
@@ -729,6 +746,7 @@
   <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5 17.5 10.5"/></symbol>
   <symbol id="i-window" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01"/></symbol>
   <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9.5" r="1.5"/><path d="m20 15.5-4.5-4.5L6 20"/></symbol>
+  <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M15.5 3.5a5 5 0 0 0-6.2 6.2L3.9 15a2 2 0 0 0 0 2.8l2.3 2.3a2 2 0 0 0 2.8 0l5.3-5.4a5 5 0 0 0 6.2-6.2l-3 3-2.8-2.8z"/></symbol>
   <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></symbol>
 </defs></svg>
 
@@ -742,6 +760,8 @@
   <span id="dry" class="pill dry" hidden>DRY-RUN</span>
   <button class="icon-btn" onclick="imgOpen()" title="Images">
     <svg class="ic"><use href="#i-image"/></svg></button>
+  <button id="tools-btn" class="icon-btn" onclick="toolsOpen()" title="Media tools">
+    <svg class="ic"><use href="#i-wrench"/></svg></button>
   <button id="mcp-btn" class="icon-btn" onclick="mcpOpen()" title="MCP servers">
     <svg class="ic"><use href="#i-plug"/></svg></button>
   <button id="split-btn" class="icon-btn" onclick="toggleSplit()" title="Side-by-side (needs 2 open workspaces)">
@@ -964,6 +984,25 @@
       <button class="primary" onclick="mcpAdd()">Add</button>
     </div>
     <div id="mcp-msg" class="form-msg"></div>
+  </div>
+</div>
+
+<!-- Tools: ffmpeg & co. có trên PATH của tiến trình orchestrator chưa. Không thuộc workspace
+     nào nên mở từ topbar, như MCP. -->
+<div id="tools-modal" class="modal-overlay" onclick="if (event.target === this) toolsClose()" hidden>
+  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="tools-title">
+    <h3 id="tools-title"><svg class="ic"><use href="#i-wrench"/></svg> Media tools
+      <span class="spacer"></span>
+      <button class="icon-btn" onclick="toolsClose()" title="Close">
+        <svg class="ic"><use href="#i-x"/></svg></button></h3>
+    <div class="hint">Agents edit video and audio by running these commands in their own terminal,
+      so they have to be installed on the machine running the orchestrator — nothing here ships
+      with it. Install what is missing, then press <b>Re-check</b>.</div>
+    <div id="tools-list"></div>
+    <div class="spawn-actions ai-actions">
+      <button class="secondary" onclick="toolsOpen()">Re-check</button>
+    </div>
+    <div id="tools-msg" class="form-msg"></div>
   </div>
 </div>
 

@@ -73,6 +73,7 @@ jobs:
           python check_inject.py
           python check_images.py
           python check_origin.py
+          python check_tools.py
 
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean
