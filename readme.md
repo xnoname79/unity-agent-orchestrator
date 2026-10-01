@@ -27,6 +27,9 @@ The orchestrator finds them through the PATH of its own process. Install one whi
 and you have to restart it. If `which claude` prints a path but the dashboard still says the
 command is missing, set `CLAUDE_BIN` / `ORCH_CODEX_BIN` / `ORCH_AGY_BIN`.
 
+Nothing else is needed to start. Agents that edit video or audio also need ffmpeg and a few
+friends on your machine — see [Tools for video and audio](#tools-for-video-and-audio).
+
 ## Install
 
 **Windows.** Download `agent-orch-windows-x64.zip` from [Releases](../../releases), unzip it, run
@@ -232,6 +235,69 @@ client.images.edit(                                # 1-3 images to edit, combine
 - `n` must be 1. `response_format="url"` returns a link on this server instead of the bytes.
 - Out of quota answers `429 insufficient_quota` with the reset time, and tells the SDK not to
   retry. Every result also lands in the dashboard gallery. Full spec at `/docs`.
+
+## Tools for video and audio
+
+Nothing for video or audio ships with the orchestrator. The agents work by running commands in
+their own terminal, so whatever is on your PATH is what they can reach for. Install these once
+and every session afterwards can inspect, cut, scale and re-mix media.
+
+| Tool | What an agent does with it |
+|---|---|
+| **ffmpeg** | Everything that changes a file: trim, join, scale, re-encode, crossfade between clips (`xfade`), overlay, speed, colour and blur filters, pull out frames, add or strip audio. |
+| **ffprobe** | Reads a file without touching it — duration, resolution, frame rate, codecs, streams. `-v quiet -print_format json -show_streams` gives the agent something it can parse instead of guess. Comes with ffmpeg. |
+| **ImageMagick** | Stills: crop, resize, composite, annotate, contact sheets, format conversion. The companion to the Images section above. |
+| **yt-dlp** | Optional. Downloads a video or audio track from a URL so the agent has source material to work on. |
+| **SoX** | Optional. Audio on its own: `sox --i` for a quick readout, `stat` for levels, `spectrogram` for a picture of the sound. |
+| **ExifTool** | Optional. Reads and writes the metadata ffmpeg leaves alone. |
+
+### Install them
+
+**Windows** (PowerShell; `winget` ships with Windows 11):
+
+```powershell
+winget install Gyan.FFmpeg
+winget install ImageMagick.ImageMagick
+```
+
+**macOS** ([Homebrew](https://brew.sh)):
+
+```bash
+brew install ffmpeg imagemagick sox exiftool
+```
+
+**Linux** (Debian, Ubuntu):
+
+```bash
+sudo apt install ffmpeg imagemagick sox libimage-exiftool-perl
+```
+
+yt-dlp is the exception: the version in a distro repository is usually years old and fails on
+sites that have changed since. Install it from Python on any OS, and update it the same way when
+a download stops working:
+
+```bash
+python3 -m pip install --upgrade yt-dlp
+```
+
+### Check they are ready
+
+From the same shell you start the orchestrator in:
+
+```bash
+ffmpeg -version && ffprobe -version && magick -version
+```
+
+Three things to know when one of them misbehaves:
+
+- **The orchestrator reads your PATH when it starts.** Install a tool while it is running and the
+  agents will not see it until you restart it — same as the provider CLIs.
+- **`magick` is ImageMagick 7.** Debian and Ubuntu still ship version 6, where the command is
+  `convert` and `magick` does not exist. An agent that writes `magick` on those machines gets
+  *command not found*; tell it to use `convert`, or install version 7.
+- **ffmpeg builds differ.** A build can be missing an encoder or filter your task needs.
+  `ffmpeg -encoders` and `ffmpeg -filters` list what yours actually has — worth checking before
+  blaming the command when `libx264` or `drawtext` turns up missing.
 
 ## Talk to an agent over the OpenAI API
 
