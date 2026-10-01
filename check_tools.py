@@ -95,9 +95,6 @@ def test_found_and_missing():
 
     rows, missing = with_path()
     check("empty PATH: the three required tools are counted", missing == 3, str(missing))
-    check("empty PATH: every missing tool comes with a command to fix it",
-          all(r["install"] for r in rows.values()),
-          str([n for n, r in rows.items() if not r["install"]]))
 
 
 def test_red_dot_means_something():
@@ -204,6 +201,22 @@ def test_gate_is_per_command_not_per_os():
           rows["yt-dlp"]["install"])
 
 
+def test_nothing_missing_is_a_dead_end():
+    """Whatever the OS, a missing tool has to leave the user somewhere to go.
+
+    A command where there is one (SoX on Windows has no winget id, and that is fine), and in
+    every case the project's own download page, which is never wrong.
+    """
+    for plat in ("win32", "darwin", "linux"):
+        rows = as_os(plat, "winget", "brew", "apt", "python3", "py")
+        check(f"{plat}: every missing tool points somewhere to go",
+              all(r["install"] or r["site"] for r in rows.values()),
+              str([n for n, r in rows.items() if not (r["install"] or r["site"])]))
+        check(f"{plat}: the three required ones come with a command",
+              all(rows[n]["install"] for n in ("ffmpeg", "ffprobe", "ImageMagick")),
+              str({n: rows[n]["install"] for n in ("ffmpeg", "ffprobe", "ImageMagick")}))
+
+
 def test_no_guessed_commands():
     """A wrong install command costs the user a round trip they cannot debug. Silence is better."""
     rows = as_os("linux", "apt")
@@ -236,6 +249,7 @@ async def main():
     test_windows()
     test_macos()
     test_gate_is_per_command_not_per_os()
+    test_nothing_missing_is_a_dead_end()
     test_wiring()
     app = so.build_app()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
