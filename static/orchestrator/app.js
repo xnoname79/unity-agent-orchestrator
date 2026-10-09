@@ -2993,7 +2993,10 @@ function boardHtml(b) {
       <span class="nm">${esc(b.name)}</span>
       ${badge(b.status, b.status === "active" ? "b-green" : "b-gray")}
       ${b.planning ? badge("planning…", "b-blue") : ""}
-      <span class="hint" style="margin:0">${esc(b.agent)} · ${b.done}/${b.total} done ·
+      <span class="hint" style="margin:0" title="${b.runs_as
+        ? `Nudges run as '${esc(b.runs_as)}', a separate agent in the same folder, so they never \
+land in the middle of your chat with ${esc(b.agent)}.` : ""}">${esc(b.agent)}${
+        b.runs_as ? ` (runs as ${esc(b.runs_as)})` : ""} · ${b.done}/${b.total} done ·
         next nudge ${esc(untilText(b.next_ping) || "—")}</span>
       <span class="spacer" style="flex:1"></span>
       <button onclick="boardNudge('${b.id}')" title="Ask the agent for a nudge right now">

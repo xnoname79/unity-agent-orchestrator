@@ -335,7 +335,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS boards (
             id TEXT PRIMARY KEY,                -- brd_<random>
             workspace_id TEXT NOT NULL DEFAULT 'default',
-            session_id TEXT NOT NULL,           -- agent dựng task + viết lời nhắc
+            session_id TEXT NOT NULL,           -- session RIÊNG board chạy trên đó (xem board_agent_for)
+            owner_id TEXT NOT NULL DEFAULT '',  -- agent NGƯỜI DÙNG chọn; board chỉ mượn cwd/cấu hình
             name TEXT NOT NULL,
             goal TEXT NOT NULL DEFAULT '',
             context TEXT NOT NULL DEFAULT '',   -- user gõ thêm lúc tạo: ràng buộc, deadline thật…
@@ -365,6 +366,11 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_board_tasks ON board_tasks(board_id, position);
     """)
+    # migrate: board tạo trước khi thread được tách ra chưa có owner_id. '' = board kiểu cũ,
+    # còn dùng chung transcript với người dùng; board_thread() nâng cấp nó ở lần chạy kế tiếp.
+    bcols = [r[1] for r in conn.execute("PRAGMA table_info(boards)").fetchall()]
+    if bcols and "owner_id" not in bcols:
+        conn.execute("ALTER TABLE boards ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
     # migrate: thêm cột dry_run cho signals nếu DB cũ chưa có
     cols = [r[1] for r in conn.execute("PRAGMA table_info(signals)").fetchall()]
     if "dry_run" not in cols:
@@ -4312,7 +4318,8 @@ BOARD_OVERDUE = (1.25, 1.5, 2.0, 3.0)   # quá hạn thì giãn dần chứ khô
 BOARD_BACKOFF = 1.6        # mỗi lời nhắc bị bỏ qua, khoảng cách lần sau nhân lên
 BOARD_BACKOFF_CAP = 4.0    # … nhưng không quá 4× BOARD_MIN_GAP, nếu không là im luôn cả ngày
 _BOARD_FIELDS = ("name", "goal", "context", "status", "quiet_from", "quiet_to", "strikes",
-                 "last_ping_at", "advice", "research_due", "research_why", "planning", "session_id")
+                 "last_ping_at", "advice", "research_due", "research_why", "planning",
+                 "session_id", "owner_id")
 _TASK_FIELDS = ("title", "detail", "estimate_min", "priority", "status", "position",
                 "started_at", "done_at")
 _board_busy: set = set()   # board đang có một lượt nhắc chạy (agent có thể mất vài phút)
@@ -4429,13 +4436,14 @@ def board_next_ping(board, tasks, now):
 
 # ── Board store ──────────────────────────────────────────────────────────────
 
-def create_board(workspace_id, session_id, name, goal="", context=""):
+def create_board(workspace_id, session_id, name, goal="", context="", owner_id=""):
     _ensure_db()
     bid = "brd_" + secrets.token_hex(8)
     conn = _conn()
-    conn.execute("INSERT INTO boards (id, workspace_id, session_id, name, goal, context, "
-                 "created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                 (bid, workspace_id or DEFAULT_WORKSPACE, session_id, name, goal, context, _now()))
+    conn.execute("INSERT INTO boards (id, workspace_id, session_id, owner_id, name, goal, context, "
+                 "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 (bid, workspace_id or DEFAULT_WORKSPACE, session_id, owner_id, name, goal,
+                  context, _now()))
     conn.commit()
     conn.close()
     return bid
@@ -4476,10 +4484,16 @@ def update_board(bid, **fields):
 
 
 def delete_board(bid):
+    """Xoá board + thread riêng của nó. Agent người dùng chọn (owner_id) KHÔNG bị đụng tới — đó
+    là card họ đang chat, board chỉ mượn cấu hình của nó. Board kiểu cũ (owner_id rỗng) chạy thẳng
+    trên session của người dùng, nên ở đó không có gì để dọn."""
+    b = get_board(bid)
     conn = _conn()
     conn.execute("DELETE FROM boards WHERE id = ?", (bid,))
     conn.commit()
     conn.close()
+    if b and b.get("owner_id") and b["session_id"] != b["owner_id"]:
+        unregister_session(b["session_id"])
 
 
 def board_tasks(bid):
@@ -4540,6 +4554,58 @@ def delete_task(tid):
     conn.close()
 
 
+def board_agent_for(owner, board_name):
+    """Session RIÊNG cho board, cùng thư mục và cùng cấu hình với agent người dùng đã chọn.
+
+    VÌ SAO KHÔNG DÙNG THẲNG SESSION ĐÓ. Lời nhắc của board và cuộc chat của người dùng sẽ ghi vào
+    CÙNG MỘT transcript, và không có gì ngăn hai bên nói cùng lúc: _lock_for chỉ xếp hàng các run
+    HEADLESS với nhau, còn terminal nhúng là một tiến trình `claude --resume <id>` KHÁC, mở đúng
+    transcript ấy, không đi qua khoá nào. Hai tiến trình cùng nối vào một hội thoại thì lượt của
+    bên này có thể bị bên kia ghi đè khi lưu. Và kể cả lúc không mất gì, JSON schema của board vẫn
+    nằm chen giữa câu chuyện người dùng đang nói dở — lượt sau agent đọc lại thấy nó như một phần
+    của việc đang làm.
+
+    Chép transcript sang id mới thì mỗi dòng trong file còn mang sessionId cũ bên trong, phải sửa
+    lại theo đúng định dạng nội bộ của từng CLI — thứ sẽ hỏng lặng lẽ ở bản CLI kế tiếp. Mở một
+    session mới CÙNG THƯ MỤC rẻ hơn và không phụ thuộc định dạng nào: agent board vẫn đọc được
+    đúng project, chỉ là nó có cuốn sổ riêng.
+
+    cwd/model/effort/tool/permission copy từ agent gốc — board không được chạy bằng một cấu hình
+    khác với cái người dùng đã chọn cho thư mục đó.
+    """
+    ws = owner.get("workspace_id") or DEFAULT_WORKSPACE
+    base = f"{owner.get('name') or 'agent'}-board"
+    name = base
+    n = 2
+    while get_session_by_name(name, ws):
+        name = f"{base}-{n}"
+        n += 1
+    sid = str(uuid.uuid4())
+    register_session(sid, name, project=owner.get("project") or "", cwd=owner.get("cwd") or "",
+                     allowed_tools=json.loads(owner.get("allowed_tools") or "[]"),
+                     permission_mode=owner.get("permission_mode") or "",
+                     model=owner.get("model") or "", effort=owner.get("effort") or "",
+                     workspace_id=ws, engine=owner.get("engine") or "claude")
+    print(f"[orchestrator] board '{board_name}': thread riêng '{name}' (cwd={owner.get('cwd')})",
+          flush=True)
+    return sid
+
+
+def board_thread(b):
+    """Session board chạy trên đó, tạo nếu chưa có.
+
+    Board tạo trước khi thread được tách (owner_id rỗng) TỰ nâng cấp ở lần chạy kế tiếp thay vì
+    tiếp tục ghi đè lên cuộc chat của người dùng — không cần ai đi sửa tay."""
+    if b.get("owner_id"):
+        return b["session_id"]
+    owner = get_session(b["session_id"])
+    if not owner:
+        return b["session_id"]
+    sid = board_agent_for(owner, b["name"])
+    update_board(b["id"], session_id=sid, owner_id=owner["id"])
+    return sid
+
+
 def board_view(b, now=None):
     """Board + task + mốc nhắc kế tiếp, dạng FE dùng trực tiếp.
 
@@ -4551,10 +4617,14 @@ def board_view(b, now=None):
     tasks = board_tasks(b["id"])
     at = board_next_ping(b, tasks, now)
     done = sum(1 for t in tasks if t["status"] == "done")
+    # agent = người dùng chọn ai; runs_as = thread riêng board thật sự chạy trên đó. Hiện cả hai:
+    # thread đó là một session thật, đốt quota thật và xem được transcript trên canvas.
+    owner = get_session(b.get("owner_id") or "") or {}
     return {**b, "tasks": tasks, "advice": _json_obj(b.get("advice")),
             "next_ping": at.isoformat() if at else "",
             "done": done, "total": len(tasks),
-            "agent": _session_name(b["session_id"]) or b["session_id"]}
+            "agent": owner.get("name") or _session_name(b["session_id"]) or b["session_id"],
+            "runs_as": _session_name(b["session_id"]) if b.get("owner_id") else ""}
 
 
 # ── Board ↔ agent ────────────────────────────────────────────────────────────
@@ -4658,10 +4728,11 @@ async def board_ask(b, prompt):
     # để thử đường ống, không phải để agent lên kế hoạch; board vẫn nhắc, bằng câu tự viết.
     if DRY_RUN:
         return ""
-    sid = enqueue_signal(b["session_id"], prompt, BOARD_SENDER, 0, 0, b["workspace_id"])
+    target = board_thread(b)
+    sid = enqueue_signal(target, prompt, BOARD_SENDER, 0, 0, b["workspace_id"])
     _inflight.add(sid)   # run_loop đừng nhặt trùng signal này
     try:
-        res = await process_signal({"id": sid, "to_session": b["session_id"], "message": prompt,
+        res = await process_signal({"id": sid, "to_session": target, "message": prompt,
                                     "workspace_id": b["workspace_id"],
                                     "requires_approval": 0, "dry_run": 0}) or {}
     finally:
@@ -4756,7 +4827,9 @@ async def board_tick(bid, manual=False):
                  strikes=0 if manual else int(b.get("strikes") or 0) + 1,
                  advice=json.dumps({**adv, "nudge": nudge, "at": now.isoformat()})[:4000])
     publish({"type": "board_ping", "board": bid, "name": b["name"], "nudge": nudge,
-             "next_action": str(adv.get("next_action") or ""), "agent": _session_name(b["session_id"]),
+             "next_action": str(adv.get("next_action") or ""),
+             # Tên hiện cho người dùng là agent HỌ chọn, không phải thread nội bộ của board.
+             "agent": _session_name(b.get("owner_id") or b["session_id"]),
              "workspace_id": b["workspace_id"]})
     return nudge
 
@@ -5896,9 +5969,13 @@ def build_app():
         if not sid:
             return JSONResponse({"error": f"no agent found for '{ref}'"}, status_code=404)
         # Board thừa hưởng workspace của agent (nguồn sự thật là session, như signal).
-        ws = get_session(sid).get("workspace_id") or DEFAULT_WORKSPACE
-        bid = create_board(ws, sid, name[:120], str(body.get("goal") or "")[:4000],
-                           str(body.get("context") or "")[:4000])
+        owner = get_session(sid)
+        ws = owner.get("workspace_id") or DEFAULT_WORKSPACE
+        # Agent người dùng chọn quyết định THƯ MỤC và cấu hình; board chạy trên thread riêng cùng
+        # thư mục đó, để lời nhắc không chen vào cuộc chat của họ (xem board_agent_for).
+        bid = create_board(ws, board_agent_for(owner, name[:120]), name[:120],
+                           str(body.get("goal") or "")[:4000],
+                           str(body.get("context") or "")[:4000], owner_id=sid)
         b = get_board(bid)
         # Agent tự dựng task list ngay — nhưng ở TASK RIÊNG: một lượt agent có thể mất vài phút,
         # giữ request HTTP mở suốt lượt đó là trình duyệt tự bỏ cuộc trước khi board kịp xong.

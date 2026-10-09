@@ -234,8 +234,18 @@ loses nothing.
 
 ### What the agent sends back
 
-Each nudge is a real run of that agent, through the same session lock, daily run cap and audit log
-as any other work it does — so a board shows up in History like everything else. It answers in
+A board does not run on the agent you chat with. Picking an agent picks a **folder** and its
+settings — model, tools, permissions — and the board then opens its own session there, named
+`<agent>-board`, which you will see on the canvas. That separation is not tidiness: the terminal
+you type in is a second `claude` process holding the same conversation file, and the orchestrator's
+per-session lock only queues background runs against each other. Share one session between your
+chat and the board and both processes append to the same transcript, where the later save can drop
+the other's turns — and even when nothing is lost, the board's JSON sits in the middle of the
+conversation you were having. The board agent reads the same project, keeps its own notebook, and
+is deleted with the board; the agent you chat with is never touched.
+
+Each nudge is a real run, through the same session lock, daily run cap and audit log
+as any other work — so a board shows up in History like everything else. It answers in
 JSON: the line to show you, and optionally a task to retime, a task you had not thought of, and
 whether it needs to research something before the next nudge. That last flag is why it does not
 look things up every time: research happens when the agent says the facts it is working from have

@@ -262,6 +262,50 @@ def test_board_signals_skip_the_ping_pong_cap():
           so._round_at.get(("default", "capbot")) is None, str(so._round_at))
 
 
+def test_board_never_writes_the_chat_transcript():
+    """Lời nhắc KHÔNG được chạy trên session người dùng đang chat.
+
+    Khoá _lock_for chỉ xếp hàng các run headless với nhau — terminal nhúng là một tiến trình
+    claude KHÁC mở đúng transcript ấy và không đi qua khoá nào, nên dùng chung session là hai
+    tiến trình cùng nối vào một hội thoại. Board phải có thread riêng, cùng thư mục.
+    """
+    so.register_session("sess-owner", "writer", cwd="/tmp/proj", model="opus",
+                        permission_mode="bypassPermissions", workspace_id="default")
+    owner = so.get_session("sess-owner")
+    bid = so.create_board("default", so.board_agent_for(owner, "b"), "b", owner_id="sess-owner")
+    b = so.get_board(bid)
+    check("the board runs on its own session, not the one you chat with",
+          b["session_id"] != "sess-owner", b["session_id"])
+    thread = so.get_session(b["session_id"])
+    check("that session sits in the same folder", thread["cwd"] == "/tmp/proj", thread["cwd"])
+    check("and carries the same model and permissions",
+          thread["model"] == "opus" and thread["permission_mode"] == "bypassPermissions",
+          f"{thread['model']} {thread['permission_mode']}")
+    check("the board still shows the agent you picked",
+          so.board_view(b)["agent"] == "writer", so.board_view(b)["agent"])
+    so.delete_board(bid)
+    check("deleting the board takes its thread with it",
+          so.get_session(b["session_id"]) is None, "thread left behind")
+    check("but never the agent you chat with", so.get_session("sess-owner") is not None,
+          "the chat agent was deleted")
+
+
+def test_old_board_upgrades_itself():
+    """Board tạo trước khi thread được tách ra (owner_id rỗng) phải tự chuyển sang thread riêng,
+    chứ không im lặng ghi tiếp vào transcript của người dùng."""
+    so.register_session("sess-old", "oldbot", cwd="/tmp/proj2", workspace_id="default")
+    bid = so.create_board("default", "sess-old", "legacy board")
+    before = so.get_board(bid)
+    check("an old board starts out sharing the chat session",
+          before["session_id"] == "sess-old" and not before["owner_id"], str(dict(before))[:80])
+    so.board_thread(before)
+    after = so.get_board(bid)
+    check("the next run moves it onto its own thread",
+          after["session_id"] != "sess-old" and after["owner_id"] == "sess-old",
+          f"{after['session_id']} / {after['owner_id']}")
+    so.delete_board(bid)
+
+
 def test_wiring():
     """Nút và tab phải có thật — backend đúng mà UI không gọi tới thì tính năng không tồn tại."""
     here = Path(__file__).parent
@@ -275,6 +319,7 @@ def test_wiring():
             ('id="task-modal"', "index.html", html),
             ("window.taskOpen", "app.js", js),
             ("function renderTask(", "app.js", js),
+            ("def board_agent_for(", "session_orchestrator.py", py),
             ("function renderBoards(", "app.js", js),
             ("window.boardNew", "app.js", js),
             ("board_ping", "app.js", js),
@@ -299,6 +344,8 @@ async def main():
     test_user_work_is_never_deleted_under_them()
     test_started_at_is_set_when_work_begins()
     test_board_signals_skip_the_ping_pong_cap()
+    test_board_never_writes_the_chat_transcript()
+    test_old_board_upgrades_itself()
     test_wiring()
 
     app = so.build_app()
