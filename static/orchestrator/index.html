@@ -453,11 +453,27 @@
   .bd-task.drag { opacity: .4; }
   .bd-task .t { font-size: 12.5px; line-height: 1.4; }
   .bd-task.done .t { text-decoration: line-through; color: var(--muted); }
-  .bd-task .d { font-size: 11px; color: var(--muted); line-height: 1.5; }
+  /* Ghi chú trên card cắt 2 dòng: card là chỗ liếc qua cả cột, đọc đủ thì mở dialog. Không
+     cắt thì một việc ghi chú dài đẩy ba việc còn lại xuống dưới màn hình. */
+  .bd-task .d { font-size: 11px; color: var(--muted); line-height: 1.5;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .bd-task .row { display: flex; gap: 6px; align-items: center; font-size: 10.5px;
     color: var(--faint); }
   .bd-task .row .spacer { flex: 1; }
-  .bd-task .row button { padding: 1px 5px; font-size: 10.5px; }
+
+  /* Dialog một việc: toàn bộ nội dung + mọi thao tác lên nó. */
+  .tk-head { display: flex; align-items: flex-start; gap: 10px; }
+  .tk-title { font-size: 15px; font-weight: 600; line-height: 1.4; flex: 1; min-width: 0;
+    overflow-wrap: anywhere; }
+  .tk-meta { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  .tk-when { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
+  .tk-detail { margin-top: 12px; padding: 11px 12px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: var(--r-ctl); font-size: 12.5px;
+    line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tk-detail.none { color: var(--faint); font-style: italic; }
+  .tk-move { display: flex; gap: 6px; margin-top: 14px; flex-wrap: wrap; }
+  .tk-move button.on { background: var(--accent); border-color: var(--accent);
+    color: var(--accent-fg); font-weight: 600; }
   .bd-nudge { margin: 0 15px 12px; padding: 10px 12px; border-radius: var(--r-ctl);
     background: var(--amber-soft); border: 1px solid var(--amber); font-size: 12.5px;
     line-height: 1.55; display: flex; gap: 9px; align-items: flex-start; }
@@ -1043,6 +1059,16 @@
     </div>
   </div><!-- /ws-detail-view -->
 </main>
+
+<!-- Một việc, mở hết: card trong cột chỉ đủ chỗ liếc qua, còn ghi chú của agent ("làm sao
+     biết là xong") thường dài hơn thế. Mọi thao tác lên việc cũng dồn về đây thay vì nhét
+     thêm nút vào card. -->
+<div id="task-modal" class="modal-overlay" onclick="if (event.target === this) taskClose()" hidden>
+  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="task-title">
+    <div id="task-title"></div>
+    <div id="task-body"></div>
+  </div>
+</div>
 
 <div id="toasts"></div>
 

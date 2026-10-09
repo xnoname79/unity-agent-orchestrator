@@ -2844,6 +2844,7 @@ window.toolsClose = toolsClose;
 // chỉ hiện "nhắc tiếp lúc nào" và đẩy thao tác của người dùng về server.
 let BOARDS = [];
 let bdOpen = "";        // board đang mở ("" = đang xem danh sách)
+let bdTask = 0;         // việc đang mở trong dialog (0 = đóng)
 let bdDrag = false;     // đang kéo một task → SSE refresh KHÔNG dựng lại DOM dưới tay người dùng
 
 const PRIO = ["high", "normal", "low"];
@@ -2877,6 +2878,7 @@ function renderBoards(list) {
   const cur = list.find((b) => b.id === bdOpen);
   $("boards-view").hidden = !!cur;
   open.hidden = !cur;
+  if (bdTask) renderTask();
   if (cur) { open.innerHTML = boardHtml(cur); return; }
   bdOpen = "";
   $("bd-count").textContent = list.length ? `${list.length} in this workspace` : "";
@@ -2901,16 +2903,77 @@ function boardBack() { bdOpen = ""; renderBoards(BOARDS); }
 window.boardBack = boardBack;
 
 function taskHtml(t) {
-  const est = `${t.estimate_min}m`;
   return `<div class="bd-task p-${esc(t.priority)} ${t.status === "done" ? "done" : ""}"
-    draggable="true" data-task="${t.id}" ondragstart="taskDragStart(event)" ondragend="taskDragEnd()">
+    draggable="true" data-task="${t.id}" ondragstart="taskDragStart(event)" ondragend="taskDragEnd()"
+    onclick="taskOpen(${t.id})" title="Open this task">
     <div class="t">${esc(t.title)}</div>
     ${t.detail ? `<div class="d">${esc(t.detail)}</div>` : ""}
-    <div class="row"><span>${esc(t.priority)} · ${est}</span><span class="spacer"></span>
-      <button onclick="taskEdit(${t.id})" title="Edit this task">${ic("edit")}</button>
-      <button onclick="taskDrop(${t.id})" title="Delete this task">${ic("trash")}</button></div>
+    <div class="row"><span>${esc(t.priority)} · ${t.estimate_min}m</span><span class="spacer"></span>
+      ${t.status === "doing" ? `<span>${esc(spentText(t))}</span>` : ""}</div>
   </div>`;
 }
+
+// "25 phút rồi" / "quá 8 phút" — con số người dùng thật sự cần khi nhìn việc đang làm.
+function spentText(t) {
+  if (!t.started_at) return "";
+  const spent = Math.round((Date.now() - new Date(t.started_at)) / 60000);
+  const left = t.estimate_min - spent;
+  return left >= 0 ? `${spent}m in` : `${-left}m over`;
+}
+
+function taskOpen(id) { bdTask = id; renderTask(); }
+window.taskOpen = taskOpen;
+
+function taskClose() { bdTask = 0; $("task-modal").hidden = true; }
+window.taskClose = taskClose;
+
+function taskWhen(t) {
+  if (t.status === "done") return t.done_at ? `Finished at ${shortTime(t.done_at)}.` : "Finished.";
+  if (t.status !== "doing") return "Not started. Drag it into Doing and the clock starts — that is "
+    + "what the nudges are timed from.";
+  if (!t.started_at) return "In progress.";
+  const spent = Math.round((Date.now() - new Date(t.started_at)) / 60000);
+  const left = t.estimate_min - spent;
+  return `Started at ${shortTime(t.started_at)}, ${spent} min in — `
+    + (left >= 0 ? `${left} min left of the ${t.estimate_min} planned.`
+                 : `${-left} min past the ${t.estimate_min} planned.`);
+}
+
+// Dialog vẽ lại từ BOARDS mỗi lần board refresh: agent có thể đổi ước lượng của đúng việc đang
+// mở (retime), và số liệu trong dialog phải là số liệu thật chứ không phải ảnh chụp lúc bấm vào.
+function renderTask() {
+  const b = BOARDS.find((x) => x.id === bdOpen);
+  const t = b && b.tasks.find((x) => x.id === bdTask);
+  $("task-modal").hidden = !t;
+  if (!t) { bdTask = 0; return; }
+  const over = t.status === "doing" && t.started_at
+    && (Date.now() - new Date(t.started_at)) / 60000 > t.estimate_min;
+  $("task-title").innerHTML = `<div class="tk-head">
+    <span class="tk-title">${esc(t.title)}</span>
+    <button class="icon-btn" onclick="taskClose()" title="Close">${ic("x")}</button></div>`;
+  $("task-body").innerHTML = `
+    <div class="tk-meta">
+      ${badge(t.status, t.status === "done" ? "b-green" : t.status === "doing" ? "b-blue" : "b-gray")}
+      ${badge(t.priority, t.priority === "high" ? "b-red" : t.priority === "low" ? "b-gray" : "b-blue")}
+      ${badge(t.estimate_min + " min", over ? "b-amber" : "b-gray")}
+    </div>
+    <div class="tk-when">${esc(taskWhen(t))}</div>
+    <div class="tk-detail ${t.detail ? "" : "none"}">${
+      t.detail ? esc(t.detail) : "No notes on this one yet."}</div>
+    <div class="tk-move">${COLS.map(([key, label]) =>
+      `<button class="${t.status === key ? "on" : ""}" onclick="taskMove(${t.id}, '${key}')"
+        ${t.status === key ? "disabled" : ""}>${esc(label)}</button>`).join("")}</div>
+    <div class="spawn-actions ai-actions">
+      <button class="secondary" onclick="taskEdit(${t.id})">${ic("edit")} Edit</button>
+      <button class="secondary" onclick="taskDrop(${t.id})">${ic("trash")} Delete</button>
+    </div>`;
+}
+
+async function taskMove(tid, status) {
+  try { await api(`/api/boards/${bdOpen}/tasks/${tid}`, "POST", { status }); await boardsLoad(); }
+  catch (e) { alert("Could not move that task: " + e); }
+}
+window.taskMove = taskMove;
 
 function boardHtml(b) {
   const nudge = b.advice && b.advice.nudge ? `<div class="bd-nudge">${ic("clock")}
@@ -3036,8 +3099,11 @@ window.taskEdit = taskEdit;
 
 async function taskDrop(tid) {
   if (!confirm("Delete this task?")) return;
-  try { await api(`/api/boards/${bdOpen}/tasks/${tid}`, "DELETE"); await boardsLoad(); }
-  catch (e) { alert("Could not delete that task: " + e); }
+  try {
+    await api(`/api/boards/${bdOpen}/tasks/${tid}`, "DELETE");
+    taskClose();
+    await boardsLoad();
+  } catch (e) { alert("Could not delete that task: " + e); }
 }
 window.taskDrop = taskDrop;
 
@@ -3210,6 +3276,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
   if (e.key === "Escape" && !$("img-modal").hidden) imgClose();
   if (e.key === "Escape" && !$("tools-modal").hidden) toolsClose();
+  if (e.key === "Escape" && !$("task-modal").hidden) taskClose();
 });
 
 // Nút trong danh sách: tên đi qua data-attribute, không qua inline onclick.
