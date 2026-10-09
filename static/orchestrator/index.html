@@ -416,6 +416,69 @@
   #tab-history { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 20px;
     display: grid; gap: 16px; align-content: start; }
   #tab-history[hidden] { display: none; }
+
+  /* Board: bảng việc của NGƯỜI DÙNG (3 cột todo/doing/done), không phải hàng đợi của agent. */
+  #tab-boards { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 20px; }
+  #tab-boards[hidden] { display: none; }
+  .bd-wrap { width: 100%; max-width: 1180px; margin: 0 auto; display: grid; gap: 16px; }
+  .bd-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px;
+    padding: 12px 15px; }
+  .bd-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-card);
+    padding: 12px 13px; display: grid; gap: 7px; cursor: pointer; text-align: left; }
+  .bd-card:hover { border-color: var(--accent); }
+  .bd-card .nm { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 7px; }
+  .bd-card .goal { font-size: 11.5px; color: var(--muted); line-height: 1.5;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .bd-meta { display: flex; gap: 9px; align-items: center; font-size: 11px; color: var(--faint);
+    flex-wrap: wrap; }
+  .bd-bar { height: 4px; border-radius: 3px; background: var(--panel2); overflow: hidden; }
+  .bd-bar > i { display: block; height: 100%; background: var(--green); }
+  .bd-head { display: flex; align-items: center; gap: 10px; padding: 12px 15px; flex-wrap: wrap; }
+  .bd-head .nm { font-weight: 600; font-size: 14px; }
+  .bd-goal { padding: 0 15px 12px; font-size: 12px; color: var(--muted); line-height: 1.6;
+    white-space: pre-wrap; }
+  .bd-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 0 15px 15px;
+    align-items: stretch; }
+  @media (max-width: 760px) { .bd-cols { grid-template-columns: 1fr; } }
+  .bd-col { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-card);
+    padding: 9px; display: grid; gap: 8px; align-content: start; min-height: 90px; }
+  .bd-col.over { border-color: var(--accent); background: var(--accent-soft); }
+  .bd-col > h3 { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin: 0; display: flex; gap: 6px; align-items: center; }
+  .bd-task { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--gray);
+    border-radius: var(--r-ctl); padding: 8px 9px; display: grid; gap: 5px; cursor: grab; }
+  .bd-task.p-high { border-left-color: var(--red); }
+  .bd-task.p-normal { border-left-color: var(--blue); }
+  .bd-task.p-low { border-left-color: var(--gray); }
+  .bd-task.drag { opacity: .4; }
+  .bd-task .t { font-size: 12.5px; line-height: 1.4; }
+  .bd-task.done .t { text-decoration: line-through; color: var(--muted); }
+  .bd-task .d { font-size: 11px; color: var(--muted); line-height: 1.5; }
+  .bd-task .row { display: flex; gap: 6px; align-items: center; font-size: 10.5px;
+    color: var(--faint); }
+  .bd-task .row .spacer { flex: 1; }
+  .bd-task .row button { padding: 1px 5px; font-size: 10.5px; }
+  .bd-nudge { margin: 0 15px 12px; padding: 10px 12px; border-radius: var(--r-ctl);
+    background: var(--amber-soft); border: 1px solid var(--amber); font-size: 12.5px;
+    line-height: 1.55; display: flex; gap: 9px; align-items: flex-start; }
+  .bd-nudge .when { font-size: 10.5px; color: var(--muted); display: block; margin-top: 3px; }
+  .bd-form { display: grid; gap: 8px; padding: 12px 15px; }
+  .bd-form input, .bd-form textarea, .bd-form select { background: var(--bg);
+    border: 1px solid var(--border); color: var(--text); border-radius: var(--r-ctl);
+    padding: 7px 9px; font: inherit; font-size: 12.5px; width: 100%; }
+  .bd-form textarea { min-height: 62px; resize: vertical; }
+  .bd-form .two { display: flex; gap: 8px; flex-wrap: wrap; }
+  .bd-form .two > * { flex: 1; min-width: 130px; }
+  .bd-form .two > button, .bd-form .two > .hint { flex: 0 0 auto; min-width: 0; }
+
+  /* Lời nhắc tới lúc người dùng đang ở tab khác: toast góc dưới, tự tắt. Notification của
+     trình duyệt (nếu user cho phép) lo trường hợp tab bị ẩn hoàn toàn. */
+  #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: grid; gap: 8px;
+    max-width: min(360px, calc(100vw - 32px)); }
+  .toast { background: var(--panel); border: 1px solid var(--amber); border-left: 4px solid var(--amber);
+    border-radius: var(--r-ctl); box-shadow: var(--sh-3); padding: 10px 12px; font-size: 12.5px;
+    line-height: 1.55; display: grid; gap: 4px; cursor: pointer; }
+  .toast b { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--amber); }
   .hist-wrap { width: 100%; max-width: 1100px; margin: 0 auto; display: grid; gap: 16px; }
   .sg-form { display: flex; gap: 8px; align-items: center; padding: 12px 15px; flex-wrap: wrap; }
   .sg-form select, .sg-form input { background: var(--bg); border: 1px solid var(--border);
@@ -748,6 +811,7 @@
   <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9.5" r="1.5"/><path d="m20 15.5-4.5-4.5L6 20"/></symbol>
   <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M15.5 3.5a5 5 0 0 0-6.2 6.2L3.9 15a2 2 0 0 0 0 2.8l2.3 2.3a2 2 0 0 0 2.8 0l5.3-5.4a5 5 0 0 0 6.2-6.2l-3 3-2.8-2.8z"/></symbol>
   <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></symbol>
+  <symbol id="i-board" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/></symbol>
 </defs></svg>
 
 <header>
@@ -845,6 +909,8 @@
       <div class="tabs">
         <button id="tab-btn-agents" class="tab active" onclick="switchTab('agents')">
           <svg class="ic sm"><use href="#i-map"/></svg> Agents</button>
+        <button id="tab-btn-boards" class="tab" onclick="switchTab('boards')">
+          <svg class="ic sm"><use href="#i-board"/></svg> Boards</button>
         <button id="tab-btn-history" class="tab" onclick="switchTab('history')">
           <svg class="ic sm"><use href="#i-clock"/></svg> History</button>
       </div>
@@ -907,6 +973,37 @@
       </aside>
     </div>
 
+    <!-- Board: mục tiêu của NGƯỜI DÙNG trong ngày, một agent trông một board. Hai màn trong
+         cùng một tab: danh sách board (#boards-view) và một board đang mở (#board-open). -->
+    <div id="tab-boards" hidden>
+      <div class="bd-wrap">
+        <div id="boards-view">
+          <section class="panel">
+            <h2>Boards <span id="bd-count" class="hint" style="margin:0"></span></h2>
+            <div id="bd-list" class="bd-list"></div>
+            <div id="bd-empty" class="empty" hidden>No boards yet. Name one, pick the agent that
+              should look after it, and say what you want done.</div>
+          </section>
+          <section class="panel">
+            <h2>New board</h2>
+            <div class="bd-form">
+              <div class="two">
+                <input id="bd-name" placeholder="Board name (e.g. Launch day)">
+                <select id="bd-agent"></select>
+              </div>
+              <textarea id="bd-goal" placeholder="What do you want to have done? The agent reads this, researches if it needs to, and writes the task list for you."></textarea>
+              <textarea id="bd-ctx" placeholder="Anything it should know: hard deadlines, what is already done, links, constraints (optional)"></textarea>
+              <div class="two">
+                <button class="primary" onclick="boardNew()">Create board</button>
+                <span id="bd-msg" class="hint"></span>
+              </div>
+            </div>
+          </section>
+        </div>
+        <div id="board-open" hidden></div>
+      </div>
+    </div>
+
     <div id="tab-history" hidden>
       <div class="hist-wrap">
         <section class="panel">
@@ -946,6 +1043,8 @@
     </div>
   </div><!-- /ws-detail-view -->
 </main>
+
+<div id="toasts"></div>
 
 <div id="drawer-overlay" class="drawer-overlay" onclick="closeDrawer()"></div>
 

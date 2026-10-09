@@ -2837,6 +2837,304 @@ window.toolsOpen = toolsOpen;
 function toolsClose() { $("tools-modal").hidden = true; }
 window.toolsClose = toolsClose;
 
+// ── Boards ───────────────────────────────────────────────────────────────────
+// Bảng việc của NGƯỜI DÙNG, không phải hàng đợi của agent (cái đó ở tab History). Một board =
+// một mục tiêu + một agent trông nó: agent dựng task từ mục tiêu, rồi tới giờ thì nhắc.
+// Backend tự tính mốc nhắc từ trạng thái task (xem board_next_ping) nên FE không giữ lịch gì —
+// chỉ hiện "nhắc tiếp lúc nào" và đẩy thao tác của người dùng về server.
+let BOARDS = [];
+let bdOpen = "";        // board đang mở ("" = đang xem danh sách)
+let bdDrag = false;     // đang kéo một task → SSE refresh KHÔNG dựng lại DOM dưới tay người dùng
+
+const PRIO = ["high", "normal", "low"];
+const COLS = [["todo", "To do"], ["doing", "Doing"], ["done", "Done"]];
+
+// "trong 25 phút" / "9 phút trước" — người dùng cần biết CÒN BAO LÂU, mốc tuyệt đối thì phải
+// tự trừ nhẩm. Dưới 1 phút gọi là "any moment": đếm từng giây chỉ làm người ta ngồi chờ.
+function untilText(iso) {
+  if (!iso) return "";
+  const m = Math.round((new Date(iso) - Date.now()) / 60000);
+  if (m <= 0) return m > -2 ? "any moment" : `${-m} min ago`;
+  if (m < 60) return `in ${m} min`;
+  const h = Math.floor(m / 60);
+  return `in ${h}h${m % 60 ? " " + (m % 60) + "m" : ""}`;
+}
+
+function boardsMsg(text, ok) { showMsg("bd-msg", text, ok); }
+
+async function boardsLoad() {
+  BOARDS = await api("/api/boards" + wsQuery());
+  renderBoards(BOARDS);
+}
+
+function renderBoards(list) {
+  if (bdDrag) return;                       // đang kéo card: để nguyên DOM
+  // SSE bắn theo MỌI bước của mọi agent trong workspace. Dựng lại DOM đúng lúc người dùng đang
+  // gõ tên việc mới là chữ bay mất giữa chừng — bỏ qua lượt vẽ này, lượt sau vẽ cũng không muộn.
+  const f = document.activeElement;
+  const open = $("board-open");
+  if (f && open && open.contains(f) && /INPUT|TEXTAREA|SELECT/.test(f.tagName)) return;
+  const cur = list.find((b) => b.id === bdOpen);
+  $("boards-view").hidden = !!cur;
+  open.hidden = !cur;
+  if (cur) { open.innerHTML = boardHtml(cur); return; }
+  bdOpen = "";
+  $("bd-count").textContent = list.length ? `${list.length} in this workspace` : "";
+  $("bd-empty").hidden = !!list.length;
+  $("bd-list").innerHTML = list.map((b) => {
+    const pct = b.total ? Math.round((b.done / b.total) * 100) : 0;
+    const next = b.status !== "active" ? b.status
+      : b.planning ? "agent is planning…" : untilText(b.next_ping) || "nothing to nudge";
+    return `<button class="bd-card" onclick="boardShow('${b.id}')">
+      <span class="nm">${ic("board")} ${esc(b.name)}</span>
+      <span class="goal">${esc(b.goal || "No goal set yet.")}</span>
+      <div class="bd-bar"><i style="width:${pct}%"></i></div>
+      <span class="bd-meta"><span>${b.done}/${b.total} done</span>
+        <span>· ${esc(b.agent)}</span><span>· ${esc(next)}</span></span></button>`;
+  }).join("");
+}
+
+function boardShow(id) { bdOpen = id; renderBoards(BOARDS); }
+window.boardShow = boardShow;
+
+function boardBack() { bdOpen = ""; renderBoards(BOARDS); }
+window.boardBack = boardBack;
+
+function taskHtml(t) {
+  const est = `${t.estimate_min}m`;
+  return `<div class="bd-task p-${esc(t.priority)} ${t.status === "done" ? "done" : ""}"
+    draggable="true" data-task="${t.id}" ondragstart="taskDragStart(event)" ondragend="taskDragEnd()">
+    <div class="t">${esc(t.title)}</div>
+    ${t.detail ? `<div class="d">${esc(t.detail)}</div>` : ""}
+    <div class="row"><span>${esc(t.priority)} · ${est}</span><span class="spacer"></span>
+      <button onclick="taskEdit(${t.id})" title="Edit this task">${ic("edit")}</button>
+      <button onclick="taskDrop(${t.id})" title="Delete this task">${ic("trash")}</button></div>
+  </div>`;
+}
+
+function boardHtml(b) {
+  const nudge = b.advice && b.advice.nudge ? `<div class="bd-nudge">${ic("clock")}
+    <div>${esc(b.advice.nudge)}<span class="when">${esc(b.agent)} ·
+      ${esc(shortTime(b.advice.at))}${b.advice.next_action ? " · " + esc(b.advice.next_action) : ""}
+      </span></div></div>` : "";
+  const cols = COLS.map(([key, label]) => {
+    const list = b.tasks.filter((t) => t.status === key);
+    return `<div class="bd-col" data-col="${key}" ondragover="colOver(event)"
+      ondragleave="colLeave(event)" ondrop="colDrop(event, '${b.id}', '${key}')">
+      <h3>${esc(label)} <span class="hint" style="margin:0">${list.length}</span></h3>
+      ${list.map(taskHtml).join("")}</div>`;
+  }).join("");
+  return `<section class="panel">
+    <div class="bd-head">
+      <button onclick="boardBack()" title="Back to all boards">${ic("back")}</button>
+      <span class="nm">${esc(b.name)}</span>
+      ${badge(b.status, b.status === "active" ? "b-green" : "b-gray")}
+      ${b.planning ? badge("planning…", "b-blue") : ""}
+      <span class="hint" style="margin:0">${esc(b.agent)} · ${b.done}/${b.total} done ·
+        next nudge ${esc(untilText(b.next_ping) || "—")}</span>
+      <span class="spacer" style="flex:1"></span>
+      <button onclick="boardNudge('${b.id}')" title="Ask the agent for a nudge right now">
+        ${ic("send")} Nudge me</button>
+      <button onclick="boardPlan('${b.id}')" title="Have the agent rebuild the task list from the goal">
+        ${ic("refresh")} Re-plan</button>
+      <button onclick="boardPause('${b.id}', '${esc(b.status)}')"
+        title="Stop or resume the reminders">${ic(b.status === "active" ? "pause" : "play")}</button>
+      <button onclick="boardDelete('${b.id}', ${JSON.stringify(b.name)})" title="Delete this board">
+        ${ic("trash")}</button>
+    </div>
+    ${b.goal ? `<div class="bd-goal">${esc(b.goal)}</div>` : ""}
+    ${nudge}
+    <div class="bd-cols">${cols}</div>
+    <div class="bd-form">
+      <div class="two">
+        <input id="bd-t-title" placeholder="Add a task of your own…"
+          onkeydown="if(event.key==='Enter')taskAdd('${b.id}')">
+        <input id="bd-t-est" type="number" min="5" step="5" value="30" title="Estimate, minutes"
+          style="max-width:110px">
+        <select id="bd-t-prio" title="Priority">
+          ${PRIO.map((p) => `<option value="${p}"${p === "normal" ? " selected" : ""}>${p}</option>`).join("")}
+        </select>
+        <button class="primary" onclick="taskAdd('${b.id}')">Add</button>
+      </div>
+      <div>
+        <label class="hint" style="margin:0">Quiet hours — no nudges from
+          <input id="bd-q-from" type="number" min="0" max="23" value="${b.quiet_from}"
+            onchange="boardQuiet('${b.id}')" style="max-width:70px"> to
+          <input id="bd-q-to" type="number" min="0" max="23" value="${b.quiet_to}"
+            onchange="boardQuiet('${b.id}')" style="max-width:70px"> (set both the same to be
+          reminded around the clock)</label>
+      </div>
+    </div>
+  </section>`;
+}
+
+// Kéo task giữa 3 cột = native HTML5 drag, không thêm thư viện nào. Trạng thái 'doing' đóng mốc
+// started_at ở server, và toàn bộ nhịp nhắc đo từ mốc đó.
+function taskDragStart(ev) {
+  bdDrag = true;
+  ev.currentTarget.classList.add("drag");
+  ev.dataTransfer.setData("text/plain", ev.currentTarget.dataset.task);
+  ev.dataTransfer.effectAllowed = "move";
+}
+window.taskDragStart = taskDragStart;
+
+function taskDragEnd() { bdDrag = false; boardsLoad().catch(() => {}); }
+window.taskDragEnd = taskDragEnd;
+
+function colOver(ev) { ev.preventDefault(); ev.currentTarget.classList.add("over"); }
+window.colOver = colOver;
+
+function colLeave(ev) { ev.currentTarget.classList.remove("over"); }
+window.colLeave = colLeave;
+
+async function colDrop(ev, bid, status) {
+  ev.preventDefault();
+  ev.currentTarget.classList.remove("over");
+  const tid = ev.dataTransfer.getData("text/plain");
+  bdDrag = false;
+  if (!tid) return;
+  try { await api(`/api/boards/${bid}/tasks/${tid}`, "POST", { status }); }
+  catch (e) { alert("Could not move that task: " + e); }
+  boardsLoad().catch(() => {});
+}
+window.colDrop = colDrop;
+
+async function taskAdd(bid) {
+  const title = $("bd-t-title").value.trim();
+  if (!title) return;
+  try {
+    await api(`/api/boards/${bid}/tasks`, "POST", {
+      title, estimate_min: +$("bd-t-est").value || 30, priority: $("bd-t-prio").value });
+    $("bd-t-title").value = "";
+    await boardsLoad();
+  } catch (e) { alert("Could not add that task: " + e); }
+}
+window.taskAdd = taskAdd;
+
+// Sửa task bằng prompt: cùng lối với mọi hộp sửa nhanh khác trên dashboard (đổi tên group,
+// chọn thư mục…). Một form modal riêng cho ba ô này không mua thêm được gì.
+async function taskEdit(tid) {
+  const b = BOARDS.find((x) => x.id === bdOpen);
+  const t = b && b.tasks.find((x) => x.id === tid);
+  if (!t) return;
+  const title = prompt("Task", t.title);
+  if (title === null) return;
+  const detail = prompt("Notes (optional)", t.detail || "");
+  if (detail === null) return;
+  const est = prompt("Estimate in minutes", t.estimate_min);
+  if (est === null) return;
+  const prio = prompt("Priority — high, normal or low", t.priority);
+  if (prio === null) return;
+  try {
+    await api(`/api/boards/${bdOpen}/tasks/${tid}`, "POST", {
+      title: title.trim() || t.title, detail, estimate_min: +est || t.estimate_min,
+      priority: PRIO.includes((prio || "").trim()) ? prio.trim() : t.priority });
+    await boardsLoad();
+  } catch (e) { alert("Could not save that task: " + e); }
+}
+window.taskEdit = taskEdit;
+
+async function taskDrop(tid) {
+  if (!confirm("Delete this task?")) return;
+  try { await api(`/api/boards/${bdOpen}/tasks/${tid}`, "DELETE"); await boardsLoad(); }
+  catch (e) { alert("Could not delete that task: " + e); }
+}
+window.taskDrop = taskDrop;
+
+function fillBoardAgents(sessions) {
+  const sel = $("bd-agent");
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = sessions.length
+    ? sessions.map((s) => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join("")
+    : `<option value="">(spawn an agent first)</option>`;
+  if (cur && sessions.some((s) => s.name === cur)) sel.value = cur;
+}
+
+async function boardNew() {
+  const name = $("bd-name").value.trim();
+  const agent = $("bd-agent").value;
+  const goal = $("bd-goal").value.trim();
+  if (!name || !agent) { boardsMsg("Name the board and pick the agent that looks after it.", false); return; }
+  try {
+    const b = await api("/api/boards", "POST", {
+      name, session_id: agent, goal, context: $("bd-ctx").value.trim(), workspace_id: currentWS });
+    $("bd-name").value = ""; $("bd-goal").value = ""; $("bd-ctx").value = "";
+    boardsMsg(goal ? `Created. ${esc(b.agent)} is working out the tasks…` : "Created.", true);
+    askNotify();
+    bdOpen = b.id;
+    await boardsLoad();
+  } catch (e) { boardsMsg("Could not create that board: " + e, false); }
+}
+window.boardNew = boardNew;
+
+async function boardNudge(id) {
+  try { await api(`/api/boards/${id}/nudge`, "POST", {}); boardsMsg("Asking the agent…", true); }
+  catch (e) { alert("Could not ask for a nudge: " + e); }
+}
+window.boardNudge = boardNudge;
+
+async function boardPlan(id) {
+  if (!confirm("Have the agent rebuild the task list?\n\nTasks you have started or finished stay "
+    + "as they are — only the untouched 'To do' ones are replaced.")) return;
+  try { await api(`/api/boards/${id}/plan`, "POST", {}); await boardsLoad(); }
+  catch (e) { alert("Could not re-plan: " + e); }
+}
+window.boardPlan = boardPlan;
+
+async function boardPause(id, status) {
+  try {
+    await api(`/api/boards/${id}`, "POST", { status: status === "active" ? "paused" : "active" });
+    await boardsLoad();
+  } catch (e) { alert("Could not change that board: " + e); }
+}
+window.boardPause = boardPause;
+
+async function boardQuiet(id) {
+  try {
+    await api(`/api/boards/${id}`, "POST",
+              { quiet_from: +$("bd-q-from").value || 0, quiet_to: +$("bd-q-to").value || 0 });
+    await boardsLoad();
+  } catch (e) { alert("Could not save quiet hours: " + e); }
+}
+window.boardQuiet = boardQuiet;
+
+async function boardDelete(id, name) {
+  if (!confirm(`Delete board '${name}' and all its tasks? This cannot be undone.`)) return;
+  try { bdOpen = ""; await api(`/api/boards/${id}`, "DELETE"); await boardsLoad(); }
+  catch (e) { alert("Could not delete that board: " + e); }
+}
+window.boardDelete = boardDelete;
+
+// ── Lời nhắc tới ─────────────────────────────────────────────────────────────
+// Toast trong trang lo lúc người dùng đang ở tab khác của dashboard; Notification của trình
+// duyệt lo lúc cửa sổ bị ẩn hoàn toàn. KHÔNG tự xin quyền lúc boot: một hộp xin quyền bật lên
+// trước khi người dùng biết tính năng này là gì thì gần như luôn bị bấm Block — và Block thì
+// không xin lại được. Chỉ xin khi họ vừa tạo board xong, tức là vừa nói rằng họ muốn được nhắc.
+function toast(title, text, onClick) {
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.innerHTML = `<b>${esc(title)}</b><span>${esc(text)}</span>`;
+  el.onclick = () => { el.remove(); if (onClick) onClick(); };
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), 30000);
+}
+
+function askNotify() {
+  try {
+    if (window.Notification && Notification.permission === "default") Notification.requestPermission();
+  } catch { /* trình duyệt không có, hoặc bị policy chặn */ }
+}
+
+function boardPing(ev) {
+  toast(ev.name || "Board", ev.nudge || "", () => { switchTab("boards"); boardShow(ev.board); });
+  try {
+    if (window.Notification && Notification.permission === "granted" && document.hidden) {
+      new Notification(ev.name || "Board", { body: ev.nudge || "", tag: ev.board });
+    }
+  } catch { /* Notification bị chặn — toast vẫn còn */ }
+}
+
 // ── MCP servers ──────────────────────────────────────────────────────────────
 // Đăng ký ở scope user nên nó áp cho MỌI session claude, không thuộc workspace nào — vì thế
 // mở từ topbar chứ không từ canvas.
@@ -3303,12 +3601,15 @@ async function openSessionRun(sid) {
 }
 window.openSessionRun = openSessionRun;
 
-// ── Tabs: Agents (canvas) / History (signal queue + audit log) ──────────────
+// ── Tabs: Agents (canvas) / Boards (kế hoạch người dùng) / History ─────────
 function switchTab(name) {
   $("tab-agents").hidden = name !== "agents";
+  $("tab-boards").hidden = name !== "boards";
   $("tab-history").hidden = name !== "history";
   $("tab-btn-agents").classList.toggle("active", name === "agents");
+  $("tab-btn-boards").classList.toggle("active", name === "boards");
   $("tab-btn-history").classList.toggle("active", name === "history");
+  if (name === "boards") boardsLoad().catch((e) => console.error(e));
   // Key theo workspace: hai pane mở cùng lúc dùng chung một key thì đổi tab ở pane này
   // lật luôn pane kia.
   try { localStorage.setItem("orch-tab." + currentWS, name); } catch { /* private mode */ }
@@ -3419,6 +3720,10 @@ async function refreshAll() {
     editorCards = Array.isArray(vsc) ? vsc : [];
     renderCanvas(sessions, signals.items);
     fillSignalForm(sessions);
+    fillBoardAgents(sessions);
+    // Board chỉ refetch khi tab của nó đang mở: SSE bắn theo mỗi bước của mọi agent, gọi thêm
+    // một request mỗi lần cho một tab đang ẩn là trả tiền cho thứ không ai nhìn.
+    if (!$("tab-boards").hidden) boardsLoad().catch(() => {});
     sigHasMore = signals.has_more; renderSignals(signals.items);
     runsHasMore = runs.has_more; renderRuns(runs.items);
   } catch (e) { console.error(e); if (!PANE) setConn(false); }
@@ -3440,6 +3745,7 @@ function connectSSE() {
     let ev = null;
     try { ev = JSON.parse(m.data); } catch { /* keepalive */ }
     if (ev && ev.type === "run_event") appendLiveEvent(ev);  // live vào drawer, không cần refetch
+    if (ev && ev.type === "board_ping") boardPing(ev);
     scheduleRefresh();  // tables (debounced)
   };
   es.onerror = () => {
@@ -3459,7 +3765,10 @@ if (PANE) {
   $("hdr-ws").hidden = false;
   cvInit();
   mmInit();
-  try { switchTab(localStorage.getItem("orch-tab." + currentWS) || "agents"); }
+  // ?tab= / ?board= thắng trạng thái đã lưu: mọi màn của dashboard đều phải mở lại được bằng
+  // một URL — reload hay bookmark thì về đúng board đang xem, không rơi về danh sách.
+  bdOpen = qs.get("board") || "";
+  try { switchTab(qs.get("tab") || localStorage.getItem("orch-tab." + currentWS) || "agents"); }
   catch { /* tab mặc định */ }
   // Shell nói chuyện xuống: 'show' = pane vừa hiện/đổi bề rộng (xterm phải fit lại,
   // display:none đo được 0×0); 'theme' = user vừa đổi theme ở shell.

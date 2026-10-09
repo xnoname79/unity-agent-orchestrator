@@ -21,6 +21,10 @@ Env:
   ORCH_DEV_MODE        "1" = chế độ dev: nút mở project là card nvim thay vì trình quản lý
                        file của OS (default "0"; cờ `--dev` cũng bật)
   ORCH_POLL_INTERVAL   giây giữa các lần poll (default 5)
+  ORCH_BOARD_TICK      giây giữa 2 lần quét board xem có tới giờ nhắc (default 60)
+  ORCH_BOARD_MIN_GAP   phút tối thiểu giữa 2 lời nhắc của 1 board (default 20)
+  ORCH_BOARD_IDLE_GAP  phút giữa 2 lời nhắc khi user chưa bắt tay vào việc nào (default 45)
+  ORCH_BOARD_RESEARCH_GAP  phút trước khi agent được research lại cho board (default 360)
   ORCH_MAX_CONCURRENT  số session chạy song song tối đa (default 3)
   ORCH_STREAM          "1" = stream transcript (thinking/tool_use/text) real-time (default 1)
   ORCH_STREAM_PARTIAL  "1" = thêm --include-partial-messages, text chảy từng token (default 0)
@@ -322,6 +326,44 @@ def init_db():
             extra INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (session_id, day)
         );
+    """)
+    conn.executescript("""
+        -- BOARD: kế hoạch một ngày của NGƯỜI DÙNG, do 1 agent trông. Không phải hàng đợi việc
+        -- của agent (cái đó là bảng signals) — ở đây agent là người nhắc, người làm là user.
+        -- session_id KHÔNG unique: một agent trông được nhiều board (user có 2 agent nhưng muốn
+        -- 5 board là chuyện thường); mỗi board thì chỉ có ĐÚNG một agent.
+        CREATE TABLE IF NOT EXISTS boards (
+            id TEXT PRIMARY KEY,                -- brd_<random>
+            workspace_id TEXT NOT NULL DEFAULT 'default',
+            session_id TEXT NOT NULL,           -- agent dựng task + viết lời nhắc
+            name TEXT NOT NULL,
+            goal TEXT NOT NULL DEFAULT '',
+            context TEXT NOT NULL DEFAULT '',   -- user gõ thêm lúc tạo: ràng buộc, deadline thật…
+            status TEXT NOT NULL DEFAULT 'active',   -- active | paused | done
+            quiet_from INTEGER NOT NULL DEFAULT 22,  -- giờ local: KHÔNG nhắc từ đây…
+            quiet_to INTEGER NOT NULL DEFAULT 8,     -- …tới đây (bằng nhau = nhắc cả ngày)
+            strikes INTEGER NOT NULL DEFAULT 0,      -- số lần nhắc liên tiếp user không phản hồi
+            last_ping_at TEXT NOT NULL DEFAULT '',
+            advice TEXT NOT NULL DEFAULT '{}',       -- JSON agent trả lần gần nhất
+            research_due TEXT NOT NULL DEFAULT '',   -- mốc được phép research lại ('' = không cần)
+            research_why TEXT NOT NULL DEFAULT '',   -- agent tự nêu vì sao cần research
+            planning INTEGER NOT NULL DEFAULT 0,     -- 1 = agent đang dựng task, đừng nhắc
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS board_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            estimate_min INTEGER NOT NULL DEFAULT 30,
+            priority TEXT NOT NULL DEFAULT 'normal',   -- high | normal | low
+            status TEXT NOT NULL DEFAULT 'todo',       -- todo | doing | done
+            position INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT NOT NULL DEFAULT '',       -- mốc đo nhịp nhắc, set khi kéo sang doing
+            done_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_board_tasks ON board_tasks(board_id, position);
     """)
     # migrate: thêm cột dry_run cho signals nếu DB cũ chưa có
     cols = [r[1] for r in conn.execute("PRAGMA table_info(signals)").fetchall()]
@@ -904,6 +946,12 @@ def enqueue_signal(to_session, message, from_session="", requires_approval=0, dr
     if from_session in _HUMAN_SENDERS:
         # Người / hệ thống giao việc (chat dashboard) → mở vòng việc mới ở vai nhận.
         note_human_touch(_session_name(to_session), workspace_id)
+    elif from_session == BOARD_SENDER:
+        # Lời nhắc của board là việc vận hành theo giờ, KHÔNG phải hai agent nhắn qua lại: nó
+        # không tính vào trần id=94 và cũng KHÔNG mở vòng việc mới (coi là người dùng chạm thì
+        # mỗi tick cron lại cấp thêm ngân sách cho một vòng ping-pong đang chạy mà không ai
+        # trông). Trần run/ngày của session vẫn cắn như mọi run khác.
+        pass
     elif not str(message or "").startswith("/compact"):
         n, to_name = pair_signal_count(from_session, to_session, workspace_id)
         if n < PAIR_SIGNAL_CAP:
@@ -4244,6 +4292,507 @@ async def run_loop():
         await asyncio.sleep(POLL_INTERVAL)
 
 
+# ─── Board: kế hoạch một ngày của người dùng, một agent trông một board ──────
+# Vì sao board nằm trong orchestrator chứ không dùng một app todo có sẵn: giá trị không ở cái
+# danh sách (Trello làm tốt hơn) mà ở chỗ AGENT ĐÃ Ở ĐÂY — nó tự dựng task từ mục tiêu, tự đo
+# lại khi người dùng lệch kế hoạch, và nhắc bằng một câu người thật thay vì tiếng chuông.
+#
+# Nhịp nhắc là phần dễ làm sai nhất nên luật nằm TRỌN trong board_next_ping(): hàm thuần, không
+# I/O, không đọc đồng hồ hệ thống (now truyền vào) → test được bằng đồng hồ giả, xem check_boards.py.
+BOARD_SENDER = "board"      # from_session của signal do board sinh (xem enqueue_signal)
+BOARD_TICK = float(os.environ.get("ORCH_BOARD_TICK", "60"))          # giây giữa 2 lần quét
+BOARD_MIN_GAP = float(os.environ.get("ORCH_BOARD_MIN_GAP", "20"))    # phút giữa 2 lời nhắc
+BOARD_IDLE_GAP = float(os.environ.get("ORCH_BOARD_IDLE_GAP", "45"))  # phút khi chưa bắt việc nào
+BOARD_RESEARCH_GAP = float(os.environ.get("ORCH_BOARD_RESEARCH_GAP", "360"))  # phút
+# Mốc hỏi thăm tính theo TỶ LỆ ước lượng của việc đang làm, không phải mốc tuyệt đối: việc 20
+# phút và việc 3 tiếng không thể cùng nhịp. Việc high được hỏi sớm hơn vì lệch kế hoạch ở việc
+# quan trọng thì phải biết sớm; việc low chỉ hỏi khi tới hạn, hỏi giữa đường chỉ là làm ồn.
+BOARD_CHECKPOINTS = {"high": (0.35, 0.7, 1.0), "normal": (0.5, 0.85, 1.0), "low": (1.0,)}
+BOARD_OVERDUE = (1.25, 1.5, 2.0, 3.0)   # quá hạn thì giãn dần chứ không hỏi lại mỗi vòng quét
+BOARD_BACKOFF = 1.6        # mỗi lời nhắc bị bỏ qua, khoảng cách lần sau nhân lên
+BOARD_BACKOFF_CAP = 4.0    # … nhưng không quá 4× BOARD_MIN_GAP, nếu không là im luôn cả ngày
+_BOARD_FIELDS = ("name", "goal", "context", "status", "quiet_from", "quiet_to", "strikes",
+                 "last_ping_at", "advice", "research_due", "research_why", "planning", "session_id")
+_TASK_FIELDS = ("title", "detail", "estimate_min", "priority", "status", "position",
+                "started_at", "done_at")
+_board_busy: set = set()   # board đang có một lượt nhắc chạy (agent có thể mất vài phút)
+
+
+def _iso(ts):
+    """ISO string → datetime, None nếu rỗng/hỏng. DB không ép định dạng nên đừng tin cột."""
+    try:
+        return datetime.fromisoformat(ts) if ts else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_obj(text):
+    """Bóc object JSON ĐẦU TIÊN trong câu trả lời của agent.
+
+    Không json.loads thẳng cả chuỗi: agent trả text của người — bọc trong ```json, kèm một câu
+    dẫn phía trước, hoặc giải thích thêm phía sau. raw_decode parse MỘT giá trị JSON bắt đầu từ
+    vị trí cho sẵn và bỏ qua phần đuôi, nên không cần tự đếm ngoặc — và tự đếm thì sai ngay khi
+    trong chuỗi có dấu '}' (vd lời nhắc "use } carefully"): nó đóng khối sớm một ký tự.
+    Trả {} nếu không có object nào: agent trả rác là chuyện thường, caller tự lo đường fallback.
+    """
+    s = str(text or "")
+    dec = json.JSONDecoder()
+    i = s.find("{")
+    while i >= 0:
+        try:
+            obj, _ = dec.raw_decode(s, i)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict):
+            return obj
+        i = s.find("{", i + 1)
+    return {}
+
+
+def _quiet_shift(when, qfrom, qto):
+    """Dời một mốc nhắc rơi vào giờ im lặng tới lúc mở cửa sổ.
+
+    Giờ im lặng gần như luôn VẮT QUA NỬA ĐÊM (22→8) nên không so sánh được bằng một khoảng
+    đơn giản: trong cửa sổ nghĩa là h >= 22 HOẶC h < 8. qfrom == qto = không có giờ im lặng.
+    """
+    qfrom, qto = int(qfrom) % 24, int(qto) % 24
+    if qfrom == qto:
+        return when
+    h = when.hour + when.minute / 60
+    inside = (qfrom <= h or h < qto) if qfrom > qto else (qfrom <= h < qto)
+    if not inside:
+        return when
+    out = when.replace(hour=qto, minute=0, second=0, microsecond=0)
+    return out if out > when else out + timedelta(days=1)
+
+
+def _board_jitter(board_id, when):
+    """0…+20% BOARD_MIN_GAP, ổn định theo (board, mốc).
+
+    Nhịp tròn trịa đọc ra là máy: nhắc đúng :00 và :30 mỗi ngày thì sau hai hôm người dùng đọc
+    được nó như tiếng chuông và bắt đầu bỏ qua. Lệch vài phút là đủ để nó giống người.
+    Băm từ (board, mốc) chứ KHÔNG random(): board_next_ping bị gọi lại mỗi vòng quét và mỗi lần
+    FE mở board — random thì mốc trôi mỗi lần tính và "nhắc sau 9 phút" không bao giờ tới.
+    Chỉ cộng, không trừ: trừ thì mốc có thể lùi xuống dưới sàn BOARD_MIN_GAP đã tính ở trên.
+    """
+    seed = 0
+    for ch in f"{board_id}|{when:%Y%m%d%H%M}":
+        seed = (seed * 131 + ord(ch)) % 100003   # trộn, không cộng dồn: hai board tên sát nhau
+    return seed / 100003 * 0.2 * BOARD_MIN_GAP   # (brd_a1/brd_a2) phải rơi vào hai phút khác nhau
+
+
+def board_next_ping(board, tasks, now):
+    """Mốc nên nhắc tiếp, hoặc None nếu không nhắc nữa. Thuần, không I/O.
+
+    Nhịp của một người bạn ngồi cạnh, không phải đồng hồ báo thức:
+      · đang làm việc gì  → hỏi giữa đường, hỏi lúc gần hết giờ, rồi hỏi đúng hạn
+      · quá hạn           → giãn dần 1.25× 1.5× 2× 3× ước lượng
+      · chưa bắt việc nào → nhắc bắt đầu, thưa hơn (BOARD_IDLE_GAP)
+      · luôn cách lần trước ≥ BOARD_MIN_GAP, và càng bị bỏ qua càng lùi (BOARD_BACKOFF)
+      · rơi vào giờ im lặng → dời tới lúc mở cửa sổ
+      · xong hết việc, hoặc board paused/done → None, im hẳn
+
+    SÀN (floor) tính trước mọi thứ khác và được áp SAU cùng, vì nó là luật không được phá: hai
+    lời nhắc sát nhau là thứ biến một người bạn thành cái app spam, kể cả khi task vừa đổi làm
+    mốc checkpoint nhảy về quá khứ.
+    """
+    if (board.get("status") or "active") != "active":
+        return None
+    live = [t for t in tasks if t["status"] != "done"]
+    if not live:
+        return None
+    floor = now
+    last = _iso(board.get("last_ping_at"))
+    if last:
+        strikes = max(0, int(board.get("strikes") or 0))
+        gap = BOARD_MIN_GAP * min(BOARD_BACKOFF ** strikes, BOARD_BACKOFF_CAP)
+        floor = max(floor, last + timedelta(minutes=gap))
+    doing = [t for t in live if t["status"] == "doing"]
+    if not doing:
+        # Chưa kéo gì sang doing. Mốc đếm từ lời nhắc trước, hoặc từ lúc tạo board nếu chưa
+        # nhắc lần nào — nếu đếm từ `now` thì mỗi vòng quét lại đẩy mốc đi 45 phút nữa.
+        base = last or _iso(board.get("created_at")) or now
+        cand = base + timedelta(minutes=BOARD_IDLE_GAP)
+    else:
+        t = doing[0]
+        start = _iso(t.get("started_at")) or now
+        est = max(5, int(t.get("estimate_min") or 30))
+        marks = BOARD_CHECKPOINTS.get(t.get("priority"), BOARD_CHECKPOINTS["normal"]) + BOARD_OVERDUE
+        # Mốc ĐẦU TIÊN còn ở phía trước sàn. Mốc đã trôi qua thì bỏ — chúng là những lần hỏi
+        # thăm của một quá khứ không còn ai cần nghe nữa.
+        cand = next((start + timedelta(minutes=est * m) for m in marks
+                     if start + timedelta(minutes=est * m) > floor), floor)
+    cand = max(cand, floor)
+    return _quiet_shift(cand + timedelta(minutes=_board_jitter(board["id"], cand)),
+                        board.get("quiet_from", 22), board.get("quiet_to", 8))
+
+
+# ── Board store ──────────────────────────────────────────────────────────────
+
+def create_board(workspace_id, session_id, name, goal="", context=""):
+    _ensure_db()
+    bid = "brd_" + secrets.token_hex(8)
+    conn = _conn()
+    conn.execute("INSERT INTO boards (id, workspace_id, session_id, name, goal, context, "
+                 "created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (bid, workspace_id or DEFAULT_WORKSPACE, session_id, name, goal, context, _now()))
+    conn.commit()
+    conn.close()
+    return bid
+
+
+def get_board(bid):
+    _ensure_db()
+    conn = _conn()
+    row = conn.execute("SELECT * FROM boards WHERE id = ?", (bid,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def list_boards(workspace_id=None):
+    _ensure_db()
+    conn = _conn()
+    q = "SELECT * FROM boards"
+    args = ()
+    if workspace_id:
+        q += " WHERE workspace_id = ?"
+        args = (workspace_id,)
+    rows = conn.execute(q + " ORDER BY created_at", args).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_board(bid, **fields):
+    """Chỉ ghi cột có trong _BOARD_FIELDS — tên cột đi thẳng vào SQL nên KHÔNG được nhận key tự
+    do từ request body."""
+    sets = {k: v for k, v in fields.items() if k in _BOARD_FIELDS}
+    if not sets:
+        return
+    conn = _conn()
+    conn.execute(f"UPDATE boards SET {', '.join(k + ' = ?' for k in sets)} WHERE id = ?",
+                 (*sets.values(), bid))
+    conn.commit()
+    conn.close()
+
+
+def delete_board(bid):
+    conn = _conn()
+    conn.execute("DELETE FROM boards WHERE id = ?", (bid,))
+    conn.commit()
+    conn.close()
+
+
+def board_tasks(bid):
+    _ensure_db()
+    conn = _conn()
+    rows = conn.execute("SELECT * FROM board_tasks WHERE board_id = ? ORDER BY position, id",
+                        (bid,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_task(bid, title, detail="", estimate_min=30, priority="normal", status="todo"):
+    _ensure_db()
+    conn = _conn()
+    pos = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM board_tasks "
+                       "WHERE board_id = ?", (bid,)).fetchone()["p"]
+    cur = conn.execute(
+        "INSERT INTO board_tasks (board_id, title, detail, estimate_min, priority, status, "
+        "position, started_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (bid, title, detail, max(5, int(estimate_min or 30)),
+         priority if priority in ("high", "normal", "low") else "normal",
+         status if status in ("todo", "doing", "done") else "todo",
+         pos, _now() if status == "doing" else "", _now()))
+    conn.commit()
+    tid = cur.lastrowid
+    conn.close()
+    return tid
+
+
+def update_task(tid, **fields):
+    """Đổi trạng thái task có HỆ QUẢ VỀ THỜI GIAN, nên mốc được đóng ở đây chứ không ở route:
+    'doing' phải có started_at vì toàn bộ nhịp nhắc đo từ đó — thiếu nó thì board_next_ping coi
+    như việc vừa bắt đầu và lời nhắc không bao giờ tới."""
+    sets = {k: v for k, v in fields.items() if k in _TASK_FIELDS}
+    if not sets:
+        return
+    if sets.get("status") == "doing":
+        sets.setdefault("done_at", "")
+    if sets.get("status") == "done":
+        sets.setdefault("done_at", _now())
+    if "estimate_min" in sets:
+        sets["estimate_min"] = max(5, int(sets["estimate_min"] or 30))
+    conn = _conn()
+    if sets.get("status") == "doing":
+        cur = conn.execute("SELECT started_at FROM board_tasks WHERE id = ?", (tid,)).fetchone()
+        if cur is not None and not cur["started_at"]:
+            sets["started_at"] = _now()
+    conn.execute(f"UPDATE board_tasks SET {', '.join(k + ' = ?' for k in sets)} WHERE id = ?",
+                 (*sets.values(), tid))
+    conn.commit()
+    conn.close()
+
+
+def delete_task(tid):
+    conn = _conn()
+    conn.execute("DELETE FROM board_tasks WHERE id = ?", (tid,))
+    conn.commit()
+    conn.close()
+
+
+def board_view(b, now=None):
+    """Board + task + mốc nhắc kế tiếp, dạng FE dùng trực tiếp.
+
+    next_ping được TÍNH chứ không lưu: nó phụ thuộc trạng thái task, mà task thì user kéo đổi
+    liên tục. Lưu thành cột là phải nhớ cập nhật ở mọi đường ghi — và chỗ nào quên là chỗ lịch
+    nhắc nói một đằng, sự thật một nẻo.
+    """
+    now = now or datetime.now()
+    tasks = board_tasks(b["id"])
+    at = board_next_ping(b, tasks, now)
+    done = sum(1 for t in tasks if t["status"] == "done")
+    return {**b, "tasks": tasks, "advice": _json_obj(b.get("advice")),
+            "next_ping": at.isoformat() if at else "",
+            "done": done, "total": len(tasks),
+            "agent": _session_name(b["session_id"]) or b["session_id"]}
+
+
+# ── Board ↔ agent ────────────────────────────────────────────────────────────
+# Prompt viết bằng tiếng Anh vì agent nào cũng đọc được; còn NỘI DUNG trả về (task, lời nhắc)
+# phải theo ngôn ngữ của goal — người dùng viết mục tiêu bằng tiếng Việt thì lời nhắc tiếng Anh
+# đọc như thư máy.
+BOARD_PLAN_PROMPT = """You run the board "{name}" for the user on this orchestrator. This is \
+not a coding task: plan the user's work.
+
+GOAL
+{goal}
+
+WHAT THE USER TOLD YOU
+{context}
+
+Research first only if you need facts you do not already have (prices, APIs, docs, anything \
+that goes stale). Then split the goal into tasks the user can actually finish.
+
+Reply with ONE json object and nothing else:
+{{"tasks": [{{"title": "...", "detail": "why it matters and how to know it is done",
+             "estimate_min": 45, "priority": "high|normal|low"}}]}}
+
+Rules: 3 to 7 tasks, ordered so the first one is the one to start now. estimate_min is honest \
+working time for a person, not the best case. Write title and detail in the same language as \
+the GOAL above."""
+
+BOARD_ADVICE_PROMPT = """You run the board "{name}" for the user. It is {now}. Send them one \
+nudge, the way a friend sitting at the next desk would.
+
+GOAL
+{goal}
+
+THE BOARD RIGHT NOW
+{state}
+{research}
+Reply with ONE json object and nothing else:
+{{"nudge": "one or two sentences, addressed to the user, in the language of the GOAL",
+  "next_action": "keep_going|wrap_up|switch|break|replan",
+  "retime": [{{"id": 3, "estimate_min": 60}}],
+  "new_tasks": [{{"title": "...", "detail": "...", "estimate_min": 20, "priority": "normal"}}],
+  "research": {{"needed": false, "why": "", "recheck_in_min": {gap}}}}}
+
+The nudge: name the task, say the one thing worth doing next, two sentences at most, no lists, \
+no cheerleading. If they are past the estimate, say so plainly and either retime the task or \
+tell them to move on — do not pretend the plan still holds.
+retime and new_tasks are optional; leave them out when nothing needs to change.
+research.needed = true ONLY if your next nudge would need facts you do not have, or facts that \
+have gone stale. It spends the user's time and tokens, so default to false."""
+
+BOARD_RESEARCH_LINE = """
+DO THE RESEARCH NOW before answering — last time you asked for it, saying: {why}
+"""
+
+
+def _board_state(b, tasks, now):
+    """Trạng thái board dạng text cho prompt. CÓ 'đã nhắc N lần chưa thấy trả lời' — agent phải
+    biết để đổi giọng hoặc đề nghị nghỉ, thay vì nhắc lần thứ tư y như lần đầu."""
+    lines = []
+    for t in tasks:
+        extra = ""
+        if t["status"] == "doing":
+            st = _iso(t["started_at"])
+            if st:
+                mins = int((now - st).total_seconds() // 60)
+                extra = f", started {mins} min ago"
+        lines.append(f"- #{t['id']} [{t['status']}] {t['title']} "
+                     f"({t['priority']}, estimate {t['estimate_min']} min{extra})"
+                     + (f"\n      {t['detail']}" if t["detail"] else ""))
+    out = "\n".join(lines) or "- (no tasks yet)"
+    strikes = int(b.get("strikes") or 0)
+    if strikes:
+        out += (f"\n\nYou have sent {strikes} nudge(s) in a row with no answer and nothing moved "
+                f"on the board. Assume they are heads-down or away — keep it shorter than last "
+                f"time, and consider suggesting a break or a smaller next step.")
+    return out
+
+
+def _board_fallback(tasks, now):
+    """Lời nhắc tự viết khi agent lỗi/trả rác. Một lần nhắc hỏng KHÔNG được thành im lặng: user
+    đã bật board lên là họ trông vào nó để không quên việc."""
+    doing = [t for t in tasks if t["status"] == "doing"]
+    if doing:
+        t = doing[0]
+        st = _iso(t["started_at"])
+        spent = int((now - st).total_seconds() // 60) if st else 0
+        left = int(t["estimate_min"]) - spent
+        if left > 0:
+            return f"{t['title']} — about {left} min left of the {t['estimate_min']} you planned."
+        return (f"{t['title']} is {-left} min past the {t['estimate_min']} you planned. "
+                f"Wrap it up, or give it more time?")
+    todo = [t for t in tasks if t["status"] == "todo"]
+    return f"Nothing started yet. Next up: {todo[0]['title']}." if todo else ""
+
+
+async def board_ask(b, prompt):
+    """Chạy MỘT lượt agent của board, trả text. Đi đúng đường signal (khoá session, trần
+    run/ngày, audit, run_events) như chat API — board không được là cửa sau bỏ qua mấy luật đó.
+    from_session = BOARD_SENDER: miễn trần ping-pong, xem enqueue_signal."""
+    # ORCH_DRY_RUN=1 trả về một stub ECHO lại prompt. Nếu coi đó là câu trả lời thì _json_obj
+    # bóc được chính cái JSON MẪU trong prompt và board mọc ra task tên "..." — đã đo. Dry-run là
+    # để thử đường ống, không phải để agent lên kế hoạch; board vẫn nhắc, bằng câu tự viết.
+    if DRY_RUN:
+        return ""
+    sid = enqueue_signal(b["session_id"], prompt, BOARD_SENDER, 0, 0, b["workspace_id"])
+    _inflight.add(sid)   # run_loop đừng nhặt trùng signal này
+    try:
+        res = await process_signal({"id": sid, "to_session": b["session_id"], "message": prompt,
+                                    "workspace_id": b["workspace_id"],
+                                    "requires_approval": 0, "dry_run": 0}) or {}
+    finally:
+        _inflight.discard(sid)
+    return res.get("result", "") if res.get("status") == "done" else ""
+
+
+async def board_plan(bid):
+    """Agent dựng danh sách task đầu tiên từ goal.
+
+    CHỈ thay task còn 'todo': việc user đang làm hoặc đã xong thì không ai được xoá dưới tay họ
+    — kể cả khi chính họ bấm re-plan.
+    """
+    b = get_board(bid)
+    if not b:
+        return
+    update_board(bid, planning=1)
+    publish({"type": "board", "board": bid, "planning": 1, "workspace_id": b["workspace_id"]})
+    try:
+        text = await board_ask(b, BOARD_PLAN_PROMPT.format(
+            name=b["name"], goal=b["goal"] or "(none given)", context=b["context"] or "(none)"))
+        tasks = _json_obj(text).get("tasks")
+        if isinstance(tasks, list) and tasks:
+            for t in board_tasks(bid):
+                if t["status"] == "todo":
+                    delete_task(t["id"])
+            for t in tasks[:12]:
+                if isinstance(t, dict) and str(t.get("title") or "").strip():
+                    add_task(bid, str(t["title"])[:200], str(t.get("detail") or "")[:1000],
+                             t.get("estimate_min", 30), str(t.get("priority") or "normal"))
+    except Exception as e:  # noqa: BLE001
+        print(f"[orchestrator] board {bid} plan error: {e}", file=sys.stderr)
+    finally:
+        update_board(bid, planning=0)
+        b = get_board(bid) or b
+        publish({"type": "board", "board": bid, "planning": 0, "workspace_id": b["workspace_id"]})
+
+
+def _board_apply(bid, adv, now):
+    """Áp phần agent đề nghị: đổi ước lượng, thêm việc mới, hẹn lượt research kế tiếp."""
+    for r in adv.get("retime") or []:
+        if isinstance(r, dict) and r.get("id") and r.get("estimate_min"):
+            update_task(int(r["id"]), estimate_min=r["estimate_min"])
+    for t in (adv.get("new_tasks") or [])[:5]:
+        if isinstance(t, dict) and str(t.get("title") or "").strip():
+            add_task(bid, str(t["title"])[:200], str(t.get("detail") or "")[:1000],
+                     t.get("estimate_min", 30), str(t.get("priority") or "normal"))
+    # Research CHỈ chạy khi agent tự nói là cần — và lần kế tiếp không sớm hơn recheck_in_min.
+    # Nếu để mỗi lượt nhắc cũng đi tra lại thì một board mở cả ngày là vài chục lượt tra cho
+    # cùng một thông tin, mà đa số lời nhắc chẳng cần dữ liệu mới nào.
+    rs = adv.get("research") if isinstance(adv.get("research"), dict) else {}
+    if rs.get("needed"):
+        try:
+            gap = float(rs.get("recheck_in_min") or 0)
+        except (TypeError, ValueError):
+            gap = 0.0
+        update_board(bid, research_due=(now + timedelta(minutes=max(0.0, gap))).isoformat(),
+                     research_why=str(rs.get("why") or "")[:500])
+    else:
+        update_board(bid, research_due="", research_why="")
+
+
+async def board_tick(bid, manual=False):
+    """Một lượt nhắc: hỏi agent, áp đề nghị của nó, đẩy lời nhắc ra dashboard."""
+    b = get_board(bid)
+    if not b:
+        return None
+    now = datetime.now()
+    tasks = board_tasks(bid)
+    adv, text = {}, ""
+    # Agent của board bị xoá → vẫn nhắc bằng câu tự viết. Board là của người dùng; agent biến
+    # mất không phải lý do để kế hoạch của họ im lặng.
+    if get_session(b["session_id"]):
+        due = _iso(b["research_due"])
+        research = (BOARD_RESEARCH_LINE.format(why=b["research_why"] or "information may be stale")
+                    if b["research_why"] and due and due <= now else "")
+        try:
+            text = await board_ask(b, BOARD_ADVICE_PROMPT.format(
+                name=b["name"], goal=b["goal"] or "(none given)", now=now.strftime("%a %H:%M"),
+                state=_board_state(b, tasks, now), research=research,
+                gap=int(BOARD_RESEARCH_GAP)))
+        except Exception as e:  # noqa: BLE001
+            print(f"[orchestrator] board {bid} advice error: {e}", file=sys.stderr)
+        adv = _json_obj(text)
+        if research and adv:
+            update_board(bid, research_due="", research_why="")   # lượt research đã dùng
+        _board_apply(bid, adv, now)
+    nudge = str(adv.get("nudge") or "").strip() or _board_fallback(tasks, now)
+    if not nudge:
+        return None
+    update_board(bid, last_ping_at=now.isoformat(),
+                 strikes=0 if manual else int(b.get("strikes") or 0) + 1,
+                 advice=json.dumps({**adv, "nudge": nudge, "at": now.isoformat()})[:4000])
+    publish({"type": "board_ping", "board": bid, "name": b["name"], "nudge": nudge,
+             "next_action": str(adv.get("next_action") or ""), "agent": _session_name(b["session_id"]),
+             "workspace_id": b["workspace_id"]})
+    return nudge
+
+
+async def _board_tick_guarded(bid):
+    try:
+        await board_tick(bid)
+    except Exception as e:  # noqa: BLE001
+        print(f"[orchestrator] board {bid} tick error: {e}", file=sys.stderr)
+    finally:
+        _board_busy.discard(bid)
+
+
+async def board_loop():
+    """Quét mọi board mỗi BOARD_TICK giây, nhắc board nào tới mốc.
+
+    KHÔNG có bảng lịch, không có cronjob của OS: mốc được tính lại từ trạng thái task mỗi vòng
+    (board_next_ping). Nhờ vậy user kéo một card hay sửa ước lượng là nhịp nhắc đổi theo NGAY —
+    và orchestrator tắt đi bật lại không mất lịch nào, vì chẳng có lịch nào để mất.
+    """
+    print(f"[orchestrator] boards: tick={BOARD_TICK:.0f}s, min gap={BOARD_MIN_GAP:.0f}m")
+    while True:
+        try:
+            now = datetime.now()
+            for b in list_boards():
+                if b["id"] in _board_busy or b["status"] != "active" or b["planning"]:
+                    continue
+                at = board_next_ping(b, board_tasks(b["id"]), now)
+                if at and at <= now:
+                    _board_busy.add(b["id"])
+                    asyncio.create_task(_board_tick_guarded(b["id"]))
+        except Exception as e:  # noqa: BLE001
+            print(f"[orchestrator] board loop error: {e}", file=sys.stderr)
+        await asyncio.sleep(BOARD_TICK)
+
+
 # ─── Chat API tương thích OpenAI (/v1) ───────────────────────────────────────
 # Để app ngoài (SDK openai, LangChain, n8n…) chat thẳng với agent trong orchestrator mà không
 # phải học API riêng: chỉ đổi base_url + model là chạy.
@@ -5328,6 +5877,143 @@ def build_app():
         p.with_suffix(".json").unlink(missing_ok=True)
         return JSONResponse({"deleted": p.name})
 
+    # ── Boards: kế hoạch một ngày của người dùng ─────────────────────────────
+    # Mọi thao tác của NGƯỜI DÙNG lên board đều reset strikes về 0: họ vừa chạm vào kế hoạch
+    # nghĩa là lời nhắc trước đã tới được, nên lần sau không cần lùi xa nữa (xem BOARD_BACKOFF).
+    async def api_boards(request: Request):
+        wid = request.query_params.get("workspace_id") or None
+        now = datetime.now()
+        return JSONResponse([board_view(b, now) for b in list_boards(wid)])
+
+    async def api_board_create(request: Request):
+        body = await request.json()
+        name = str(body.get("name") or "").strip()
+        ref = body.get("session_id") or body.get("agent")
+        if not name or not ref:
+            return JSONResponse({"error": "name and session_id are required"}, status_code=400)
+        wid = body.get("workspace_id") or None
+        sid = resolve_session_id(ref, wid)
+        if not sid:
+            return JSONResponse({"error": f"no agent found for '{ref}'"}, status_code=404)
+        # Board thừa hưởng workspace của agent (nguồn sự thật là session, như signal).
+        ws = get_session(sid).get("workspace_id") or DEFAULT_WORKSPACE
+        bid = create_board(ws, sid, name[:120], str(body.get("goal") or "")[:4000],
+                           str(body.get("context") or "")[:4000])
+        b = get_board(bid)
+        # Agent tự dựng task list ngay — nhưng ở TASK RIÊNG: một lượt agent có thể mất vài phút,
+        # giữ request HTTP mở suốt lượt đó là trình duyệt tự bỏ cuộc trước khi board kịp xong.
+        # FE thấy planning=1 rồi nhận board qua SSE khi xong.
+        if b["goal"]:
+            asyncio.create_task(board_plan(bid))
+        publish({"type": "board", "board": bid, "workspace_id": ws})
+        return JSONResponse(board_view(b), status_code=201)
+
+    async def api_board_update(request: Request):
+        bid = request.path_params["bid"]
+        b = get_board(bid)
+        if not b:
+            return JSONResponse({"error": "no such board"}, status_code=404)
+        body = await request.json()
+        patch = {k: body[k] for k in ("name", "goal", "context", "status", "quiet_from",
+                                      "quiet_to") if k in body}
+        if "status" in patch and patch["status"] not in ("active", "paused", "done"):
+            return JSONResponse({"error": "status must be active, paused or done"}, status_code=400)
+        for k in ("quiet_from", "quiet_to"):
+            if k in patch:
+                patch[k] = int(patch[k]) % 24
+        update_board(bid, strikes=0, **patch)
+        publish({"type": "board", "board": bid, "workspace_id": b["workspace_id"]})
+        return JSONResponse(board_view(get_board(bid)))
+
+    async def api_board_delete(request: Request):
+        bid = request.path_params["bid"]
+        b = get_board(bid)
+        if not b:
+            return JSONResponse({"error": "no such board"}, status_code=404)
+        delete_board(bid)   # board_tasks ON DELETE CASCADE
+        publish({"type": "board", "board": bid, "deleted": 1, "workspace_id": b["workspace_id"]})
+        return JSONResponse({"ok": True})
+
+    async def api_board_plan(request: Request):
+        bid = request.path_params["bid"]
+        if not get_board(bid):
+            return JSONResponse({"error": "no such board"}, status_code=404)
+        asyncio.create_task(board_plan(bid))
+        return JSONResponse({"ok": True, "planning": True})
+
+    async def api_board_nudge(request: Request):
+        """Nhắc NGAY, không chờ tới mốc. Chạy ở task riêng (lượt agent lâu) — lời nhắc về qua SSE."""
+        bid = request.path_params["bid"]
+        if not get_board(bid):
+            return JSONResponse({"error": "no such board"}, status_code=404)
+        if bid in _board_busy:
+            return JSONResponse({"ok": True, "busy": True})
+        _board_busy.add(bid)
+
+        async def _go():
+            try:
+                await board_tick(bid, manual=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"[orchestrator] board {bid} nudge error: {e}", file=sys.stderr)
+            finally:
+                _board_busy.discard(bid)
+
+        asyncio.create_task(_go())
+        return JSONResponse({"ok": True})
+
+    async def api_board_ack(request: Request):
+        """User đã đọc lời nhắc. Reset backoff — đang nói chuyện được thì không cần lùi xa."""
+        bid = request.path_params["bid"]
+        if not get_board(bid):
+            return JSONResponse({"error": "no such board"}, status_code=404)
+        update_board(bid, strikes=0)
+        return JSONResponse(board_view(get_board(bid)))
+
+    async def api_board_task_add(request: Request):
+        bid = request.path_params["bid"]
+        b = get_board(bid)
+        if not b:
+            return JSONResponse({"error": "no such board"}, status_code=404)
+        body = await request.json()
+        title = str(body.get("title") or "").strip()
+        if not title:
+            return JSONResponse({"error": "title is required"}, status_code=400)
+        add_task(bid, title[:200], str(body.get("detail") or "")[:1000],
+                 body.get("estimate_min", 30), str(body.get("priority") or "normal"),
+                 str(body.get("status") or "todo"))
+        update_board(bid, strikes=0)
+        publish({"type": "board", "board": bid, "workspace_id": b["workspace_id"]})
+        return JSONResponse(board_view(get_board(bid)), status_code=201)
+
+    async def api_board_task_update(request: Request):
+        bid, tid = request.path_params["bid"], int(request.path_params["tid"])
+        b = get_board(bid)
+        # Task phải thuộc ĐÚNG board trong URL: không thì /api/boards/<của tôi>/tasks/<id lạ>
+        # sửa được việc của board khác, kể cả board ở workspace khác.
+        if not b or not any(t["id"] == tid for t in board_tasks(bid)):
+            return JSONResponse({"error": "no such task on this board"}, status_code=404)
+        body = await request.json()
+        patch = {k: body[k] for k in ("title", "detail", "estimate_min", "priority", "status",
+                                      "position") if k in body}
+        if patch.get("status") not in (None, "todo", "doing", "done"):
+            return JSONResponse({"error": "status must be todo, doing or done"}, status_code=400)
+        if patch.get("priority") not in (None, "high", "normal", "low"):
+            return JSONResponse({"error": "priority must be high, normal or low"}, status_code=400)
+        update_task(tid, **patch)
+        update_board(bid, strikes=0)
+        publish({"type": "board", "board": bid, "workspace_id": b["workspace_id"]})
+        return JSONResponse(board_view(get_board(bid)))
+
+    async def api_board_task_delete(request: Request):
+        bid, tid = request.path_params["bid"], int(request.path_params["tid"])
+        b = get_board(bid)
+        if not b or not any(t["id"] == tid for t in board_tasks(bid)):
+            return JSONResponse({"error": "no such task on this board"}, status_code=404)
+        delete_task(tid)
+        update_board(bid, strikes=0)
+        publish({"type": "board", "board": bid, "workspace_id": b["workspace_id"]})
+        return JSONResponse(board_view(get_board(bid)))
+
     async def api_tools(request: Request):
         """Tool media nào đã sẵn sàng. Không nhận tham số — luôn là máy chạy orchestrator."""
         return JSONResponse(media_tools())
@@ -6021,6 +6707,7 @@ def build_app():
             await stack.enter_async_context(unity_app.router.lifespan_context(app))
             await stack.enter_async_context(asset_app.router.lifespan_context(app))
             task = asyncio.create_task(run_loop())
+            btask = asyncio.create_task(board_loop())
             print(f"[orchestrator] Dashboard: http://{ORCH_HOST}:{ORCH_PORT}")
             print(f"[orchestrator] API docs:  http://{ORCH_HOST}:{ORCH_PORT}/docs"
                   + (f"  (dry_run={DRY_RUN})" if DRY_RUN else ""))
@@ -6049,6 +6736,7 @@ def build_app():
                 yield
             finally:
                 task.cancel()
+                btask.cancel()
                 # KHÔNG đóng card editor ở đây. Phiên nvim sống trong tmux và CỐ Ý sống tiếp qua
                 # restart — mở lại dashboard là còn nguyên buffer. Đây chính là chỗ bản VS Code cũ
                 # phải dọn tay: serve-web mồ côi mà UI không còn thấy để đóng. tmux không có vấn
@@ -6082,6 +6770,16 @@ def build_app():
         WebSocketRoute("/ws/editor", ws_editor),
         Route("/api/skills/templates", api_skill_templates),
         Route("/api/tools", api_tools),
+        Route("/api/boards", api_boards),
+        Route("/api/boards", api_board_create, methods=["POST"]),
+        Route("/api/boards/{bid}", api_board_update, methods=["POST"]),
+        Route("/api/boards/{bid}", api_board_delete, methods=["DELETE"]),
+        Route("/api/boards/{bid}/plan", api_board_plan, methods=["POST"]),
+        Route("/api/boards/{bid}/nudge", api_board_nudge, methods=["POST"]),
+        Route("/api/boards/{bid}/ack", api_board_ack, methods=["POST"]),
+        Route("/api/boards/{bid}/tasks", api_board_task_add, methods=["POST"]),
+        Route("/api/boards/{bid}/tasks/{tid}", api_board_task_update, methods=["POST"]),
+        Route("/api/boards/{bid}/tasks/{tid}", api_board_task_delete, methods=["DELETE"]),
         Route("/api/mcp", api_mcp),
         Route("/api/mcp/check", api_mcp_check, methods=["POST"]),
         Route("/api/mcp/connect", api_mcp_connect, methods=["POST"]),

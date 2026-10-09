@@ -189,6 +189,70 @@ The mode is picked at startup; there is no switch in the UI. Editor cards live i
 the orchestrator, so one opened in developer mode is still there after a plain restart — the flag
 only decides what the button opens next.
 
+## Boards: plan a day, get nudged through it
+
+The **Boards** tab inside a workspace is a small board of your own work — not the agents' queue,
+which lives in History. A board is one goal plus one agent to look after it: you name the board,
+pick the agent, and write what you want done. The agent researches if it needs to, then writes the
+task list for you, each task with an estimate and a priority. From there the board is yours — add,
+edit, delete, and drag cards between **To do**, **Doing** and **Done**.
+
+An agent can look after several boards, but each board has exactly one agent. **Re-plan** has it
+rebuild the list from the goal; tasks you have started or finished are never touched, only the
+untouched *To do* ones are replaced.
+
+### When it nudges you
+
+Dragging a task into *Doing* starts its clock, and the clock is what the reminders are timed from
+— everything is a fraction of that task's own estimate, so a 20-minute task and a 3-hour task do
+not get the same pace:
+
+| Priority | Checked on at |
+|---|---|
+| high | 35%, 70% and 100% of the estimate |
+| normal | 50%, 85% and 100% |
+| low | only when the estimate runs out |
+
+Past the estimate it follows up at 1.25×, 1.5×, 2× and 3× — spreading out rather than repeating.
+With nothing in *Doing* it nudges you to start something instead, every 45 minutes.
+
+Four rules sit on top of that, and they are the difference between a friend and an alarm clock:
+
+- **Never twice in 20 minutes.** Whatever the checkpoints say, a nudge that lands too soon after
+  the last one waits.
+- **Ignored nudges back off.** Each one you do not answer pushes the next 1.6× further out, up to
+  4× the minimum gap. Touching the board — moving a card, adding a task, asking for a nudge —
+  clears the counter and the normal pace comes back.
+- **Quiet hours.** Nothing between 22:00 and 08:00 by default; a nudge due then waits for morning.
+  Set both ends to the same hour on the board to be reminded around the clock.
+- **A couple of minutes of jitter**, fixed per board, so two boards never fire on the same tick and
+  the rhythm never reads as a timer.
+
+Nothing is stored as a schedule. The next nudge is recomputed from the state of the tasks every
+time, which is why moving a card changes the pace immediately, and why restarting the orchestrator
+loses nothing.
+
+### What the agent sends back
+
+Each nudge is a real run of that agent, through the same session lock, daily run cap and audit log
+as any other work it does — so a board shows up in History like everything else. It answers in
+JSON: the line to show you, and optionally a task to retime, a task you had not thought of, and
+whether it needs to research something before the next nudge. That last flag is why it does not
+look things up every time: research happens when the agent says the facts it is working from have
+gone stale, not once an hour. Nudges are exempt from the agent-to-agent message cap, since they
+are a clock talking, not two agents in a loop.
+
+If the agent run fails, the board still nudges you — with a line it works out itself from the
+clock. A broken run is not a reason for your plan to go quiet.
+
+Reminders arrive as a card in the corner of the dashboard, and as a desktop notification when the
+window is in the background. The browser asks permission the first time you create a board, which
+is the first moment the question means anything. Either way the orchestrator has to be running:
+boards are not a phone app.
+
+`ORCH_BOARD_TICK`, `ORCH_BOARD_MIN_GAP`, `ORCH_BOARD_IDLE_GAP` and `ORCH_BOARD_RESEARCH_GAP` move
+the numbers above if they do not suit you.
+
 ## Make images
 
 The picture button in the top bar opens **Images**. Describe what you want, pick a shape, press
@@ -494,6 +558,7 @@ python3 check_shutdown.py                   # Ctrl-C returns, even with an SSE s
 python3 check_images.py                     # drawings are picked up, references stay in the gallery
 python3 check_origin.py                     # a website you visit cannot drive the orchestrator
 python3 check_tools.py                      # the media tool panel tells the truth about this machine
+python3 check_boards.py                     # a board nudges like a friend, not an alarm clock
 ```
 
 ## License
