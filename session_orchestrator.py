@@ -337,6 +337,7 @@ def init_db():
             workspace_id TEXT NOT NULL DEFAULT 'default',
             session_id TEXT NOT NULL,           -- session RIÊNG board chạy trên đó (xem board_agent_for)
             owner_id TEXT NOT NULL DEFAULT '',  -- agent NGƯỜI DÙNG chọn; board chỉ mượn cwd/cấu hình
+            chat_seen TEXT NOT NULL DEFAULT '', -- timestamp lượt chat cuối của owner board đã đọc
             name TEXT NOT NULL,
             goal TEXT NOT NULL DEFAULT '',
             context TEXT NOT NULL DEFAULT '',   -- user gõ thêm lúc tạo: ràng buộc, deadline thật…
@@ -371,6 +372,8 @@ def init_db():
     bcols = [r[1] for r in conn.execute("PRAGMA table_info(boards)").fetchall()]
     if bcols and "owner_id" not in bcols:
         conn.execute("ALTER TABLE boards ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
+    if bcols and "chat_seen" not in bcols:
+        conn.execute("ALTER TABLE boards ADD COLUMN chat_seen TEXT NOT NULL DEFAULT ''")
     # migrate: thêm cột dry_run cho signals nếu DB cũ chưa có
     cols = [r[1] for r in conn.execute("PRAGMA table_info(signals)").fetchall()]
     if "dry_run" not in cols:
@@ -4319,7 +4322,7 @@ BOARD_BACKOFF = 1.6        # mỗi lời nhắc bị bỏ qua, khoảng cách l�
 BOARD_BACKOFF_CAP = 4.0    # … nhưng không quá 4× BOARD_MIN_GAP, nếu không là im luôn cả ngày
 _BOARD_FIELDS = ("name", "goal", "context", "status", "quiet_from", "quiet_to", "strikes",
                  "last_ping_at", "advice", "research_due", "research_why", "planning",
-                 "session_id", "owner_id")
+                 "session_id", "owner_id", "chat_seen")
 _TASK_FIELDS = ("title", "detail", "estimate_min", "priority", "status", "position",
                 "started_at", "done_at")
 _board_busy: set = set()   # board đang có một lượt nhắc chạy (agent có thể mất vài phút)
@@ -4639,7 +4642,7 @@ GOAL
 
 WHAT THE USER TOLD YOU
 {context}
-
+{chat}
 Research first only if you need facts you do not already have (prices, APIs, docs, anything \
 that goes stale). Then split the goal into tasks the user can actually finish.
 
@@ -4659,7 +4662,7 @@ GOAL
 
 THE BOARD RIGHT NOW
 {state}
-{research}
+{chat}{research}
 Reply with ONE json object and nothing else:
 {{"nudge": "one or two sentences, addressed to the user, in the language of the GOAL",
   "next_action": "keep_going|wrap_up|switch|break|replan",
@@ -4673,6 +4676,13 @@ tell them to move on — do not pretend the plan still holds.
 retime and new_tasks are optional; leave them out when nothing needs to change.
 research.needed = true ONLY if your next nudge would need facts you do not have, or facts that \
 have gone stale. It spends the user's time and tokens, so default to false."""
+
+BOARD_CHAT_BLOCK = """
+WHAT THE USER AND {agent} SAID SINCE YOU LAST LOOKED
+(read-only excerpt of their work chat, newest last. Use it to tell what is really done, blocked \
+or changed — if a task is finished there, say so and point at the next one; never quote it back.)
+{chat}
+"""
 
 BOARD_RESEARCH_LINE = """
 DO THE RESEARCH NOW before answering — last time you asked for it, saying: {why}
@@ -4700,6 +4710,66 @@ def _board_state(b, tasks, now):
                 f"on the board. Assume they are heads-down or away — keep it shorter than last "
                 f"time, and consider suggesting a break or a smaller next step.")
     return out
+
+
+# 4MB: output công cụ chiếm gần hết transcript — đo trên phiên thật, 256KB đuôi chỉ còn hai câu
+# ngắn, câu người dùng hỏi đã trôi mất. 4MB đọc + parse ~40ms, mỗi lượt nhắc một lần.
+BOARD_CHAT_TAIL = 4 * 1024 * 1024   # byte cuối transcript được đọc
+BOARD_CHAT_CHARS = 3000        # trần đoạn chat đưa vào prompt
+
+
+def board_chat_since(b):
+    """Người dùng và agent của họ đã nói gì SAU lần board đọc trước → (đoạn prompt, mốc mới).
+
+    CHỈ ĐỌC transcript của agent người dùng chọn (owner_id): không resume, không ghi, nên không
+    đụng phiên họ đang gõ. Không tốn thêm run nào — chính lượt nhắc của board tiêu hoá đoạn này.
+    Mốc là timestamp ISO-UTC của dòng transcript (claude và codex cùng định dạng, so chuỗi được).
+    agy lưu hội thoại trong sqlite riêng → bỏ qua, board vẫn nhắc như cũ.
+    """
+    since = b.get("chat_seen") or ""
+    owner = get_session(b.get("owner_id") or "")
+    if not owner:
+        return "", since
+    cli = cli_of_engine(engine_name_of_session(owner))
+    path = _transcript_path(resume_target(owner, cli), cli) if cli != "agy" else None
+    if not path:
+        return "", since
+    # ponytail: chỉ đọc đuôi BOARD_CHAT_TAIL — chat dài hơn thế giữa hai lượt nhắc thì phần đầu
+    # rơi mất, nhưng prompt cũng chỉ giữ BOARD_CHAT_CHARS cuối nên không đáng đọc cả file 100MB.
+    try:
+        with path.open("rb") as f:
+            size = f.seek(0, 2)
+            f.seek(max(0, size - BOARD_CHAT_TAIL))
+            lines = f.read().decode("utf-8", "replace").splitlines()[1 if size > BOARD_CHAT_TAIL else 0:]
+    except OSError:
+        return "", since
+    turns, last = [], since
+    for line in lines:
+        try:
+            o = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        ts = o.get("timestamp") or ""
+        if ts <= since:
+            continue
+        if cli == "codex":
+            p = o.get("payload") or {}
+            who = {"user_message": "user", "agent_message": "agent"}.get(p.get("type"))
+            text = p.get("message")
+        else:
+            # toolUseResult = output công cụ, isMeta/isCompactSummary = chữ hệ thống chèn vào,
+            # isSidechain = subagent — không cái nào là người dùng và agent nói với nhau.
+            skip = o.get("toolUseResult") or o.get("isMeta") or o.get("isCompactSummary") \
+                or o.get("isSidechain")
+            who = None if skip else {"user": "user", "assistant": "agent"}.get(o.get("type"))
+            text = _first_text((o.get("message") or {}).get("content"))
+        text = " ".join(str(text or "").split())
+        if not who or not text or text.startswith("<") or _is_seed_text(text):
+            continue
+        turns.append(f"{who}: {text[:400]}")
+        last = max(last, ts)
+    chat = "\n".join(turns)[-BOARD_CHAT_CHARS:]
+    return (BOARD_CHAT_BLOCK.format(agent=owner["name"], chat=chat) if chat else ""), last
 
 
 def _board_fallback(tasks, now):
@@ -4752,10 +4822,13 @@ async def board_plan(bid):
     update_board(bid, planning=1)
     publish({"type": "board", "board": bid, "planning": 1, "workspace_id": b["workspace_id"]})
     try:
+        chat, seen = board_chat_since(b)
         text = await board_ask(b, BOARD_PLAN_PROMPT.format(
-            name=b["name"], goal=b["goal"] or "(none given)", context=b["context"] or "(none)"))
+            name=b["name"], goal=b["goal"] or "(none given)", context=b["context"] or "(none)",
+            chat=chat))
         tasks = _json_obj(text).get("tasks")
         if isinstance(tasks, list) and tasks:
+            update_board(bid, chat_seen=seen)
             for t in board_tasks(bid):
                 if t["status"] == "todo":
                     delete_task(t["id"])
@@ -4809,14 +4882,18 @@ async def board_tick(bid, manual=False):
         due = _iso(b["research_due"])
         research = (BOARD_RESEARCH_LINE.format(why=b["research_why"] or "information may be stale")
                     if b["research_why"] and due and due <= now else "")
+        chat, seen = board_chat_since(b)
         try:
             text = await board_ask(b, BOARD_ADVICE_PROMPT.format(
                 name=b["name"], goal=b["goal"] or "(none given)", now=now.strftime("%a %H:%M"),
-                state=_board_state(b, tasks, now), research=research,
+                state=_board_state(b, tasks, now), chat=chat, research=research,
                 gap=int(BOARD_RESEARCH_GAP)))
         except Exception as e:  # noqa: BLE001
             print(f"[orchestrator] board {bid} advice error: {e}", file=sys.stderr)
         adv = _json_obj(text)
+        # Mốc chỉ tiến khi agent THẬT SỰ trả lời: lượt hỏng mà vẫn tiến thì đoạn chat đó mất luôn.
+        if adv:
+            update_board(bid, chat_seen=seen)
         if research and adv:
             update_board(bid, research_due="", research_why="")   # lượt research đã dùng
         _board_apply(bid, adv, now)

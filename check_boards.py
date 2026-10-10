@@ -306,6 +306,81 @@ def test_old_board_upgrades_itself():
     so.delete_board(bid)
 
 
+async def test_board_reads_what_you_said_in_chat():
+    """Board phải biết người dùng đã làm gì với agent của họ — đọc transcript, không ghi.
+
+    Chỉ lời người dùng và lời agent; output công cụ, chữ hệ thống, subagent thì không. Mốc
+    chat_seen chỉ tiến khi agent của board thật sự trả lời, nếu không đoạn chat đó mất luôn.
+    """
+    keep = so.CLAUDE_PROJECTS_DIR, so.CODEX_SESSIONS_DIR
+    so.CLAUDE_PROJECTS_DIR = Path(tempfile.mkdtemp())
+    so.CODEX_SESSIONS_DIR = Path(tempfile.mkdtemp())
+    try:
+        so.register_session("sess-chat", "chatbot", cwd="/tmp/p3", workspace_id="default")
+        tr = so.CLAUDE_PROJECTS_DIR / "-tmp-p3" / "sess-chat.jsonl"
+        tr.parent.mkdir()
+
+        def say(*rows):
+            with tr.open("a", encoding="utf-8") as f:
+                for r in rows:
+                    f.write(json.dumps(r) + "\n")
+
+        def msg(kind, ts, content, **kw):
+            return {"type": kind, "timestamp": ts, "message": {"content": content}, **kw}
+
+        say(msg("user", "2026-10-12T02:00:00.000Z", "login page is done, moving to billing"),
+            msg("assistant", "2026-10-12T02:00:05.000Z", [{"type": "text", "text": "Nice. Billing next."}]),
+            msg("assistant", "2026-10-12T02:00:06.000Z", [{"type": "tool_use", "name": "Bash"}]),
+            msg("user", "2026-10-12T02:00:07.000Z", "SECRET_TOOL_OUTPUT", toolUseResult={"x": 1}),
+            msg("user", "2026-10-12T02:00:08.000Z", "injected caveat", isMeta=True),
+            msg("user", "2026-10-12T02:00:09.000Z", "<command-name>/model</command-name>"),
+            msg("assistant", "2026-10-12T02:00:10.000Z", [{"type": "text", "text": "subagent"}],
+                isSidechain=True))
+        bid = so.create_board("default", so.board_agent_for(so.get_session("sess-chat"), "c"),
+                              "c", owner_id="sess-chat")
+        chat, seen = so.board_chat_since(so.get_board(bid))
+        check("the board sees what you told your agent",
+              "user: login page is done" in chat and "agent: Nice. Billing next." in chat, chat)
+        check("but not tool output, system text or subagents",
+              not any(x in chat for x in ("SECRET_TOOL_OUTPUT", "caveat", "command-name",
+                                          "subagent")), chat)
+        check("and names the agent you chat with", "chatbot" in chat, chat[:80])
+        check("the cursor lands on the last real turn", seen == "2026-10-12T02:00:05.000Z", seen)
+
+        await so.board_tick(bid)                 # dry-run: agent không trả lời
+        check("a nudge the agent never answered does not swallow the chat",
+              so.get_board(bid)["chat_seen"] == "", so.get_board(bid)["chat_seen"])
+
+        so.update_board(bid, chat_seen=seen)
+        check("nothing new, nothing sent", so.board_chat_since(so.get_board(bid))[0] == "",
+              "chat repeated")
+        say(msg("user", "2026-10-12T03:00:00.000Z", "billing blocked on the stripe key"))
+        chat, _ = so.board_chat_since(so.get_board(bid))
+        check("only what came after", "stripe key" in chat and "login page" not in chat, chat)
+        so.delete_board(bid)
+
+        so.register_session("sess-cx", "cxbot", workspace_id="default", model="codex")
+        roll = so.CODEX_SESSIONS_DIR / "2026/10/12" / "rollout-2026-10-12T09-00-00-sess-cx.jsonl"
+        roll.parent.mkdir(parents=True)
+        roll.write_text("\n".join(json.dumps(r) for r in (
+            {"type": "event_msg", "timestamp": "2026-10-12T02:00:00.000Z",
+             "payload": {"type": "user_message", "message": "draft the pricing email"}},
+            {"type": "response_item", "timestamp": "2026-10-12T02:00:00.000Z",
+             "payload": {"type": "message", "role": "user",
+                         "content": [{"type": "input_text", "text": "draft the pricing email"}]}},
+            {"type": "event_msg", "timestamp": "2026-10-12T02:00:09.000Z",
+             "payload": {"type": "agent_message", "message": "Drafted, 120 words."}})) + "\n",
+            encoding="utf-8")
+        cid = so.create_board("default", so.board_agent_for(so.get_session("sess-cx"), "x"),
+                              "x", owner_id="sess-cx")
+        chat, _ = so.board_chat_since(so.get_board(cid))
+        check("codex chats are read too, each turn once",
+              chat.count("pricing email") == 1 and "agent: Drafted" in chat, chat)
+        so.delete_board(cid)
+    finally:
+        so.CLAUDE_PROJECTS_DIR, so.CODEX_SESSIONS_DIR = keep
+
+
 def test_wiring():
     """Nút và tab phải có thật — backend đúng mà UI không gọi tới thì tính năng không tồn tại."""
     here = Path(__file__).parent
@@ -346,6 +421,7 @@ async def main():
     test_board_signals_skip_the_ping_pong_cap()
     test_board_never_writes_the_chat_transcript()
     test_old_board_upgrades_itself()
+    await test_board_reads_what_you_said_in_chat()
     test_wiring()
 
     app = so.build_app()

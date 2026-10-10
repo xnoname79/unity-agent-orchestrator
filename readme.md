@@ -244,6 +244,15 @@ the other's turns — and even when nothing is lost, the board's JSON sits in th
 conversation you were having. The board agent reads the same project, keeps its own notebook, and
 is deleted with the board; the agent you chat with is never touched.
 
+It still knows what you have been doing. Before each nudge the board **reads** — never writes —
+the chat between you and the agent you picked, takes what was said since its last look (your
+words and the agent's replies; tool output, system text and subagents are left out), and puts the
+newest 3,000 characters in the prompt. Tell your agent "login page is done" and the next nudge
+points at the next task instead of asking how the login page is going. This costs no extra run,
+and a nudge that fails does not move the read marker, so nothing you said is skipped. Claude and
+Codex chats are read; Antigravity keeps its chats in its own database, so its boards nudge from
+the board alone.
+
 Each nudge is a real run, through the same session lock, daily run cap and audit log
 as any other work — so a board shows up in History like everything else. It answers in
 JSON: the line to show you, and optionally a task to retime, a task you had not thought of, and
