@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 import sys
 import tempfile
 from datetime import datetime, timedelta
@@ -312,9 +313,10 @@ async def test_board_reads_what_you_said_in_chat():
     Chỉ lời người dùng và lời agent; output công cụ, chữ hệ thống, subagent thì không. Mốc
     chat_seen chỉ tiến khi agent của board thật sự trả lời, nếu không đoạn chat đó mất luôn.
     """
-    keep = so.CLAUDE_PROJECTS_DIR, so.CODEX_SESSIONS_DIR
+    keep = so.CLAUDE_PROJECTS_DIR, so.CODEX_SESSIONS_DIR, so.AGY_CONVERSATIONS_DIR
     so.CLAUDE_PROJECTS_DIR = Path(tempfile.mkdtemp())
     so.CODEX_SESSIONS_DIR = Path(tempfile.mkdtemp())
+    so.AGY_CONVERSATIONS_DIR = Path(tempfile.mkdtemp())
     try:
         so.register_session("sess-chat", "chatbot", cwd="/tmp/p3", workspace_id="default")
         tr = so.CLAUDE_PROJECTS_DIR / "-tmp-p3" / "sess-chat.jsonl"
@@ -377,8 +379,52 @@ async def test_board_reads_what_you_said_in_chat():
         check("codex chats are read too, each turn once",
               chat.count("pricing email") == 1 and "agent: Drafted" in chat, chat)
         so.delete_board(cid)
+
+        # agy: sqlite, mỗi bước một blob protobuf. Tự mã hoá đúng các field hàm đọc tìm tới.
+        def var(n):
+            out = b""
+            while n > 0x7f:
+                out, n = out + bytes([n & 0x7f | 0x80]), n >> 7
+            return out + bytes([n])
+
+        def pb(*fields):
+            out = b""
+            for f, v in fields:
+                if isinstance(v, int):
+                    out += var(f << 3) + var(v)
+                else:
+                    v = v.encode() if isinstance(v, str) else v
+                    out += var(f << 3 | 2) + var(len(v)) + v
+            return out
+
+        def at(sec):
+            return (5, pb((1, pb((1, sec), (2, 250_000_000)))))
+
+        t0 = 1791770400                         # 2026-10-12T02:00:00Z
+        so.register_session("sess-agy", "gembot", workspace_id="default", model="agy")
+        conn = sqlite3.connect(so.AGY_CONVERSATIONS_DIR / "sess-agy.db")
+        conn.execute("CREATE TABLE steps (idx INTEGER, step_type INTEGER, step_payload BLOB)")
+        conn.executemany("INSERT INTO steps VALUES (?, ?, ?)", [
+            (0, 14, pb((1, 14), at(t0), (19, pb((2, "outline is done, starting slides"))))),
+            (1, 15, pb((1, 15), at(t0 + 5), (20, pb((3, "SECRET_THINKING"))))),
+            (2, 132, pb((1, 132), at(t0 + 6), (22, "TOOL_OUTPUT"))),
+            (3, 15, pb((1, 15), at(t0 + 9), (20, pb((1, "Good. Slides next."),
+                                                  (3, "SECRET_THINKING"))))),
+            (4, 14, b"\xff\xff\xff")])        # blob hỏng: bỏ qua, không làm hỏng cả lượt
+        conn.commit()
+        conn.close()
+        gid = so.create_board("default", so.board_agent_for(so.get_session("sess-agy"), "g"),
+                              "g", owner_id="sess-agy")
+        chat, seen = so.board_chat_since(so.get_board(gid))
+        check("antigravity chats are read too",
+              "user: outline is done" in chat and "agent: Good. Slides next." in chat, chat)
+        check("but never the model's private thinking or tool output",
+              "SECRET_THINKING" not in chat and "TOOL_OUTPUT" not in chat, chat)
+        check("antigravity times line up with the other CLIs",
+              seen == "2026-10-12T02:00:09.250Z", seen)
+        so.delete_board(gid)
     finally:
-        so.CLAUDE_PROJECTS_DIR, so.CODEX_SESSIONS_DIR = keep
+        so.CLAUDE_PROJECTS_DIR, so.CODEX_SESSIONS_DIR, so.AGY_CONVERSATIONS_DIR = keep
 
 
 def test_wiring():

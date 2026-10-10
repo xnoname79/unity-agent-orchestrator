@@ -249,9 +249,11 @@ the chat between you and the agent you picked, takes what was said since its las
 words and the agent's replies; tool output, system text and subagents are left out), and puts the
 newest 3,000 characters in the prompt. Tell your agent "login page is done" and the next nudge
 points at the next task instead of asking how the login page is going. This costs no extra run,
-and a nudge that fails does not move the read marker, so nothing you said is skipped. Claude and
-Codex chats are read; Antigravity keeps its chats in its own database, so its boards nudge from
-the board alone.
+and a nudge that fails does not move the read marker, so nothing you said is skipped. It works
+with all three CLIs, so a Gemini-only setup gets the same board as a Claude or ChatGPT one.
+Antigravity stores chats as undocumented protobuf in sqlite; the board decodes the two fields it
+needs (what you typed, what the agent replied — never its private reasoning), and if a future agy
+release moves them, the board falls back to nudging from the task list instead of breaking.
 
 Each nudge is a real run, through the same session lock, daily run cap and audit log
 as any other work — so a board shows up in History like everything else. It answers in

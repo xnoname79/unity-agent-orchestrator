@@ -59,7 +59,7 @@ import socket
 import sqlite3
 import sys
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -4718,22 +4718,77 @@ BOARD_CHAT_TAIL = 4 * 1024 * 1024   # byte cuối transcript được đọc
 BOARD_CHAT_CHARS = 3000        # trần đoạn chat đưa vào prompt
 
 
-def board_chat_since(b):
-    """Người dùng và agent của họ đã nói gì SAU lần board đọc trước → (đoạn prompt, mốc mới).
+def _pb_get(b, *path):
+    """Giá trị của field theo đường số field (vd 5, 1, 1) trong một blob protobuf, None nếu thiếu.
 
-    CHỈ ĐỌC transcript của agent người dùng chọn (owner_id): không resume, không ghi, nên không
-    đụng phiên họ đang gõ. Không tốn thêm run nào — chính lượt nhắc của board tiêu hoá đoạn này.
-    Mốc là timestamp ISO-UTC của dòng transcript (claude và codex cùng định dạng, so chuỗi được).
-    agy lưu hội thoại trong sqlite riêng → bỏ qua, board vẫn nhắc như cũ.
-    """
-    since = b.get("chat_seen") or ""
-    owner = get_session(b.get("owner_id") or "")
-    if not owner:
-        return "", since
-    cli = cli_of_engine(engine_name_of_session(owner))
-    path = _transcript_path(resume_target(owner, cli), cli) if cli != "agy" else None
-    if not path:
-        return "", since
+    Đọc wire format trần, KHÔNG cần .proto: agy không công bố schema, mà kéo cả thư viện protobuf
+    vào chỉ để lấy hai chuỗi thì không đáng. Varint → int, length-delimited → bytes."""
+    for want in path:
+        if not isinstance(b, bytes):
+            return None               # đường đi xuyên qua một varint
+        i, hit = 0, None
+        while i < len(b) and hit is None:
+            key, i = _varint(b, i)
+            f, wt = key >> 3, key & 7
+            if wt == 0:
+                v, i = _varint(b, i)
+            elif wt == 2:
+                n, i = _varint(b, i)
+                v, i = b[i:i + n], i + n
+            elif wt in (1, 5):
+                v, i = None, i + (8 if wt == 1 else 4)
+            else:
+                return None           # group (3/4) — đã bỏ khỏi protobuf, gặp là blob lạ
+            if f == want:
+                hit = v
+        if hit is None:
+            return None
+        b = hit
+    return b
+
+
+def _varint(b, i):
+    n = s = 0
+    while True:
+        c = b[i]
+        i += 1
+        n |= (c & 0x7f) << s
+        s += 7
+        if c < 0x80:
+            return n, i
+
+
+def _chat_turns(path, cli):
+    """(timestamp ISO-UTC, 'user'|'agent', text) của MỘT transcript, cũ trước mới sau. CHỈ ĐỌC.
+
+    Chỉ lời người dùng và lời agent — output công cụ, chữ hệ thống, subagent, suy nghĩ riêng của
+    model thì không. Ba CLI ba định dạng; timestamp đưa về cùng một dạng để so chuỗi được."""
+    if cli == "agy":
+        # agy: sqlite, mỗi bước một blob protobuf không công bố schema (đo trên agy 10/2026):
+        # step 14 = người dùng gõ, text ở field 19.2; step 15 = model trả lời, text ở 20.1
+        # (20.3 là phần suy nghĩ — không phải lời nói với người dùng); giờ ở 5.1 {giây, nano}.
+        # ponytail: số field là đoán từ dữ liệu thật. agy đổi schema thì hàm này trả rỗng chứ
+        # không vỡ — board vẫn nhắc từ task list, chỉ mất phần chat.
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+            try:
+                rows = conn.execute("SELECT step_type, step_payload FROM steps WHERE step_type IN "
+                                    "(14, 15) ORDER BY idx DESC LIMIT 200").fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return
+        for st, pay in reversed(rows):
+            try:
+                sec, ns = _pb_get(pay, 5, 1, 1), _pb_get(pay, 5, 1, 2) or 0
+                text = _pb_get(pay, 19, 2) if st == 14 else _pb_get(pay, 20, 1)
+            except IndexError:
+                continue              # blob cụt
+            if isinstance(sec, int) and isinstance(text, bytes):
+                ts = datetime.fromtimestamp(sec, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+                yield (f"{ts}.{ns // 1_000_000:03d}Z", "user" if st == 14 else "agent",
+                       text.decode("utf-8", "replace"))
+        return
     # ponytail: chỉ đọc đuôi BOARD_CHAT_TAIL — chat dài hơn thế giữa hai lượt nhắc thì phần đầu
     # rơi mất, nhưng prompt cũng chỉ giữ BOARD_CHAT_CHARS cuối nên không đáng đọc cả file 100MB.
     try:
@@ -4742,15 +4797,11 @@ def board_chat_since(b):
             f.seek(max(0, size - BOARD_CHAT_TAIL))
             lines = f.read().decode("utf-8", "replace").splitlines()[1 if size > BOARD_CHAT_TAIL else 0:]
     except OSError:
-        return "", since
-    turns, last = [], since
+        return
     for line in lines:
         try:
             o = json.loads(line)
         except json.JSONDecodeError:
-            continue
-        ts = o.get("timestamp") or ""
-        if ts <= since:
             continue
         if cli == "codex":
             p = o.get("payload") or {}
@@ -4763,8 +4814,28 @@ def board_chat_since(b):
                 or o.get("isSidechain")
             who = None if skip else {"user": "user", "assistant": "agent"}.get(o.get("type"))
             text = _first_text((o.get("message") or {}).get("content"))
-        text = " ".join(str(text or "").split())
-        if not who or not text or text.startswith("<") or _is_seed_text(text):
+        if who:
+            yield o.get("timestamp") or "", who, str(text or "")
+
+
+def board_chat_since(b):
+    """Người dùng và agent của họ đã nói gì SAU lần board đọc trước → (đoạn prompt, mốc mới).
+
+    CHỈ ĐỌC transcript của agent người dùng chọn (owner_id): không resume, không ghi, nên không
+    đụng phiên họ đang gõ. Không tốn thêm run nào — chính lượt nhắc của board tiêu hoá đoạn này.
+    """
+    since = b.get("chat_seen") or ""
+    owner = get_session(b.get("owner_id") or "")
+    if not owner:
+        return "", since
+    cli = cli_of_engine(engine_name_of_session(owner))
+    path = _transcript_path(resume_target(owner, cli), cli)
+    if not path:
+        return "", since
+    turns, last = [], since
+    for ts, who, text in _chat_turns(path, cli):
+        text = " ".join(text.split())
+        if ts <= since or not text or text.startswith("<") or _is_seed_text(text):
             continue
         turns.append(f"{who}: {text[:400]}")
         last = max(last, ts)
