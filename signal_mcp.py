@@ -202,7 +202,9 @@ async def list_agents(from_role: str = "", workspace_id: str = ""):
         if sender_ws is None:
             return ("Cần biết bạn thuộc workspace nào mới liệt kê được. Gọi lại kèm from_role="
                     "<vai của bạn> (hoặc workspace_id nếu vai bị trùng tên giữa nhiều workspace).")
-        sessions = [s for s in orch.list_sessions() if s.get("workspace_id") == sender_ws]
+        threads = orch.board_threads()   # thread của board không phải đồng nghiệp để nhắn
+        sessions = [s for s in orch.list_sessions()
+                    if s.get("workspace_id") == sender_ws and s["id"] not in threads]
     else:
         if not workspace_id:
             return ("Chế độ HTTP cần workspace_id tường minh để lọc đúng workspace của bạn "
@@ -215,7 +217,7 @@ async def list_agents(from_role: str = "", workspace_id: str = ""):
             return f"Lỗi kết nối orchestrator tại {ORCH_URL}: {e}"
         if r.status_code >= 400:
             return f"Lỗi ({r.status_code}): {r.text}"
-        sessions = r.json()
+        sessions = [s for s in r.json() if not s.get("board")]
     agents = [{"role": s["name"], "status": s["status"], "project": s.get("project", "")} for s in sessions]
     if not agents:
         return f"Chưa có agent nào trong workspace '{sender_ws}'."

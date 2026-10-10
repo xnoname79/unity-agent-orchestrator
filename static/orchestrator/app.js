@@ -2896,6 +2896,18 @@ function renderBoards(list) {
   }).join("");
 }
 
+function renderBoardAgents(list) {
+  $("bd-agents").hidden = !list.length;
+  $("bd-agents-list").innerHTML = list.map((s) => `<button class="bd-agent"
+      onclick="boardShow('${esc(s.board.id)}')" title="Open the board this agent runs">
+      ${ic("board", "sm")}<b>${esc(s.name)}</b>
+      <span class="hint">for ${esc(s.board.name)} · ${esc(s.model || "default model")}</span>
+      <span class="spacer"></span>
+      <span class="pill${s.status === "running" ? " live" : ""}">${esc(s.status)}</span>
+      <span class="hint">${s.used_today}${s.daily_limit ? "/" + s.daily_limit : ""} runs today</span>
+    </button>`).join("");
+}
+
 function boardShow(id) { bdOpen = id; renderBoards(BOARDS); }
 window.boardShow = boardShow;
 
@@ -3788,9 +3800,13 @@ async function refreshAll() {
       api("/api/editor").catch(() => []),
     ]);
     editorCards = Array.isArray(vsc) ? vsc : [];
-    renderCanvas(sessions, signals.items);
-    fillSignalForm(sessions);
-    fillBoardAgents(sessions);
+    // Thread của board không phải agent để chat: không terminal trên canvas, không chip trên
+    // thanh cửa sổ, không làm đích signal hay chủ của board khác — gom riêng vào tab Boards.
+    const work = sessions.filter((s) => !s.board);
+    renderCanvas(work, signals.items);
+    fillSignalForm(work);
+    fillBoardAgents(work);
+    renderBoardAgents(sessions.filter((s) => s.board));
     // Board chỉ refetch khi tab của nó đang mở: SSE bắn theo mỗi bước của mọi agent, gọi thêm
     // một request mỗi lần cho một tab đang ẩn là trả tiền cho thứ không ai nhìn.
     if (!$("tab-boards").hidden) boardsLoad().catch(() => {});

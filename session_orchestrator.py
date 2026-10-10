@@ -4473,6 +4473,17 @@ def list_boards(workspace_id=None):
     return [dict(r) for r in rows]
 
 
+def board_threads():
+    """{session_id: {id, name} của board} cho mọi session là thread RIÊNG của một board.
+
+    Không ai chat với các session này: dashboard gom chúng vào tab Boards thay vì bày terminal
+    trên canvas, và list_agents giấu chúng khỏi agent khác — signal lạ rơi vào thread của board
+    là lẫn vào lịch sử nhắc việc của nó. Board kiểu cũ (owner_id rỗng) chạy trên chính agent của
+    người dùng, nên session đó vẫn là agent để chat, không tính."""
+    return {b["session_id"]: {"id": b["id"], "name": b["name"]} for b in list_boards()
+            if b["owner_id"] and b["session_id"] != b["owner_id"]}
+
+
 def update_board(bid, **fields):
     """Chỉ ghi cột có trong _BOARD_FIELDS — tên cột đi thẳng vào SQL nên KHÔNG được nhận key tự
     do từ request body."""
@@ -5619,6 +5630,7 @@ def build_app():
         # kết nối/origin của HTTP/1.1). Chỉ có khi lọc theo 1 workspace — view admin gộp mọi
         # tenant thì con số không có nghĩa.
         pairs = pair_counts(wsf) if wsf else {}
+        threads = board_threads()
         out = []
         for s in list_sessions():
             if wsf and s.get("workspace_id") != wsf:
@@ -5633,7 +5645,8 @@ def build_app():
             # poll /api/sessions mỗi 5s và đã sát trần 6 kết nối/origin (xem note ở trên), thêm
             # N request nữa mỗi vòng là tự bóp mình. Giá ở đây = 3 stat() / session / vòng.
             out.append({**s, **daily_stats(s["id"]), "pairs": peers,
-                        "skill_missing": _skill_missing_roots(s.get("cwd") or "", name)})
+                        "skill_missing": _skill_missing_roots(s.get("cwd") or "", name),
+                        "board": threads.get(s["id"])})
         return JSONResponse(out)
 
     async def api_session_detail(request: Request):

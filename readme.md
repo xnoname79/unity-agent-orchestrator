@@ -236,7 +236,9 @@ loses nothing.
 
 A board does not run on the agent you chat with. Picking an agent picks a **folder** and its
 settings — model, tools, permissions — and the board then opens its own session there, named
-`<agent>-board`, which you will see on the canvas. That separation is not tidiness: the terminal
+`<agent>-board`. You never chat with it, so it gets no terminal on the canvas and other agents
+cannot message it; it is listed under **Board agents** in the Boards tab, with whether it is
+running and how many runs it has used today. That separation is not tidiness: the terminal
 you type in is a second `claude` process holding the same conversation file, and the orchestrator's
 per-session lock only queues background runs against each other. Share one session between your
 chat and the board and both processes append to the same transcript, where the later save can drop

@@ -431,6 +431,12 @@
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .bd-meta { display: flex; gap: 9px; align-items: center; font-size: 11px; color: var(--faint);
     flex-wrap: wrap; }
+  .bd-agents { display: grid; gap: 6px; padding: 12px 15px 15px; }
+  .bd-agent { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; text-align: left;
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-card);
+    padding: 8px 12px; font-size: 12px; cursor: pointer; }
+  .bd-agent:hover { border-color: var(--accent); }
+  .bd-agent .hint { margin: 0; }
   .bd-bar { height: 4px; border-radius: 3px; background: var(--panel2); overflow: hidden; }
   .bd-bar > i { display: block; height: 100%; background: var(--green); }
   .bd-head { display: flex; align-items: center; gap: 10px; padding: 12px 15px; flex-wrap: wrap; }
@@ -999,6 +1005,14 @@
             <div id="bd-list" class="bd-list"></div>
             <div id="bd-empty" class="empty" hidden>No boards yet. Name one, pick the agent that
               should look after it, and say what you want done.</div>
+          </section>
+          <!-- Thread riêng của từng board. Không ai chat với chúng nên không có terminal trên
+               canvas — gom về đây, chỉ cần biết đang chạy hay rảnh và đã đốt bao nhiêu lượt. -->
+          <section id="bd-agents" class="panel" hidden>
+            <h2 title="Each board runs its own session in the folder of the agent you picked, so a
+              nudge never lands in the chat you are having. It nudges you; you don't chat with it.">Board
+              agents <span class="hint" style="margin:0">one per board · not for chat</span></h2>
+            <div id="bd-agents-list" class="bd-agents"></div>
           </section>
           <section class="panel">
             <h2>New board</h2>

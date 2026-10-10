@@ -442,6 +442,9 @@ def test_wiring():
             ("function renderTask(", "app.js", js),
             ("def board_agent_for(", "session_orchestrator.py", py),
             ("function renderBoards(", "app.js", js),
+            ('id="bd-agents"', "index.html", html),
+            ("function renderBoardAgents(", "app.js", js),
+            ("renderCanvas(work,", "app.js", js),
             ("window.boardNew", "app.js", js),
             ("board_ping", "app.js", js),
             ('Route("/api/boards"', "session_orchestrator.py", py),
@@ -497,6 +500,23 @@ async def main():
         check("GET /api/boards lists them with their tasks",
               r.status_code == 200 and any(x["id"] == bid and x["total"] == 1 for x in r.json()),
               f"{r.status_code} {r.text[:90]}")
+        r = await c.get("/api/sessions?workspace_id=default")
+        rows = {x["name"]: x for x in r.json()}
+        thread = rows.get("boardbot-board") or {}
+        check("the board's own session is flagged, so the canvas leaves it out",
+              (thread.get("board") or {}).get("id") == bid, str(thread.get("board")))
+        check("the agent you chat with is not", rows["boardbot"]["board"] is None,
+              str(rows["boardbot"]["board"]))
+        import signal_mcp
+        signal_mcp._INPROC = True
+        try:
+            peers = json.loads(await signal_mcp.list_agents(from_role="boardbot",
+                                                            workspace_id="default"))
+        finally:
+            signal_mcp._INPROC = False
+        check("other agents cannot see a board's session to message it",
+              "boardbot-board" not in {a["role"] for a in peers}
+              and "boardbot" in {a["role"] for a in peers}, str(peers))
         r = await c.delete(f"/api/boards/{bid}")
         check("DELETE takes the tasks with it",
               r.status_code == 200 and not so.board_tasks(bid), r.text[:90])
