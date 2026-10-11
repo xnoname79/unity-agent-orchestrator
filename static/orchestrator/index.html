@@ -421,6 +421,10 @@
   #tab-boards { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 20px; }
   #tab-boards[hidden] { display: none; }
   .bd-wrap { width: 100%; max-width: 1180px; margin: 0 auto; display: grid; gap: 16px; }
+  /* Panel nằm trong #boards-view chứ không trực tiếp trong .bd-wrap → gap của .bd-wrap không tới
+     chúng. display:grid đè thuộc tính hidden nên phải trả lại display:none cho nó. */
+  #boards-view { display: grid; gap: 16px; }
+  #boards-view[hidden] { display: none; }
   .bd-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px;
     padding: 12px 15px; }
   .bd-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-card);
@@ -431,7 +435,7 @@
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .bd-meta { display: flex; gap: 9px; align-items: center; font-size: 11px; color: var(--faint);
     flex-wrap: wrap; }
-  .bd-agents { display: grid; gap: 6px; padding: 12px 15px 15px; }
+  .bd-agents { display: grid; gap: 8px; padding: 12px 15px 15px; }
   .bd-agent { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; text-align: left;
     background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-card);
     padding: 8px 12px; font-size: 12px; cursor: pointer; }
