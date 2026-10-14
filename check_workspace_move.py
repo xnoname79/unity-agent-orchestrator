@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guards for moving an agent between workspaces, and for deleting one.
+"""Guards for moving an agent between workspaces, renaming one, and deleting one.
 
 An agent moves so it can signal the agents in another workspace — routing resolves a signal by
 (role, workspace), so this one column decides who can reach whom. Every check here is a way the
@@ -8,6 +8,13 @@ move could go wrong quietly rather than loudly:
   - a duplicate role name in the target workspace makes signals land on whichever session was
     active last, silently, because names are not unique and lookup is ORDER BY last_active;
   - a suspended workspace blocks every signal, so an agent moved into one just goes quiet.
+
+Renaming goes wrong just as quietly:
+
+  - the role's playbook lives in <cwd>/<root>/skills/<name>/, so a rename that leaves it behind
+    leaves the agent without its playbook, and nothing says so;
+  - other agents, and the renamed agent itself, still remember the old name from their
+    transcripts. A signal sent to (or signed with) the old name must still reach the card.
 
 Runs the real app in-process over ASGI against a throwaway DB.
 
@@ -130,6 +137,91 @@ async def main():
         check("its agents are gone from the orchestrator", so.get_session("s-doomed") is None)
         check("the workspace itself is gone", so.get_workspace(doomed["id"]) is None)
         check("but its signals stay for audit", bool(so.list_signals(50, 0, doomed["id"])[0]))
+
+        # ── Đổi tên ──────────────────────────────────────────────────────────────
+        proj = tempfile.mkdtemp()
+        tmpl = ("# <ROLE_NAME>\nPlaybook for the <ROLE_NAME> role.\n"
+                'send_signal(to_role="x", from_role="<ROLE_NAME>")\nA designer reviews every frame.\n')
+
+        async def agent(sid, name, wid, skill=True):
+            r = await c.post("/api/sessions", json={"id": sid, "name": name, "workspace_id": wid,
+                                                    "cwd": proj})
+            assert r.status_code < 400, r.text
+            if skill:
+                so._write_role_skill(proj, name, tmpl)
+
+        async def rename(sid, name):
+            return await c.post(f"/api/sessions/{sid}/name", json={"name": name})
+
+        await agent("s-ren", "designer", a["id"])
+        await agent("s-peer", "peer", a["id"], skill=False)
+        r = await rename("s-ren", "art-director")
+        check("renaming a card works", r.status_code == 200 and r.json()["name"] == "art-director"
+              and r.json()["renamed_from"] == "designer", f"{r.status_code} {r.text[:90]}")
+        check("signals to the new name reach it",
+              so.resolve_session_id("art-director", a["id"]) == "s-ren")
+        check("signals to the old name still reach it (agents remember the old name)",
+              so.resolve_session_id("designer", a["id"]) == "s-ren")
+        moved = all(so._skill_path(proj, "art-director", root).exists()
+                    and not so._skill_path(proj, "designer", root).parent.exists()
+                    for root in so.CLI_SKILL_ROOTS)
+        check("its playbook moves with it, for every CLI", moved)
+        txt = so._role_skill(proj, "art-director")
+        check("the playbook names the new role",
+              "name: art-director" in txt and "# art-director" in txt
+              and 'from_role="art-director"' in txt and "the art-director role" in txt, txt[:200])
+        check("but the rest of the playbook is left alone",
+              "A designer reviews every frame." in txt, txt)
+
+        r = await c.post("/api/signals", json={"to_role": "peer", "message": "done",
+                                               "from_role": "designer", "workspace_id": a["id"]})
+        row = [x for x in so.list_signals(50, 0, a["id"])[0] if x["id"] == r.json().get("id")]
+        check("a signal signed with the old name is recorded under the new one",
+              row and row[0]["from_session"] == "art-director", str(row)[:120])
+        import signal_mcp
+        check("the MCP tools accept the old name as a sender",
+              signal_mcp._check_from_role(so, "designer") == ""
+              and signal_mcp._sender_workspace(so, "designer") == a["id"])
+
+        r = await rename("s-ren", "peer")
+        check("a name already taken in the workspace is refused", r.status_code == 409,
+              f"{r.status_code} {r.text[:90]}")
+        for bad in ("", "../escape", "a/b"):
+            r = await rename("s-ren", bad)
+            check(f"a bad name {bad!r} is refused", r.status_code == 400, str(r.status_code))
+        so.set_session_status("s-ren", "running")
+        r = await rename("s-ren", "busy-now")
+        check("a running card is refused", r.status_code == 409, str(r.status_code))
+        so.set_session_status("s-ren", "idle")
+
+        await agent("s-new", "designer", a["id"], skill=False)
+        check("a new card that takes the old name gets it back",
+              so.resolve_session_id("designer", a["id"]) == "s-new")
+
+        # Thư mục skills của một vai khác (workspace khác, cùng cwd) mang đúng tên định đổi sang.
+        await agent("s-other", "taken", b["id"])
+        await agent("s-col", "col", a["id"])
+        r = await rename("s-col", "taken")
+        check("a rename that would overwrite another role's playbook is refused",
+              r.status_code == 409 and so.get_session("s-col")["name"] == "col"
+              and so._skill_path(proj, "col").exists(), f"{r.status_code} {r.text[:90]}")
+
+        # Cùng cwd, cùng tên, hai workspace = MỘT playbook dùng chung.
+        await agent("s-sh1", "shared", a["id"])
+        await agent("s-sh2", "shared", b["id"], skill=False)
+        await rename("s-sh1", "shared-a")
+        check("renaming one of two cards that share a playbook copies it instead of taking it",
+              so._skill_path(proj, "shared").exists() and so._skill_path(proj, "shared-a").exists())
+
+        await agent("s-mv", "mover", a["id"])
+        r = await move("s-mv", b["id"], name="mover-b")
+        check("moving and renaming keeps the playbook",
+              r.status_code == 200 and so._skill_path(proj, "mover-b").exists()
+              and not so._skill_path(proj, "mover").exists(), f"{r.status_code} {r.text[:90]}")
+
+        so.unregister_session("s-ren")
+        check("removing a card drops its old names", not so.alias_sessions("designer")
+              and so.resolve_session_id("designer", a["id"]) == "s-new")
 
         r = await c.delete("/api/workspaces/default")
         check("the default workspace is refused", r.status_code == 400, f"{r.status_code} {r.text[:90]}")

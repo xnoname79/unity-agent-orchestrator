@@ -1143,6 +1143,24 @@ function engineOfModel(model) {
   return "claude";
 }
 
+// Đổi tên card. Signal gửi bằng tên mới tới ngay; tên cũ vẫn tới — backend giữ nó làm alias vì
+// đồng nghiệp (và chính agent này, trong transcript) còn nhớ tên cũ. Không truyền tên qua onclick:
+// tên do người dùng gõ, một dấu ' trong đó là vỡ chuỗi JS trong thuộc tính.
+async function renameCard(sid = selSid) {
+  const s = (cvLast.sessions || []).find((x) => x.id === sid);
+  if (!s) return;
+  const next = (prompt(`Rename '${s.name}' to:\n\nSignals to the new name reach it right away, `
+                       + `and the old name keeps working for agents that still remember it.`, s.name) || "").trim();
+  if (!next || next === s.name) return;
+  try {
+    await api(`/api/sessions/${encodeURIComponent(sid)}/name`, "POST", { name: next });
+  } catch (e) { alert("Could not rename: " + e); return; }
+  // Lựa chọn CLI và khoá terminal giữ theo TÊN — không dời theo thì card nối lại bằng CLI mặc định.
+  for (const m of [termCli, termLock]) if (s.name in m) { m[next] = m[s.name]; delete m[s.name]; }
+  await refreshAll();
+}
+window.renameCard = renameCard;
+
 async function setTermCli(sid, name, cli) {
   termCli[name] = cli;
   await reconnectTerm(sid, name);
@@ -1650,7 +1668,7 @@ function agentCard(s, needsYou) {
       : "";
     const head = `<div class="node-head">
       <span class="status-dot dot-${esc(s.status)}"></span>
-      <b title="${esc(s.name)}">${esc(s.name)}</b>
+      <b title="${esc(s.name)} — double-click to rename">${esc(s.name)}</b>
       ${needsYou ? `<span class="needs-badge">NEEDS YOU</span>` : ""}
       <span class="spacer"></span>
       ${adopt}
@@ -2406,7 +2424,8 @@ function cvInit() {
       // (editor dán theo trong layoutZones) → cả cặp đi cùng nhau, không tách ra được.
       const anchor = cvPairOf[node.dataset.nid] || node;
       drag = { mode: "node", el: anchor, nid: anchor.dataset.nid, sx: e.clientX, sy: e.clientY,
-               ox: parseFloat(anchor.style.left) || 0, oy: parseFloat(anchor.style.top) || 0 };
+               ox: parseFloat(anchor.style.left) || 0, oy: parseFloat(anchor.style.top) || 0,
+               onName: !!e.target.closest(".node-head > b") };
     } else if (!e.target.closest(".node")) {
       drag = { mode: "pan", sx: e.clientX, sy: e.clientY, ox: CV.tx, oy: CV.ty };
     } else return;
@@ -2501,7 +2520,17 @@ function cvInit() {
     // Trước đây click mở thẳng drawer transcript; giờ transcript là một nút trong inspector.
     if (drag.mode === "node" && !drag.moved) {
       const card = drag.el.querySelector(".agent-card");
-      if (card && card.dataset.sid) selectNode(card.dataset.sid);
+      if (card && card.dataset.sid) {
+        selectNode(card.dataset.sid);
+        // Bấm đúp lên TÊN = đổi tên. Không dùng ondblclick: setPointerCapture ở pointerdown
+        // retarget mọi event chuột về canvas, handler gắn trên tên không bao giờ chạy.
+        const now = performance.now(), last = cvInit._nameAt, sid = card.dataset.sid;
+        cvInit._nameAt = drag.onName ? { sid, t: now } : null;
+        if (drag.onName && last && last.sid === sid && now - last.t < 400) {
+          cvInit._nameAt = null;
+          setTimeout(() => renameCard(sid));   // sau khi up() dọn xong trạng thái kéo
+        }
+      }
     }
     // Click nền (pan mà không kéo) → bỏ chọn.
     if (drag.mode === "pan" && !drag.moved) selectNode(null);

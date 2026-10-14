@@ -366,6 +366,13 @@ def init_db():
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_board_tasks ON board_tasks(board_id, position);
+        -- Tên CŨ của một session đã đổi tên. Transcript của chính nó và của đồng nghiệp còn nhớ tên
+        -- cũ, nên signal gửi bằng tên cũ vẫn phải tới đúng card. Tên thật luôn thắng tên cũ.
+        CREATE TABLE IF NOT EXISTS session_aliases (
+            name TEXT NOT NULL,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            PRIMARY KEY (name, session_id)
+        );
     """)
     # migrate: board tạo trước khi thread được tách ra chưa có owner_id. '' = board kiểu cũ,
     # còn dùng chung transcript với người dùng; board_thread() nâng cấp nó ở lần chạy kế tiếp.
@@ -714,21 +721,76 @@ def set_session_resume(session_id, resume_id):
     conn.close()
 
 
-def set_session_workspace(session_id, workspace_id, name=None):
-    """Chuyển session sang workspace khác (kèm đổi tên vai nếu cần vì trùng tên bên đó).
+def set_session_workspace(session_id, workspace_id):
+    """Chuyển session sang workspace khác. Đổi tên kèm theo đi qua rename_session (playbook +
+    tên cũ phải đi cùng tên).
 
     CHỈ đụng cột workspace_id. KHÔNG viết lại signals/runs cũ: mỗi dòng đóng dấu nơi cuộc trao
     đổi ĐÃ xảy ra — sửa là làm giả audit log. Hệ quả đã biết: lịch sử ở lại workspace cũ, và
     ngân sách ping-pong (đếm theo signals.workspace_id) bắt đầu lại từ đầu bên mới."""
     conn = _conn()
-    if name:
-        conn.execute("UPDATE sessions SET workspace_id = ?, name = ?, last_active = ? WHERE id = ?",
-                     (workspace_id, name, _now(), session_id))
-    else:
-        conn.execute("UPDATE sessions SET workspace_id = ?, last_active = ? WHERE id = ?",
-                     (workspace_id, _now(), session_id))
+    conn.execute("UPDATE sessions SET workspace_id = ?, last_active = ? WHERE id = ?",
+                 (workspace_id, _now(), session_id))
     conn.commit()
     conn.close()
+
+
+def _rename_in_skill(text, old, new):
+    """Đổi tên vai ĐÚNG ở những chỗ template đặt nó (<ROLE_NAME>): dòng `name:`, tiêu đề `# vai`,
+    "the <vai> role" và tên trong ngoặc kép như from_role="<vai>". KHÔNG thay mọi chỗ chữ đó
+    xuất hiện: tên vai hay là từ thường ("dev", "writer"), thay tràn là sửa nát playbook."""
+    o = re.escape(old)
+    for pat in (rf"(?m)(^name:[ \t]*){o}([ \t]*$)", rf"(?m)(^#[ \t]+){o}([ \t]*$)",
+                rf"(\bthe ){o}( role\b)", rf"([\"']){o}(\1)"):
+        text = re.sub(pat, lambda m: m.group(1) + new + m.group(2), text)
+    return text
+
+
+def rename_session(session_id, name, workspace_id=None):
+    """Đổi tên vai của session → "" nếu xong, chuỗi lỗi nếu từ chối (chưa đổi gì).
+
+    Ba thứ đi theo tên, đổi một mà quên hai là agent hỏng im lặng:
+      - playbook <cwd>/<root>/skills/<tên>/SKILL.md của mọi CLI → dời sang thư mục tên mới, sửa
+        tên bên trong. Bỏ quên là vai mất playbook mà không ai báo;
+      - tên cũ → session_aliases, để signal gửi bằng tên cũ (đồng nghiệp nhớ tên cũ, chính nó
+        cũng ký from_role bằng tên cũ) vẫn tới đúng card;
+      - cột name.
+    workspace_id: nơi tên mới phải sống — move kèm đổi tên truyền workspace ĐÍCH."""
+    s = get_session(session_id)
+    old = s["name"]
+    ws = workspace_id or s.get("workspace_id") or DEFAULT_WORKSPACE
+    cwd = s.get("cwd") or ""
+    moves = []
+    for root in CLI_SKILL_ROOTS:
+        src, dst = _skill_path(cwd, old, root).parent, _skill_path(cwd, name, root).parent
+        if src.is_dir():
+            if dst.exists():
+                return (f"{dst} already exists — another role in this folder uses that name, "
+                        f"so its playbook would replace this agent's")
+            moves.append((src, dst))
+    # Cùng thư mục + cùng tên ở workspace KHÁC = dùng CHUNG playbook. Dời đi là bên kia mất nó.
+    shared = any(x["id"] != session_id and x["name"] == old and (x.get("cwd") or "") == cwd
+                 for x in list_sessions())
+    for src, dst in moves:
+        if shared:
+            shutil.copytree(src, dst)
+        else:
+            src.rename(dst)
+        f = dst / "SKILL.md"
+        if f.exists():
+            f.write_text(_rename_in_skill(f.read_text(encoding="utf-8"), old, name), encoding="utf-8")
+    conn = _conn()
+    # Tên mới từng là tên cũ của AI ĐÓ trong workspace này → tên thật thắng; xoá alias kẻo sau
+    # này card này đổi tên đi chỗ khác thì tên đó lại lặng lẽ trỏ về người kia.
+    conn.execute("DELETE FROM session_aliases WHERE name = ? AND session_id IN "
+                 "(SELECT id FROM sessions WHERE workspace_id = ?)", (name, ws))
+    conn.execute("INSERT OR IGNORE INTO session_aliases (name, session_id) VALUES (?, ?)",
+                 (old, session_id))
+    conn.execute("UPDATE sessions SET name = ?, last_active = ? WHERE id = ?",
+                 (name, _now(), session_id))
+    conn.commit()
+    conn.close()
+    return ""
 
 
 def set_session_effort(session_id, effort):
@@ -754,6 +816,33 @@ def get_session_by_name(name, workspace_id=None):
     return dict(row) if row else None
 
 
+def alias_sessions(name, workspace_id=None):
+    """Session từng mang tên `name` rồi được đổi tên, mới hoạt động trước. Lọc theo workspace
+    HIỆN TẠI của session (JOIN) — chuyển workspace thì tên cũ đi theo, không kẹt lại bên cũ."""
+    _ensure_db()
+    conn = _conn()
+    q = "SELECT s.* FROM session_aliases a JOIN sessions s ON s.id = a.session_id WHERE a.name = ?"
+    args = [name]
+    if workspace_id is not None:
+        q += " AND s.workspace_id = ?"
+        args.append(workspace_id)
+    rows = conn.execute(q + " ORDER BY s.last_active DESC", args).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def current_name(name, workspace_id=None):
+    """Tên HIỆN TẠI của vai được gọi bằng `name` — chính nó nếu là tên thật hoặc không ai mang.
+
+    Agent đã đổi tên vẫn ký from_role bằng tên cũ (transcript nhớ tên cũ). Ghi signal bằng tên
+    hiện tại thì trần ping-pong đếm đúng MỘT vai và canvas nối được mũi tên."""
+    if not name or name in _HUMAN_SENDERS or name == BOARD_SENDER \
+            or get_session_by_name(name, workspace_id):
+        return name
+    old = alias_sessions(name, workspace_id)
+    return old[0]["name"] if old else name
+
+
 def resolve_session_id(ref, workspace_id=None, from_ref=None):
     """ref = session_id (exact match) HOẶC role/name → trả session_id, None nếu không thấy.
 
@@ -768,7 +857,7 @@ def resolve_session_id(ref, workspace_id=None, from_ref=None):
         if workspace_id is not None and s.get("workspace_id") != workspace_id:
             return None
         return ref
-    s = get_session_by_name(ref, workspace_id)
+    s = get_session_by_name(ref, workspace_id) or next(iter(alias_sessions(ref, workspace_id)), None)
     return s["id"] if s else None
 
 
@@ -949,6 +1038,7 @@ def pair_counts(workspace_id):
 def enqueue_signal(to_session, message, from_session="", requires_approval=0, dry_run=0,
                    workspace_id=DEFAULT_WORKSPACE):
     _ensure_db()
+    from_session = current_name(from_session, workspace_id)
     # id=94: chặn NGAY Ở HÀM GHI (mọi đường vào signal đều qua đây: MCP send_signal, POST
     # /api/signals, và bất kỳ caller mới nào) thay vì rào ở từng caller — rào lẻ thì thêm đường
     # mới là thủng. Người gửi là NGƯỜI thì không chặn; '/compact' là lệnh vận hành, cũng không.
@@ -6506,13 +6596,51 @@ def build_app():
                           f"pass a different 'name' to move and rename in one step"},
                 status_code=409)
         old_ws = s.get("workspace_id") or DEFAULT_WORKSPACE
-        set_session_workspace(sid, wid, name if name != s["name"] else None)
+        if name != s["name"]:
+            err = rename_session(sid, name, wid)
+            if err:
+                return JSONResponse({"error": err}, status_code=409)
+        set_session_workspace(sid, wid)
         s = get_session(sid)
         # Hai event: pane cũ bỏ card đi, pane mới dựng lên. publish() lọc theo workspace_id nên
         # một event chỉ tới được một bên.
         publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": old_ws})
         publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": wid})
         return JSONResponse({**s, "moved_from": old_ws})
+
+    async def api_rename(request: Request):
+        """Đổi tên card. Signal gửi bằng tên mới tới ngay; tên cũ vẫn tới (xem rename_session)."""
+        sid = request.path_params["sid"]
+        s = get_session(sid)
+        if not s:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        name = (body.get("name") or "").strip()
+        # Tên đi thẳng vào đường dẫn playbook (<cwd>/.claude/skills/<tên>/) — chặn như
+        # _write_role_skill, không thì '../x' dời playbook ra khỏi thư mục skills.
+        if not name or name in (".", "..") or "/" in name or "\\" in name:
+            return JSONResponse({"error": "name is required and cannot contain / or \\"},
+                                status_code=400)
+        if name == s["name"]:
+            return JSONResponse(s)
+        if s.get("status") == "running":
+            # Đang chạy = CLI đang đọc playbook từ thư mục sắp bị dời.
+            return JSONResponse({"error": "session is running — wait for the current turn to finish"},
+                                status_code=409)
+        ws = s.get("workspace_id") or DEFAULT_WORKSPACE
+        clash = get_session_by_name(name, ws)
+        if clash and clash["id"] != sid:
+            return JSONResponse({"error": f"this workspace already has a session named '{name}'"},
+                                status_code=409)
+        err = rename_session(sid, name)
+        if err:
+            return JSONResponse({"error": err}, status_code=409)
+        old, s = s["name"], get_session(sid)
+        publish({"type": "session", "id": sid, "status": s["status"], "workspace_id": ws})
+        return JSONResponse({**s, "renamed_from": old})
 
     async def api_set_effort(request: Request):
         """Đổi reasoning effort của 1 session ngay trên bảng Sessions."""
@@ -7049,6 +7177,7 @@ def build_app():
         Route("/api/sessions/{sid}/model", api_set_model, methods=["POST"]),
         Route("/api/sessions/{sid}/effort", api_set_effort, methods=["POST"]),
         Route("/api/sessions/{sid}/workspace", api_set_workspace, methods=["POST"]),
+        Route("/api/sessions/{sid}/name", api_rename, methods=["POST"]),
         Route("/api/sessions/{sid}/allow", api_allow, methods=["POST"]),
         Route("/api/signals", api_signals),
         Route("/api/signals", api_enqueue, methods=["POST"]),

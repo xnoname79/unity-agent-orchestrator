@@ -106,7 +106,10 @@ back out; the API answers with the last four characters.
 **Spawn agent** asks for the group first, then a workspace inside it, then four fields:
 
 * **Role name** — how signals find this agent, so it must be unique in the workspace. It also
-  names the skill directory its playbook is written to.
+  names the skill directory its playbook is written to. Rename it later by double-clicking the
+  name on the card, or with the pencil in the inspector: the playbook moves to the new directory,
+  signals to the new name reach it at once, and the old name keeps working, since other agents
+  and the agent itself still remember it from their conversations.
 * **Playbook template** — which bundled template under `.claude/skills/` seeds the role. Several
   agents can share one; they differ by role name, not by playbook.
 * **Working dir** — the project the agent operates in. Leave it empty to use the workspace folder.

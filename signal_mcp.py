@@ -50,7 +50,9 @@ def _sender_workspace(orch, from_role: str = "", workspace_id: str = ""):
     if workspace_id:
         return workspace_id
     if from_role:
-        matches = {s.get("workspace_id") for s in orch.list_sessions() if s.get("name") == from_role}
+        # Tên cũ của card đã đổi tên cũng tính: agent đó vẫn ký from_role bằng tên nó nhớ.
+        matches = ({s.get("workspace_id") for s in orch.list_sessions() if s.get("name") == from_role}
+                   or {s.get("workspace_id") for s in orch.alias_sessions(from_role)})
         if len(matches) == 1:
             return next(iter(matches))
     return None
@@ -69,7 +71,7 @@ def _check_from_role(orch, from_role: str):
     if not from_role or from_role.strip().lower() in orch._HUMAN_SENDERS:
         return ""
     names = {s.get("name") for s in orch.list_sessions()}
-    if from_role in names:
+    if from_role in names or orch.alias_sessions(from_role):   # tên cũ của card đã đổi tên
         return ""
     return (f"⛔ from_role='{from_role}' không phải vai nào đang đăng ký. Điền ĐÚNG tên session "
             f"của bạn (gọi list_agents để xem danh sách), đừng tự đặt tên — sai tên thì "
