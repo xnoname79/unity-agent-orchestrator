@@ -638,6 +638,8 @@
   .edge { stroke-width: 1.6; fill: none; }
   .edge-wait { stroke: var(--edge-wait); }
   .edge-run { stroke: var(--edge-run); stroke-dasharray: 6 5; animation: edgeflow .6s linear infinite; }
+  /* Một chiều (báo cáo / không cần trả lời): chấm thay vì nét — nhìn là biết sẽ không có mũi tên về. */
+  .edge-oneway { stroke-dasharray: 1 5; stroke-linecap: round; }
   @keyframes edgeflow { to { stroke-dashoffset: -11; } }
 
   /* Card agent: luôn có terminal nhúng */

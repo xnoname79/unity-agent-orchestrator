@@ -79,7 +79,7 @@ def _check_from_role(orch, from_role: str):
 
 
 async def _enqueue(to_role: str, message: str, from_role: str = "", requires_approval: int = 0,
-                   workspace_id: str = ""):
+                   workspace_id: str = "", expect_reply: bool = True):
     """Đẩy 1 signal vào orchestrator. In-process nếu chạy chung, ngược lại POST HTTP.
 
     Đa tenant: resolve `to_role` TRONG CÙNG workspace với người gửi — để hai workspace trùng
@@ -105,7 +105,8 @@ async def _enqueue(to_role: str, message: str, from_role: str = "", requires_app
             return False, f"không tìm thấy session cho '{to_role}'{scope}"
         target_ws = orch.get_session(target).get("workspace_id") or orch.DEFAULT_WORKSPACE
         try:
-            sid = orch.enqueue_signal(target, message, from_role, int(requires_approval), 0, target_ws)
+            sid = orch.enqueue_signal(target, message, from_role, int(requires_approval), 0, target_ws,
+                                      expects_reply=expect_reply)
         except orch.SignalPairCapExceeded as e:
             # id=94 trần ping-pong: trả NGUYÊN VĂN lời hướng dẫn cho agent (nó phải đọc được là
             # cần báo cáo cho người dùng, không phải thử lại).
@@ -119,6 +120,7 @@ async def _enqueue(to_role: str, message: str, from_role: str = "", requires_app
         "message": message,
         "from_role": from_role,
         "requires_approval": int(requires_approval),
+        "expects_reply": bool(expect_reply),
     }
     if workspace_id:
         payload["workspace_id"] = workspace_id
@@ -134,7 +136,7 @@ async def _enqueue(to_role: str, message: str, from_role: str = "", requires_app
 
 @mcp.tool()
 async def send_signal(to_role: str, message: str, from_role: str = "", requires_approval: bool = False,
-                      workspace_id: str = ""):
+                      workspace_id: str = "", expect_reply: bool = True):
     """Gửi signal tới một agent khác. Orchestrator sẽ inject message vào session đó.
 
     Dùng khi agent hiện tại cần bàn giao/thông báo cho agent khác (vd Artist Director
@@ -151,8 +153,12 @@ async def send_signal(to_role: str, message: str, from_role: str = "", requires_
         workspace_id: (đa tenant) workspace của agent gửi — orchestrator cấp cho bạn khi
                  spawn. Truyền vào để signal chỉ resolve trong đúng workspace này (bắt buộc
                  khi role bị trùng giữa nhiều workspace). Bỏ trống nếu chạy đơn tenant.
+        expect_reply: False = yêu cầu MỘT CHIỀU (cập nhật, thông báo): vai kia làm xong là dừng,
+                 KHÔNG gửi báo cáo về. Để True khi bạn cần kết quả để làm tiếp. Báo cáo
+                 [REPORT] cho việc người kia giao thì orchestrator tự đánh dấu, không cần đặt.
     """
-    ok, data = await _enqueue(to_role, message, from_role, 1 if requires_approval else 0, workspace_id)
+    ok, data = await _enqueue(to_role, message, from_role, 1 if requires_approval else 0, workspace_id,
+                              expect_reply)
     if not ok:
         # Trần ping-pong (id=94) và from_role sai đều đã là câu chỉ dẫn hoàn chỉnh — trả nguyên
         # văn, đừng bọc thêm chữ "Lỗi" khiến agent tưởng là trục trặc kỹ thuật rồi thử lại.
@@ -178,7 +184,8 @@ async def compact_context(role: str = "", focus: str = "", from_role: str = "", 
     if not target:
         return "Cần 'role' (hoặc 'from_role') của agent cần nén."
     message = "/compact" + (f" {focus}" if focus.strip() else "")
-    ok, data = await _enqueue(target, message, from_role, 0, workspace_id)
+    # Nén là việc vận hành, không có gì để báo cáo ngược.
+    ok, data = await _enqueue(target, message, from_role, 0, workspace_id, expect_reply=False)
     if not ok:
         return f"Lỗi gửi lệnh compact {data}"
     return f"Đã lên lịch compact cho '{target}' (signal #{data.get('id')})."

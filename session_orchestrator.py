@@ -288,6 +288,7 @@ def init_db():
             message TEXT NOT NULL,
             requires_approval INTEGER NOT NULL DEFAULT 0,
             dry_run INTEGER NOT NULL DEFAULT 0,      -- 1 = preview, không gọi claude thật
+            expects_reply INTEGER NOT NULL DEFAULT 1, -- 0 = báo cáo / yêu cầu một chiều, đừng trả lời
             status TEXT NOT NULL DEFAULT 'pending',  -- pending|approved|processing|done|failed|denied|blocked
             reason TEXT NOT NULL DEFAULT '',          -- lý do khi blocked/failed/denied (hiển thị hover trên dashboard)
             created_at TEXT NOT NULL,
@@ -385,6 +386,8 @@ def init_db():
     cols = [r[1] for r in conn.execute("PRAGMA table_info(signals)").fetchall()]
     if "dry_run" not in cols:
         conn.execute("ALTER TABLE signals ADD COLUMN dry_run INTEGER NOT NULL DEFAULT 0")
+    if "expects_reply" not in cols:
+        conn.execute("ALTER TABLE signals ADD COLUMN expects_reply INTEGER NOT NULL DEFAULT 1")
     if "reason" not in cols:
         conn.execute("ALTER TABLE signals ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
     if "workspace_id" not in cols:
@@ -1035,10 +1038,31 @@ def pair_counts(workspace_id):
     return counts
 
 
+def _is_answer(from_name, to_session, workspace_id):
+    """Signal from_name → to_session là CÂU TRẢ LỜI: người gửi đang chạy đúng signal do người nhận
+    giao (status 'processing'). Báo cáo gửi trong lượt đó là kết thúc việc, không phải việc mới."""
+    src = get_session_by_name(from_name, workspace_id)
+    if not src:
+        return False
+    conn = _conn()
+    row = conn.execute("SELECT 1 FROM signals WHERE status = 'processing' AND to_session = ? "
+                       "AND from_session = ? AND workspace_id = ? LIMIT 1",
+                       (src["id"], _session_name(to_session), workspace_id)).fetchone()
+    conn.close()
+    return row is not None
+
+
 def enqueue_signal(to_session, message, from_session="", requires_approval=0, dry_run=0,
-                   workspace_id=DEFAULT_WORKSPACE):
+                   workspace_id=DEFAULT_WORKSPACE, expects_reply=1):
+    """expects_reply=0: người nhận làm xong thì DỪNG, không gửi báo cáo về (xem _reply_rule).
+    Người gửi tự chọn (send_signal expect_reply=False — yêu cầu một chiều), hoặc orchestrator tự
+    đặt khi signal là câu trả lời (_is_answer). Thiếu cái sau là A giao việc, B báo cáo, A lại
+    "báo cáo" cho báo cáo của B… qua lại tới trần id=94 thay vì dừng sau một vòng."""
     _ensure_db()
     from_session = current_name(from_session, workspace_id)
+    if expects_reply and from_session not in _HUMAN_SENDERS and from_session != BOARD_SENDER \
+            and _is_answer(from_session, to_session, workspace_id):
+        expects_reply = 0
     # id=94: chặn NGAY Ở HÀM GHI (mọi đường vào signal đều qua đây: MCP send_signal, POST
     # /api/signals, và bất kỳ caller mới nào) thay vì rào ở từng caller — rào lẻ thì thêm đường
     # mới là thủng. Người gửi là NGƯỜI thì không chặn; '/compact' là lệnh vận hành, cũng không.
@@ -1069,10 +1093,10 @@ def enqueue_signal(to_session, message, from_session="", requires_approval=0, dr
                 f"Bộ đếm tự mở lại khi người dùng giao việc mới.")
     conn = _conn()
     cur = conn.execute(
-        "INSERT INTO signals (workspace_id, from_session, to_session, message, requires_approval, dry_run, status, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+        "INSERT INTO signals (workspace_id, from_session, to_session, message, requires_approval, dry_run, "
+        "expects_reply, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
         (workspace_id, from_session, to_session, _coerce_message(message),
-         int(requires_approval), int(dry_run), _now()),
+         int(requires_approval), int(dry_run), 1 if expects_reply else 0, _now()),
     )
     conn.commit()
     sid = cur.lastrowid
@@ -2391,7 +2415,7 @@ _TIMING_RULE = ('[Thời điểm] send_signal là thao tác CUỐI của lượt
                 'signal (báo cáo + bàn giao) thì gửi liền nhau ở cuối lượt.')
 
 
-def _reply_rule(name, from_role):
+def _reply_rule(name, from_role, expects_reply=1):
     """Đích báo cáo = NGƯỜI GỬI signal này, không phải một vai cố định.
 
     Playbook cũ dạy báo cáo về một alias cố định; alias đó chỉ resolve khi có session được đánh
@@ -2400,6 +2424,11 @@ def _reply_rule(name, from_role):
     if not from_role or from_role.strip().lower() in _HUMAN_SENDERS:
         return ("[Báo cáo] Signal này do NGƯỜI DÙNG gửi, không phải agent. Trả lời bằng text ngay "
                 "trong lượt này — KHÔNG gọi send_signal để 'báo cáo' (không có agent nào để nhận).")
+    if not expects_reply:
+        return (f'[Báo cáo] Signal này do vai "{from_role}" gửi và KHÔNG cần trả lời: hoặc là báo cáo '
+                f'cho việc bạn đã giao, hoặc là yêu cầu một chiều. Làm phần việc của bạn (nếu có) rồi '
+                f'DỪNG — KHÔNG send_signal về "{from_role}", kể cả chỉ để xác nhận đã nhận. Luật này '
+                f'thay cho luật báo cáo trong playbook. Bàn giao bước kế cho một vai KHÁC thì vẫn gửi.')
     return (f'[Báo cáo] Signal này do vai "{from_role}" giao. Xong việc: '
             f'send_signal(to_role="{from_role}", from_role="{name}", '
             f'message="[REPORT] <kết quả> + <bằng chứng: path/số liệu/test> + <còn hở gì>"). '
@@ -2408,7 +2437,7 @@ def _reply_rule(name, from_role):
             f'KHÔNG gửi signal về chính mình.')
 
 
-def _prepend_role(cwd, name, message, from_role=""):
+def _prepend_role(cwd, name, message, from_role="", expects_reply=1):
     """Ghim role + playbook vào MỖI signal inject → role không trôi khi history dài/compact.
     Lazy-load: chỉ SKILL của role này, không nhồi mọi skill. Không có SKILL → chỉ prepend tên role."""
     parts = []
@@ -2418,7 +2447,7 @@ def _prepend_role(cwd, name, message, from_role=""):
     # Luôn có, kể cả vai không có SKILL riêng.
     parts.append(_PEER_RULE)
     parts.append(_TIMING_RULE)
-    parts.append(_reply_rule(name, from_role))
+    parts.append(_reply_rule(name, from_role, expects_reply))
     return (f"[Role: {name}]\n[Signal from: {from_role or 'user'}]\n"
             + "\n\n---\n\n".join(parts) + f"\n\n---\n\n{message}")
 
@@ -2442,7 +2471,7 @@ def _is_slash_cmd(message):
     return bool(_SLASH_CMD.match(str(message or "").strip()))
 
 
-def inject_prompt(target, message, from_role=""):
+def inject_prompt(target, message, from_role="", expects_reply=1):
     """Prompt THỰC SỰ đi vào CLI cho một signal.
 
     Chỉ claude được đi thẳng: codex/agy nhận `/compact` ra sao thì chưa đo, nên giữ NGUYÊN đường
@@ -2450,7 +2479,7 @@ def inject_prompt(target, message, from_role=""):
     Mất khối role đúng một lượt là có chủ ý: lượt compact không làm việc của vai."""
     if _is_slash_cmd(message) and engine_name_of_session(target) == "claude":
         return str(message).strip()
-    return _prepend_role(target.get("cwd", ""), target["name"], message, from_role)
+    return _prepend_role(target.get("cwd", ""), target["name"], message, from_role, expects_reply)
 
 
 # ─── Skill templates (liệt kê vai/role cho dropdown spawn) ────────────────────
@@ -4313,7 +4342,8 @@ async def process_signal(signal):
             # from_session lưu TÊN VAI người gửi (xem enqueue_signal) → đưa thẳng vào prompt để
             # agent biết báo cáo ngược cho ai. Rỗng/'user' = người dùng chat, không phải agent.
             # Ngoại lệ DUY NHẤT: signal bản thân nó là một lệnh slash (xem inject_prompt).
-            inject_msg = inject_prompt(target, signal["message"], signal.get("from_session", ""))
+            inject_msg = inject_prompt(target, signal["message"], signal.get("from_session", ""),
+                                       signal.get("expects_reply", 1))
             while True:
                 try:
                     res = await engine.run(target, inject_msg, on_event=on_event, dry_run=dry)
@@ -6756,7 +6786,8 @@ def build_app():
         try:
             sid = enqueue_signal(target, body["message"],
                                  body.get("from_session", "") or body.get("from_role", ""),
-                                 int(body.get("requires_approval", 0)), int(body.get("dry_run", 0)), target_ws)
+                                 int(body.get("requires_approval", 0)), int(body.get("dry_run", 0)), target_ws,
+                                 expects_reply=bool(body.get("expects_reply", True)))
         except SignalPairCapExceeded as e:
             # id=94: 429 = "đúng đường nhưng hết lượt". Body mang nguyên lời hướng dẫn để caller
             # đọc được phải làm gì thay vì chỉ thấy mã lỗi.

@@ -58,6 +58,11 @@ Every signal you receive carries a `[Signal from: ...]` line naming its sender.
 - Sent by another agent → when you are done, `send_signal` a `[REPORT]` back to that
   agent: what you did, the evidence (paths, numbers, test output), and what is still
   open. Report to the sender, never to a fixed role name.
+- Marked as needing no reply → do the work, then stop. Do not signal the sender, not
+  even to confirm. Reports are marked this way automatically, so a `[REPORT]` ends the
+  exchange: never answer a report with another report.
+- Need nothing back (an update, a heads-up, "please change X")? Send it with
+  `expect_reply=False` so the other agent does not report back.
 - Sent by a human → answer in text. There is nobody to signal.
 - A hand-off to a third role is a separate signal. It does not replace the report.
   Both go out at the end of the turn, back to back — never one now and one later.

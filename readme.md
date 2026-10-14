@@ -543,6 +543,11 @@ Stop it with `launchctl unload -w ~/Library/LaunchAgents/com.agent-orch.plist`.
 What keeps a room full of unattended agents from running away:
 
 * **Approval gate** — signals marked `requires_approval` wait for a human on the dashboard.
+* **Reports end the exchange** — an agent that receives work reports back once. A signal sent
+  while handling work from that same agent is recognised as the report and marked one-way, so
+  the receiver does not report on the report. An agent can also send a one-way request itself
+  (`send_signal(..., expect_reply=False)`) when it needs nothing back. One-way signals show a
+  `one-way` badge in History and a dotted arrow on the canvas.
 * **Ping-pong cap** — a pair of agents gets a bounded number of exchanges per task; the budget
   reopens when a human gives new work.
 * **Daily cap** — off by default; set `ORCH_MAX_RUNS_PER_DAY` and a session that hits it waits

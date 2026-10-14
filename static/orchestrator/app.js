@@ -2135,7 +2135,7 @@ function redrawEdges() {
     const ra = rect(a), rb = rect(b);
     const p1 = rectBorderPoint(ra, rb.x + rb.w / 2, rb.y + rb.h / 2);
     const p2 = rectBorderPoint(rb, ra.x + ra.w / 2, ra.y + ra.h / 2);
-    out += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" class="edge edge-${e.cls}" marker-end="url(#ah-${e.cls})"/>`;
+    out += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" class="edge edge-${e.cls}${e.oneway ? " edge-oneway" : ""}" marker-end="url(#ah-${e.cls})"/>`;
   }
   svg.innerHTML = EDGE_DEFS + out;
   redrawMinimap();   // gọi ở đây = mọi lần node đổi vị trí/kích thước/số lượng đều bắt được
@@ -2335,7 +2335,7 @@ function renderCanvas(sessions, signals) {
     if (!cls) continue;
     const key = from + "→" + to;
     if (!pairBest.has(key) || cls === "run")
-      pairBest.set(key, { from, to, cls });
+      pairBest.set(key, { from, to, cls, oneway: sg.expects_reply === 0 });
   }
   cvEdges = [...pairBest.values()];
   redrawEdges();
@@ -3578,7 +3578,8 @@ function renderSignals(list) {
     }
     return `<tr>
       <td>${s.id}</td>
-      <td><code>${esc(s.from_session || "—")} → ${esc(s.to_session)}</code></td>
+      <td><code>${esc(s.from_session || "—")} → ${esc(s.to_session)}</code>
+        ${s.expects_reply === 0 ? badge("one-way", "b-gray", "No reply expected: the receiver does the work and stops — a report, or a request sent with expect_reply=False") : ""}</td>
       <td class="msg" title="${esc(s.message)}">${esc(s.message)}</td>
       <td>${s.requires_approval ? badge("required", "b-amber") : "—"}</td>
       <td>${badge(s.status, SIGNAL_BADGE[s.status], s.reason)}</td>
