@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guards for the Sounds panel and its MCP tools — search a video, pull its sound out with yt-dlp.
+"""Guards for the Sounds panel — search a video, pull its sound out with yt-dlp, cut it.
 
 Text from strangers reaches yt-dlp's argv here: the search a user (or an agent) types, the link
 they paste. Every way that goes wrong is a quiet one:
@@ -18,7 +18,6 @@ they paste. Every way that goes wrong is a quiet one:
     restart;
   - the length filter runs AFTER the search, so a tight one must fetch more, then trim to the
     limit — or "up to 5 min" comes back nearly empty;
-  - the panel and the MCP tools must share one library: what an agent extracts, the user sees;
   - the panel's extract is a DRAFT: not in the library until the editor keeps it, a failed cut
     keeps the draft, a bad range never reaches ffmpeg, keeping all of it is not re-encoded;
   - an upload is a stranger's file on our disk: only mp3, under a size cap checked WHILE it
@@ -51,7 +50,6 @@ os.environ["ORCH_WORKSPACES_ROOT"] = tempfile.mkdtemp()
 
 import httpx                          # noqa: E402
 import session_orchestrator as so     # noqa: E402
-import sound_mcp                      # noqa: E402
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 so.SOUNDS_DIR = Path(tempfile.mkdtemp())
@@ -293,7 +291,7 @@ async def main():
               and [f.name for f in drafts.iterdir() if "-cut" in f.name] == [], r.text[:120])
         r = await c.post(keep, json={"start": 0.5, "end": 1.5})
         k = r.json()
-        args = ff_calls[-1]
+        args = next(a for a in reversed(ff_calls) if "-ss" in a)   # sau nó có thể là lượt đo nền
         check("the cut asks ffmpeg for exactly that part",
               args[args.index("-ss") + 1] == "0.500" and args[args.index("-t") + 1] == "1.000",
               str(args))
@@ -311,7 +309,7 @@ async def main():
         n = len(ff_calls)
         r = await c.post(f"/api/sounds/drafts/{d2}/keep", json={"start": 0, "end": None})
         check("keeping all of it moves the file as is, not re-encoded",
-              r.status_code == 200 and len(ff_calls) == n
+              r.status_code == 200 and not any("-ss" in a for a in ff_calls[n:])
               and (so.SOUNDS_DIR / d2).read_bytes() == b"ID3fake-audio", r.text[:120])
 
         r = await c.post("/api/sounds", json={"url": "https://youtu.be/a1", "draft": True})
@@ -359,26 +357,9 @@ async def main():
         present["yt-dlp"] = str(YT)
         so._ytdlp = fake_ytdlp
 
-    # ── MCP: cùng lõi, cùng thư viện ─────────────────────────────────────────
-    res = json.loads(await sound_mcp.search_videos("rain", 5))
-    await sound_mcp.search_videos("rain", 5, max_minutes=10)
-    check("search_videos takes the same length filter", calls[-1][-1].startswith("ytsearch15:"),
-          calls[-1][-1])
-    check("search_videos returns the results as JSON", res["results"][0]["title"] == "Rain loop",
-          str(res)[:120])
-    made = json.loads(await sound_mcp.extract_audio("https://youtu.be/a1", "mp3", "sound-designer"))
-    lib = json.loads(await sound_mcp.list_sounds())
-    check("what an agent extracts lands in the user's library, signed with its name",
-          any(i["name"] == made["name"] and i["by"] == "sound-designer" for i in lib), str(lib)[:160])
-    check("the agent gets the file path to copy from", Path(made["path"]).is_file(), made["path"])
-    msg = await sound_mcp.extract_audio("file:///etc/passwd")
-    check("tool errors read as instructions, not as crashes", msg.startswith("⛔"), msg)
-
     # ── Nối dây ──────────────────────────────────────────────────────────────
     html = (HERE / "static/orchestrator/index.html").read_text(encoding="utf-8")
     js = (HERE / "static/orchestrator/app.js").read_text(encoding="utf-8")
-    py = (HERE / "session_orchestrator.py").read_text(encoding="utf-8")
-    spec = (HERE / "build.spec").read_text(encoding="utf-8")
     for want, where, blob in (('id="snd-modal"', "index.html", html),
                               ('onclick="toolsClose(); sndOpen()"', "app.js", js),
                               ("window.sndOpen", "app.js", js),
@@ -389,9 +370,7 @@ async def main():
                               ('id="lib-drawer"', "index.html", html),
                               ('"/api/sounds/upload?name="', "app.js", js),
                               ('max_minutes: +$("snd-len").value', "app.js", js),
-                              ('onclick="sndRecheck()"', "app.js", js),
-                              ('Mount("/sounds", app=sound_app)', "session_orchestrator.py", py),
-                              ('"sound_mcp"', "build.spec", spec)):
+                              ('onclick="sndRecheck()"', "app.js", js)):
         check(f"{where} wires up {want}", want in blob, "not found")
 
 

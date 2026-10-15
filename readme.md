@@ -349,27 +349,32 @@ streams cannot be extracted. Files are kept in `~/.session_orch_db/sounds/`. A v
 belongs to whoever made it — the library shows a licence when the site states one; check it before
 you ship a sound.
 
-Agents get the same panel as MCP tools, served at `/sounds/mcp`:
-
-| Tool | Does |
-|---|---|
-| `search_videos(query, limit, ai_only, max_minutes)` | Searches, returns titles, links and durations |
-| `extract_audio(url, format, from_role)` | Pulls the sound into the library, returns its file path |
-| `list_sounds()` | What is in the library |
-
-A sound an agent extracts appears in your library, signed with its name. Press **Give agents these
-tools** in the panel to register the server with every installed CLI, or once by hand:
-
-```bash
-claude mcp add --transport http --scope user sounds http://127.0.0.1:8992/sounds/mcp
-```
-
 ## Library
 
 **Library** on the top bar opens a drawer with everything you have kept: sounds (play, download,
 delete) and images. **Upload mp3** adds a sound from your computer, up to 100 MB; it opens in
-**Edit sound** first, so you can cut it before it is kept. What agents extract or draw shows up
-there within a few seconds.
+**Edit sound** first, so you can cut it before it is kept. Images agents draw show up there within
+a few seconds.
+
+Agents read the same library through MCP tools served at `/library/mcp`. They are read-only:
+nothing here adds, changes or deletes media.
+
+| Tool | Does |
+|---|---|
+| `search_media(query, kind, min_seconds, max_seconds, limit)` | Finds sounds and images by words in their title, prompt or file name, by kind and by length. Returns each file's path |
+| `inspect_media(name)` | An image comes back as the picture itself, with its prompt and size. A sound comes back measured: length, loudness over time, where it is loud and quiet, and how bright it is |
+
+An agent cannot listen, so `inspect_media` measures a sound with ffmpeg instead, the same way
+Signal's `inspect_audio` does. The numbers are saved in the sound's `.json` beside the file, so
+`search_media` returns them from then on without measuring again. A sound you keep from **Edit
+sound** is measured as soon as it is saved.
+
+Press **Give agents these tools** in the drawer to register the server with every installed CLI,
+or once by hand:
+
+```bash
+claude mcp add --transport http --scope user library http://127.0.0.1:8992/library/mcp
+```
 
 ## Tools for video and audio
 
@@ -636,6 +641,7 @@ python3 check_origin.py                     # a website you visit cannot drive t
 python3 check_tools.py                      # the media tool panel tells the truth about this machine
 python3 check_boards.py                     # a board nudges like a friend, not an alarm clock
 python3 check_sounds.py                     # a search or link never reaches yt-dlp as a flag
+python3 check_library.py                    # agents' library search and sound measurements are right
 ```
 
 ## License

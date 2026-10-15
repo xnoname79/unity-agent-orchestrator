@@ -3519,14 +3519,14 @@ $("img-grid").addEventListener("click", imgClick);
 $("img-refs").addEventListener("click", imgClick);
 
 // ── Sounds ───────────────────────────────────────────────────────────────────
-// Tìm video, tách tiếng bằng yt-dlp. Agent dùng CÙNG lõi qua MCP /sounds/mcp, nên thư viện là
-// một: agent tách xong là hiện ở đây. Modal sống ở shell (không có SSE) → poll khi đang mở.
+// Tìm video, tách tiếng bằng yt-dlp, cắt trong editor rồi mới vào thư viện. Agent không tách
+// tiếng; nó đọc thư viện qua /library/mcp (xem Library).
 let sndResults = [];
-let sndLibKey = "";      // tên các file đang vẽ — poll chỉ vẽ lại khi đổi, kẻo <audio> đang phát bị cắt
+let sndLibKey = "";      // tên các file đang vẽ — chỉ vẽ lại khi đổi, kẻo <audio> đang phát bị cắt
 const sndUrl = (name) => "/api/sounds/" + encodeURIComponent(name);
 const sndDur = (s) => s == null ? "" : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 
-function sndStatus(st, agents) {
+function sndStatus(st) {
   const fix = (cmd, site, more = "") => `<div class="tool-fix">${cmd ? `<code>${esc(cmd)}</code>` : ""}
     <a href="${esc(site)}" target="_blank" rel="noopener">${cmd ? "other ways" : "how to install"}</a>${more}</div>`;
   // Đường dẫn: máy có thể có nhiều yt-dlp (conda, pip, bản release) — nâng nhầm bản là vẫn "cũ".
@@ -3542,11 +3542,6 @@ function sndStatus(st, agents) {
   else out.push(`<div>${badge("ready", "b-green")} <b>yt-dlp ${esc(st.version)}</b>${at} ${recheck}</div>`);
   if (!st.ffmpeg) out.push(`<div>${badge("missing", "b-red")} <b>ffmpeg</b> is needed to pull the
     sound out of a video.</div>${fix(st.ffmpeg_install, "https://ffmpeg.org/download.html")}`);
-  out.push(agents.length
-    ? `<div class="hint">Agents can use these tools too (${esc(agents.join(", "))}):
-        <code>search_videos</code>, <code>extract_audio</code>, <code>list_sounds</code>.</div>`
-    : `<div class="hint">Agents cannot use these tools yet.
-        <button class="secondary" onclick="sndConnect()">Give agents these tools</button></div>`);
   out.push(`<div class="hint">Saved to <code>${esc(st.dir)}</code> · videos up to
     ${st.max_minutes} minutes.</div>`);
   $("snd-status").innerHTML = out.join("");
@@ -3585,13 +3580,9 @@ function sndLibHtml(list) {
     </div>`).join("") : `<div class="hint">Nothing yet — extract a sound and it lands here.</div>`;
 }
 
-async function sndLoad(withAgents) {
+async function sndLoad(withStatus) {
   const r = await api("/api/sounds");
-  if (withAgents) {
-    const m = await api("/api/mcp").catch(() => ({ servers: [] }));
-    const s = (m.servers || []).find((x) => (x.url || "").split("?")[0].replace(/\/+$/, "").endsWith("/sounds/mcp"));
-    sndStatus(r.status, s ? s.clis : []);
-  }
+  if (withStatus) sndStatus(r.status);
   sndPaintLib(r.items);
 }
 
@@ -3613,9 +3604,6 @@ window.sndRecheck = sndRecheck;
 
 function sndClose() { $("snd-modal").hidden = true; }
 window.sndClose = sndClose;
-
-// Agent extract_audio xong lúc modal đang mở → hiện ra trong vòng 5 giây.
-setInterval(() => { if (!$("snd-modal").hidden) sndLoad(false).catch(() => {}); }, 5000);
 
 async function sndSearch() {
   const query = $("snd-q").value.trim();
@@ -3658,16 +3646,6 @@ async function sndClick(ev) {
 }
 $("snd-results").addEventListener("click", sndClick);
 $("snd-lib").addEventListener("click", sndClick);
-
-// Đăng ký /sounds/mcp cho MỌI CLI đang cài, qua đúng đường của modal MCP (kiểm trước, ghi sau).
-async function sndConnect() {
-  try {
-    await api("/api/mcp/connect", "POST", { name: "sounds", url: location.origin + "/sounds/mcp" });
-    showMsg("snd-msg", "Done — agents started after this have the Sounds tools.", true);
-    await sndLoad(true);
-  } catch (e) { showMsg("snd-msg", mcpErr(e), false); }
-}
-window.sndConnect = sndConnect;
 
 // ── Sound editor ─────────────────────────────────────────────────────────────
 // Bản nháp vừa tách (drafts/, chưa vào thư viện) → chọn đoạn giữ lại → Save mới vào thư viện.
@@ -3840,6 +3818,7 @@ window.sedDiscard = sedDiscard;
 // ── Library ──────────────────────────────────────────────────────────────────
 // Mọi thứ đã giữ lại ở một chỗ: tiếng (thư viện Sounds) và ảnh (thư viện Images). Cùng API,
 // cùng markup với hai modal kia — ở đây chỉ gom lại, thêm tải mp3 lên (qua editor để cắt).
+// Agent đọc đúng thư viện này qua /library/mcp: search_media, inspect_media.
 let libKey = "";      // như sndLibKey: poll chỉ vẽ lại khi danh sách đổi, kẻo <audio> đang phát bị cắt
 
 const libIsOpen = () => $("lib-drawer").classList.contains("open");
@@ -3860,7 +3839,29 @@ function libOpen() {
   $("lib-overlay").classList.add("open");
   libKey = "";
   libLoad().catch((e) => showMsg("lib-msg", "Error: " + e, false));
+  libAgents();
 }
+
+// CLI nào đã có /library/mcp — đọc từ danh sách của modal MCP, không gọi thử server.
+async function libAgents() {
+  const m = await api("/api/mcp").catch(() => ({ servers: [] }));
+  const s = (m.servers || []).find((x) => (x.url || "").split("?")[0].replace(/\/+$/, "").endsWith("/library/mcp"));
+  $("lib-agents").innerHTML = s && s.clis.length
+    ? `Agents can search and inspect this library (${esc(s.clis.join(", "))}):
+        <code>search_media</code>, <code>inspect_media</code>.`
+    : `Agents cannot see this library yet.
+        <button class="secondary" onclick="libConnect()">Give agents these tools</button>`;
+}
+
+// Đăng ký /library/mcp cho MỌI CLI đang cài, qua đúng đường của modal MCP (kiểm trước, ghi sau).
+async function libConnect() {
+  try {
+    await api("/api/mcp/connect", "POST", { name: "library", url: location.origin + "/library/mcp" });
+    showMsg("lib-msg", "Done — agents started after this can search and inspect the library.", true);
+    await libAgents();
+  } catch (e) { showMsg("lib-msg", mcpErr(e), false); }
+}
+window.libConnect = libConnect;
 window.libOpen = libOpen;
 
 function libClose() {
@@ -3870,7 +3871,7 @@ function libClose() {
 }
 window.libClose = libClose;
 
-// Agent tách tiếng / vẽ ảnh lúc drawer đang mở → hiện ra trong vòng 5 giây.
+// Agent vẽ ảnh (qua /v1/images) lúc drawer đang mở → hiện ra trong vòng 5 giây.
 setInterval(() => { if (libIsOpen()) libLoad().catch(() => {}); }, 5000);
 
 function libPick() {

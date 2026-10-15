@@ -52,6 +52,7 @@ import asyncio
 import base64
 import json
 import math
+import operator
 import os
 import re
 import secrets
@@ -59,6 +60,7 @@ import shlex
 import shutil
 import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 import uuid
@@ -1911,8 +1913,8 @@ def media_tools():
 
 
 # ─── Sounds: tìm video, tách tiếng bằng yt-dlp ───────────────────────────────
-# Panel Sounds trên dashboard và MCP sound_mcp (/sounds/mcp) gọi CÙNG các hàm dưới đây — agent
-# tách được một tiếng là người dùng thấy nó trong thư viện ngay, và ngược lại.
+# Panel Sounds trên dashboard gọi các hàm dưới đây; agent không tách tiếng, chỉ đọc thư viện qua
+# library_mcp (/library/mcp — xem "Library cho agent" bên dưới).
 #
 # yt-dlp KHÔNG đóng gói kèm: dùng bản trên PATH (xem MEDIA_TOOLS). Bản cũ là hỏng thật, không
 # phải hỏng giả: YouTube đổi trang liên tục, yt-dlp 2025.02 đo được trả "The page needs to be
@@ -2274,6 +2276,7 @@ async def sound_keep(name, start=None, end=None):
             meta["duration"] = round(meta["duration"] - start, 3)
     dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     p.with_suffix(".json").unlink(missing_ok=True)
+    _inspect_later(dst.name)
     return {**meta, "name": dst.name, "path": str(dst)}
 
 
@@ -2300,6 +2303,214 @@ def sound_download_name(p):
         title = ""
     title = " ".join(re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", title).split()).strip(" .")[:120]
     return (title or p.stem) + p.suffix
+
+
+# ─── Library cho agent: tìm và "nhìn" media đã giữ lại ─────────────────────────
+# Agent không có tai: một tiếng với nó chỉ là tiêu đề và độ dài. sound_inspect đo thay bằng
+# ffmpeg — cùng thuật toán inspect_audio của Signal (server/sound.mjs) để hai nơi mô tả một file
+# giống nhau — rồi GHI vào .json cạnh file, nên lần tìm sau đọc được mà không phải đo lại.
+SOUND_INSPECT_V = 1        # đổi cách đo thì tăng: bản ghi cũ tự bị đo lại
+_INSPECT_BINS = 60         # một dòng chữ số: đủ mịn để thấy tiếng vào ở đâu, đủ ngắn để đọc
+_INSPECT_FLOOR_DB = -60    # dưới mức này là im lặng với người nghe, và là chữ số 0
+_INSPECT_HIGH_RATE = 22050
+_SOUND_BG = set()          # giữ tham chiếu task nền, kẻo bị GC giữa chừng
+
+
+def _db(x):
+    return 20 * math.log10(x)
+
+
+async def _rms_per_second(p, chain):
+    """RMS (dB) từng giây của file sau chuỗi lọc chain. Giây im lặng ra -inf → -120."""
+    rc, out, err = await _ffmpeg(
+        ["-t", str(SOUND_MAX_MIN * 60), "-i", str(p), "-ac", "1", "-af",
+         f"aresample={_INSPECT_HIGH_RATE},{chain}asetnsamples=n={_INSPECT_HIGH_RATE}:p=0,"
+         "astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
+         "-f", "null", "-"], 600)
+    if rc:
+        raise RuntimeError(err.strip()[-200:] or f"exit {rc}")
+    vals = re.findall(r"RMS_level=(\S+)", out.decode("utf-8", "replace"))
+    return [float(v) if math.isfinite(float(v)) else -120.0 for v in vals]
+
+
+async def _sound_highs(p):
+    """Bao nhiêu phần của tiếng nằm ở dải cao (trên 1.5 kHz, trên 3 kHz), dB so với toàn dải, từng
+    giây có tiếng: median, p95, và giây sáng nhất. Ba lần highpass như Signal, để số đo khớp."""
+    hp = lambda f: f"highpass=f={f}," * 3   # noqa: E731
+    full, h15, h3 = await asyncio.gather(*(_rms_per_second(p, c) for c in ("", hp(1500), hp(3000))))
+    live = [(f, a, b) for f, a, b in zip(full, h15, h3) if f > -50]
+    if not live:
+        return None
+
+    def band(k):
+        d = sorted(r[k] - r[0] for r in live)
+        return {"median": round(d[int(0.5 * (len(d) - 1))], 1), "p95": round(d[int(0.95 * (len(d) - 1))], 1)}
+    return {"above_1_5k": band(1), "above_3k": band(2),
+            "brightest_at": max(range(len(h3)), key=h3.__getitem__)}
+
+
+async def sound_inspect(name, refresh=False):
+    """Số đo của một tiếng trong thư viện, đo một lần rồi giữ trong .json (khoá "inspect").
+    Đo lại khi file đổi (mtime) hoặc cách đo đổi (SOUND_INSPECT_V)."""
+    p = sound_path(name)
+    if not p:
+        raise LookupError(f"no sound called {name!r} in the library — search_media lists them")
+    meta_p = p.with_suffix(".json")
+    try:
+        meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    have, mtime = meta.get("inspect") or {}, p.stat().st_mtime_ns
+    if not refresh and have.get("v") == SOUND_INSPECT_V and have.get("mtime") == mtime:
+        return have
+    cap = SOUND_MAX_MIN * 60
+    rc, raw, err = await _ffmpeg(["-t", str(cap), "-i", str(p), "-ac", "1",
+                                  "-ar", str(SOUND_PEAK_RATE), "-f", "s16le", "-"], 300)
+    if rc or len(raw) < 2:
+        raise RuntimeError("ffmpeg could not read the sound: " + (err.strip()[-300:] or "no audio"))
+
+    def envelope():
+        a = array.array("h", raw[:len(raw) // 2 * 2])
+        if sys.byteorder == "big":
+            a.byteswap()
+        n, level, peak, sq = len(a), [], 0, 0
+        for i in range(_INSPECT_BINS):
+            c = a[i * n // _INSPECT_BINS:(i + 1) * n // _INSPECT_BINS] or array.array("h", [0])
+            m = max(max(c), -min(c)) / 32768
+            peak, sq = max(peak, m), sq + sum(map(operator.mul, c, c))
+            # -60..0 dB trải ra 10 chữ số: tiếng nền nhỏ mà nghe được vẫn là 1-2, không bị gọi là 0.
+            level.append(0 if m <= 0 else max(0, min(9, round(
+                9 * (_db(m) - _INSPECT_FLOOR_DB) / -_INSPECT_FLOOR_DB))))
+        return n, level, peak, math.sqrt(sq / n) / 32768
+    n, level, peak, rms = await asyncio.to_thread(envelope)
+    seconds = n / SOUND_PEAK_RATE
+    step = seconds / _INSPECT_BINS
+
+    def runs(want):
+        out, i = [], 0
+        while i < _INSPECT_BINS:
+            if (level[i] > 0) == want:
+                j = i
+                while j + 1 < _INSPECT_BINS and (level[j + 1] > 0) == want:
+                    j += 1
+                out.append([round(i * step, 1), round((j + 1) * step, 1)])
+                i = j
+            i += 1
+        return out
+    try:   # dải cao là phần thêm: ffmpeg thiếu filter thì mất mục này, không mất cả bản đo
+        highs = await _sound_highs(p)
+    except (RuntimeError, ValueError):
+        highs = None
+    ins = {"v": SOUND_INSPECT_V, "mtime": mtime, "seconds": round(seconds, 2),
+           "step": round(step, 3), "level": "".join(map(str, level)),
+           "loud": runs(True), "quiet": runs(False),
+           "peak_dbfs": round(_db(peak), 1) if peak > 0 else None,
+           "rms_dbfs": round(_db(rms), 1) if rms > 0 else None, "highs": highs,
+           **({"scanned_only_first": cap} if seconds >= cap else {})}
+    meta["inspect"] = ins
+    if not meta.get("duration"):
+        meta["duration"] = ins["seconds"]
+    if p.is_file():   # bị xoá trong lúc đo: đừng để lại một .json mồ côi
+        meta_p.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return ins
+
+
+def _inspect_later(name):
+    """Đo ngay khi tiếng vào thư viện, ở nền: lần tìm sau đã có số đo, không ai phải chờ."""
+    async def run():
+        try:
+            await sound_inspect(name)
+        except (LookupError, RuntimeError, OSError) as e:
+            print(f"[sounds] inspect {name}: {e}")
+    t = asyncio.create_task(run())
+    _SOUND_BG.add(t)
+    t.add_done_callback(_SOUND_BG.discard)
+
+
+def image_size(p):
+    """(rộng, cao) đọc từ header PNG / JPEG / WebP, (None, None) nếu không đọc được."""
+    try:
+        with open(p, "rb") as f:
+            b = f.read(1 << 20)
+        if b[:8] == b"\x89PNG\r\n\x1a\n":
+            return struct.unpack(">II", b[16:24])
+        if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+            kind = b[12:16]
+            if kind == b"VP8X":
+                return 1 + int.from_bytes(b[24:27], "little"), 1 + int.from_bytes(b[27:30], "little")
+            if kind == b"VP8L":
+                bits = int.from_bytes(b[21:25], "little")
+                return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+            if kind == b"VP8 ":
+                w, h = struct.unpack("<HH", b[26:30])
+                return w & 0x3FFF, h & 0x3FFF
+        if b[:3] == b"\xff\xd8\xff":
+            i = 2
+            while i + 9 < len(b):
+                if b[i] != 0xFF:
+                    i += 1
+                    continue
+                m = b[i + 1]
+                # SOF0..SOF15 mang kích thước; C4/C8/CC là marker khác cùng dải số.
+                if 0xC0 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC):
+                    h, w = struct.unpack(">HH", b[i + 5:i + 9])
+                    return w, h
+                i += 2 + int.from_bytes(b[i + 2:i + 4], "big")
+    except (OSError, struct.error):
+        pass
+    return None, None
+
+
+def library_items():
+    """Mọi thứ trong thư viện cho agent: tiếng và ảnh, mới nhất trước, kèm đường dẫn file."""
+    out = []
+    for s in list_sounds():
+        ins = {k: v for k, v in (s.get("inspect") or {}).items() if k not in ("v", "mtime")}
+        out.append({"kind": "sound", "name": s["name"], "title": s.get("title") or "",
+                    "channel": s.get("channel") or "", "seconds": s.get("duration"),
+                    "format": s.get("format") or "", "license": s.get("license") or "",
+                    "source": s.get("source") or "", "by": s.get("by") or "",
+                    "uploaded": s.get("uploaded") or "", "created": s.get("created") or "",
+                    "path": s["path"], "inspected": bool(ins), **({"inspect": ins} if ins else {})})
+    for i in list_images():
+        w, h = image_size(IMAGES_DIR / i["name"])
+        out.append({"kind": "image", "name": i["name"], "prompt": i.get("prompt") or "",
+                    "drawn": i.get("drawn") or "", "uploaded": i.get("uploaded") or "",
+                    "created": i.get("created") or "", "width": w, "height": h,
+                    "path": str(IMAGES_DIR / i["name"])})
+    return sorted(out, key=lambda x: x["name"], reverse=True)
+
+
+_LIB_TEXT = ("title", "channel", "license", "uploaded", "prompt", "drawn", "by", "format", "kind")
+
+
+def library_search(query="", kind="", min_seconds=0, max_seconds=0, limit=20):
+    """Tìm theo chữ (mỗi từ của query khớp một phần tiêu đề/prompt/kênh/tên file…; nhiều từ khớp
+    hơn thì lên trước), lọc theo loại và độ dài. Query rỗng = tất cả, mới nhất trước."""
+    kind = str(kind or "").strip().lower()
+    if kind not in ("", "sound", "image"):
+        raise ValueError("kind must be 'sound', 'image' or empty for both")
+    try:
+        lo, hi = float(min_seconds or 0), float(max_seconds or 0)
+        limit = max(1, min(int(limit or 20), 100))
+    except (TypeError, ValueError):
+        raise ValueError("min_seconds, max_seconds and limit must be numbers")
+    words = [w for w in re.split(r"\W+", str(query or "").lower()) if w]
+    hits = []
+    for it in library_items():
+        if kind and it["kind"] != kind:
+            continue
+        if lo or hi:   # lọc theo độ dài: chỉ tiếng có độ dài mới qua được
+            sec = it.get("seconds")
+            if it["kind"] != "sound" or sec is None or sec < lo or (hi and sec > hi):
+                continue
+        text = " ".join(str(it.get(k) or "") for k in _LIB_TEXT).lower()
+        score = sum(1 for w in words if w in text)
+        if words and not score:
+            continue
+        hits.append((score, it))
+    hits.sort(key=lambda h: h[0], reverse=True)    # sort ổn định: cùng điểm thì giữ mới-trước
+    return {"total": len(hits), "items": [it for _, it in hits[:limit]]}
 
 
 # ─── Card thư mục: duyệt project NGAY TRONG dashboard ─────────────────────────
@@ -5947,10 +6158,10 @@ def build_app():
     """Starlette app: REST control + SSE live events + background poll loop.
 
     Ngoài API/dashboard của chính orchestrator, app này còn mount các MCP server nội
-    bộ (signal, asset-fetch, sounds) vào cùng 1 port để chỉ cần start 1 process:
+    bộ (signal, asset-fetch, library) vào cùng 1 port để chỉ cần start 1 process:
       - /signal/mcp  → signal_mcp (send_signal, compact_context, list_agents)
       - /assets/mcp  → asset_fetch (tìm texture/model/sound)
-      - /sounds/mcp  → sound_mcp (tìm video, tách tiếng — chung lõi với panel Sounds)
+      - /library/mcp → library_mcp (tìm và đo tiếng/ảnh trong Library — chỉ đọc)
     signal_mcp chạy in-process (gọi thẳng hàm orchestrator, không self-call HTTP).
     """
     from contextlib import AsyncExitStack, asynccontextmanager
@@ -5964,7 +6175,7 @@ def build_app():
 
     import signal_mcp
     import asset_fetch
-    import sound_mcp
+    import library_mcp
 
     # signal_mcp gọi thẳng các hàm orchestrator thay vì POST HTTP về chính mình.
     signal_mcp._INPROC = True
@@ -5974,7 +6185,7 @@ def build_app():
     # /mcp sẽ lỗi 500 vì session manager chưa khởi động.
     signal_app = signal_mcp.mcp.streamable_http_app()
     asset_app = asset_fetch.mcp.streamable_http_app()
-    sound_app = sound_mcp.mcp.streamable_http_app()
+    library_app = library_mcp.mcp.streamable_http_app()
 
     async def health(request: Request):
         # embedded_terminal: CI Windows kiểm tra cờ này để bắt trường hợp pywinpty không được
@@ -6627,7 +6838,7 @@ def build_app():
         p.with_suffix(".json").unlink(missing_ok=True)
         return JSONResponse({"deleted": p.name})
 
-    # ── Sounds: tìm video, tách tiếng (lõi chung với MCP sound_mcp) ──────────
+    # ── Sounds: tìm video, tách tiếng, cắt trong editor ─────────────────────
     def _sound_err(e):
         code = 400 if isinstance(e, ValueError) else 409 if isinstance(e, LookupError) else 502
         return JSONResponse({"error": str(e)}, status_code=code)
@@ -7568,13 +7779,13 @@ def build_app():
             # Khởi động session manager của từng MCP sub-app (bắt buộc cho /mcp).
             await stack.enter_async_context(signal_app.router.lifespan_context(app))
             await stack.enter_async_context(asset_app.router.lifespan_context(app))
-            await stack.enter_async_context(sound_app.router.lifespan_context(app))
+            await stack.enter_async_context(library_app.router.lifespan_context(app))
             task = asyncio.create_task(run_loop())
             btask = asyncio.create_task(board_loop())
             print(f"[orchestrator] Dashboard: http://{ORCH_HOST}:{ORCH_PORT}")
             print(f"[orchestrator] API docs:  http://{ORCH_HOST}:{ORCH_PORT}/docs"
                   + (f"  (dry_run={DRY_RUN})" if DRY_RUN else ""))
-            print("[orchestrator] MCP mounted: /signal/mcp, /assets/mcp, /sounds/mcp")
+            print("[orchestrator] MCP mounted: /signal/mcp, /assets/mcp, /library/mcp")
             # Agent chạy shell với bypassPermissions. CORS mở (không có API key nào khác chặn) =
             # bất kỳ trang web nào người dùng mở cũng POST được /v1 và sai khiến agent trên máy này.
             # In thành KHỐI có viền: người double-click .exe chỉ thấy console vài giây trước khi
@@ -7705,10 +7916,10 @@ def build_app():
         Route("/openapi.json", api_openapi),
         Route("/docs", api_docs),
         # MCP server nội bộ mount chung port (đặt trước static "/"): /signal/mcp, /assets/mcp,
-        # /sounds/mcp.
+        # /library/mcp.
         Mount("/signal", app=signal_app),
         Mount("/assets", app=asset_app),
-        Mount("/sounds", app=sound_app),
+        Mount("/library", app=library_app),
     ]
 
     # Dashboard (Phase C): serve static UI at "/" (must be last — catches the rest).

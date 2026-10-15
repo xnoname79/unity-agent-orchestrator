@@ -76,6 +76,7 @@ jobs:
           python check_tools.py
           python check_boards.py
           python check_sounds.py
+          python check_library.py
 
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean
