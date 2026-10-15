@@ -331,22 +331,24 @@ client.images.edit(                                # 1-3 images to edit, combine
 Open **Media tools** (the wrench on the top bar): once yt-dlp is installed, its row has an
 **Open Sounds** button. Sounds searches YouTube, pulls the audio out of a video and keeps it in a
 library you can play, download or delete. **AI-generated only** (on by default) adds
-"AI generated" to the search. Pick the format (mp3, wav, m4a, opus or flac) before you press
-**Extract audio**; **Download** saves the file under the video's title.
+"AI generated" to the search, and **Up to** leaves out videos longer than 5, 10, 20, 30 or 60
+minutes. Pick the format (mp3, wav, m4a, opus or flac) before you press **Extract audio**;
+**Download** saves the file under the video's title.
 
 It runs `yt-dlp` and `ffmpeg` on the machine the orchestrator runs on (see the next section). The
 panel says when either is missing, and when yt-dlp is old enough that sites have likely broken it,
 with the command to install or upgrade. It names the yt-dlp it uses and gives the upgrade command
 for that copy: a machine can have several (pip, conda, a release download), and upgrading another
-one changes nothing here. Press **Re-check** after you upgrade. Videos over 30 minutes and live streams cannot be
-extracted. Files are kept in `~/.session_orch_db/sounds/`. A video's sound belongs to whoever made
-it — the library shows a licence when the site states one; check it before you ship a sound.
+one changes nothing here. Press **Re-check** after you upgrade. Videos over 60 minutes and live
+streams cannot be extracted. Files are kept in `~/.session_orch_db/sounds/`. A video's sound
+belongs to whoever made it — the library shows a licence when the site states one; check it before
+you ship a sound.
 
 Agents get the same panel as MCP tools, served at `/sounds/mcp`:
 
 | Tool | Does |
 |---|---|
-| `search_videos(query, limit, ai_only)` | Searches, returns titles, links and durations |
+| `search_videos(query, limit, ai_only, max_minutes)` | Searches, returns titles, links and durations |
 | `extract_audio(url, format, from_role)` | Pulls the sound into the library, returns its file path |
 | `list_sounds()` | What is in the library |
 

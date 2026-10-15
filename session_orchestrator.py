@@ -1920,9 +1920,10 @@ SOUNDS_DIR = DB_DIR / "sounds"
 SOUND_FORMATS = {"mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4",
                  "opus": "audio/ogg", "flac": "audio/flac"}
 SOUND_SEARCH_MAX = 20
-# shortcut: trần cố định 30 phút. Một video "10 hours of rain" là hàng trăm MB và nhiều phút tải
-# chỉ để lấy vài giây tiếng; thành biến môi trường khi có người thật sự cần dài hơn.
-SOUND_MAX_MIN = 30
+# shortcut: trần cố định 60 phút (= nấc dài nhất của bộ lọc độ dài). Một video "10 hours of
+# rain" là hàng trăm MB và nhiều phút tải chỉ để lấy vài giây tiếng; thành biến môi trường khi có
+# người thật sự cần dài hơn.
+SOUND_MAX_MIN = 60
 SOUND_STALE_DAYS = 60        # yt-dlp cũ hơn thế thì cảnh báo trước khi YouTube kịp làm nó hỏng
 _SOUND_NAME_OK = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}\.(" + "|".join(SOUND_FORMATS) + r")$")
 _SOUND_SLOTS = asyncio.Semaphore(2)    # mỗi lần tách = một yt-dlp + một ffmpeg
@@ -2020,9 +2021,9 @@ async def _ytdlp(args, timeout):
     return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
 
 
-async def sound_search(query, limit=10, ai_only=True):
+async def sound_search(query, limit=10, ai_only=True, max_minutes=SOUND_MAX_MIN):
     """Tìm video trên YouTube. ai_only thêm "AI generated" vào câu tìm — đúng thứ người dùng gõ
-    thêm bằng tay, nhưng không gõ hai lần nếu câu đã có."""
+    thêm bằng tay, nhưng không gõ hai lần nếu câu đã có. Bỏ video dài hơn max_minutes."""
     query = " ".join(str(query or "").split())
     if not query or len(query) > 200:
         raise ValueError("type what you are looking for, up to 200 characters")
@@ -2030,11 +2031,18 @@ async def sound_search(query, limit=10, ai_only=True):
         limit = max(1, min(int(limit), SOUND_SEARCH_MAX))
     except (TypeError, ValueError):
         limit = 10
+    try:
+        max_s = max(1, min(int(max_minutes), SOUND_MAX_MIN)) * 60
+    except (TypeError, ValueError):
+        max_s = SOUND_MAX_MIN * 60
     if ai_only and "ai generated" not in query.lower():
         query += " AI generated"
+    # shortcut: lọc SAU khi tìm, nên lấy gấp 3 khi lọc chặt hơn trần — vẫn có thể ra ít hơn
+    # limit nếu gần hết dài hơn; chuyển sang bộ lọc thời lượng của YouTube nếu người dùng kêu.
+    fetch = limit if max_s >= SOUND_MAX_MIN * 60 else limit * 3
     # '--' trước đích: câu tìm do người (hoặc agent) gõ, mở đầu bằng '-' là thành cờ của yt-dlp.
     rc, out, err = await _ytdlp(["--flat-playlist", "-j", "--no-warnings", "--",
-                                 f"ytsearch{limit}:{query}"], 90)
+                                 f"ytsearch{fetch}:{query}"], 90)
     rows = []
     for line in out.splitlines():
         try:
@@ -2043,6 +2051,8 @@ async def sound_search(query, limit=10, ai_only=True):
             continue
         # Đang phát trực tiếp / sắp phát: chẳng có tệp nào để tách tiếng.
         if not isinstance(o, dict) or o.get("live_status") in ("is_live", "is_upcoming"):
+            continue
+        if (o.get("duration") or 0) > max_s:
             continue
         thumbs = o.get("thumbnails") or [{}]
         rows.append({"id": o.get("id") or "", "title": o.get("title") or "",
@@ -2053,7 +2063,7 @@ async def sound_search(query, limit=10, ai_only=True):
                      "too_long": bool(o.get("duration") and o["duration"] > SOUND_MAX_MIN * 60)})
     if rc and not rows:
         raise RuntimeError(_ytdlp_error(err))
-    return {"query": query, "results": rows}
+    return {"query": query, "results": rows[:limit]}
 
 
 async def sound_extract(url, fmt="mp3", by=""):
@@ -6482,7 +6492,8 @@ def build_app():
         b = await _body(request)
         try:
             return JSONResponse(await sound_search(b.get("query"), b.get("limit") or 10,
-                                                   b.get("ai_only", True) is not False))
+                                                   b.get("ai_only", True) is not False,
+                                                   b.get("max_minutes") or SOUND_MAX_MIN))
         except (ValueError, LookupError, RuntimeError) as e:
             return _sound_err(e)
 

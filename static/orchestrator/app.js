@@ -3615,10 +3615,13 @@ async function sndSearch() {
   $("snd-go").disabled = true;
   showMsg("snd-msg", "Searching…", true);
   try {
-    const r = await api("/api/sounds/search", "POST", { query, ai_only: $("snd-ai").checked, limit: 12 });
+    const r = await api("/api/sounds/search", "POST", { query, ai_only: $("snd-ai").checked, limit: 12,
+      max_minutes: +$("snd-len").value });
     sndResults = r.results;
     sndPaintResults();
+    const len = +$("snd-len").value;
     showMsg("snd-msg", r.results.length ? `${r.results.length} videos for “${r.query}”.`
+      : len < 60 ? `Nothing up to ${len} min for “${r.query}” — try a longer length.`
       : `Nothing found for “${r.query}”.`, true);
   } catch (e) { showMsg("snd-msg", mcpErr(e), false); }
   finally { $("snd-go").disabled = false; }

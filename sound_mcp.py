@@ -32,19 +32,21 @@ def _fail(e):
 
 
 @mcp.tool()
-async def search_videos(query: str, limit: int = 10, ai_only: bool = True):
+async def search_videos(query: str, limit: int = 10, ai_only: bool = True, max_minutes: int = 60):
     """Search YouTube for videos whose sound you might want.
 
     Args:
         query: What it should sound like, e.g. "rain on a tin roof" or "8-bit victory jingle".
         limit: How many results, 1 to 20.
         ai_only: True adds "AI generated" to the search, the same as the panel's checkbox.
+        max_minutes: Leave out videos longer than this — 5, 10, 20, 30 or 60 (the most that
+            extract_audio takes), the same as the panel's Length choice.
 
     Returns JSON: {query, results: [{title, url, channel, duration (seconds), views, too_long}]}.
     Results with too_long=true cannot be extracted (see extract_audio). Live streams are left out.
     """
     try:
-        return json.dumps(await _orch().sound_search(query, limit, ai_only), ensure_ascii=False)
+        return json.dumps(await _orch().sound_search(query, limit, ai_only, max_minutes), ensure_ascii=False)
     except (ValueError, LookupError, RuntimeError) as e:
         return _fail(e)
 

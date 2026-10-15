@@ -16,6 +16,8 @@ they paste. Every way that goes wrong is a quiet one:
     the user's shell has (conda), while the orchestrator keeps running the old release binary;
   - the version is cached for the 5-second poll, but an upgrade in place must show without a
     restart;
+  - the length filter runs AFTER the search, so a tight one must fetch more, then trim to the
+    limit — or "up to 5 min" comes back nearly empty;
   - the panel and the MCP tools must share one library: what an agent extracts, the user sees.
 
 yt-dlp itself is not run: _ytdlp is replaced by a fake that answers the way yt-dlp 2026.08 does
@@ -121,8 +123,18 @@ async def main():
               args[-2:] == ["--", "ytsearch12:rain AI generated"], str(args))
         titles = [x["title"] for x in body["results"]]
         check("live streams are left out (nothing to extract)", "LIVE rain" not in titles, titles)
-        long = [x for x in body["results"] if x["title"] == "10 hours of rain"]
-        check("videos over the limit are flagged", long and long[0]["too_long"], str(long))
+        check("videos longer than the most we extract are left out",
+              "10 hours of rain" not in titles, titles)
+        r = await c.post("/api/sounds/search", json={"query": "rain", "limit": 12, "max_minutes": 5})
+        check("a tight length filter fetches more, since it filters after the search",
+              calls[-1][-1].startswith("ytsearch36:"), calls[-1][-1])
+        check("and keeps only videos up to that length",
+              [x["title"] for x in r.json()["results"]] == ["Rain loop"], r.text[:160])
+        r = await c.post("/api/sounds/search", json={"query": "rain", "limit": 1, "max_minutes": 60})
+        check("results are trimmed to the limit", len(r.json()["results"]) == 1, r.text[:160])
+        r = await c.post("/api/sounds/search", json={"query": "rain", "max_minutes": "abc"})
+        check("a bad length falls back to the most we extract",
+              r.status_code == 200 and calls[-1][-1].startswith("ytsearch10:"), r.text[:120])
         await c.post("/api/sounds/search", json={"query": "AI generated rain"})
         check("'AI generated' is not added twice", calls[-1][-1] == "ytsearch10:AI generated rain",
               calls[-1][-1])
@@ -154,7 +166,7 @@ async def main():
         args = calls[-1]
         check("the link sits after '--'", args[-2:] == ["--", "https://youtu.be/a1"], str(args))
         check("long videos and live streams are filtered",
-              "duration<=1800 & !is_live" in args, str(args))
+              "duration<=3600 & !is_live" in args, str(args))
         check("the file is named by us, not by the video title",
               so._SOUND_NAME_OK.match(s["name"]) is not None, s["name"])
         check("the title and source are kept", s["title"].startswith("Rain") and s["by"] == "user"
@@ -181,7 +193,7 @@ async def main():
         before = set(os.listdir(so.SOUNDS_DIR))
         r = await c.post("/api/sounds", json={"url": "https://youtu.be/long-one"})
         check("a video skipped for length says so",
-              r.status_code == 400 and "longer than 30 minutes" in r.json()["error"], r.text[:120])
+              r.status_code == 400 and "longer than 60 minutes" in r.json()["error"], r.text[:120])
         set_version("2025.02.19")
         r = await c.post("/api/sounds", json={"url": "https://youtu.be/broken"})
         err = r.json().get("error", "")
@@ -233,6 +245,9 @@ async def main():
 
     # ── MCP: cùng lõi, cùng thư viện ─────────────────────────────────────────
     res = json.loads(await sound_mcp.search_videos("rain", 5))
+    await sound_mcp.search_videos("rain", 5, max_minutes=10)
+    check("search_videos takes the same length filter", calls[-1][-1].startswith("ytsearch15:"),
+          calls[-1][-1])
     check("search_videos returns the results as JSON", res["results"][0]["title"] == "Rain loop",
           str(res)[:120])
     made = json.loads(await sound_mcp.extract_audio("https://youtu.be/a1", "mp3", "sound-designer"))
@@ -251,6 +266,8 @@ async def main():
     for want, where, blob in (('id="snd-modal"', "index.html", html),
                               ('onclick="toolsClose(); sndOpen()"', "app.js", js),
                               ("window.sndOpen", "app.js", js),
+                              ('id="snd-len"', "index.html", html),
+                              ('max_minutes: +$("snd-len").value', "app.js", js),
                               ('onclick="sndRecheck()"', "app.js", js),
                               ('Mount("/sounds", app=sound_app)', "session_orchestrator.py", py),
                               ('"sound_mcp"', "build.spec", spec)):
