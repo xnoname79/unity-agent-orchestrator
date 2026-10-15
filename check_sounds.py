@@ -20,7 +20,9 @@ they paste. Every way that goes wrong is a quiet one:
     limit — or "up to 5 min" comes back nearly empty;
   - the panel and the MCP tools must share one library: what an agent extracts, the user sees;
   - the panel's extract is a DRAFT: not in the library until the editor keeps it, a failed cut
-    keeps the draft, a bad range never reaches ffmpeg, keeping all of it is not re-encoded.
+    keeps the draft, a bad range never reaches ffmpeg, keeping all of it is not re-encoded;
+  - an upload is a stranger's file on our disk: only mp3, under a size cap checked WHILE it
+    streams in, and nothing left behind when it is refused.
 
 yt-dlp and ffmpeg are not run: _ytdlp and _ffmpeg are replaced by fakes that answer the way
 yt-dlp 2026.08 and ffmpeg do (measured), so this runs offline and on Windows.
@@ -318,6 +320,34 @@ async def main():
         check("discard removes the draft", r.status_code == 200 and not list(drafts.iterdir()),
               str(list(drafts.iterdir())))
 
+        # ── Tải mp3 lên → bản nháp ───────────────────────────────────────────
+        up = "/api/sounds/upload?name=" + urllib.parse.quote("My clip.v2.mp3")
+        r = await c.post(up, content=b"ID3\x04" + b"\0" * 64)
+        u = r.json()
+        check("an mp3 upload becomes a draft named after the file",
+              r.status_code == 200 and (drafts / u["name"]).is_file() and u["title"] == "My clip.v2"
+              and u["by"] == "user", r.text[:160])
+        lib = (await c.get("/api/sounds")).json()["items"]
+        check("an upload is not in the library until kept", all(i["name"] != u["name"] for i in lib),
+              str(lib)[:120])
+        await c.get(f"/api/sounds/drafts/{u['name']}/peaks")
+        r = await c.post(f"/api/sounds/drafts/{u['name']}/keep", json={})
+        check("its length comes from the decoded wave, since nobody stated it",
+              r.status_code == 200 and r.json()["duration"] == 2.0, r.text[:160])
+        r = await c.post(up, content=b"\xff\xfb\x90\x00" + b"\0" * 64)
+        check("an mp3 without an ID3 tag is taken too", r.status_code == 200, r.text[:120])
+        await c.delete(f"/api/sounds/drafts/{r.json()['name']}")
+        for what, body in (("an HTML page", b"<html><script>alert(1)</script>"), ("an empty file", b"")):
+            r = await c.post(up, content=body)
+            check(f"{what} is refused and nothing stays on disk",
+                  r.status_code == 400 and not list(drafts.iterdir()), f"{r.status_code} {r.text[:80]}")
+        real_max = so.SOUND_UPLOAD_MAX
+        so.SOUND_UPLOAD_MAX = 16
+        r = await c.post(up, content=b"ID3" + b"\0" * 64)
+        so.SOUND_UPLOAD_MAX = real_max
+        check("a file over the size cap is refused and removed",
+              r.status_code == 400 and "MB" in r.text and not list(drafts.iterdir()), r.text[:120])
+
         present["yt-dlp"] = None
         so._ytdlp = real_ytdlp                        # đường thật: phải dừng ở chỗ thiếu binary
         r = await c.post("/api/sounds/search", json={"query": "rain"})
@@ -355,6 +385,9 @@ async def main():
                               ('id="snd-len"', "index.html", html),
                               ('id="sed-modal"', "index.html", html),
                               ("draft: true", "app.js", js),
+                              ('onclick="libOpen()"', "index.html", html),
+                              ('id="lib-drawer"', "index.html", html),
+                              ('"/api/sounds/upload?name="', "app.js", js),
                               ('max_minutes: +$("snd-len").value', "app.js", js),
                               ('onclick="sndRecheck()"', "app.js", js),
                               ('Mount("/sounds", app=sound_app)', "session_orchestrator.py", py),

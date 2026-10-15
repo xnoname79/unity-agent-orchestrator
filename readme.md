@@ -364,6 +364,13 @@ tools** in the panel to register the server with every installed CLI, or once by
 claude mcp add --transport http --scope user sounds http://127.0.0.1:8992/sounds/mcp
 ```
 
+## Library
+
+**Library** on the top bar opens a drawer with everything you have kept: sounds (play, download,
+delete) and images. **Upload mp3** adds a sound from your computer, up to 100 MB; it opens in
+**Edit sound** first, so you can cut it before it is kept. What agents extract or draw shows up
+there within a few seconds.
+
 ## Tools for video and audio
 
 Nothing for video or audio ships with the orchestrator. The agents work by running commands in

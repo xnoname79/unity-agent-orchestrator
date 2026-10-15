@@ -137,6 +137,9 @@
     padding: 0; border-color: transparent; background: transparent; color: var(--muted); }
   .icon-btn:hover { background: var(--panel2); color: var(--text); border-color: var(--border); }
   .icon-btn.on { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+  .tb-sep { width: 1px; height: 20px; background: var(--border); flex: none; }
+  .icon-btn.lib-btn { width: auto; gap: 6px; padding: 0 9px; font-size: 12.5px; }
+  @media (max-width: 560px) { .lib-lbl { display: none; } .icon-btn.lib-btn { padding: 0; width: 28px; } }
   .pill { font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border);
     color: var(--muted); white-space: nowrap; }
   .pill.live { color: var(--green); border-color: var(--green); background: var(--green-soft); }
@@ -808,6 +811,11 @@
   .drawer-head h3 { margin: 0; font-size: 13.5px; }
   .drawer-head .spacer { flex: 1; }
   .drawer-body { flex: 1; overflow-y: auto; padding: 12px 15px; background: var(--bg); }
+  .lib-head { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; }
+  .lib-head h4 { margin: 0; font-size: 12.5px; }
+  .lib-head .spacer { flex: 1; }
+  #lib-drawer .img-grid { margin-top: 8px; }
+  #lib-drawer section + section { margin-top: 20px; }
   /* Danh sách cửa sổ trong drawer */
   .ev { display: flex; gap: 9px; padding: 7px 10px; margin: 5px 0; background: var(--panel);
     border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: var(--r-ctl); }
@@ -870,6 +878,7 @@
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5 17.5 10.5"/></symbol>
   <symbol id="i-window" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01"/></symbol>
+  <symbol id="i-library" viewBox="0 0 24 24"><path d="M4 4v16M8 8v12M12 6v14M16 6l4 14"/></symbol>
   <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
   <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9.5" r="1.5"/><path d="m20 15.5-4.5-4.5L6 20"/></symbol>
   <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M15.5 3.5a5 5 0 0 0-6.2 6.2L3.9 15a2 2 0 0 0 0 2.8l2.3 2.3a2 2 0 0 0 2.8 0l5.3-5.4a5 5 0 0 0 6.2-6.2l-3 3-2.8-2.8z"/></symbol>
@@ -893,6 +902,9 @@
     <svg class="ic"><use href="#i-plug"/></svg></button>
   <button id="split-btn" class="icon-btn" onclick="toggleSplit()" title="Side-by-side (needs 2 open workspaces)">
     <svg class="ic"><use href="#i-split"/></svg></button>
+  <span class="tb-sep" aria-hidden="true"></span>
+  <button id="lib-btn" class="icon-btn lib-btn" onclick="libOpen()" title="Images and sounds you have kept">
+    <svg class="ic"><use href="#i-library"/></svg><span class="lib-lbl">Library</span></button>
   <button id="theme-btn" class="icon-btn" onclick="cycleTheme()" title="Theme">
     <svg class="ic"><use href="#i-theme"/></svg></button>
   <span id="conn" class="pill dead">offline</span>
@@ -1139,6 +1151,32 @@
     <button class="secondary" onclick="closeDrawer()">Close</button>
   </div>
   <div id="dr-body" class="drawer-body"></div>
+</aside>
+
+<!-- Library: mọi thứ người dùng đã giữ lại (ảnh, tiếng) ở một chỗ. Dùng lại khung drawer của
+     transcript; modal (z 30) như Edit sound vẫn nổi lên trên nó. -->
+<div id="lib-overlay" class="drawer-overlay" onclick="libClose()"></div>
+<aside id="lib-drawer" class="drawer" aria-labelledby="lib-title">
+  <div class="drawer-head">
+    <h3 id="lib-title">Library</h3>
+    <div class="spacer"></div>
+    <button class="secondary" onclick="libClose()">Close</button>
+  </div>
+  <div class="drawer-body">
+    <div id="lib-msg" class="form-msg"></div>
+    <section>
+      <div class="lib-head"><h4>Sounds <span id="lib-n-snd" class="hint"></span></h4>
+        <span class="spacer"></span>
+        <button class="secondary" onclick="libPick()"
+          title="Add an mp3 from this computer — you can cut it before it is kept">Upload mp3</button>
+        <input id="lib-file" type="file" accept=".mp3,audio/mpeg" hidden onchange="libUpload(this)"></div>
+      <div id="lib-snd" class="snd-list"></div>
+    </section>
+    <section>
+      <div class="lib-head"><h4>Images <span id="lib-n-img" class="hint"></span></h4></div>
+      <div id="lib-img" class="img-grid"></div>
+    </section>
+  </div>
 </aside>
 
 <!-- MCP servers: register an HTTP MCP server for every claude session (user scope, written

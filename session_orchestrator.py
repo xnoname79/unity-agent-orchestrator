@@ -2085,12 +2085,8 @@ async def sound_extract(url, fmt="mp3", by="", draft=False):
         rows = {r["name"]: r for r in media_tools()["tools"]}
         raise LookupError("ffmpeg is needed to pull the sound out of a video — install it: "
                           + (rows["ffmpeg"]["install"] or rows["ffmpeg"]["site"]))
-    home = _sound_home(draft)
+    home = _sound_drafts() if draft else SOUNDS_DIR
     home.mkdir(parents=True, exist_ok=True)
-    if draft:   # bản nháp bị bỏ dở (đóng tab giữa chừng): dọn sau một ngày
-        for old in home.glob("*"):
-            if old.stat().st_mtime < datetime.now().timestamp() - 86400:
-                old.unlink(missing_ok=True)
     stem = f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
     ok = False
     try:
@@ -2133,6 +2129,48 @@ async def sound_extract(url, fmt="mp3", by="", draft=False):
 
 def _sound_home(draft):
     return SOUNDS_DIR / "drafts" if draft else SOUNDS_DIR
+
+
+def _sound_drafts():
+    """drafts/, sau khi dọn bản nháp bị bỏ dở (đóng tab giữa chừng) quá một ngày."""
+    home = _sound_home(True)
+    home.mkdir(parents=True, exist_ok=True)
+    for old in home.glob("*"):
+        if old.stat().st_mtime < datetime.now().timestamp() - 86400:
+            old.unlink(missing_ok=True)
+    return home
+
+
+SOUND_UPLOAD_MAX = 100 * 1024 * 1024    # mp3 128 kbps ≈ 1 giờ 45 phút
+
+
+async def sound_upload(chunks, filename=""):
+    """Một file mp3 của người dùng → bản nháp, để cắt trong editor như tiếng vừa tách. Ghi ra
+    đĩa từng mẩu, có trần — không gom cả trăm MB vào RAM rồi mới đếm."""
+    dst = _sound_drafts() / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.mp3"
+    size, ok = 0, False
+    try:
+        with open(dst, "wb") as f:
+            async for chunk in chunks:
+                size += len(chunk)
+                if size > SOUND_UPLOAD_MAX:
+                    raise ValueError(f"sound files up to {SOUND_UPLOAD_MAX // 2**20} MB")
+                f.write(chunk)
+        with open(dst, "rb") as f:
+            head = f.read(3)
+        # Thẻ ID3, hoặc vào thẳng một frame MPEG audio (11 bit đồng bộ đầu frame).
+        if not (head == b"ID3" or (len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0)):
+            raise ValueError("only mp3 files")
+        name = str(filename or "")[:120]
+        meta = {"title": name.rsplit(".", 1)[0] if "." in name else name, "channel": "",
+                "duration": None, "source": "", "license": "", "format": "mp3", "by": "user",
+                "created": _now(), "uploaded": name}
+        dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        ok = True
+    finally:
+        if not ok:
+            dst.unlink(missing_ok=True)
+    return {**meta, "name": dst.name, "path": str(dst)}
 
 
 def sound_path(name, draft=False):
@@ -2182,7 +2220,17 @@ async def sound_peaks(name, n=1000):
         step = max(1, -(-len(a) // n))
         return [round(max(max(c), -min(c)) / 32768, 3)
                 for c in (a[i:i + step] for i in range(0, len(a), step))]
-    return {"duration": len(raw) // 2 / SOUND_PEAK_RATE, "peaks": await asyncio.to_thread(peaks)}
+    duration = len(raw) // 2 / SOUND_PEAK_RATE
+    # File tải lên không ai báo thời lượng: lấy cái vừa giải mã, để thư viện có mà hiện.
+    meta_p = p.with_suffix(".json")
+    try:
+        meta = json.loads(meta_p.read_text(encoding="utf-8"))
+        if not meta.get("duration"):
+            meta_p.write_text(json.dumps({**meta, "duration": round(duration, 3)},
+                                         ensure_ascii=False), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+    return {"duration": duration, "peaks": await asyncio.to_thread(peaks)}
 
 
 async def sound_keep(name, start=None, end=None):
@@ -6609,6 +6657,13 @@ def build_app():
         return sound_path(request.path_params["name"],
                           draft=request.url.path.startswith("/api/sounds/drafts/"))
 
+    async def api_sounds_upload(request: Request):
+        try:
+            return JSONResponse(await sound_upload(request.stream(),
+                                                   request.query_params.get("name", "")))
+        except ValueError as e:
+            return _sound_err(e)
+
     async def api_sound_peaks(request: Request):
         try:
             return JSONResponse(await sound_peaks(request.path_params["name"]))
@@ -7600,6 +7655,7 @@ def build_app():
         Route("/api/sounds", api_sounds),
         Route("/api/sounds", api_sounds_extract, methods=["POST"]),
         Route("/api/sounds/search", api_sounds_search, methods=["POST"]),
+        Route("/api/sounds/upload", api_sounds_upload, methods=["POST"]),
         Route("/api/sounds/drafts/{name}", api_sound_file),
         Route("/api/sounds/drafts/{name}", api_sound_delete, methods=["DELETE"]),
         Route("/api/sounds/drafts/{name}/peaks", api_sound_peaks),

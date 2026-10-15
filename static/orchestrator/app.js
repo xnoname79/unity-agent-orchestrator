@@ -3321,6 +3321,7 @@ window.mcpClose = mcpClose;
 document.addEventListener("keydown", (e) => {
   // Editor nằm trên Sounds: Esc chỉ hỏi bỏ bản nháp, không đóng luôn Sounds bên dưới.
   if (e.key === "Escape" && !$("sed-modal").hidden) return sedDiscard();
+  if (e.key === "Escape" && libIsOpen()) libClose();
   if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
   if (e.key === "Escape" && !$("img-modal").hidden) imgClose();
   if (e.key === "Escape" && !$("snd-modal").hidden) sndClose();
@@ -3406,10 +3407,11 @@ $("img-writer").innerHTML = `<option value="">My words, exactly</option>` + MODE
 
 const imgUrl = (name) => "/api/images/" + encodeURIComponent(name);
 
-function imgRows(list) {
+// pick=false: không có nút Reference (Library chỉ xem/xoá, ảnh mẫu chọn trong modal Images).
+function imgRows(list, pick = true) {
   if (!list.length) return `<div class="hint">No images yet.</div>`;
   return list.map((i) => {
-    const on = imgRefs.includes(i.name);
+    const on = pick && imgRefs.includes(i.name);
     const cap = i.prompt || (i.uploaded ? "Uploaded · " + i.uploaded : "");
     const tip = i.drawn ? `${cap}\n\nDrawn from (${i.writer}): ${i.drawn}` : cap;
     // Tên file đi qua data-attribute, không qua inline onclick — cùng lối như danh sách MCP.
@@ -3417,8 +3419,8 @@ function imgRows(list) {
       <a href="${imgUrl(i.name)}" target="_blank" rel="noopener" title="Open full size">
         <img src="${imgUrl(i.name)}" alt="${esc(cap)}" loading="lazy"></a>
       <div class="img-foot"><span title="${esc(tip)}">${esc(cap)}</span>
-        <button class="secondary${on ? " on" : ""}" data-img-ref="${esc(i.name)}"
-          title="Use this image as a reference for the next one">${on ? "Selected" : "Reference"}</button></div>
+        ${pick ? `<button class="secondary${on ? " on" : ""}" data-img-ref="${esc(i.name)}"
+          title="Use this image as a reference for the next one">${on ? "Selected" : "Reference"}</button>` : ""}</div>
       <button class="icon-btn" data-img-rm="${esc(i.name)}" title="Delete">
         <svg class="ic sm"><use href="#i-trash"/></svg></button>
     </figure>`;
@@ -3567,7 +3569,11 @@ function sndPaintLib(list) {
   const key = list.map((i) => i.name).join("|");
   if (key === sndLibKey) return;
   sndLibKey = key;
-  $("snd-lib").innerHTML = list.length ? list.map((i) => `<div class="snd-row">
+  $("snd-lib").innerHTML = sndLibHtml(list);
+}
+
+function sndLibHtml(list) {
+  return list.length ? list.map((i) => `<div class="snd-row">
       <div class="snd-meta"><a href="${esc(i.source || sndUrl(i.name))}" target="_blank" rel="noopener"
           title="${esc(i.title)}">${esc(i.title || i.name)}</a>
         <span class="hint">${esc([i.channel, sndDur(i.duration), i.format,
@@ -3813,8 +3819,10 @@ async function sedSave() {
   try {
     const s = await api(sedUrl() + "/keep", "POST", body);
     sedHide();
-    showMsg("snd-msg", `Saved “${s.title || s.name}” to the library.`, true);
-    await sndLoad(false);
+    // Editor mở từ Sounds (tách) hoặc từ Library (tải lên): báo và làm mới đúng chỗ đó.
+    const fromLib = libIsOpen();
+    showMsg(fromLib ? "lib-msg" : "snd-msg", `Saved “${s.title || s.name}” to the library.`, true);
+    await (fromLib ? libLoad() : sndLoad(false));
   } catch (e) {
     showMsg("sed-msg", mcpErr(e), false);
     $("sed-save").disabled = false;
@@ -3828,6 +3836,74 @@ async function sedDiscard() {
   sedHide();
 }
 window.sedDiscard = sedDiscard;
+
+// ── Library ──────────────────────────────────────────────────────────────────
+// Mọi thứ đã giữ lại ở một chỗ: tiếng (thư viện Sounds) và ảnh (thư viện Images). Cùng API,
+// cùng markup với hai modal kia — ở đây chỉ gom lại, thêm tải mp3 lên (qua editor để cắt).
+let libKey = "";      // như sndLibKey: poll chỉ vẽ lại khi danh sách đổi, kẻo <audio> đang phát bị cắt
+
+const libIsOpen = () => $("lib-drawer").classList.contains("open");
+
+async function libLoad() {
+  const [imgs, snd] = await Promise.all([api("/api/images"), api("/api/sounds")]);
+  $("lib-n-snd").textContent = snd.items.length ? `(${snd.items.length})` : "";
+  $("lib-n-img").textContent = imgs.length ? `(${imgs.length})` : "";
+  const key = [...snd.items, ...imgs].map((i) => i.name).join("|");
+  if (key === libKey) return;
+  libKey = key;
+  $("lib-snd").innerHTML = sndLibHtml(snd.items);
+  $("lib-img").innerHTML = imgRows(imgs, false);
+}
+
+function libOpen() {
+  $("lib-drawer").classList.add("open");
+  $("lib-overlay").classList.add("open");
+  libKey = "";
+  libLoad().catch((e) => showMsg("lib-msg", "Error: " + e, false));
+}
+window.libOpen = libOpen;
+
+function libClose() {
+  $("lib-drawer").classList.remove("open");
+  $("lib-overlay").classList.remove("open");
+  $("lib-drawer").querySelectorAll("audio").forEach((a) => a.pause());
+}
+window.libClose = libClose;
+
+// Agent tách tiếng / vẽ ảnh lúc drawer đang mở → hiện ra trong vòng 5 giây.
+setInterval(() => { if (libIsOpen()) libLoad().catch(() => {}); }, 5000);
+
+function libPick() {
+  $("lib-file").click();
+}
+window.libPick = libPick;
+
+// Byte thô như ảnh tải lên: server ghi thẳng ra đĩa từng mẩu, không cần multipart.
+async function libUpload(input) {
+  const f = input.files[0];
+  input.value = "";   // chọn lại đúng file đó lần nữa vẫn phải bắn onchange
+  if (!f) return;
+  showMsg("lib-msg", `Uploading ${f.name}…`, true);
+  try {
+    const r = await fetch("/api/sounds/upload?name=" + encodeURIComponent(f.name),
+                          { method: "POST", body: f });
+    if (!r.ok) throw await r.text();
+    $("lib-msg").textContent = "";
+    sedOpen(await r.json());
+  } catch (e) { showMsg("lib-msg", `${f.name}: ${mcpErr(e)}`, false); }
+}
+window.libUpload = libUpload;
+
+$("lib-drawer").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-img-rm], button[data-snd-rm]");
+  if (!btn) return;
+  const img = btn.dataset.imgRm;
+  if (!confirm(img ? "Delete this image?" : "Delete this sound?")) return;
+  try {
+    await api(img ? imgUrl(img) : sndUrl(btn.dataset.sndRm), "DELETE");
+    await libLoad();
+  } catch (e) { showMsg("lib-msg", mcpErr(e), false); }
+});
 
 function sedHide() {
   const au = $("sed-audio");
