@@ -1501,7 +1501,7 @@ MCP_TIMEOUT = float(os.environ.get("ORCH_MCP_TIMEOUT", "6"))
 MCP_PROTOCOL = "2024-11-05"
 # Chính orchestrator cũng mount vài MCP server nội bộ. Chúng KHÔNG hiện trong modal: người dùng
 # không tự đăng ký chúng ở đây, mà bấm Remove thì agent mất luôn đường signal.
-MCP_OWN_PATHS = ("/signal/mcp", "/unity/mcp")
+MCP_OWN_PATHS = ("/signal/mcp",)
 # ~/.claude.json, KHÔNG phải ~/.claude/ — CLAUDE_CONFIG_DIR không dời file này.
 CLAUDE_CONFIG_FILE = Path(os.environ.get("ORCH_CLAUDE_CONFIG", str(Path.home() / ".claude.json")))
 # codex: CÙNG file với model/effort/trust-level của người dùng. Chỉ được đụng đúng bảng
@@ -5552,9 +5552,9 @@ def build_app():
     """Starlette app: REST control + SSE live events + background poll loop.
 
     Ngoài API/dashboard của chính orchestrator, app này còn mount các MCP server nội
-    bộ (signal, unity-dev) vào cùng 1 port để chỉ cần start 1 process:
+    bộ (signal, asset-fetch) vào cùng 1 port để chỉ cần start 1 process:
       - /signal/mcp  → signal_mcp (send_signal, compact_context, list_agents)
-      - /unity/mcp   → unity_dev (tools lập kế hoạch game)
+      - /assets/mcp  → asset_fetch (tìm texture/model/sound)
     signal_mcp chạy in-process (gọi thẳng hàm orchestrator, không self-call HTTP).
     """
     from contextlib import AsyncExitStack, asynccontextmanager
@@ -5567,7 +5567,6 @@ def build_app():
     from starlette.staticfiles import StaticFiles
 
     import signal_mcp
-    import unity_dev
     import asset_fetch
 
     # signal_mcp gọi thẳng các hàm orchestrator thay vì POST HTTP về chính mình.
@@ -5577,7 +5576,6 @@ def build_app():
     # lifespan riêng (chạy session manager) — phải nối vào lifespan cha, nếu không
     # /mcp sẽ lỗi 500 vì session manager chưa khởi động.
     signal_app = signal_mcp.mcp.streamable_http_app()
-    unity_app = unity_dev.mcp.streamable_http_app()
     asset_app = asset_fetch.mcp.streamable_http_app()
 
     async def health(request: Request):
@@ -7101,14 +7099,13 @@ def build_app():
         async with AsyncExitStack() as stack:
             # Khởi động session manager của từng MCP sub-app (bắt buộc cho /mcp).
             await stack.enter_async_context(signal_app.router.lifespan_context(app))
-            await stack.enter_async_context(unity_app.router.lifespan_context(app))
             await stack.enter_async_context(asset_app.router.lifespan_context(app))
             task = asyncio.create_task(run_loop())
             btask = asyncio.create_task(board_loop())
             print(f"[orchestrator] Dashboard: http://{ORCH_HOST}:{ORCH_PORT}")
             print(f"[orchestrator] API docs:  http://{ORCH_HOST}:{ORCH_PORT}/docs"
                   + (f"  (dry_run={DRY_RUN})" if DRY_RUN else ""))
-            print("[orchestrator] MCP mounted: /signal/mcp, /unity/mcp")
+            print("[orchestrator] MCP mounted: /signal/mcp, /assets/mcp")
             # Agent chạy shell với bypassPermissions. CORS mở (không có API key nào khác chặn) =
             # bất kỳ trang web nào người dùng mở cũng POST được /v1 và sai khiến agent trên máy này.
             # In thành KHỐI có viền: người double-click .exe chỉ thấy console vài giây trước khi
@@ -7228,9 +7225,8 @@ def build_app():
         # Tài liệu: /docs xem bằng Swagger UI, /openapi.json để import vào Postman/codegen.
         Route("/openapi.json", api_openapi),
         Route("/docs", api_docs),
-        # MCP server nội bộ mount chung port (đặt trước static "/"): /signal/mcp, /unity/mcp.
+        # MCP server nội bộ mount chung port (đặt trước static "/"): /signal/mcp, /assets/mcp.
         Mount("/signal", app=signal_app),
-        Mount("/unity", app=unity_app),
         Mount("/assets", app=asset_app),
     ]
 

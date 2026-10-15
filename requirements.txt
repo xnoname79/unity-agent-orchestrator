@@ -1,5 +1,5 @@
-# GHIM mcp < 2: bản 2.0.0 BỎ `mcp.server.fastmcp`, mà cả 3 MCP server ở đây
-# (signal_mcp, unity_dev, asset_fetch) đều `from mcp.server.fastmcp import FastMCP`.
+# GHIM mcp < 2: bản 2.0.0 BỎ `mcp.server.fastmcp`, mà cả 2 MCP server ở đây
+# (signal_mcp, asset_fetch) đều `from mcp.server.fastmcp import FastMCP`.
 # Không ghim thì CI cài 2.x, build vẫn qua nhưng binary chết ngay lúc serve với
 # "ModuleNotFoundError: No module named 'mcp.server.fastmcp'".
 # Muốn lên 2.x thì phải viết lại cả 3 server theo API mới, không phải đổi 1 dòng.
