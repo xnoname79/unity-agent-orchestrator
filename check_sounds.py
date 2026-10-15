@@ -12,7 +12,10 @@ they paste. Every way that goes wrong is a quiet one:
   - yt-dlp's duration filter skips a video SILENTLY (exit 0, no output), so "no output" must be
     reported as "too long", not as success or as a crash;
   - an old yt-dlp is the most common real failure (sites change), so the error must say how old
-    it is and how to upgrade;
+    it is and how to upgrade THAT copy — a generic `pip install --upgrade` lands in whichever python
+    the user's shell has (conda), while the orchestrator keeps running the old release binary;
+  - the version is cached for the 5-second poll, but an upgrade in place must show without a
+    restart;
   - the panel and the MCP tools must share one library: what an agent extracts, the user sees.
 
 yt-dlp itself is not run: _ytdlp is replaced by a fake that answers the way yt-dlp 2026.08 does
@@ -84,16 +87,23 @@ async def fake_ytdlp(args, timeout):
     return 0, "Deprecated Feature: something\n" + json.dumps(info) + "\n", ""
 
 
+BIN = Path(tempfile.mkdtemp())
+YT = BIN / "yt-dlp"
+YT.write_text("#!/opt/conda/bin/python3.11\nfrom yt_dlp import main\n")
 real_which = so.shutil.which
-present = {"yt-dlp": "/fake/bin/yt-dlp", "ffmpeg": "/fake/bin/ffmpeg"}
+present = {"yt-dlp": str(YT), "ffmpeg": "/fake/bin/ffmpeg"}
 
 
 def fake_which(cmd, *a, **kw):
     return present.get(cmd) if cmd in ("yt-dlp", "ffmpeg") else real_which(cmd, *a, **kw)
 
 
+def set_version(v):
+    so._ytdlp_versions[(str(YT), os.stat(YT).st_mtime_ns)] = v
+
+
 so.shutil.which = fake_which
-so._ytdlp_versions["/fake/bin/yt-dlp"] = "2099.01.01"     # mới: không cảnh báo
+set_version("2099.01.01")                                # mới: không cảnh báo
 
 
 async def main():
@@ -172,14 +182,36 @@ async def main():
         r = await c.post("/api/sounds", json={"url": "https://youtu.be/long-one"})
         check("a video skipped for length says so",
               r.status_code == 400 and "longer than 30 minutes" in r.json()["error"], r.text[:120])
-        so._ytdlp_versions["/fake/bin/yt-dlp"] = "2025.02.19"
+        set_version("2025.02.19")
         r = await c.post("/api/sounds", json={"url": "https://youtu.be/broken"})
         err = r.json().get("error", "")
         check("a yt-dlp failure comes back with its own message",
               r.status_code == 502 and "page needs to be reloaded" in err, err)
         check("an old yt-dlp is named, with how to upgrade it", "days old" in err
               and "upgrade" in err, err)
-        so._ytdlp_versions["/fake/bin/yt-dlp"] = "2099.01.01"
+        check("a pip-installed yt-dlp is upgraded with the pip of ITS python",
+              "/opt/conda/bin/python3.11 -m pip install --upgrade yt-dlp" in err, err)
+
+        # Nâng cấp tại chỗ: file bị ghi đè → mtime đổi → đọc lại version, không cần restart.
+        st = os.stat(YT)
+        os.utime(YT, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+        real_run = so.subprocess.run
+        so.subprocess.run = lambda *a, **kw: so.subprocess.CompletedProcess(a, 0, "2099.02.02\n", "")
+        try:
+            r = await c.get("/api/sounds")
+        finally:
+            so.subprocess.run = real_run
+        st = r.json()["status"]
+        check("an upgrade in place shows without a restart",
+              st["version"] == "2099.02.02" and not st["stale"], str(st))
+
+        # Bản release (zipapp/exe, vài MB) tự nâng cấp được.
+        YT.write_bytes(b"#!/usr/bin/env python3\nPK" + bytes(1_000_000))
+        up = so._ytdlp_upgrade_cmd(str(YT))
+        check("a release build of yt-dlp is upgraded with its own -U",
+              up.endswith(" -U") and str(YT) in up, up)
+        YT.write_text("#!/opt/conda/bin/python3.11\nfrom yt_dlp import main\n")
+        set_version("2099.01.01")
         check("failed extractions leave nothing behind",
               set(os.listdir(so.SOUNDS_DIR)) == before, str(set(os.listdir(so.SOUNDS_DIR)) - before))
 
@@ -196,7 +228,7 @@ async def main():
         r = await c.get("/api/sounds")
         check("and the panel knows it is missing", r.json()["status"]["ytdlp"] in ("", None),
               str(r.json()["status"]))
-        present["yt-dlp"] = "/fake/bin/yt-dlp"
+        present["yt-dlp"] = str(YT)
         so._ytdlp = fake_ytdlp
 
     # ── MCP: cùng lõi, cùng thư viện ─────────────────────────────────────────
@@ -217,8 +249,9 @@ async def main():
     py = (HERE / "session_orchestrator.py").read_text(encoding="utf-8")
     spec = (HERE / "build.spec").read_text(encoding="utf-8")
     for want, where, blob in (('id="snd-modal"', "index.html", html),
-                              ('onclick="sndOpen()"', "index.html", html),
+                              ('onclick="toolsClose(); sndOpen()"', "app.js", js),
                               ("window.sndOpen", "app.js", js),
+                              ('onclick="sndRecheck()"', "app.js", js),
                               ('Mount("/sounds", app=sound_app)', "session_orchestrator.py", py),
                               ('"sound_mcp"', "build.spec", spec)):
         check(f"{where} wires up {want}", want in blob, "not found")

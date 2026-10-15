@@ -294,6 +294,7 @@
   .tool-row .nm { font-weight: 600; }
   .tool-row .meta { flex: 1 1 0; min-width: 0; color: var(--faint); font-size: 11px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+  .tool-row .head button { flex: none; font-size: 11.5px; padding: 3px 9px; }
   .tool-row .what { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
   .tool-fix { margin-top: 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .tool-fix code { user-select: all; background: var(--panel2); border: 1px solid var(--border);
@@ -319,6 +320,7 @@
   .img-foot button.on { color: var(--accent); border-color: var(--accent); }
   .snd-status { display: grid; gap: 6px; margin-bottom: 4px; font-size: 11.5px; }
   .snd-status .tool-fix { margin: 0; }
+  .snd-recheck { font-size: 11px; padding: 2px 8px; margin-left: 4px; }
   .snd-search { display: flex; gap: 8px; }
   .snd-search input { flex: 1; min-width: 0; }
   .snd-opts { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
@@ -879,8 +881,6 @@
   <span id="dry" class="pill dry" hidden>DRY-RUN</span>
   <button class="icon-btn" onclick="imgOpen()" title="Images">
     <svg class="ic"><use href="#i-image"/></svg></button>
-  <button class="icon-btn" onclick="sndOpen()" title="Sounds">
-    <svg class="ic"><use href="#i-music"/></svg></button>
   <button id="tools-btn" class="icon-btn" onclick="toolsOpen()" title="Media tools">
     <svg class="ic"><use href="#i-wrench"/></svg></button>
   <button id="mcp-btn" class="icon-btn" onclick="mcpOpen()" title="MCP servers">
@@ -1182,8 +1182,8 @@
   </div>
 </div>
 
-<!-- Images: tool generate_image của agy, vẽ bằng tài khoản Google đang login ở agy. Không gắn
-     với workspace nào nên mở từ topbar, như MCP. -->
+<!-- Sounds: tìm video, tách tiếng bằng yt-dlp. Mở từ dòng yt-dlp trong Media tools — chỉ hiện
+     nút khi yt-dlp đã cài, nên không chiếm một nút topbar riêng. -->
 <div id="snd-modal" class="modal-overlay" onclick="if (event.target === this) sndClose()" hidden>
   <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="snd-title">
     <h3 id="snd-title"><svg class="ic"><use href="#i-music"/></svg> Sounds
@@ -1215,6 +1215,8 @@
   </div>
 </div>
 
+<!-- Images: tool generate_image của agy, vẽ bằng tài khoản Google đang login ở agy. Không gắn
+     với workspace nào nên mở từ topbar, như MCP. -->
 <div id="img-modal" class="modal-overlay" onclick="if (event.target === this) imgClose()" hidden>
   <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="img-title">
     <h3 id="img-title"><svg class="ic"><use href="#i-image"/></svg> Images

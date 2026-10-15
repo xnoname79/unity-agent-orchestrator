@@ -54,6 +54,7 @@ import math
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import sqlite3
@@ -1926,21 +1927,46 @@ SOUND_STALE_DAYS = 60        # yt-dlp cũ hơn thế thì cảnh báo trước k
 _SOUND_NAME_OK = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}\.(" + "|".join(SOUND_FORMATS) + r")$")
 _SOUND_SLOTS = asyncio.Semaphore(2)    # mỗi lần tách = một yt-dlp + một ffmpeg
 _SOUND_URL_OK = re.compile(r"^https?://\S+$")
-_ytdlp_versions = {}                   # đường dẫn binary → version, khỏi spawn lại mỗi lần poll
+# (đường dẫn binary, mtime) → version: poll không spawn lại, mà nâng cấp tại chỗ (file bị ghi
+# đè → mtime đổi) thì lần hỏi sau thấy ngay, không phải restart orchestrator.
+_ytdlp_versions = {}
+_YTDLP_CMDS = next(t for t in MEDIA_TOOLS if t[0] == "yt-dlp")[5]
 
 
-def _ytdlp_upgrade_cmd():
-    return _install_cmd(next(t for t in MEDIA_TOOLS if t[0] == "yt-dlp")[5])
+def _ytdlp_upgrade_cmd(exe):
+    """Lệnh nâng cấp ĐÚNG bản orchestrator đang chạy. `pip install --upgrade` chung chung dễ nâng
+    nhầm một python khác (conda, venv) trong khi PATH của orchestrator vẫn trỏ bản cũ. Bản
+    release (zipapp/exe, vài MB) tự nâng bằng -U; bản pip là script nhỏ, shebang trỏ đúng python
+    đã cài nó."""
+    # shortcut: đường có dấu cách trên Windows ra "…" -U, PowerShell cần & phía trước; sửa khi gặp.
+    join = subprocess.list2cmdline if sys.platform.startswith("win") else shlex.join
+    line = ""
+    try:
+        if os.path.getsize(exe) > 1_000_000:
+            return join([exe, "-U"])
+        with open(exe, "rb") as f:
+            line = f.readline(512).decode(errors="replace")
+    except OSError:
+        pass
+    words = line[2:].split() if line.startswith("#!") else []
+    py = next((w for w in reversed(words) if "python" in os.path.basename(w)), "")
+    if py:
+        return join([py, "-m", "pip", "install", "--upgrade", "yt-dlp"])
+    return _install_cmd(_YTDLP_CMDS)
 
 
 def _ytdlp_version(exe):
-    if exe and exe not in _ytdlp_versions:
+    try:
+        key = (exe, os.stat(exe).st_mtime_ns)
+    except (OSError, TypeError, ValueError):
+        return ""
+    if key not in _ytdlp_versions:
         try:
             r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=15)
-            _ytdlp_versions[exe] = r.stdout.strip()
+            _ytdlp_versions[key] = r.stdout.strip()
         except (OSError, subprocess.SubprocessError):
-            _ytdlp_versions[exe] = ""
-    return _ytdlp_versions.get(exe, "")
+            _ytdlp_versions[key] = ""
+    return _ytdlp_versions[key]
 
 
 def _ytdlp_age(version):
@@ -1960,7 +1986,8 @@ def sound_status():
     age = _ytdlp_age(version)
     return {"ytdlp": y["path"], "version": version, "stale": bool(age and age > SOUND_STALE_DAYS),
             "age_days": age, "ffmpeg": f["path"], "install": y["install"],
-            "upgrade": _ytdlp_upgrade_cmd(), "ffmpeg_install": f["install"],
+            "upgrade": _ytdlp_upgrade_cmd(y["path"]) if y["path"] else "",
+            "ffmpeg_install": f["install"],
             "site": y["site"], "dir": str(SOUNDS_DIR), "max_minutes": SOUND_MAX_MIN}
 
 
@@ -1980,7 +2007,8 @@ async def _ytdlp(args, timeout):
     exe = shutil.which("yt-dlp")
     if not exe:
         raise LookupError("yt-dlp is not installed on this machine — install it: "
-                          + (_ytdlp_upgrade_cmd() or "https://github.com/yt-dlp/yt-dlp#installation"))
+                          + (_install_cmd(_YTDLP_CMDS)
+                             or "https://github.com/yt-dlp/yt-dlp#installation"))
     proc = await asyncio.create_subprocess_exec(exe, *args, stdout=asyncio.subprocess.PIPE,
                                                 stderr=asyncio.subprocess.PIPE)
     try:

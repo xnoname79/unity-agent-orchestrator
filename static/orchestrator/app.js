@@ -2830,7 +2830,9 @@ function toolRows(list) {
       <div class="head"><span class="nm">${esc(t.name)}</span>
         ${badge(ok ? "ready" : t.required ? "missing" : "not installed", cls)}
         ${t.required ? "" : `<span class="cli-tag">optional</span>`}
-        <span class="meta" title="${esc(t.path)}">${esc(t.path || t.command)}</span></div>
+        <span class="meta" title="${esc(t.path)}">${esc(t.path || t.command)}</span>
+        ${t.name === "yt-dlp" && ok ? `<button class="secondary" onclick="toolsClose(); sndOpen()"
+          title="Search videos and pull their sound out">Open Sounds</button>` : ""}</div>
       <div class="what">${esc(t.what)}${t.note ? " — " + esc(t.note) : ""}</div>
       ${fix}</div>`;
   }).join("");
@@ -3521,15 +3523,19 @@ const sndUrl = (name) => "/api/sounds/" + encodeURIComponent(name);
 const sndDur = (s) => s == null ? "" : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 
 function sndStatus(st, agents) {
-  const fix = (cmd, site) => `<div class="tool-fix">${cmd ? `<code>${esc(cmd)}</code>` : ""}
-    <a href="${esc(site)}" target="_blank" rel="noopener">${cmd ? "other ways" : "how to install"}</a></div>`;
+  const fix = (cmd, site, more = "") => `<div class="tool-fix">${cmd ? `<code>${esc(cmd)}</code>` : ""}
+    <a href="${esc(site)}" target="_blank" rel="noopener">${cmd ? "other ways" : "how to install"}</a>${more}</div>`;
+  // Đường dẫn: máy có thể có nhiều yt-dlp (conda, pip, bản release) — nâng nhầm bản là vẫn "cũ".
+  const recheck = `<button class="secondary snd-recheck" onclick="sndRecheck()"
+    title="Look at yt-dlp and ffmpeg again, e.g. after you upgrade">Re-check</button>`;
+  const at = st.ytdlp ? ` <span class="hint">at <code>${esc(st.ytdlp)}</code></span>` : "";
   const out = [];
   if (!st.ytdlp) out.push(`<div>${badge("missing", "b-red")} <b>yt-dlp</b> is not installed —
-    search and extract need it.</div>${fix(st.install, st.site)}`);
-  else if (st.stale) out.push(`<div>${badge("old", "b-amber")} <b>yt-dlp ${esc(st.version)}</b> is
+    search and extract need it.</div>${fix(st.install, st.site, recheck)}`);
+  else if (st.stale) out.push(`<div>${badge("old", "b-amber")} <b>yt-dlp ${esc(st.version)}</b>${at} is
     ${st.age_days} days old. Sites change often and old versions stop working — upgrade it:</div>
-    ${fix(st.upgrade, st.site)}`);
-  else out.push(`<div>${badge("ready", "b-green")} <b>yt-dlp ${esc(st.version)}</b></div>`);
+    ${fix(st.upgrade, st.site, recheck)}`);
+  else out.push(`<div>${badge("ready", "b-green")} <b>yt-dlp ${esc(st.version)}</b>${at} ${recheck}</div>`);
   if (!st.ffmpeg) out.push(`<div>${badge("missing", "b-red")} <b>ffmpeg</b> is needed to pull the
     sound out of a video.</div>${fix(st.ffmpeg_install, "https://ffmpeg.org/download.html")}`);
   out.push(agents.length
@@ -3587,6 +3593,15 @@ function sndOpen() {
   sndLoad(true).catch((e) => showMsg("snd-msg", "Error: " + e, false));
 }
 window.sndOpen = sndOpen;
+
+// Cache version phía server đọc lại khi file yt-dlp đổi, nên chỉ cần hỏi lại.
+async function sndRecheck() {
+  try {
+    await sndLoad(true);
+    showMsg("snd-msg", "Checked just now.", true);
+  } catch (e) { showMsg("snd-msg", "Error: " + e, false); }
+}
+window.sndRecheck = sndRecheck;
 
 function sndClose() { $("snd-modal").hidden = true; }
 window.sndClose = sndClose;
