@@ -345,6 +345,12 @@
     color: var(--text); text-decoration: none; }
   .snd-dl:hover { border-color: var(--accent); color: var(--accent); }
   @media (max-width: 560px) { .snd-row { flex-wrap: wrap; } .snd-row img { width: 72px; } }
+  #sed-wave { display: block; width: 100%; height: 128px; margin-top: 10px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg); cursor: crosshair; touch-action: none; }
+  .sed-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+  .form-card .sed-row label { display: inline-flex; align-items: center; gap: 6px; margin: 0;
+    text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--muted); }
+  .form-card .sed-row input { width: 92px; padding: 4px 8px; font-variant-numeric: tabular-nums; }
   .img-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .img-refs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 22px; }
   .img-ref { position: relative; width: 56px; height: 56px; overflow: hidden;
@@ -1216,6 +1222,34 @@
     <div id="snd-results" class="snd-list"></div>
     <label>Library</label>
     <div id="snd-lib" class="snd-list"></div>
+  </div>
+</div>
+
+<!-- Editor của Sounds: bản nháp vừa tách → chọn đoạn giữ lại → mới vào thư viện. KHÔNG đóng khi
+     bấm ra ngoài: một cú click trượt là mất bản nháp phải tách lại. -->
+<div id="sed-modal" class="modal-overlay" hidden>
+  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="sed-title">
+    <h3 id="sed-title"><svg class="ic"><use href="#i-music"/></svg> Edit sound
+      <span class="spacer"></span>
+      <button class="icon-btn" onclick="sedDiscard()" title="Discard">
+        <svg class="ic"><use href="#i-x"/></svg></button></h3>
+    <div id="sed-name" class="hint"></div>
+    <canvas id="sed-wave" aria-label="Sound wave — drag across it to pick the part to keep"></canvas>
+    <div class="sed-row">
+      <button id="sed-play" class="secondary" onclick="sedPlay()">Play selection</button>
+      <label>Start <input id="sed-start" inputmode="decimal" onchange="sedTyped()"></label>
+      <label>End <input id="sed-end" inputmode="decimal" onchange="sedTyped()"></label>
+      <span id="sed-len" class="hint"></span>
+      <button class="secondary" onclick="sedAll()">Select all</button>
+    </div>
+    <div class="hint">Drag across the wave to pick the part to keep, or drag its edges. Start and
+      End take seconds or m:ss.</div>
+    <div id="sed-msg" class="form-msg"></div>
+    <div class="spawn-actions ai-actions">
+      <button class="secondary" onclick="sedDiscard()">Discard</button>
+      <button id="sed-save" class="primary" onclick="sedSave()">Save to library</button>
+    </div>
+    <audio id="sed-audio" preload="auto"></audio>
   </div>
 </div>
 

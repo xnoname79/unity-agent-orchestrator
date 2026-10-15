@@ -18,10 +18,12 @@ they paste. Every way that goes wrong is a quiet one:
     restart;
   - the length filter runs AFTER the search, so a tight one must fetch more, then trim to the
     limit — or "up to 5 min" comes back nearly empty;
-  - the panel and the MCP tools must share one library: what an agent extracts, the user sees.
+  - the panel and the MCP tools must share one library: what an agent extracts, the user sees;
+  - the panel's extract is a DRAFT: not in the library until the editor keeps it, a failed cut
+    keeps the draft, a bad range never reaches ffmpeg, keeping all of it is not re-encoded.
 
-yt-dlp itself is not run: _ytdlp is replaced by a fake that answers the way yt-dlp 2026.08 does
-(measured), so this runs offline and on Windows.
+yt-dlp and ffmpeg are not run: _ytdlp and _ffmpeg are replaced by fakes that answer the way
+yt-dlp 2026.08 and ffmpeg do (measured), so this runs offline and on Windows.
 
     python3 check_sounds.py
 """
@@ -78,11 +80,12 @@ async def fake_ytdlp(args, timeout):
     stem = Path(out_tmpl).name.split(".")[0]
     if "long" in target:
         return 0, "", ""                              # match-filters bỏ qua trong im lặng
+    home = Path(out_tmpl).parent
     if "broken" in target:
-        (so.SOUNDS_DIR / f"{stem}.webm.part").write_bytes(b"half")
+        (home / f"{stem}.webm.part").write_bytes(b"half")
         return 1, "", "ERROR: [youtube] x: The page needs to be reloaded.\n"
     fmt = args[args.index("--audio-format") + 1]
-    dst = so.SOUNDS_DIR / f"{stem}.{fmt}"
+    dst = home / f"{stem}.{fmt}"
     dst.write_bytes(b"ID3fake-audio")
     info = {"id": "a1", "title": 'Rain / thunder: "loop"', "channel": "Renders", "duration": 42,
             "webpage_url": target, "filepath": str(dst)}
@@ -92,6 +95,21 @@ async def fake_ytdlp(args, timeout):
 BIN = Path(tempfile.mkdtemp())
 YT = BIN / "yt-dlp"
 YT.write_text("#!/opt/conda/bin/python3.11\nfrom yt_dlp import main\n")
+ff_calls = []                         # argv của mọi lần "chạy" ffmpeg
+ff = {"fail": False}
+
+
+async def fake_ffmpeg(args, timeout):
+    """Đọc sóng → PCM s16le: 1 giây im lặng rồi 1 giây ở nửa biên độ. Cắt → ghi file đích."""
+    ff_calls.append(list(args))
+    if ff["fail"]:
+        return 1, b"", "Error while decoding stream #0:0"
+    if args[-1] == "-":
+        return 0, b"\0\0" * 8000 + (16384).to_bytes(2, "little", signed=True) * 8000, ""
+    Path(args[-1]).write_bytes(b"ID3cut")
+    return 0, b"", ""
+
+
 real_which = so.shutil.which
 present = {"yt-dlp": str(YT), "ffmpeg": "/fake/bin/ffmpeg"}
 
@@ -232,6 +250,74 @@ async def main():
               and not (so.SOUNDS_DIR / s["name"]).exists()
               and not (so.SOUNDS_DIR / s["name"]).with_suffix(".json").exists(), r.text[:90])
 
+        # ── Bản nháp → editor → thư viện ─────────────────────────────────────
+        so._ffmpeg = fake_ffmpeg
+        drafts = so.SOUNDS_DIR / "drafts"
+        drafts.mkdir(exist_ok=True)
+        old = drafts / "20200101-000000-abcdef.mp3"
+        old.write_bytes(b"x")
+        os.utime(old, (0, 0))
+        r = await c.post("/api/sounds", json={"url": "https://youtu.be/a1", "draft": True})
+        d = r.json()["name"]
+        check("the panel's extract is a draft", r.status_code == 200 and (drafts / d).is_file(),
+              r.text[:120])
+        check("drafts left for over a day are swept", not old.exists(), str(list(drafts.iterdir())))
+        lib = (await c.get("/api/sounds")).json()["items"]
+        check("a draft is not in the library yet", all(i["name"] != d for i in lib), str(lib)[:120])
+        r = await c.get(f"/api/sounds/drafts/{d}")
+        check("the editor can play the draft", r.status_code == 200, str(r.status_code))
+        r = await c.get(f"/api/sounds/{d}")
+        check("the library route does not serve a draft", r.status_code == 404, str(r.status_code))
+        r = await c.get(f"/api/sounds/drafts/{d}/peaks")
+        pk = r.json()
+        check("the wave comes back as peaks, with the length ffmpeg decoded",
+              pk.get("duration") == 2.0 and len(pk.get("peaks", [])) == 1000
+              and pk["peaks"][0] == 0 and pk["peaks"][-1] == 0.5, str(pk)[:120])
+        r = await c.get("/api/sounds/drafts/x.mp3/peaks")
+        check("a made-up draft name is not read", r.status_code != 200, str(r.status_code))
+
+        keep = f"/api/sounds/drafts/{d}/keep"
+        for bad in ({"start": -1, "end": 1}, {"start": 1, "end": 1.01}, {"start": "abc"},
+                    {"start": "nan", "end": 1}, {"start": 0, "end": "inf"}):
+            n = len(ff_calls)
+            r = await c.post(keep, json=bad)
+            check(f"range {bad} is refused before ffmpeg runs",
+                  r.status_code == 400 and len(ff_calls) == n, f"{r.status_code} {r.text[:80]}")
+        ff["fail"] = True
+        r = await c.post(keep, json={"start": 0.5, "end": 1.5})
+        ff["fail"] = False
+        check("a failed cut keeps the draft and puts nothing in the library",
+              r.status_code == 502 and (drafts / d).is_file() and not (so.SOUNDS_DIR / d).exists()
+              and [f.name for f in drafts.iterdir() if "-cut" in f.name] == [], r.text[:120])
+        r = await c.post(keep, json={"start": 0.5, "end": 1.5})
+        k = r.json()
+        args = ff_calls[-1]
+        check("the cut asks ffmpeg for exactly that part",
+              args[args.index("-ss") + 1] == "0.500" and args[args.index("-t") + 1] == "1.000",
+              str(args))
+        check("the cut lands in the library with its length and where it came from",
+              r.status_code == 200 and (so.SOUNDS_DIR / d).read_bytes() == b"ID3cut"
+              and k["duration"] == 1.0 and k["clip"] == [0.5, 1.5] and k["title"].startswith("Rain"),
+              r.text[:160])
+        check("and the draft is gone", not list(drafts.glob(Path(d).stem + "*")),
+              str(list(drafts.iterdir())))
+        r = await c.post(keep, json={})
+        check("a draft is kept only once", r.status_code == 409, str(r.status_code))
+
+        r = await c.post("/api/sounds", json={"url": "https://youtu.be/a1", "draft": True})
+        d2 = r.json()["name"]
+        n = len(ff_calls)
+        r = await c.post(f"/api/sounds/drafts/{d2}/keep", json={"start": 0, "end": None})
+        check("keeping all of it moves the file as is, not re-encoded",
+              r.status_code == 200 and len(ff_calls) == n
+              and (so.SOUNDS_DIR / d2).read_bytes() == b"ID3fake-audio", r.text[:120])
+
+        r = await c.post("/api/sounds", json={"url": "https://youtu.be/a1", "draft": True})
+        d3 = r.json()["name"]
+        r = await c.delete(f"/api/sounds/drafts/{d3}")
+        check("discard removes the draft", r.status_code == 200 and not list(drafts.iterdir()),
+              str(list(drafts.iterdir())))
+
         present["yt-dlp"] = None
         so._ytdlp = real_ytdlp                        # đường thật: phải dừng ở chỗ thiếu binary
         r = await c.post("/api/sounds/search", json={"query": "rain"})
@@ -267,6 +353,8 @@ async def main():
                               ('onclick="toolsClose(); sndOpen()"', "app.js", js),
                               ("window.sndOpen", "app.js", js),
                               ('id="snd-len"', "index.html", html),
+                              ('id="sed-modal"', "index.html", html),
+                              ("draft: true", "app.js", js),
                               ('max_minutes: +$("snd-len").value', "app.js", js),
                               ('onclick="sndRecheck()"', "app.js", js),
                               ('Mount("/sounds", app=sound_app)', "session_orchestrator.py", py),

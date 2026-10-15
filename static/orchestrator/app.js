@@ -3319,6 +3319,8 @@ function mcpClose() {
 window.mcpClose = mcpClose;
 
 document.addEventListener("keydown", (e) => {
+  // Editor nằm trên Sounds: Esc chỉ hỏi bỏ bản nháp, không đóng luôn Sounds bên dưới.
+  if (e.key === "Escape" && !$("sed-modal").hidden) return sedDiscard();
   if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
   if (e.key === "Escape" && !$("img-modal").hidden) imgClose();
   if (e.key === "Escape" && !$("snd-modal").hidden) sndClose();
@@ -3641,9 +3643,10 @@ async function sndClick(ev) {
   btn.textContent = "Extracting…";
   showMsg("snd-msg", "Pulling the sound out… usually under a minute.", true);
   try {
-    const s = await api("/api/sounds", "POST", { url: btn.dataset.sndUrl, format: $("snd-fmt").value });
-    showMsg("snd-msg", `Saved “${s.title || s.name}”.`, true);
-    await sndLoad(false);
+    const s = await api("/api/sounds", "POST",
+      { url: btn.dataset.sndUrl, format: $("snd-fmt").value, draft: true });
+    showMsg("snd-msg", `Extracted “${s.title || s.name}” — pick the part to keep.`, true);
+    sedOpen(s);
   } catch (e) { showMsg("snd-msg", mcpErr(e), false); }
   finally { btn.disabled = false; btn.textContent = "Extract audio"; }
 }
@@ -3659,6 +3662,181 @@ async function sndConnect() {
   } catch (e) { showMsg("snd-msg", mcpErr(e), false); }
 }
 window.sndConnect = sndConnect;
+
+// ── Sound editor ─────────────────────────────────────────────────────────────
+// Bản nháp vừa tách (drafts/, chưa vào thư viện) → chọn đoạn giữ lại → Save mới vào thư viện.
+// Đỉnh sóng tính ở server (sound_peaks); ở đây chỉ vẽ và giữ đoạn chọn [a, b] tính bằng giây.
+let sed = null;          // { name, dur, peaks, a, b, drag }
+const SED_MIN = 0.05;    // đoạn ngắn nhất được giữ, khớp với sound_keep
+
+const sedUrl = () => "/api/sounds/drafts/" + encodeURIComponent(sed.name);
+const sedFmt = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, "0")}`;
+function sedParse(v) {                // "65.5", "1:05.5" → 65.5
+  const p = String(v).trim().split(":");
+  if (!p[0] || p.length > 2) return NaN;
+  return p.length === 2 ? Number(p[0]) * 60 + Number(p[1]) : Number(p[0]);
+}
+
+async function sedOpen(d) {
+  const me = sed = { name: d.name, dur: 0, peaks: [], a: 0, b: 0, drag: null };
+  $("sed-name").textContent = d.title || d.name;
+  $("sed-modal").hidden = false;
+  $("sed-audio").src = sedUrl();
+  showMsg("sed-msg", "Reading the sound wave…", true);
+  sedSync();
+  try {
+    const r = await api(sedUrl() + "/peaks");
+    if (sed !== me) return;           // đã Discard trong lúc chờ
+    Object.assign(sed, { dur: r.duration, peaks: r.peaks, b: r.duration });
+    $("sed-msg").textContent = "";
+    sedSync();
+  } catch (e) { if (sed === me) showMsg("sed-msg", mcpErr(e), false); }
+}
+
+function sedSync() {
+  $("sed-start").value = sedFmt(sed.a);
+  $("sed-end").value = sedFmt(sed.b);
+  $("sed-len").textContent = sed.dur ? `keeps ${sedFmt(sed.b - sed.a)} of ${sedFmt(sed.dur)}` : "";
+  $("sed-save").disabled = !sed.dur;
+  sedDraw();
+}
+
+function sedDraw() {
+  const c = $("sed-wave"), dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  c.width = w * dpr;
+  c.height = h * dpr;
+  const g = c.getContext("2d");
+  g.scale(dpr, dpr);
+  const css = getComputedStyle(document.documentElement);
+  const accent = css.getPropertyValue("--accent").trim(), dim = css.getPropertyValue("--faint").trim();
+  const x = (t) => sed.dur ? t / sed.dur * w : 0;
+  const xa = x(sed.a), xb = x(sed.b), n = sed.peaks.length;
+  g.fillStyle = accent;
+  g.globalAlpha = 0.14;
+  g.fillRect(xa, 0, xb - xa, h);
+  g.globalAlpha = 1;
+  for (let px = 0; px < w && n; px++) {
+    // Một cột pixel = đỉnh lớn nhất của các bucket rơi vào nó.
+    const i0 = Math.floor(px / w * n), i1 = Math.max(i0 + 1, Math.floor((px + 1) / w * n));
+    let p = 0;
+    for (let i = i0; i < i1 && i < n; i++) p = Math.max(p, sed.peaks[i]);
+    const y = Math.max(0.5, p * (h / 2 - 4));
+    g.fillStyle = px >= xa && px <= xb ? accent : dim;
+    g.fillRect(px, h / 2 - y, 1, y * 2);
+  }
+  if (!sed.dur) return;
+  g.fillStyle = accent;
+  g.fillRect(xa - 1, 0, 2, h);
+  g.fillRect(xb - 1, 0, 2, h);
+  const au = $("sed-audio");
+  if (!au.paused) {
+    g.fillStyle = css.getPropertyValue("--text").trim();
+    g.fillRect(x(au.currentTime), 0, 1, h);
+  }
+}
+
+// Kéo trên sóng: gần mép (6px) → kéo mép đó; chỗ khác → vẽ đoạn mới từ điểm bấm.
+function sedAt(ev) {
+  const r = $("sed-wave").getBoundingClientRect(), px = ev.clientX - r.left;
+  const near = (t) => Math.abs(t / sed.dur * r.width - px) <= 6;
+  return { t: Math.min(sed.dur, Math.max(0, px / r.width * sed.dur)),
+           edge: near(sed.a) ? "a" : near(sed.b) ? "b" : null };
+}
+$("sed-wave").addEventListener("pointerdown", (ev) => {
+  if (!sed?.dur) return;
+  const { t, edge } = sedAt(ev);
+  sed.drag = edge || { from: t };
+  ev.currentTarget.setPointerCapture(ev.pointerId);
+});
+$("sed-wave").addEventListener("pointermove", (ev) => {
+  if (!sed?.dur) return;
+  const { t, edge } = sedAt(ev);
+  if (!sed.drag) { ev.currentTarget.style.cursor = edge ? "ew-resize" : ""; return; }
+  if (sed.drag === "a") sed.a = Math.min(t, sed.b - SED_MIN);
+  else if (sed.drag === "b") sed.b = Math.max(t, sed.a + SED_MIN);
+  else {
+    const a = Math.min(sed.drag.from, t), b = Math.max(sed.drag.from, t);
+    if (b - a < SED_MIN) return;      // một cú click không xoá đoạn đang chọn
+    Object.assign(sed, { a, b });
+  }
+  sedSync();
+});
+for (const evName of ["pointerup", "pointercancel"]) {
+  $("sed-wave").addEventListener(evName, () => { if (sed) sed.drag = null; });
+}
+window.addEventListener("resize", () => { if (sed) sedDraw(); });
+
+function sedTyped() {
+  const a = Math.max(0, sedParse($("sed-start").value));
+  const b = Math.min(sed.dur, sedParse($("sed-end").value));
+  if (b - a >= SED_MIN) {
+    Object.assign(sed, { a, b });
+    $("sed-msg").textContent = "";
+  } else showMsg("sed-msg", "Start must come before End — seconds (65.5) or m:ss (1:05.5).", false);
+  sedSync();
+}
+window.sedTyped = sedTyped;
+
+function sedAll() {
+  Object.assign(sed, { a: 0, b: sed.dur });
+  sedSync();
+}
+window.sedAll = sedAll;
+
+function sedPlay() {
+  const au = $("sed-audio");
+  if (!au.paused) return au.pause();
+  au.currentTime = sed.a;
+  au.play().catch((e) => showMsg("sed-msg", "Cannot play: " + e.message, false));
+}
+window.sedPlay = sedPlay;
+
+function sedTick() {
+  const au = $("sed-audio");
+  if (au.paused || !sed) return;
+  if (au.currentTime >= sed.b) return au.pause();
+  sedDraw();
+  requestAnimationFrame(sedTick);
+}
+$("sed-audio").addEventListener("play", () => { $("sed-play").textContent = "Stop"; sedTick(); });
+$("sed-audio").addEventListener("pause", () => {
+  $("sed-play").textContent = "Play selection";
+  if (sed) sedDraw();
+});
+
+// Chọn hết = giữ nguyên file (server không mã hoá lại); mép sát đầu/cuối coi như đầu/cuối.
+async function sedSave() {
+  const body = { start: sed.a <= 0.01 ? 0 : sed.a, end: sed.b >= sed.dur - 0.01 ? null : sed.b };
+  $("sed-save").disabled = true;
+  showMsg("sed-msg", "Saving…", true);
+  try {
+    const s = await api(sedUrl() + "/keep", "POST", body);
+    sedHide();
+    showMsg("snd-msg", `Saved “${s.title || s.name}” to the library.`, true);
+    await sndLoad(false);
+  } catch (e) {
+    showMsg("sed-msg", mcpErr(e), false);
+    $("sed-save").disabled = false;
+  }
+}
+window.sedSave = sedSave;
+
+async function sedDiscard() {
+  if (!sed || !confirm("Discard this sound? It is not in the library yet.")) return;
+  await api(sedUrl(), "DELETE").catch(() => {});
+  sedHide();
+}
+window.sedDiscard = sedDiscard;
+
+function sedHide() {
+  const au = $("sed-audio");
+  au.pause();
+  au.removeAttribute("src");
+  au.load();
+  $("sed-modal").hidden = true;
+  sed = null;
+}
 
 async function spawnAgent() {
   // Tên vai và template là HAI thứ khác nhau: template chỉ là playbook NGUỒN (nhiều agent dùng

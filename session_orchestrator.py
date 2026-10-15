@@ -47,6 +47,7 @@ Usage:
 """
 
 import argparse
+import array
 import asyncio
 import base64
 import json
@@ -2066,11 +2067,14 @@ async def sound_search(query, limit=10, ai_only=True, max_minutes=SOUND_MAX_MIN)
     return {"query": query, "results": rows[:limit]}
 
 
-async def sound_extract(url, fmt="mp3", by=""):
+async def sound_extract(url, fmt="mp3", by="", draft=False):
     """Tách tiếng của MỘT video vào SOUNDS_DIR. Request chờ tới khi xong (thường dưới một phút).
 
     Tên file do ta đặt (thời điểm + 6 hex), KHÔNG lấy tiêu đề video: tiêu đề là chữ của người lạ,
-    đi thẳng vào đường dẫn. Tiêu đề nằm ở .json cùng tên và thành tên file lúc tải về."""
+    đi thẳng vào đường dẫn. Tiêu đề nằm ở .json cùng tên và thành tên file lúc tải về.
+
+    draft=True: vào drafts/ (KHÔNG hiện trong thư viện) để người dùng cắt trong editor trước, rồi
+    sound_keep mới đưa vào thư viện. Agent không có editor nên vẫn lưu thẳng."""
     url = str(url or "").strip()
     if not _SOUND_URL_OK.match(url):
         raise ValueError("a video link starting with http:// or https:// is required")
@@ -2081,7 +2085,12 @@ async def sound_extract(url, fmt="mp3", by=""):
         rows = {r["name"]: r for r in media_tools()["tools"]}
         raise LookupError("ffmpeg is needed to pull the sound out of a video — install it: "
                           + (rows["ffmpeg"]["install"] or rows["ffmpeg"]["site"]))
-    SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
+    home = _sound_home(draft)
+    home.mkdir(parents=True, exist_ok=True)
+    if draft:   # bản nháp bị bỏ dở (đóng tab giữa chừng): dọn sau một ngày
+        for old in home.glob("*"):
+            if old.stat().st_mtime < datetime.now().timestamp() - 86400:
+                old.unlink(missing_ok=True)
     stem = f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
     ok = False
     try:
@@ -2089,7 +2098,7 @@ async def sound_extract(url, fmt="mp3", by=""):
             rc, out, err = await _ytdlp(
                 ["-x", "--audio-format", fmt, "--no-playlist", "--no-warnings",
                  "--match-filters", f"duration<={SOUND_MAX_MIN * 60} & !is_live",
-                 "-o", str(SOUNDS_DIR / f"{stem}.%(ext)s"),
+                 "-o", str(home / f"{stem}.%(ext)s"),
                  "--print", "after_move:%(.{id,title,channel,duration,webpage_url,license,filepath})j",
                  "--", url], 900)
         info = None
@@ -2106,7 +2115,7 @@ async def sound_extract(url, fmt="mp3", by=""):
             # match-filters bỏ qua trong IM LẶNG: exit 0, không in gì (đo trên yt-dlp 2026.08).
             raise ValueError(f"skipped: the video is longer than {SOUND_MAX_MIN} minutes, "
                              f"or it is a live stream")
-        dst = SOUNDS_DIR / f"{stem}.{fmt}"
+        dst = home / f"{stem}.{fmt}"
         if not dst.is_file():
             raise RuntimeError("yt-dlp finished but left no audio file behind")
         meta = {"title": info.get("title") or "", "channel": info.get("channel") or "",
@@ -2117,17 +2126,107 @@ async def sound_extract(url, fmt="mp3", by=""):
         ok = True
     finally:
         if not ok:   # .part / .webm dở dang của một lần hỏng: không để rác trong thư viện
-            for leftover in SOUNDS_DIR.glob(stem + ".*"):
+            for leftover in home.glob(stem + ".*"):
                 leftover.unlink(missing_ok=True)
     return {**meta, "name": dst.name, "path": str(dst)}
 
 
-def sound_path(name):
-    """File tiếng trong SOUNDS_DIR mang tên này, hoặc None. Tên từ URL — chỉ nhận đúng mẫu ta đặt."""
+def _sound_home(draft):
+    return SOUNDS_DIR / "drafts" if draft else SOUNDS_DIR
+
+
+def sound_path(name, draft=False):
+    """File tiếng mang tên này (trong thư viện, hoặc drafts/), hoặc None. Tên từ URL — chỉ nhận
+    đúng mẫu ta đặt."""
     if not _SOUND_NAME_OK.match(name or ""):
         return None
-    p = SOUNDS_DIR / name
+    p = _sound_home(draft) / name
     return p if p.is_file() else None
+
+
+async def _ffmpeg(args, timeout):
+    """Chạy ffmpeg → (returncode, stdout BYTES, stderr). Không shell; mọi đường dẫn là của ta."""
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        raise LookupError("ffmpeg is not installed on this machine")
+    proc = await asyncio.create_subprocess_exec(exe, "-v", "error", "-nostdin", *args,
+                                                stdout=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.PIPE)
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"ffmpeg did not finish within {timeout // 60} minutes")
+    return proc.returncode, out, err.decode("utf-8", "replace")
+
+
+SOUND_PEAK_RATE = 8000    # Hz khi đọc sóng: đủ thấy tiếng rít/mưa, 60 phút = 58 MB qua pipe
+
+
+async def sound_peaks(name, n=1000):
+    """Hình sóng của một bản nháp: n đỉnh (0..1) + thời lượng thật đã giải mã. Tính ở server vì
+    trình duyệt giải mã cả file 60 phút là hơn 1 GB PCM."""
+    p = sound_path(name, draft=True)
+    if not p:
+        raise LookupError("no such draft")
+    rc, raw, err = await _ffmpeg(["-i", str(p), "-ac", "1", "-ar", str(SOUND_PEAK_RATE),
+                                  "-f", "s16le", "-"], 300)
+    if rc:
+        raise RuntimeError("ffmpeg could not read the sound: " + (err.strip()[-300:] or f"exit {rc}"))
+
+    def peaks():
+        a = array.array("h", raw[:len(raw) // 2 * 2])
+        if sys.byteorder == "big":
+            a.byteswap()
+        step = max(1, -(-len(a) // n))
+        return [round(max(max(c), -min(c)) / 32768, 3)
+                for c in (a[i:i + step] for i in range(0, len(a), step))]
+    return {"duration": len(raw) // 2 / SOUND_PEAK_RATE, "peaks": await asyncio.to_thread(peaks)}
+
+
+async def sound_keep(name, start=None, end=None):
+    """Đưa bản nháp vào thư viện, chỉ giữ đoạn start..end (giây; end None = tới hết).
+
+    Giữ cả bài → chuyển file nguyên vẹn, không mã hoá lại. Cắt → ffmpeg mã hoá lại: cắt
+    -c copy rơi giữa một frame mp3/aac là có tiếng tách ở đầu, đúng chỗ người ta nghe thấy."""
+    p = sound_path(name, draft=True)
+    if not p:
+        raise LookupError("no such draft — it may have been saved or discarded already")
+    try:
+        start = float(start or 0)
+        end = None if end is None else float(end)
+    except (TypeError, ValueError):
+        raise ValueError("start and end must be numbers of seconds")
+    if not math.isfinite(start) or start < 0 or (end is not None and (
+            not math.isfinite(end) or end - start < 0.05)):
+        raise ValueError("pick a part at least 0.05 s long, with the start before the end")
+    try:
+        meta = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    dst = SOUNDS_DIR / p.name
+    if start == 0 and end is None:
+        os.replace(p, dst)
+    else:
+        # Ghi ra drafts/ trước rồi mới đổi tên: file đang mã hoá dở không lộ ra trong thư viện.
+        tmp = p.with_name(f"{p.stem}-cut{p.suffix}")
+        rc, _, err = await _ffmpeg(["-y", "-ss", f"{start:.3f}", "-i", str(p),
+                                    *(["-t", f"{end - start:.3f}"] if end is not None else []),
+                                    "-map", "0:a", str(tmp)], 600)
+        if rc or not tmp.is_file():
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError("ffmpeg could not cut the sound: " + (err.strip()[-300:] or f"exit {rc}"))
+        os.replace(tmp, dst)
+        p.unlink(missing_ok=True)
+        meta["clip"] = [round(start, 3), None if end is None else round(end, 3)]
+        if end is not None:
+            meta["duration"] = round(end - start, 3)
+        elif meta.get("duration"):
+            meta["duration"] = round(meta["duration"] - start, 3)
+    dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    p.with_suffix(".json").unlink(missing_ok=True)
+    return {**meta, "name": dst.name, "path": str(dst)}
 
 
 def list_sounds():
@@ -6500,12 +6599,32 @@ def build_app():
     async def api_sounds_extract(request: Request):
         b = await _body(request)
         try:
-            return JSONResponse(await sound_extract(b.get("url"), b.get("format") or "mp3", "user"))
+            return JSONResponse(await sound_extract(b.get("url"), b.get("format") or "mp3", "user",
+                                                    draft=b.get("draft") is True))
+        except (ValueError, LookupError, RuntimeError) as e:
+            return _sound_err(e)
+
+    # Cùng handler cho thư viện và bản nháp: chỉ khác thư mục, theo đường dẫn request.
+    def _sound_req(request):
+        return sound_path(request.path_params["name"],
+                          draft=request.url.path.startswith("/api/sounds/drafts/"))
+
+    async def api_sound_peaks(request: Request):
+        try:
+            return JSONResponse(await sound_peaks(request.path_params["name"]))
+        except (LookupError, RuntimeError) as e:
+            return _sound_err(e)
+
+    async def api_sound_keep(request: Request):
+        b = await _body(request)
+        try:
+            return JSONResponse(await sound_keep(request.path_params["name"], b.get("start"),
+                                                 b.get("end")))
         except (ValueError, LookupError, RuntimeError) as e:
             return _sound_err(e)
 
     async def api_sound_file(request: Request):
-        p = sound_path(request.path_params["name"])
+        p = _sound_req(request)
         if not p:
             return JSONResponse({"error": "no such sound"}, status_code=404)
         # ?download=1 → lưu về máy với tên là tiêu đề video; không có → phát ngay trong <audio>.
@@ -6516,7 +6635,7 @@ def build_app():
                             headers={"X-Content-Type-Options": "nosniff"})
 
     async def api_sound_delete(request: Request):
-        p = sound_path(request.path_params["name"])
+        p = _sound_req(request)
         if not p:
             return JSONResponse({"error": "no such sound"}, status_code=404)
         p.unlink()
@@ -7481,6 +7600,10 @@ def build_app():
         Route("/api/sounds", api_sounds),
         Route("/api/sounds", api_sounds_extract, methods=["POST"]),
         Route("/api/sounds/search", api_sounds_search, methods=["POST"]),
+        Route("/api/sounds/drafts/{name}", api_sound_file),
+        Route("/api/sounds/drafts/{name}", api_sound_delete, methods=["DELETE"]),
+        Route("/api/sounds/drafts/{name}/peaks", api_sound_peaks),
+        Route("/api/sounds/drafts/{name}/keep", api_sound_keep, methods=["POST"]),
         Route("/api/sounds/{name}", api_sound_file),
         Route("/api/sounds/{name}", api_sound_delete, methods=["DELETE"]),
         Route("/api/sessions/{sid}", api_session_detail),

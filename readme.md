@@ -335,6 +335,11 @@ library you can play, download or delete. **AI-generated only** (on by default) 
 minutes. Pick the format (mp3, wav, m4a, opus or flac) before you press **Extract audio**;
 **Download** saves the file under the video's title.
 
+**Extract audio** opens **Edit sound** before anything reaches the library. Drag across the wave
+to pick the part to keep (or drag its edges, or type Start and End), press **Play selection** to
+hear it, then **Save to library**, or **Discard**. Keeping all of it saves the file untouched; a
+cut is re-encoded by ffmpeg so it starts cleanly. Unsaved drafts are cleared after a day.
+
 It runs `yt-dlp` and `ffmpeg` on the machine the orchestrator runs on (see the next section). The
 panel says when either is missing, and when yt-dlp is old enough that sites have likely broken it,
 with the command to install or upgrade. It names the yt-dlp it uses and gives the upgrade command
