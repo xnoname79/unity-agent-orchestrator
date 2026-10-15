@@ -57,6 +57,7 @@ import secrets
 import shutil
 import socket
 import sqlite3
+import subprocess
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -1905,6 +1906,215 @@ def media_tools():
                      if path and cmd != binaries[0] else ""),
         })
     return {"tools": rows, "missing": sum(1 for r in rows if r["required"] and not r["path"])}
+
+
+# ─── Sounds: tìm video, tách tiếng bằng yt-dlp ───────────────────────────────
+# Panel Sounds trên dashboard và MCP sound_mcp (/sounds/mcp) gọi CÙNG các hàm dưới đây — agent
+# tách được một tiếng là người dùng thấy nó trong thư viện ngay, và ngược lại.
+#
+# yt-dlp KHÔNG đóng gói kèm: dùng bản trên PATH (xem MEDIA_TOOLS). Bản cũ là hỏng thật, không
+# phải hỏng giả: YouTube đổi trang liên tục, yt-dlp 2025.02 đo được trả "The page needs to be
+# reloaded" cho mọi video vào 10/2026 — nên lỗi luôn kèm tuổi của bản đang cài và lệnh nâng cấp.
+SOUNDS_DIR = DB_DIR / "sounds"
+SOUND_FORMATS = {"mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4",
+                 "opus": "audio/ogg", "flac": "audio/flac"}
+SOUND_SEARCH_MAX = 20
+# shortcut: trần cố định 30 phút. Một video "10 hours of rain" là hàng trăm MB và nhiều phút tải
+# chỉ để lấy vài giây tiếng; thành biến môi trường khi có người thật sự cần dài hơn.
+SOUND_MAX_MIN = 30
+SOUND_STALE_DAYS = 60        # yt-dlp cũ hơn thế thì cảnh báo trước khi YouTube kịp làm nó hỏng
+_SOUND_NAME_OK = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}\.(" + "|".join(SOUND_FORMATS) + r")$")
+_SOUND_SLOTS = asyncio.Semaphore(2)    # mỗi lần tách = một yt-dlp + một ffmpeg
+_SOUND_URL_OK = re.compile(r"^https?://\S+$")
+_ytdlp_versions = {}                   # đường dẫn binary → version, khỏi spawn lại mỗi lần poll
+
+
+def _ytdlp_upgrade_cmd():
+    return _install_cmd(next(t for t in MEDIA_TOOLS if t[0] == "yt-dlp")[5])
+
+
+def _ytdlp_version(exe):
+    if exe and exe not in _ytdlp_versions:
+        try:
+            r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=15)
+            _ytdlp_versions[exe] = r.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            _ytdlp_versions[exe] = ""
+    return _ytdlp_versions.get(exe, "")
+
+
+def _ytdlp_age(version):
+    """Số ngày tuổi của bản yt-dlp (version là ngày phát hành: 2025.02.19), None nếu không đọc được."""
+    try:
+        return (datetime.now() - datetime.strptime(version[:10], "%Y.%m.%d")).days
+    except ValueError:
+        return None
+
+
+def sound_status():
+    """yt-dlp và ffmpeg trên máy CHẠY orchestrator. -x cần cả ffmpeg: thiếu nó yt-dlp tải xong
+    video rồi mới chết ở bước tách tiếng."""
+    rows = {r["name"]: r for r in media_tools()["tools"]}
+    y, f = rows["yt-dlp"], rows["ffmpeg"]
+    version = _ytdlp_version(y["path"])
+    age = _ytdlp_age(version)
+    return {"ytdlp": y["path"], "version": version, "stale": bool(age and age > SOUND_STALE_DAYS),
+            "age_days": age, "ffmpeg": f["path"], "install": y["install"],
+            "upgrade": _ytdlp_upgrade_cmd(), "ffmpeg_install": f["install"],
+            "site": y["site"], "dir": str(SOUNDS_DIR), "max_minutes": SOUND_MAX_MIN}
+
+
+def _ytdlp_error(err):
+    """Dòng ERROR cuối của yt-dlp + lời khuyên nâng cấp nếu bản đang cài đã cũ."""
+    lines = [l for l in err.splitlines() if l.startswith("ERROR:")] or err.strip().splitlines()[-1:]
+    msg = (lines[-1] if lines else "yt-dlp failed").removeprefix("ERROR: ")
+    st = sound_status()
+    if st["stale"]:
+        msg += (f" — this yt-dlp ({st['version']}) is {st['age_days']} days old and sites change "
+                f"often; upgrade it: {st['upgrade'] or st['site']}")
+    return msg
+
+
+async def _ytdlp(args, timeout):
+    """Chạy yt-dlp → (returncode, stdout, stderr). Không có shell: args đi thẳng vào argv."""
+    exe = shutil.which("yt-dlp")
+    if not exe:
+        raise LookupError("yt-dlp is not installed on this machine — install it: "
+                          + (_ytdlp_upgrade_cmd() or "https://github.com/yt-dlp/yt-dlp#installation"))
+    proc = await asyncio.create_subprocess_exec(exe, *args, stdout=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.PIPE)
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"yt-dlp did not finish within {timeout // 60} minutes")
+    return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+
+async def sound_search(query, limit=10, ai_only=True):
+    """Tìm video trên YouTube. ai_only thêm "AI generated" vào câu tìm — đúng thứ người dùng gõ
+    thêm bằng tay, nhưng không gõ hai lần nếu câu đã có."""
+    query = " ".join(str(query or "").split())
+    if not query or len(query) > 200:
+        raise ValueError("type what you are looking for, up to 200 characters")
+    try:
+        limit = max(1, min(int(limit), SOUND_SEARCH_MAX))
+    except (TypeError, ValueError):
+        limit = 10
+    if ai_only and "ai generated" not in query.lower():
+        query += " AI generated"
+    # '--' trước đích: câu tìm do người (hoặc agent) gõ, mở đầu bằng '-' là thành cờ của yt-dlp.
+    rc, out, err = await _ytdlp(["--flat-playlist", "-j", "--no-warnings", "--",
+                                 f"ytsearch{limit}:{query}"], 90)
+    rows = []
+    for line in out.splitlines():
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        # Đang phát trực tiếp / sắp phát: chẳng có tệp nào để tách tiếng.
+        if not isinstance(o, dict) or o.get("live_status") in ("is_live", "is_upcoming"):
+            continue
+        thumbs = o.get("thumbnails") or [{}]
+        rows.append({"id": o.get("id") or "", "title": o.get("title") or "",
+                     "url": o.get("url") or o.get("webpage_url") or "",
+                     "channel": o.get("channel") or o.get("uploader") or "",
+                     "duration": o.get("duration"), "views": o.get("view_count"),
+                     "thumb": thumbs[0].get("url") or "",
+                     "too_long": bool(o.get("duration") and o["duration"] > SOUND_MAX_MIN * 60)})
+    if rc and not rows:
+        raise RuntimeError(_ytdlp_error(err))
+    return {"query": query, "results": rows}
+
+
+async def sound_extract(url, fmt="mp3", by=""):
+    """Tách tiếng của MỘT video vào SOUNDS_DIR. Request chờ tới khi xong (thường dưới một phút).
+
+    Tên file do ta đặt (thời điểm + 6 hex), KHÔNG lấy tiêu đề video: tiêu đề là chữ của người lạ,
+    đi thẳng vào đường dẫn. Tiêu đề nằm ở .json cùng tên và thành tên file lúc tải về."""
+    url = str(url or "").strip()
+    if not _SOUND_URL_OK.match(url):
+        raise ValueError("a video link starting with http:// or https:// is required")
+    fmt = str(fmt or "mp3").lower()
+    if fmt not in SOUND_FORMATS:
+        raise ValueError(f"format must be one of: {', '.join(SOUND_FORMATS)}")
+    if not shutil.which("ffmpeg"):
+        rows = {r["name"]: r for r in media_tools()["tools"]}
+        raise LookupError("ffmpeg is needed to pull the sound out of a video — install it: "
+                          + (rows["ffmpeg"]["install"] or rows["ffmpeg"]["site"]))
+    SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
+    stem = f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
+    ok = False
+    try:
+        async with _SOUND_SLOTS:
+            rc, out, err = await _ytdlp(
+                ["-x", "--audio-format", fmt, "--no-playlist", "--no-warnings",
+                 "--match-filters", f"duration<={SOUND_MAX_MIN * 60} & !is_live",
+                 "-o", str(SOUNDS_DIR / f"{stem}.%(ext)s"),
+                 "--print", "after_move:%(.{id,title,channel,duration,webpage_url,license,filepath})j",
+                 "--", url], 900)
+        info = None
+        for line in reversed(out.splitlines()):
+            if line.startswith("{"):
+                try:
+                    info = json.loads(line)
+                    break
+                except ValueError:
+                    pass
+        if not info:
+            if rc:
+                raise RuntimeError(_ytdlp_error(err))
+            # match-filters bỏ qua trong IM LẶNG: exit 0, không in gì (đo trên yt-dlp 2026.08).
+            raise ValueError(f"skipped: the video is longer than {SOUND_MAX_MIN} minutes, "
+                             f"or it is a live stream")
+        dst = SOUNDS_DIR / f"{stem}.{fmt}"
+        if not dst.is_file():
+            raise RuntimeError("yt-dlp finished but left no audio file behind")
+        meta = {"title": info.get("title") or "", "channel": info.get("channel") or "",
+                "duration": info.get("duration"), "source": info.get("webpage_url") or url,
+                "license": info.get("license") or "", "format": fmt, "by": by or "",
+                "created": _now()}
+        dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        ok = True
+    finally:
+        if not ok:   # .part / .webm dở dang của một lần hỏng: không để rác trong thư viện
+            for leftover in SOUNDS_DIR.glob(stem + ".*"):
+                leftover.unlink(missing_ok=True)
+    return {**meta, "name": dst.name, "path": str(dst)}
+
+
+def sound_path(name):
+    """File tiếng trong SOUNDS_DIR mang tên này, hoặc None. Tên từ URL — chỉ nhận đúng mẫu ta đặt."""
+    if not _SOUND_NAME_OK.match(name or ""):
+        return None
+    p = SOUNDS_DIR / name
+    return p if p.is_file() else None
+
+
+def list_sounds():
+    """Tiếng đã tách, mới nhất trước. Thiếu/hỏng .json thì vẫn hiện, chỉ mất tiêu đề."""
+    out = []
+    for p in SOUNDS_DIR.glob("*"):
+        if not _SOUND_NAME_OK.match(p.name):
+            continue
+        try:
+            meta = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        out.append({"title": "", "created": "", **meta, "name": p.name, "path": str(p),
+                    "size": p.stat().st_size})
+    return sorted(out, key=lambda i: i["name"], reverse=True)
+
+
+def sound_download_name(p):
+    """Tên file lúc tải về = tiêu đề video, bỏ ký tự Windows/macOS không nhận."""
+    try:
+        title = json.loads(p.with_suffix(".json").read_text(encoding="utf-8")).get("title") or ""
+    except (OSError, ValueError):
+        title = ""
+    title = " ".join(re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", title).split()).strip(" .")[:120]
+    return (title or p.stem) + p.suffix
 
 
 # ─── Card thư mục: duyệt project NGAY TRONG dashboard ─────────────────────────
@@ -5552,9 +5762,10 @@ def build_app():
     """Starlette app: REST control + SSE live events + background poll loop.
 
     Ngoài API/dashboard của chính orchestrator, app này còn mount các MCP server nội
-    bộ (signal, asset-fetch) vào cùng 1 port để chỉ cần start 1 process:
+    bộ (signal, asset-fetch, sounds) vào cùng 1 port để chỉ cần start 1 process:
       - /signal/mcp  → signal_mcp (send_signal, compact_context, list_agents)
       - /assets/mcp  → asset_fetch (tìm texture/model/sound)
+      - /sounds/mcp  → sound_mcp (tìm video, tách tiếng — chung lõi với panel Sounds)
     signal_mcp chạy in-process (gọi thẳng hàm orchestrator, không self-call HTTP).
     """
     from contextlib import AsyncExitStack, asynccontextmanager
@@ -5568,6 +5779,7 @@ def build_app():
 
     import signal_mcp
     import asset_fetch
+    import sound_mcp
 
     # signal_mcp gọi thẳng các hàm orchestrator thay vì POST HTTP về chính mình.
     signal_mcp._INPROC = True
@@ -5577,6 +5789,7 @@ def build_app():
     # /mcp sẽ lỗi 500 vì session manager chưa khởi động.
     signal_app = signal_mcp.mcp.streamable_http_app()
     asset_app = asset_fetch.mcp.streamable_http_app()
+    sound_app = sound_mcp.mcp.streamable_http_app()
 
     async def health(request: Request):
         # embedded_terminal: CI Windows kiểm tra cờ này để bắt trường hợp pywinpty không được
@@ -6225,6 +6438,48 @@ def build_app():
         p = image_path(request.path_params["name"])
         if not p:
             return JSONResponse({"error": "no such image"}, status_code=404)
+        p.unlink()
+        p.with_suffix(".json").unlink(missing_ok=True)
+        return JSONResponse({"deleted": p.name})
+
+    # ── Sounds: tìm video, tách tiếng (lõi chung với MCP sound_mcp) ──────────
+    def _sound_err(e):
+        code = 400 if isinstance(e, ValueError) else 409 if isinstance(e, LookupError) else 502
+        return JSONResponse({"error": str(e)}, status_code=code)
+
+    async def api_sounds(request: Request):
+        return JSONResponse({"status": sound_status(), "items": list_sounds()})
+
+    async def api_sounds_search(request: Request):
+        b = await _body(request)
+        try:
+            return JSONResponse(await sound_search(b.get("query"), b.get("limit") or 10,
+                                                   b.get("ai_only", True) is not False))
+        except (ValueError, LookupError, RuntimeError) as e:
+            return _sound_err(e)
+
+    async def api_sounds_extract(request: Request):
+        b = await _body(request)
+        try:
+            return JSONResponse(await sound_extract(b.get("url"), b.get("format") or "mp3", "user"))
+        except (ValueError, LookupError, RuntimeError) as e:
+            return _sound_err(e)
+
+    async def api_sound_file(request: Request):
+        p = sound_path(request.path_params["name"])
+        if not p:
+            return JSONResponse({"error": "no such sound"}, status_code=404)
+        # ?download=1 → lưu về máy với tên là tiêu đề video; không có → phát ngay trong <audio>.
+        if request.query_params.get("download"):
+            return FileResponse(p, media_type=SOUND_FORMATS[p.suffix[1:]],
+                                filename=sound_download_name(p))
+        return FileResponse(p, media_type=SOUND_FORMATS[p.suffix[1:]],
+                            headers={"X-Content-Type-Options": "nosniff"})
+
+    async def api_sound_delete(request: Request):
+        p = sound_path(request.path_params["name"])
+        if not p:
+            return JSONResponse({"error": "no such sound"}, status_code=404)
         p.unlink()
         p.with_suffix(".json").unlink(missing_ok=True)
         return JSONResponse({"deleted": p.name})
@@ -7100,12 +7355,13 @@ def build_app():
             # Khởi động session manager của từng MCP sub-app (bắt buộc cho /mcp).
             await stack.enter_async_context(signal_app.router.lifespan_context(app))
             await stack.enter_async_context(asset_app.router.lifespan_context(app))
+            await stack.enter_async_context(sound_app.router.lifespan_context(app))
             task = asyncio.create_task(run_loop())
             btask = asyncio.create_task(board_loop())
             print(f"[orchestrator] Dashboard: http://{ORCH_HOST}:{ORCH_PORT}")
             print(f"[orchestrator] API docs:  http://{ORCH_HOST}:{ORCH_PORT}/docs"
                   + (f"  (dry_run={DRY_RUN})" if DRY_RUN else ""))
-            print("[orchestrator] MCP mounted: /signal/mcp, /assets/mcp")
+            print("[orchestrator] MCP mounted: /signal/mcp, /assets/mcp, /sounds/mcp")
             # Agent chạy shell với bypassPermissions. CORS mở (không có API key nào khác chặn) =
             # bất kỳ trang web nào người dùng mở cũng POST được /v1 và sai khiến agent trên máy này.
             # In thành KHỐI có viền: người double-click .exe chỉ thấy console vài giây trước khi
@@ -7183,6 +7439,11 @@ def build_app():
         Route("/api/images/upload", api_images_upload, methods=["POST"]),
         Route("/api/images/{name}", api_image_file),
         Route("/api/images/{name}", api_image_delete, methods=["DELETE"]),
+        Route("/api/sounds", api_sounds),
+        Route("/api/sounds", api_sounds_extract, methods=["POST"]),
+        Route("/api/sounds/search", api_sounds_search, methods=["POST"]),
+        Route("/api/sounds/{name}", api_sound_file),
+        Route("/api/sounds/{name}", api_sound_delete, methods=["DELETE"]),
         Route("/api/sessions/{sid}", api_session_detail),
         Route("/api/sessions/{sid}/unregister", api_unregister, methods=["POST"]),
         Route("/api/sessions/{sid}/runs", api_session_runs),
@@ -7225,9 +7486,11 @@ def build_app():
         # Tài liệu: /docs xem bằng Swagger UI, /openapi.json để import vào Postman/codegen.
         Route("/openapi.json", api_openapi),
         Route("/docs", api_docs),
-        # MCP server nội bộ mount chung port (đặt trước static "/"): /signal/mcp, /assets/mcp.
+        # MCP server nội bộ mount chung port (đặt trước static "/"): /signal/mcp, /assets/mcp,
+        # /sounds/mcp.
         Mount("/signal", app=signal_app),
         Mount("/assets", app=asset_app),
+        Mount("/sounds", app=sound_app),
     ]
 
     # Dashboard (Phase C): serve static UI at "/" (must be last — catches the rest).

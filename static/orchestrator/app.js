@@ -3319,6 +3319,7 @@ window.mcpClose = mcpClose;
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
   if (e.key === "Escape" && !$("img-modal").hidden) imgClose();
+  if (e.key === "Escape" && !$("snd-modal").hidden) sndClose();
   if (e.key === "Escape" && !$("tools-modal").hidden) toolsClose();
   if (e.key === "Escape" && !$("task-modal").hidden) taskClose();
 });
@@ -3510,6 +3511,136 @@ async function imgClick(ev) {
 }
 $("img-grid").addEventListener("click", imgClick);
 $("img-refs").addEventListener("click", imgClick);
+
+// ── Sounds ───────────────────────────────────────────────────────────────────
+// Tìm video, tách tiếng bằng yt-dlp. Agent dùng CÙNG lõi qua MCP /sounds/mcp, nên thư viện là
+// một: agent tách xong là hiện ở đây. Modal sống ở shell (không có SSE) → poll khi đang mở.
+let sndResults = [];
+let sndLibKey = "";      // tên các file đang vẽ — poll chỉ vẽ lại khi đổi, kẻo <audio> đang phát bị cắt
+const sndUrl = (name) => "/api/sounds/" + encodeURIComponent(name);
+const sndDur = (s) => s == null ? "" : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+
+function sndStatus(st, agents) {
+  const fix = (cmd, site) => `<div class="tool-fix">${cmd ? `<code>${esc(cmd)}</code>` : ""}
+    <a href="${esc(site)}" target="_blank" rel="noopener">${cmd ? "other ways" : "how to install"}</a></div>`;
+  const out = [];
+  if (!st.ytdlp) out.push(`<div>${badge("missing", "b-red")} <b>yt-dlp</b> is not installed —
+    search and extract need it.</div>${fix(st.install, st.site)}`);
+  else if (st.stale) out.push(`<div>${badge("old", "b-amber")} <b>yt-dlp ${esc(st.version)}</b> is
+    ${st.age_days} days old. Sites change often and old versions stop working — upgrade it:</div>
+    ${fix(st.upgrade, st.site)}`);
+  else out.push(`<div>${badge("ready", "b-green")} <b>yt-dlp ${esc(st.version)}</b></div>`);
+  if (!st.ffmpeg) out.push(`<div>${badge("missing", "b-red")} <b>ffmpeg</b> is needed to pull the
+    sound out of a video.</div>${fix(st.ffmpeg_install, "https://ffmpeg.org/download.html")}`);
+  out.push(agents.length
+    ? `<div class="hint">Agents can use these tools too (${esc(agents.join(", "))}):
+        <code>search_videos</code>, <code>extract_audio</code>, <code>list_sounds</code>.</div>`
+    : `<div class="hint">Agents cannot use these tools yet.
+        <button class="secondary" onclick="sndConnect()">Give agents these tools</button></div>`);
+  out.push(`<div class="hint">Saved to <code>${esc(st.dir)}</code> · videos up to
+    ${st.max_minutes} minutes.</div>`);
+  $("snd-status").innerHTML = out.join("");
+  $("snd-go").disabled = !st.ytdlp;
+}
+
+function sndPaintResults() {
+  $("snd-results").innerHTML = sndResults.map((r) => `<div class="snd-row">
+      ${r.thumb ? `<img src="${esc(r.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}
+      <div class="snd-meta"><a href="${esc(r.url)}" target="_blank" rel="noopener" title="${esc(r.title)}">${esc(r.title)}</a>
+        <span class="hint">${esc([r.channel, sndDur(r.duration),
+          r.views != null ? r.views.toLocaleString() + " views" : "",
+          r.too_long ? "too long to extract" : ""].filter(Boolean).join(" · "))}</span></div>
+      <button class="secondary" data-snd-url="${esc(r.url)}"${r.too_long ? " disabled" : ""}
+        title="${r.too_long ? "Longer than the limit — cannot extract" : "Pull the sound out into the library"}">Extract audio</button>
+    </div>`).join("");
+}
+
+function sndPaintLib(list) {
+  const key = list.map((i) => i.name).join("|");
+  if (key === sndLibKey) return;
+  sndLibKey = key;
+  $("snd-lib").innerHTML = list.length ? list.map((i) => `<div class="snd-row">
+      <div class="snd-meta"><a href="${esc(i.source || sndUrl(i.name))}" target="_blank" rel="noopener"
+          title="${esc(i.title)}">${esc(i.title || i.name)}</a>
+        <span class="hint">${esc([i.channel, sndDur(i.duration), i.format,
+          i.by && i.by !== "user" ? "by " + i.by : "", i.license].filter(Boolean).join(" · "))}</span>
+        <audio controls preload="none" src="${sndUrl(i.name)}"></audio></div>
+      <a class="snd-dl" href="${sndUrl(i.name)}?download=1" download title="Save to this computer">Download</a>
+      <button class="icon-btn" data-snd-rm="${esc(i.name)}" title="Delete">
+        <svg class="ic sm"><use href="#i-trash"/></svg></button>
+    </div>`).join("") : `<div class="hint">Nothing yet — extract a sound and it lands here.</div>`;
+}
+
+async function sndLoad(withAgents) {
+  const r = await api("/api/sounds");
+  if (withAgents) {
+    const m = await api("/api/mcp").catch(() => ({ servers: [] }));
+    const s = (m.servers || []).find((x) => (x.url || "").split("?")[0].replace(/\/+$/, "").endsWith("/sounds/mcp"));
+    sndStatus(r.status, s ? s.clis : []);
+  }
+  sndPaintLib(r.items);
+}
+
+function sndOpen() {
+  $("snd-modal").hidden = false;
+  $("snd-q").focus();
+  sndLoad(true).catch((e) => showMsg("snd-msg", "Error: " + e, false));
+}
+window.sndOpen = sndOpen;
+
+function sndClose() { $("snd-modal").hidden = true; }
+window.sndClose = sndClose;
+
+// Agent extract_audio xong lúc modal đang mở → hiện ra trong vòng 5 giây.
+setInterval(() => { if (!$("snd-modal").hidden) sndLoad(false).catch(() => {}); }, 5000);
+
+async function sndSearch() {
+  const query = $("snd-q").value.trim();
+  if (!query) return showMsg("snd-msg", "Type what it should sound like.", false);
+  $("snd-go").disabled = true;
+  showMsg("snd-msg", "Searching…", true);
+  try {
+    const r = await api("/api/sounds/search", "POST", { query, ai_only: $("snd-ai").checked, limit: 12 });
+    sndResults = r.results;
+    sndPaintResults();
+    showMsg("snd-msg", r.results.length ? `${r.results.length} videos for “${r.query}”.`
+      : `Nothing found for “${r.query}”.`, true);
+  } catch (e) { showMsg("snd-msg", mcpErr(e), false); }
+  finally { $("snd-go").disabled = false; }
+}
+window.sndSearch = sndSearch;
+
+async function sndClick(ev) {
+  const btn = ev.target.closest("button[data-snd-url], button[data-snd-rm]");
+  if (!btn) return;
+  if (btn.dataset.sndRm) {
+    if (!confirm("Delete this sound?")) return;
+    try { await api(sndUrl(btn.dataset.sndRm), "DELETE"); await sndLoad(false); }
+    catch (e) { showMsg("snd-msg", mcpErr(e), false); }
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Extracting…";
+  showMsg("snd-msg", "Pulling the sound out… usually under a minute.", true);
+  try {
+    const s = await api("/api/sounds", "POST", { url: btn.dataset.sndUrl, format: $("snd-fmt").value });
+    showMsg("snd-msg", `Saved “${s.title || s.name}”.`, true);
+    await sndLoad(false);
+  } catch (e) { showMsg("snd-msg", mcpErr(e), false); }
+  finally { btn.disabled = false; btn.textContent = "Extract audio"; }
+}
+$("snd-results").addEventListener("click", sndClick);
+$("snd-lib").addEventListener("click", sndClick);
+
+// Đăng ký /sounds/mcp cho MỌI CLI đang cài, qua đúng đường của modal MCP (kiểm trước, ghi sau).
+async function sndConnect() {
+  try {
+    await api("/api/mcp/connect", "POST", { name: "sounds", url: location.origin + "/sounds/mcp" });
+    showMsg("snd-msg", "Done — agents started after this have the Sounds tools.", true);
+    await sndLoad(true);
+  } catch (e) { showMsg("snd-msg", mcpErr(e), false); }
+}
+window.sndConnect = sndConnect;
 
 async function spawnAgent() {
   // Tên vai và template là HAI thứ khác nhau: template chỉ là playbook NGUỒN (nhiều agent dùng

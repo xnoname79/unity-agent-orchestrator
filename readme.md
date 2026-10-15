@@ -326,6 +326,34 @@ client.images.edit(                                # 1-3 images to edit, combine
 - Out of quota answers `429 insufficient_quota` with the reset time, and tells the SDK not to
   retry. Every result also lands in the dashboard gallery. Full spec at `/docs`.
 
+## Find sounds
+
+The **Sounds** button on the top bar searches YouTube, pulls the audio out of a video and keeps it
+in a library you can play, download or delete. **AI-generated only** (on by default) adds
+"AI generated" to the search. Pick the format (mp3, wav, m4a, opus or flac) before you press
+**Extract audio**; **Download** saves the file under the video's title.
+
+It runs `yt-dlp` and `ffmpeg` on the machine the orchestrator runs on (see the next section). The
+panel says when either is missing, and when yt-dlp is old enough that sites have likely broken it,
+with the command to install or upgrade. Videos over 30 minutes and live streams cannot be
+extracted. Files are kept in `~/.session_orch_db/sounds/`. A video's sound belongs to whoever made
+it — the library shows a licence when the site states one; check it before you ship a sound.
+
+Agents get the same panel as MCP tools, served at `/sounds/mcp`:
+
+| Tool | Does |
+|---|---|
+| `search_videos(query, limit, ai_only)` | Searches, returns titles, links and durations |
+| `extract_audio(url, format, from_role)` | Pulls the sound into the library, returns its file path |
+| `list_sounds()` | What is in the library |
+
+A sound an agent extracts appears in your library, signed with its name. Press **Give agents these
+tools** in the panel to register the server with every installed CLI, or once by hand:
+
+```bash
+claude mcp add --transport http --scope user sounds http://127.0.0.1:8992/sounds/mcp
+```
+
 ## Tools for video and audio
 
 Nothing for video or audio ships with the orchestrator. The agents work by running commands in
@@ -590,6 +618,7 @@ python3 check_images.py                     # drawings are picked up, references
 python3 check_origin.py                     # a website you visit cannot drive the orchestrator
 python3 check_tools.py                      # the media tool panel tells the truth about this machine
 python3 check_boards.py                     # a board nudges like a friend, not an alarm clock
+python3 check_sounds.py                     # a search or link never reaches yt-dlp as a flag
 ```
 
 ## License

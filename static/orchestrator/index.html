@@ -317,6 +317,32 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .img-foot button { flex: none; padding: 2px 7px; font-size: 10.5px; }
   .img-foot button.on { color: var(--accent); border-color: var(--accent); }
+  .snd-status { display: grid; gap: 6px; margin-bottom: 4px; font-size: 11.5px; }
+  .snd-status .tool-fix { margin: 0; }
+  .snd-search { display: flex; gap: 8px; }
+  .snd-search input { flex: 1; min-width: 0; }
+  .snd-opts { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+  /* .form-card label là nhãn mục (block, chữ hoa) và input/select rộng 100% — ở hàng tuỳ chọn này
+     chúng phải là ô tick và ô chọn nhỏ nằm ngang. */
+  .form-card .snd-opts label { display: inline-flex; align-items: center; gap: 6px; margin: 0;
+    font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted); }
+  .form-card .snd-opts input, .form-card .snd-opts select { width: auto; }
+  .form-card .snd-opts select { padding: 4px 8px; }
+  .snd-list { display: grid; gap: 6px; margin-top: 8px; }
+  .snd-row { display: flex; align-items: center; gap: 10px; padding: 7px 9px; min-width: 0;
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-card); }
+  .snd-row img { flex: none; width: 96px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px;
+    background: var(--panel2); }
+  .snd-meta { flex: 1; min-width: 0; display: grid; gap: 3px; }
+  .snd-meta a { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .snd-meta .hint { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .snd-meta audio { width: 100%; height: 30px; }
+  .snd-row > button, .snd-row > a { flex: none; }
+  .snd-dl { font-size: 11.5px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); text-decoration: none; }
+  .snd-dl:hover { border-color: var(--accent); color: var(--accent); }
+  @media (max-width: 560px) { .snd-row { flex-wrap: wrap; } .snd-row img { width: 72px; } }
   .img-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .img-refs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 22px; }
   .img-ref { position: relative; width: 56px; height: 56px; overflow: hidden;
@@ -836,6 +862,7 @@
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5 17.5 10.5"/></symbol>
   <symbol id="i-window" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01"/></symbol>
+  <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
   <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9.5" r="1.5"/><path d="m20 15.5-4.5-4.5L6 20"/></symbol>
   <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M15.5 3.5a5 5 0 0 0-6.2 6.2L3.9 15a2 2 0 0 0 0 2.8l2.3 2.3a2 2 0 0 0 2.8 0l5.3-5.4a5 5 0 0 0 6.2-6.2l-3 3-2.8-2.8z"/></symbol>
   <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></symbol>
@@ -852,6 +879,8 @@
   <span id="dry" class="pill dry" hidden>DRY-RUN</span>
   <button class="icon-btn" onclick="imgOpen()" title="Images">
     <svg class="ic"><use href="#i-image"/></svg></button>
+  <button class="icon-btn" onclick="sndOpen()" title="Sounds">
+    <svg class="ic"><use href="#i-music"/></svg></button>
   <button id="tools-btn" class="icon-btn" onclick="toolsOpen()" title="Media tools">
     <svg class="ic"><use href="#i-wrench"/></svg></button>
   <button id="mcp-btn" class="icon-btn" onclick="mcpOpen()" title="MCP servers">
@@ -1155,6 +1184,37 @@
 
 <!-- Images: tool generate_image của agy, vẽ bằng tài khoản Google đang login ở agy. Không gắn
      với workspace nào nên mở từ topbar, như MCP. -->
+<div id="snd-modal" class="modal-overlay" onclick="if (event.target === this) sndClose()" hidden>
+  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="snd-title">
+    <h3 id="snd-title"><svg class="ic"><use href="#i-music"/></svg> Sounds
+      <span class="spacer"></span>
+      <button class="icon-btn" onclick="sndClose()" title="Close">
+        <svg class="ic"><use href="#i-x"/></svg></button></h3>
+    <div class="hint">Find a video, pull its sound out, keep it. Runs <code>yt-dlp</code> and
+      <code>ffmpeg</code> on the machine the orchestrator runs on. Check a sound's licence before
+      you ship it.</div>
+    <div id="snd-status" class="snd-status"></div>
+    <label for="snd-q">What should it sound like?</label>
+    <div class="snd-search">
+      <input id="snd-q" placeholder="e.g. rain on a tin roof, 8-bit victory jingle"
+        onkeydown="if (event.key === 'Enter') sndSearch()">
+      <button id="snd-go" class="primary" onclick="sndSearch()">Search</button>
+    </div>
+    <div class="snd-opts">
+      <label title="Adds &quot;AI generated&quot; to the search"><input type="checkbox"
+        id="snd-ai" checked> AI-generated only</label>
+      <label>Save as <select id="snd-fmt">
+        <option value="mp3">mp3</option><option value="wav">wav</option>
+        <option value="m4a">m4a</option><option value="opus">opus</option>
+        <option value="flac">flac</option></select></label>
+    </div>
+    <div id="snd-msg" class="form-msg"></div>
+    <div id="snd-results" class="snd-list"></div>
+    <label>Library</label>
+    <div id="snd-lib" class="snd-list"></div>
+  </div>
+</div>
+
 <div id="img-modal" class="modal-overlay" onclick="if (event.target === this) imgClose()" hidden>
   <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="img-title">
     <h3 id="img-title"><svg class="ic"><use href="#i-image"/></svg> Images

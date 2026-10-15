@@ -12,8 +12,8 @@ datas = [
     (".claude/skills", ".claude/skills"),    # template vai cho dropdown spawn
 ]
 binaries, hiddenimports = [], [
-    # 2 module MCP được import BÊN TRONG build_app() — PyInstaller vẫn thấy, khai thêm cho chắc.
-    "signal_mcp", "asset_fetch",
+    # 3 module MCP được import BÊN TRONG build_app() — PyInstaller vẫn thấy, khai thêm cho chắc.
+    "signal_mcp", "asset_fetch", "sound_mcp",
 ]
 # Bỏ qua khi quét submodule. `mcp.cli` import `typer` — dep TUỲ CHỌN (chỉ có nếu cài `mcp[cli]`).
 # Thiếu typer thì module đó gọi sys.exit(1), mà SystemExit KHÔNG phải Exception nên tham số
