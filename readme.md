@@ -53,7 +53,10 @@ at [Microsoft's submission portal](https://www.microsoft.com/en-us/wdsi/filesubm
 add an exclusion — the next release is a different file and the exclusion will not cover it.
 </details>
 
-**macOS, Linux, or to work on the code.** Python 3.10+, no build step for the frontend:
+**macOS, Linux, or to work on the code.** Python 3.10+, no build step for the frontend. Check
+`python3 --version` first: the `python3` built into macOS is 3.9, and pip then fails with
+`No matching distribution found for mcp`. Install a newer one (`brew install python@3.12`) and
+use `python3.12` in place of `python3` in the venv line below.
 
 ```bash
 git clone https://github.com/xnoname79/unity-agent-orchestrator.git
