@@ -4415,8 +4415,7 @@ class AgyEngine(AgentEngine):
     name = "agy"
 
     async def spawn(self, name, project="", cwd="", allowed_tools=None, permission_mode="",
-                    init_prompt="", model="", effort="", workspace_id=DEFAULT_WORKSPACE,
-                    shim_url="", session_token="", brand_context=None, skill=""):
+                    init_prompt="", model="", effort="", workspace_id=DEFAULT_WORKSPACE, skill=""):
         # Ghim cwd theo workspace y hệt Claude (cwd truyền vào được tôn trọng).
         if bool(workspace_id) and workspace_id != DEFAULT_WORKSPACE:
             root = workspace_root(workspace_id)
@@ -4426,8 +4425,8 @@ class AgyEngine(AgentEngine):
                 cwd = root
         # Vật thể hoá role thành SKILL cho cả ba CLI (agy quét <cwd>/.agents/skills — ĐÃ ĐO).
         _write_role_skill(cwd, name, skill or init_prompt)
-        prompt = _build_init_prompt(name, init_prompt, workspace_id, brand_context)
-        # shim_url/session_token bỏ qua y như CodexEngine: agy không nhận MCP per-session.
+        prompt = _build_init_prompt(name, init_prompt, workspace_id)
+        # agy không nhận MCP per-session, y như CodexEngine.
         model = model or AGY_AUTO_MODEL
         if DRY_RUN:
             sid = f"agy-dry-{name}-{datetime.now().strftime('%H%M%S%f')}"

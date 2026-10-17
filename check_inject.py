@@ -169,6 +169,16 @@ check("and wraps an ordinary message on that very same path",
       len(seen) > 1 and seen[1].startswith(f"[Role: {ROLE}]") and SKILL_MARK in seen[1],
       repr(seen[1:2])[:120])
 
+# ── Spawn của cả ba engine tới được init prompt ──────────────────────────────
+# agy từng gọi _build_init_prompt với 4 tham số (chữ ký của master) → mọi lần spawn agy chết
+# TypeError, mà không check nào spawn agy nên không ai thấy. DRY_RUN vẫn đi qua đúng dòng đó.
+for eng in ("claude", "codex", "agy"):
+    try:
+        res = asyncio.run(so.ENGINES[eng].spawn(f"spawn-{eng}", cwd=str(tmp), init_prompt="hi"))
+        check(f"spawning an agent on {eng} works", not (res or {}).get("error"), str(res)[:160])
+    except Exception as e:     # noqa: BLE001 — chính lỗi kiểu TypeError là thứ cần bắt
+        check(f"spawning an agent on {eng} works", False, f"{type(e).__name__}: {e}")
+
 import shutil                         # noqa: E402
 db.unlink(missing_ok=True)
 shutil.rmtree(tmp, ignore_errors=True)
