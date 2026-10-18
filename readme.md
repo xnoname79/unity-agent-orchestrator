@@ -73,7 +73,7 @@ under `~/.session_orch_db/`; there is no migration step. Change the port with `O
 
 Once per CLI. Every session afterwards picks it up. The quickest way is the 🔌 button in the
 topbar: under **Built into the orchestrator**, press **Connect** next to `signal` (and next to
-`boards`, `library` or `assets` if you want those too). Or by hand:
+`boards` or `library` if you want those too). Or by hand:
 
 ```bash
 claude mcp add --transport http --scope user signal http://127.0.0.1:8992/signal/mcp
