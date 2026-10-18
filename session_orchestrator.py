@@ -1522,9 +1522,21 @@ MCP_TIMEOUT = float(os.environ.get("ORCH_MCP_TIMEOUT", "6"))
 # Phiên bản khai lúc initialize. Cứ khai bản cũ: server trả về phiên bản CỦA NÓ trong response,
 # thoả thuận xong là dùng được, còn khai bản mới hơn server thì có server từ chối thẳng.
 MCP_PROTOCOL = "2024-11-05"
-# Chính orchestrator cũng mount vài MCP server nội bộ. Chúng KHÔNG hiện trong modal: người dùng
-# không tự đăng ký chúng ở đây, mà bấm Remove thì agent mất luôn đường signal.
-MCP_OWN_PATHS = ("/signal/mcp",)
+# MCP server orchestrator tự mount (xem build_app). Modal MCP hiện chúng thành mục riêng: chưa
+# nối thì một nút Connect, nối rồi thì Check/Remove như mọi server khác.
+MCP_BUILTINS = (
+    ("signal", "/signal/mcp", "Agents message each other"),
+    ("boards", "/boards/mcp", "Agents read and update boards"),
+    ("library", "/library/mcp", "Agents search and inspect the Library's sounds and images"),
+    ("assets", "/assets/mcp", "Agents search free textures, models and sounds"),
+)
+
+
+def _builtin_url(path):
+    """URL CLI dùng để tới server nội bộ. Dựng ở server, không theo địa chỉ trình duyệt: CLI chạy
+    trên máy NÀY, còn trình duyệt có thể đi qua tunnel/port khác mà CLI không tới được."""
+    host = "127.0.0.1" if ORCH_HOST in ("", "0.0.0.0", "::") else ORCH_HOST
+    return f"http://{host}:{ORCH_PORT}{path}"
 # ~/.claude.json, KHÔNG phải ~/.claude/ — CLAUDE_CONFIG_DIR không dời file này.
 CLAUDE_CONFIG_FILE = Path(os.environ.get("ORCH_CLAUDE_CONFIG", str(Path.home() / ".claude.json")))
 # codex: CÙNG file với model/effort/trust-level của người dùng. Chỉ được đụng đúng bảng
@@ -5321,7 +5333,7 @@ def delete_task(tid):
     conn.close()
 
 
-def board_agent_for(owner, board_name, role="board", read_only=False):
+def board_agent_for(owner, board_name, role="board"):
     """Session RIÊNG cho board, cùng thư mục và cùng cấu hình với agent người dùng đã chọn.
 
     VÌ SAO KHÔNG DÙNG THẲNG SESSION ĐÓ. Lời nhắc của board và cuộc chat của người dùng sẽ ghi vào
@@ -5337,9 +5349,10 @@ def board_agent_for(owner, board_name, role="board", read_only=False):
     session mới CÙNG THƯ MỤC rẻ hơn và không phụ thuộc định dạng nào: agent board vẫn đọc được
     đúng project, chỉ là nó có cuốn sổ riêng.
 
-    cwd/model/effort/tool/permission copy từ agent gốc — board không được chạy bằng một cấu hình
-    khác với cái người dùng đã chọn cho thư mục đó. Trừ read_only (worker): chế độ plan + chỉ tool
-    đọc, bất kể agent gốc chạy quyền gì — worker không bao giờ sửa file (xem board_work).
+    cwd/model/effort copy từ agent gốc — board không được chạy bằng model khác với cái người dùng
+    đã chọn cho thư mục đó. Quyền thì KHÔNG copy: cả board (role 'board') lẫn worker đều CHỈ ĐỌC
+    (plan + READ_ONLY_TOOLS), bất kể agent gốc chạy quyền gì. Chúng làm việc cùng thư mục với agent
+    chính, nên không được sửa file nào — người dùng chọn vậy để hai bên không bao giờ đè nhau.
     """
     ws = owner.get("workspace_id") or DEFAULT_WORKSPACE
     base = f"{owner.get('name') or 'agent'}-{role}"
@@ -5350,9 +5363,7 @@ def board_agent_for(owner, board_name, role="board", read_only=False):
         n += 1
     sid = str(uuid.uuid4())
     register_session(sid, name, project=owner.get("project") or "", cwd=owner.get("cwd") or "",
-                     allowed_tools=(list(WORKER_TOOLS) if read_only
-                                    else json.loads(owner.get("allowed_tools") or "[]")),
-                     permission_mode="plan" if read_only else owner.get("permission_mode") or "",
+                     allowed_tools=list(READ_ONLY_TOOLS), permission_mode="plan",
                      model=owner.get("model") or "", effort=owner.get("effort") or "",
                      workspace_id=ws, engine=owner.get("engine") or "claude")
     print(f"[orchestrator] board '{board_name}': {role} riêng '{name}' (cwd={owner.get('cwd')})",
@@ -5752,10 +5763,10 @@ async def board_tick(bid, manual=False):
 
 # ─── Worker của board: tự chọn một task, tìm hiểu, để lại kết quả trên card ─────────────────
 # Board agent NHẮC; worker LÀM phần tìm hiểu. Hai session riêng, cùng thư mục với agent người dùng
-# chọn — nhưng worker CHỈ ĐỌC (permission plan + tool đọc, xem board_agent_for(read_only=True)).
+# chọn — nhưng CHỈ ĐỌC (permission plan + tool đọc, xem board_agent_for), như board agent.
 # Đó là cách tránh xung đột người dùng chọn: agent chính và worker không bao giờ cùng sửa một
 # file, vì worker không sửa file nào. Việc sửa là của agent chính, đọc findings rồi làm.
-WORKER_TOOLS = ("Read", "Grep", "Glob", "WebSearch", "WebFetch")
+READ_ONLY_TOOLS = ("Read", "Grep", "Glob", "WebSearch", "WebFetch")
 WORKER_SCOPES = ("global", "board")   # một worker chạy cho cả orchestrator / mỗi board một worker
 FINDINGS_MAX = 20000
 _worker_busy: set = set()   # board có worker đang chạy
@@ -5834,11 +5845,18 @@ def worker_should_start(b, tasks, busy, scope):
 
 
 def worker_reset():
-    """Orchestrator tắt giữa lúc worker đang tìm hiểu → task kẹt ở 'researching' mãi. Lúc khởi
-    động trả chúng về chưa ai đụng, để worker chọn lại."""
+    """Lúc khởi động:
+      - task kẹt ở 'researching' (orchestrator tắt giữa lúc worker đang tìm hiểu) về chưa ai đụng,
+        để worker chọn lại;
+      - thread của board tạo trước khi chúng thành CHỈ ĐỌC còn mang quyền của agent gốc (thường
+        bypassPermissions) — hạ về plan + tool đọc."""
     _ensure_db()
+    threads, tools = board_threads(), json.dumps(list(READ_ONLY_TOOLS))
     conn = _conn()
     conn.execute("UPDATE board_tasks SET worker_state = '' WHERE worker_state = 'researching'")
+    for sid in threads:
+        conn.execute("UPDATE sessions SET permission_mode = 'plan', allowed_tools = ? WHERE id = ?",
+                     (tools, sid))
     conn.commit()
     conn.close()
 
@@ -5848,7 +5866,7 @@ def board_worker(b):
     if b.get("worker_id") and get_session(b["worker_id"]):
         return b["worker_id"]
     owner = get_session(b.get("owner_id") or b["session_id"]) or {}
-    sid = board_agent_for(owner, b["name"], role="worker", read_only=True)
+    sid = board_agent_for(owner, b["name"], role="worker")
     update_board(b["id"], worker_id=sid)
     return sid
 
@@ -7266,13 +7284,15 @@ def build_app():
         out = []
         for name, entry in sorted(_mcp_servers().items()):
             url = entry["url"].split("?")[0].rstrip("/")
-            if url.endswith(MCP_OWN_PATHS):   # server nội bộ của chính orchestrator
-                continue
             out.append({"name": name, "type": entry["type"], "url": entry["url"],
                         "command": entry["command"], "clis": entry["clis"],
                         "token_hint": _mask(entry["token"]),
-                        "checkable": entry["type"] in ("http", "sse") and bool(entry["url"])})
-        return JSONResponse({"clis": _mcp_installed(), "servers": out})
+                        "checkable": entry["type"] in ("http", "sse") and bool(entry["url"]),
+                        # server nội bộ nào (theo đường dẫn — người dùng có thể đã đặt tên khác)
+                        "builtin": next((n for n, path, _ in MCP_BUILTINS if url.endswith(path)), "")})
+        return JSONResponse({"clis": _mcp_installed(), "servers": out,
+                             "builtins": [{"name": n, "path": p, "what": w, "url": _builtin_url(p)}
+                                          for n, p, w in MCP_BUILTINS]})
 
     async def api_mcp_check(request: Request):
         """Kiểm thật bằng tools/list. Gửi `name` = kiểm cái đang lưu; gửi `url`(+`token`) = thử
@@ -7301,6 +7321,11 @@ def build_app():
         name = (b.get("name") or "").strip()
         url = (b.get("url") or "").strip()
         token = (b.get("token") or "").strip()
+        if b.get("builtin"):
+            hit = next((x for x in MCP_BUILTINS if x[0] == b["builtin"]), None)
+            if not hit:
+                return JSONResponse({"error": "no such built-in server"}, status_code=400)
+            name, url, token = hit[0], _builtin_url(hit[1]), ""
         if not MCP_NAME_RE.match(name):
             return JSONResponse({"error": "name must be letters, digits, dot, dash or underscore"},
                                 status_code=400)

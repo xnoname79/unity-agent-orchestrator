@@ -279,9 +279,23 @@ def test_board_never_writes_the_chat_transcript():
           b["session_id"] != "sess-owner", b["session_id"])
     thread = so.get_session(b["session_id"])
     check("that session sits in the same folder", thread["cwd"] == "/tmp/proj", thread["cwd"])
-    check("and carries the same model and permissions",
-          thread["model"] == "opus" and thread["permission_mode"] == "bypassPermissions",
-          f"{thread['model']} {thread['permission_mode']}")
+    check("and the same model, but read-only whatever the agent you picked may do",
+          thread["model"] == "opus" and thread["permission_mode"] == "plan"
+          and json.loads(thread["allowed_tools"]) == list(so.READ_ONLY_TOOLS),
+          f"{thread['model']} {thread['permission_mode']} {thread['allowed_tools']}")
+    # Board tạo trước khi thread thành chỉ đọc còn mang quyền của agent gốc: khởi động hạ về.
+    conn = so._conn()
+    conn.execute("UPDATE sessions SET permission_mode = 'bypassPermissions', allowed_tools = '[]' "
+                 "WHERE id = ?", (b["session_id"],))
+    conn.commit()
+    conn.close()
+    so.worker_reset()
+    thread = so.get_session(b["session_id"])
+    check("an older board's thread is made read-only at startup",
+          thread["permission_mode"] == "plan", thread["permission_mode"])
+    check("and the agent you chat with keeps its own permissions",
+          so.get_session("sess-owner")["permission_mode"] == "bypassPermissions",
+          so.get_session("sess-owner")["permission_mode"])
     check("the board still shows the agent you picked",
           so.board_view(b)["agent"] == "writer", so.board_view(b)["agent"])
     so.delete_board(bid)
@@ -472,7 +486,7 @@ def test_worker_is_read_only():
           and w["model"] == "opus" and w["name"] == "coder-worker", str(w)[:160])
     check("it runs read-only whatever the agent it copies is allowed",
           w["permission_mode"] == "plan"
-          and json.loads(w["allowed_tools"]) == list(so.WORKER_TOOLS), str(w)[:200])
+          and json.loads(w["allowed_tools"]) == list(so.READ_ONLY_TOOLS), str(w)[:200])
     check("asking again reuses it", so.board_worker(so.get_board(bid)) == wid, "made a second one")
     check("it is hidden like the board's own session",
           so.board_threads().get(wid, {}).get("role") == "worker", str(so.board_threads()))
@@ -666,7 +680,7 @@ def test_wiring():
             ('id="bd-scope"', "index.html", html),
             ("window.boardWorker", "app.js", js),
             ("window.taskResearchAgain", "app.js", js),
-            ('url: location.origin + "/boards/mcp"', "app.js", js),
+            ('{ builtin: "boards" }', "app.js", js),
             ("asyncio.create_task(board_loop())", "session_orchestrator.py", py)):
         check(f"{where} wires up {want}", want in blob, "not found")
 

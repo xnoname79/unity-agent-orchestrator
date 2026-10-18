@@ -2927,7 +2927,7 @@ async function boardTools() {
 
 async function boardToolsConnect() {
   try {
-    await api("/api/mcp/connect", "POST", { name: "boards", url: location.origin + "/boards/mcp" });
+    await api("/api/mcp/connect", "POST", { builtin: "boards" });
     await boardTools();
   } catch (e) { alert(mcpErr(e)); }
 }
@@ -3316,40 +3316,63 @@ const MCP_STATE = {
 let mcpStatus = {};   // name → {state, tools, detail} của lần kiểm gần nhất
 let mcpClis = [];     // CLI đang cài trên máy này — server đăng ký sẽ ghi cho tất cả
 
+let mcpBuiltins = [];  // server orchestrator tự mount: {name, path, what, url}
+
 function mcpRows(list) {
   if (!list.length) return `<div class="hint">Nothing registered yet.</div>`;
-  return list.map((s) => {
-    const st = mcpStatus[s.name];
-    const label = !st ? (s.checkable ? "not checked" : s.type || "unknown")
-      : st.state === "connected" ? `${st.tools} tools` : st.state;
-    const meta = [s.type, s.url || s.command, s.token_hint && "token " + s.token_hint]
-      .filter(Boolean).join(" · ");
-    // Một server có thể đã khai ở CLI này mà chưa ở CLI kia (đăng ký tay từ trước) — tag mờ là
-    // "agent chạy bằng engine đó KHÔNG thấy tool này", thứ không nhìn ra được từ danh sách trơn.
-    const tags = mcpClis.map((c) => {
-      const on = (s.clis || []).includes(c);
-      return `<span class="cli-tag${on ? " on" : ""}" title="${esc(c)}${
-        on ? " has it" : " does not have it — re-add to write it there"}">${esc(c)}</span>`;
-    }).join("");
-    // Tên do người dùng đặt và có thể đã nằm sẵn trong file — KHÔNG nhét vào inline onclick,
-    // đi qua data-attribute + listener uỷ quyền như chỗ duyệt thư mục.
+  return list.map((s) => mcpRow(s)).join("");
+}
+
+// Server nội bộ: chưa nối thì một nút Connect; nối rồi thì đúng dòng như mọi server khác.
+function mcpBuiltinRows(servers) {
+  return mcpBuiltins.map((b) => {
+    const s = servers.find((x) => x.builtin === b.name);
+    if (s) return mcpRow(s, b.what);
     return `<div class="mcp-row">
-      <span class="nm">${esc(s.name)}</span>
-      ${badge(label, st ? MCP_STATE[st.state] : "b-gray")}
-      <span class="meta" title="${esc(meta)}">${esc(meta)}</span>
-      <span class="cli-tags">${tags}</span>
-      ${s.checkable ? `<button class="secondary" data-mcp-check="${esc(s.name)}">Check</button>` : ""}
-      <button class="danger" data-mcp-rm="${esc(s.name)}">Remove</button>
+      <span class="nm">${esc(b.name)}</span>
+      ${badge("not connected", "b-gray")}
+      <span class="meta" title="${esc(b.url)}">${esc(b.what)}</span>
+      <button class="primary" data-mcp-builtin="${esc(b.name)}">Connect</button>
     </div>`;
   }).join("");
+}
+
+function mcpRow(s, what = "") {
+  const st = mcpStatus[s.name];
+  const label = !st ? (s.checkable ? "not checked" : s.type || "unknown")
+    : st.state === "connected" ? `${st.tools} tools` : st.state;
+  const meta = [what, s.type, s.url || s.command, s.token_hint && "token " + s.token_hint]
+    .filter(Boolean).join(" · ");
+  // Một server có thể đã khai ở CLI này mà chưa ở CLI kia (đăng ký tay từ trước) — tag mờ là
+  // "agent chạy bằng engine đó KHÔNG thấy tool này", thứ không nhìn ra được từ danh sách trơn.
+  const tags = mcpClis.map((c) => {
+    const on = (s.clis || []).includes(c);
+    return `<span class="cli-tag${on ? " on" : ""}" title="${esc(c)}${
+      on ? " has it" : " does not have it — re-add to write it there"}">${esc(c)}</span>`;
+  }).join("");
+  // Tên do người dùng đặt và có thể đã nằm sẵn trong file — KHÔNG nhét vào inline onclick,
+  // đi qua data-attribute + listener uỷ quyền như chỗ duyệt thư mục.
+  return `<div class="mcp-row">
+    <span class="nm">${esc(s.name)}</span>
+    ${badge(label, st ? MCP_STATE[st.state] : "b-gray")}
+    <span class="meta" title="${esc(meta)}">${esc(meta)}</span>
+    <span class="cli-tags">${tags}</span>
+    ${s.checkable ? `<button class="secondary" data-mcp-check="${esc(s.name)}">Check</button>` : ""}
+    <button class="danger" data-mcp-rm="${esc(s.name)}">Remove</button>
+  </div>`;
 }
 
 async function mcpLoad(check) {
   const r = await api("/api/mcp");
   const list = r.servers;
   mcpClis = r.clis;
+  mcpBuiltins = r.builtins || [];
+  const paint = () => {
+    $("mcp-builtins").innerHTML = mcpBuiltinRows(list);
+    $("mcp-list").innerHTML = mcpRows(list.filter((s) => !s.builtin));
+  };
   $("mcp-clis").textContent = mcpClis.join(", ") || "none found";
-  $("mcp-list").innerHTML = mcpRows(list);
+  paint();
   if (!check) return list;
   // Kiểm SONG SONG khi mở modal. Không kiểm lúc boot: mỗi server tắt là một timeout, và người
   // dùng có thể đăng ký cả chục cái — trả giá đó cho mọi lần tải trang là vô lý.
@@ -3357,7 +3380,7 @@ async function mcpLoad(check) {
     try { mcpStatus[s.name] = await api("/api/mcp/check", "POST", { name: s.name }); }
     catch { mcpStatus[s.name] = { state: "error", tools: 0 }; }
   }));
-  $("mcp-list").innerHTML = mcpRows(list);
+  paint();
   return list;
 }
 
@@ -3387,12 +3410,19 @@ document.addEventListener("keydown", (e) => {
 });
 
 // Nút trong danh sách: tên đi qua data-attribute, không qua inline onclick.
-$("mcp-list").addEventListener("click", async (ev) => {
-  const btn = ev.target.closest("button[data-mcp-check], button[data-mcp-rm]");
+async function mcpListClick(ev) {
+  const btn = ev.target.closest("button[data-mcp-check], button[data-mcp-rm], button[data-mcp-builtin]");
   if (!btn) return;
-  const name = btn.dataset.mcpCheck || btn.dataset.mcpRm;
+  const name = btn.dataset.mcpCheck || btn.dataset.mcpRm || btn.dataset.mcpBuiltin;
   try {
-    if (btn.dataset.mcpCheck) {
+    if (btn.dataset.mcpBuiltin) {
+      showMsg("mcp-msg", `Connecting ${name}…`, true);
+      const r = await api("/api/mcp/connect", "POST", { builtin: name });
+      mcpStatus[name] = r;
+      await mcpLoad(false);
+      showMsg("mcp-msg", `Connected ${name} for ${r.clis.join(", ")} — agents started after this `
+        + `have its ${r.tools} tools.`, true);
+    } else if (btn.dataset.mcpCheck) {
       showMsg("mcp-msg", `Checking ${name}…`, true);
       const r = await api("/api/mcp/check", "POST", { name });
       mcpStatus[name] = r;
@@ -3400,7 +3430,9 @@ $("mcp-list").addEventListener("click", async (ev) => {
       showMsg("mcp-msg", r.state === "connected" ? `${name}: ${r.tools} tools`
         : `${name}: ${r.detail || r.state}`, r.state === "connected");
     } else {
+      const b = mcpBuiltins.find((x) => x.name === name);
       if (!confirm(`Remove '${name}' from ${mcpClis.join(", ") || "every CLI"}?\n\n`
+        + (b ? `It is how ${b.what.charAt(0).toLowerCase() + b.what.slice(1)}. ` : "")
         + `Agents already running keep it until they restart.`)) return;
       await api("/api/mcp/disconnect", "POST", { name });
       delete mcpStatus[name];
@@ -3408,7 +3440,9 @@ $("mcp-list").addEventListener("click", async (ev) => {
       showMsg("mcp-msg", `Removed ${name}.`, true);
     }
   } catch (e) { showMsg("mcp-msg", mcpErr(e), false); }
-});
+}
+$("mcp-list").addEventListener("click", mcpListClick);
+$("mcp-builtins").addEventListener("click", mcpListClick);
 
 function mcpErr(e) {
   try { return JSON.parse(e).error || String(e); } catch { return String(e); }
@@ -3913,7 +3947,7 @@ async function libAgents() {
 // Đăng ký /library/mcp cho MỌI CLI đang cài, qua đúng đường của modal MCP (kiểm trước, ghi sau).
 async function libConnect() {
   try {
-    await api("/api/mcp/connect", "POST", { name: "library", url: location.origin + "/library/mcp" });
+    await api("/api/mcp/connect", "POST", { builtin: "library" });
     showMsg("lib-msg", "Done — agents started after this can search and inspect the library.", true);
     await libAgents();
   } catch (e) { showMsg("lib-msg", mcpErr(e), false); }

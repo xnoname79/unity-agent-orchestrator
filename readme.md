@@ -71,7 +71,9 @@ under `~/.session_orch_db/`; there is no migration step. Change the port with `O
 
 ## Let the agents reach each other
 
-Once per CLI. Every session afterwards picks it up:
+Once per CLI. Every session afterwards picks it up. The quickest way is the 🔌 button in the
+topbar: under **Built into the orchestrator**, press **Connect** next to `signal` (and next to
+`boards`, `library` or `assets` if you want those too). Or by hand:
 
 ```bash
 claude mcp add --transport http --scope user signal http://127.0.0.1:8992/signal/mcp
@@ -240,9 +242,10 @@ loses nothing.
 
 ### What the agent sends back
 
-A board does not run on the agent you chat with. Picking an agent picks a **folder** and its
-settings — model, tools, permissions — and the board then opens its own session there, named
-`<agent>-board`. You never chat with it, so it gets no terminal on the canvas and other agents
+A board does not run on the agent you chat with. Picking an agent picks a **folder** and a
+model, and the board then opens its own session there, named `<agent>-board`. That session is
+**read-only** whatever the agent you picked may do — Claude's plan mode with only reading and web
+tools, Codex's read-only sandbox — so it can never change a file your main agent is working on. You never chat with it, so it gets no terminal on the canvas and other agents
 cannot message it; it is listed under **Board agents** in the Boards tab, with whether it is
 running and how many runs it has used today. That separation is not tidiness: the terminal
 you type in is a second `claude` process holding the same conversation file, and the orchestrator's

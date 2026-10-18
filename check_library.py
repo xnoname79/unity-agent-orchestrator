@@ -227,7 +227,7 @@ async def main():
     js = (HERE / "static/orchestrator/app.js").read_text(encoding="utf-8")
     for want, where, blob in (('Mount("/library", app=library_app)', "session_orchestrator.py", py),
                               ('"library_mcp"', "build.spec", spec),
-                              ('url: location.origin + "/library/mcp"', "app.js", js)):
+                              ('{ builtin: "library" }', "app.js", js)):
         check(f"{where} wires up {want}", want in blob, "not found")
 
 

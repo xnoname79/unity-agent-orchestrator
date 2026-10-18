@@ -162,14 +162,19 @@ async def main():
               str(top.get("clis")))
         listed = top["servers"]
         names = {s["name"]: s for s in listed}
-        check("the servers already in the file are listed",
-              set(names) == {"local-tool"}, str(sorted(names)))
-        # Server orchestrator tự mount bị GIẤU khỏi modal, nhưng vẫn nguyên trong file — giấu
-        # không phải xoá, agent vẫn signal được.
-        check("the orchestrator's own bundled server is hidden",
-              "signal" not in names, str(sorted(names)))
-        check("but it is still registered in the file",
-              "signal" in json.loads(cfg_now())["mcpServers"], cfg_now())
+        check("the servers already in the file are listed, the built-in signal too",
+              set(names) == {"local-tool", "signal"}, str(sorted(names)))
+        # Server orchestrator tự mount: hiện như mọi server (Check/Remove), có cờ builtin để modal
+        # xếp vào mục riêng — nhận theo ĐƯỜNG DẪN, người dùng có thể đã đặt tên khác.
+        check("the signal entry is recognised as built-in, by its path",
+              names["signal"]["builtin"] == "signal" and names["local-tool"]["builtin"] == "",
+              str(names["signal"]))
+        built = {b["name"]: b for b in top["builtins"]}
+        check("every server the orchestrator mounts is offered, connected or not",
+              set(built) == {"signal", "boards", "library", "assets"}, str(sorted(built)))
+        check("with a URL the CLIs on this machine can reach, not the browser's address",
+              built["boards"]["url"] == f"http://127.0.0.1:{so.ORCH_PORT}/boards/mcp",
+              built["boards"]["url"])
         check("a stdio server is listed but not checkable",
               names["local-tool"]["checkable"] is False
               and names["local-tool"]["type"] == "stdio", str(names.get("local-tool")))
@@ -233,6 +238,28 @@ async def main():
               agy[NAME] == {"disabled": False, "serverUrl": URL,
                             "headers": {"Authorization": "Bearer " + TOKEN}}, str(agy.get(NAME)))
         check("and agy's own servers survived", "signal" in agy, str(sorted(agy)))
+        # ── server nội bộ: một nút Connect ───────────────────────────────────
+        probed, real_probe = [], so._mcp_probe
+
+        async def fake_probe(url, token):
+            probed.append(url)
+            return "connected", 4, ""
+        so._mcp_probe = fake_probe
+        try:
+            r = await c.post("/api/mcp/connect", json={"builtin": "boards",
+                                                       "url": "http://evil.example/mcp"})
+            bad = await c.post("/api/mcp/connect", json={"builtin": "nope"})
+        finally:
+            so._mcp_probe = real_probe
+        want = f"http://127.0.0.1:{so.ORCH_PORT}/boards/mcp"
+        check("Connect on a built-in writes the server's own URL, whatever the request says",
+              r.status_code == 200 and probed == [want]
+              and json.loads(cfg_now())["mcpServers"]["boards"]["url"] == want, r.text[:160])
+        check("an unknown built-in is refused", bad.status_code == 400, bad.text[:90])
+        r = await c.post("/api/mcp/disconnect", json={"name": "boards"})
+        check("and Remove takes it out like any other server",
+              r.json()["removed"] and "boards" not in json.loads(cfg_now())["mcpServers"], r.text)
+
         # Ghi lại cùng tên = THAY, không phải khai hai lần. Codex đọc bảng trùng tên là lỗi parse.
         await c.post("/api/mcp/connect", json={"name": NAME, "url": URL, "token": TOKEN})
         check("re-adding replaces the codex table instead of duplicating it",
