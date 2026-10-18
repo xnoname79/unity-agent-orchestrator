@@ -2895,9 +2895,54 @@ function untilText(iso) {
 function boardsMsg(text, ok) { showMsg("bd-msg", text, ok); }
 
 async function boardsLoad() {
-  BOARDS = await api("/api/boards" + wsQuery());
+  const [boards, w] = await Promise.all([api("/api/boards" + wsQuery()),
+    api("/api/board-worker").catch(() => null)]);
+  BOARDS = boards;
+  if (w && document.activeElement !== $("bd-scope")) $("bd-scope").value = w.scope;
   renderBoards(BOARDS);
 }
+
+async function boardScope(scope) {
+  try { await api("/api/board-worker", "POST", { scope }); }
+  catch (e) { alert("Could not change that: " + e); }
+}
+window.boardScope = boardScope;
+
+async function boardWorker(id, on) {
+  try { await api(`/api/boards/${id}`, "POST", { worker: on }); await boardsLoad(); }
+  catch (e) { alert("Could not change the worker: " + e); }
+}
+window.boardWorker = boardWorker;
+
+// CLI nào đã có /boards/mcp — đọc từ danh sách của modal MCP, chỉ khi mở tab (không theo SSE:
+// /api/mcp đọc file cấu hình của mọi CLI).
+async function boardTools() {
+  const m = await api("/api/mcp").catch(() => ({ servers: [] }));
+  const s = (m.servers || []).find((x) => (x.url || "").split("?")[0].replace(/\/+$/, "").endsWith("/boards/mcp"));
+  $("bd-tools").innerHTML = s && s.clis.length
+    ? `Agents can read and update boards (${esc(s.clis.join(", "))}).`
+    : `Agents cannot use boards yet.
+        <button class="secondary" onclick="boardToolsConnect()">Give agents the board tools</button>`;
+}
+
+async function boardToolsConnect() {
+  try {
+    await api("/api/mcp/connect", "POST", { name: "boards", url: location.origin + "/boards/mcp" });
+    await boardTools();
+  } catch (e) { alert(mcpErr(e)); }
+}
+window.boardToolsConnect = boardToolsConnect;
+
+async function taskResearchAgain(tid) {
+  try {
+    await api(`/api/boards/${bdOpen}/tasks/${tid}`, "POST", { worker_state: "" });
+    await boardsLoad();
+  } catch (e) { alert("Could not reset that task: " + e); }
+}
+window.taskResearchAgain = taskResearchAgain;
+
+const WORKER_BADGE = { researching: ["researching…", "b-blue"], researched: ["researched", "b-green"],
+                       failed: ["research failed", "b-amber"] };
 
 function renderBoards(list) {
   if (bdDrag) return;                       // đang kéo card: để nguyên DOM
@@ -2931,8 +2976,9 @@ function renderBoardAgents(list) {
   $("bd-agents").hidden = !list.length;
   $("bd-agents-list").innerHTML = list.map((s) => `<button class="bd-agent"
       onclick="boardShow('${esc(s.board.id)}')" title="Open the board this agent runs">
-      ${ic("board", "sm")}<b>${esc(s.name)}</b>
-      <span class="hint">for ${esc(s.board.name)} · ${esc(s.model || "default model")}</span>
+      ${ic(s.board.role === "worker" ? "book" : "board", "sm")}<b>${esc(s.name)}</b>
+      <span class="hint">${s.board.role === "worker" ? "researches, read-only, " : "nudges "}for
+        ${esc(s.board.name)} · ${esc(s.model || "default model")}</span>
       <span class="spacer"></span>
       <span class="pill${s.status === "running" ? " live" : ""}">${esc(s.status)}</span>
       <span class="hint">${s.used_today}${s.daily_limit ? "/" + s.daily_limit : ""} runs today</span>
@@ -2952,6 +2998,7 @@ function taskHtml(t) {
     <div class="t">${esc(t.title)}</div>
     ${t.detail ? `<div class="d">${esc(t.detail)}</div>` : ""}
     <div class="row"><span>${esc(t.priority)} · ${t.estimate_min}m</span><span class="spacer"></span>
+      ${WORKER_BADGE[t.worker_state] ? badge(...WORKER_BADGE[t.worker_state]) : ""}
       ${t.status === "doing" ? `<span>${esc(spentText(t))}</span>` : ""}</div>
   </div>`;
 }
@@ -3003,6 +3050,12 @@ function renderTask() {
     <div class="tk-when">${esc(taskWhen(t))}</div>
     <div class="tk-detail ${t.detail ? "" : "none"}">${
       t.detail ? esc(t.detail) : "No notes on this one yet."}</div>
+    ${t.worker_state ? `<div class="tk-find"><h4>Research ${badge(...WORKER_BADGE[t.worker_state])}
+        <span class="spacer" style="flex:1"></span>
+        ${t.worker_state !== "researching" ? `<button class="secondary" onclick="taskResearchAgain(${t.id})"
+          title="Clear these findings so the worker can pick this task again">Research again</button>` : ""}</h4>
+      <div class="tk-detail ${t.findings ? "" : "none"}">${t.findings ? esc(t.findings)
+        : "The worker is looking into this now."}</div></div>` : ""}
     <div class="tk-move">${COLS.map(([key, label]) =>
       `<button class="${t.status === key ? "on" : ""}" onclick="taskMove(${t.id}, '${key}')"
         ${t.status === key ? "disabled" : ""}>${esc(label)}</button>`).join("")}</div>
@@ -3042,6 +3095,10 @@ land in the middle of your chat with ${esc(b.agent)}.` : ""}">${esc(b.agent)}${
         b.runs_as ? ` (runs as ${esc(b.runs_as)})` : ""} · ${b.done}/${b.total} done ·
         next nudge ${esc(untilText(b.next_ping) || "—")}</span>
       <span class="spacer" style="flex:1"></span>
+      <button class="${b.worker ? "on" : ""}" onclick="boardWorker('${b.id}', ${b.worker ? 0 : 1})"
+        title="${b.worker ? "Stop the research worker" : "Let a worker pick open tasks and research them. It reads the project and the web and writes findings on the task; it never edits files."}${
+        b.worker_as ? ` Runs as '${esc(b.worker_as)}'.` : ""}">
+        ${ic("book")} ${b.worker_busy ? "Researching…" : b.worker ? "Worker on" : "Worker off"}</button>
       <button onclick="boardNudge('${b.id}')" title="Ask the agent for a nudge right now">
         ${ic("send")} Nudge me</button>
       <button onclick="boardPlan('${b.id}')" title="Have the agent rebuild the task list from the goal">
@@ -4125,7 +4182,10 @@ function switchTab(name) {
   $("tab-btn-agents").classList.toggle("active", name === "agents");
   $("tab-btn-boards").classList.toggle("active", name === "boards");
   $("tab-btn-history").classList.toggle("active", name === "history");
-  if (name === "boards") boardsLoad().catch((e) => console.error(e));
+  if (name === "boards") {
+    boardsLoad().catch((e) => console.error(e));
+    boardTools();
+  }
   // Key theo workspace: hai pane mở cùng lúc dùng chung một key thì đổi tab ở pane này
   // lật luôn pane kia.
   try { localStorage.setItem("orch-tab." + currentWS, name); } catch { /* private mode */ }

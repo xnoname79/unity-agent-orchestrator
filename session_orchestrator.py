@@ -356,6 +356,8 @@ def init_db():
             research_due TEXT NOT NULL DEFAULT '',   -- mốc được phép research lại ('' = không cần)
             research_why TEXT NOT NULL DEFAULT '',   -- agent tự nêu vì sao cần research
             planning INTEGER NOT NULL DEFAULT 0,     -- 1 = agent đang dựng task, đừng nhắc
+            worker INTEGER NOT NULL DEFAULT 0,       -- 1 = có worker tự tìm hiểu task (xem board_work)
+            worker_id TEXT NOT NULL DEFAULT '',      -- session RIÊNG của worker, chỉ đọc
             created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS board_tasks (
@@ -369,7 +371,15 @@ def init_db():
             position INTEGER NOT NULL DEFAULT 0,
             started_at TEXT NOT NULL DEFAULT '',       -- mốc đo nhịp nhắc, set khi kéo sang doing
             done_at TEXT NOT NULL DEFAULT '',
+            worker_state TEXT NOT NULL DEFAULT '',     -- '' | researching | researched | failed
+            findings TEXT NOT NULL DEFAULT '',         -- worker tìm được gì (markdown)
+            worker_at TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL
+        );
+        -- Cài đặt chung của cả orchestrator mà người dùng bật/tắt trên dashboard.
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_board_tasks ON board_tasks(board_id, position);
         -- Tên CŨ của một session đã đổi tên. Transcript của chính nó và của đồng nghiệp còn nhớ tên
@@ -387,6 +397,14 @@ def init_db():
         conn.execute("ALTER TABLE boards ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
     if bcols and "chat_seen" not in bcols:
         conn.execute("ALTER TABLE boards ADD COLUMN chat_seen TEXT NOT NULL DEFAULT ''")
+    # migrate: worker tìm hiểu task (2026-10)
+    for col, ddl in (("worker", "INTEGER NOT NULL DEFAULT 0"), ("worker_id", "TEXT NOT NULL DEFAULT ''")):
+        if bcols and col not in bcols:
+            conn.execute(f"ALTER TABLE boards ADD COLUMN {col} {ddl}")
+    tcols = [r[1] for r in conn.execute("PRAGMA table_info(board_tasks)").fetchall()]
+    for col in ("worker_state", "findings", "worker_at"):
+        if tcols and col not in tcols:
+            conn.execute(f"ALTER TABLE board_tasks ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
     # migrate: thêm cột dry_run cho signals nếu DB cũ chưa có
     cols = [r[1] for r in conn.execute("PRAGMA table_info(signals)").fetchall()]
     if "dry_run" not in cols:
@@ -4015,6 +4033,9 @@ def _codex_flags(model="", permission_mode="", effort=""):
     # bypassPermissions (mặc định) = toàn quyền, y như claude --permission-mode bypassPermissions.
     if _codex_mcp_ok(permission_mode):
         flags.append("--dangerously-bypass-approvals-and-sandbox")
+    elif permission_mode == "plan":
+        # Chỉ đọc, như claude --permission-mode plan: worker của board không được sửa file nào.
+        flags += ["-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"']
     else:
         # Ghi được trong workspace, chạy lệnh không hỏi, nhưng vẫn trong sandbox.
         flags += ["-c", 'sandbox_mode="workspace-write"', "-c", 'approval_policy="never"']
@@ -5047,9 +5068,9 @@ BOARD_BACKOFF = 1.6        # mỗi lời nhắc bị bỏ qua, khoảng cách l�
 BOARD_BACKOFF_CAP = 4.0    # … nhưng không quá 4× BOARD_MIN_GAP, nếu không là im luôn cả ngày
 _BOARD_FIELDS = ("name", "goal", "context", "status", "quiet_from", "quiet_to", "strikes",
                  "last_ping_at", "advice", "research_due", "research_why", "planning",
-                 "session_id", "owner_id", "chat_seen")
+                 "session_id", "owner_id", "chat_seen", "worker", "worker_id")
 _TASK_FIELDS = ("title", "detail", "estimate_min", "priority", "status", "position",
-                "started_at", "done_at")
+                "started_at", "done_at", "worker_state", "findings", "worker_at")
 _board_busy: set = set()   # board đang có một lượt nhắc chạy (agent có thể mất vài phút)
 
 
@@ -5205,8 +5226,13 @@ def board_threads():
     trên canvas, và list_agents giấu chúng khỏi agent khác — signal lạ rơi vào thread của board
     là lẫn vào lịch sử nhắc việc của nó. Board kiểu cũ (owner_id rỗng) chạy trên chính agent của
     người dùng, nên session đó vẫn là agent để chat, không tính."""
-    return {b["session_id"]: {"id": b["id"], "name": b["name"]} for b in list_boards()
-            if b["owner_id"] and b["session_id"] != b["owner_id"]}
+    out = {}
+    for b in list_boards():
+        if b["owner_id"] and b["session_id"] != b["owner_id"]:
+            out[b["session_id"]] = {"id": b["id"], "name": b["name"]}
+        if b.get("worker_id"):
+            out[b["worker_id"]] = {"id": b["id"], "name": b["name"], "role": "worker"}
+    return out
 
 
 def update_board(bid, **fields):
@@ -5233,6 +5259,8 @@ def delete_board(bid):
     conn.close()
     if b and b.get("owner_id") and b["session_id"] != b["owner_id"]:
         unregister_session(b["session_id"])
+    if b and b.get("worker_id"):
+        unregister_session(b["worker_id"])
 
 
 def board_tasks(bid):
@@ -5293,7 +5321,7 @@ def delete_task(tid):
     conn.close()
 
 
-def board_agent_for(owner, board_name):
+def board_agent_for(owner, board_name, role="board", read_only=False):
     """Session RIÊNG cho board, cùng thư mục và cùng cấu hình với agent người dùng đã chọn.
 
     VÌ SAO KHÔNG DÙNG THẲNG SESSION ĐÓ. Lời nhắc của board và cuộc chat của người dùng sẽ ghi vào
@@ -5310,10 +5338,11 @@ def board_agent_for(owner, board_name):
     đúng project, chỉ là nó có cuốn sổ riêng.
 
     cwd/model/effort/tool/permission copy từ agent gốc — board không được chạy bằng một cấu hình
-    khác với cái người dùng đã chọn cho thư mục đó.
+    khác với cái người dùng đã chọn cho thư mục đó. Trừ read_only (worker): chế độ plan + chỉ tool
+    đọc, bất kể agent gốc chạy quyền gì — worker không bao giờ sửa file (xem board_work).
     """
     ws = owner.get("workspace_id") or DEFAULT_WORKSPACE
-    base = f"{owner.get('name') or 'agent'}-board"
+    base = f"{owner.get('name') or 'agent'}-{role}"
     name = base
     n = 2
     while get_session_by_name(name, ws):
@@ -5321,11 +5350,12 @@ def board_agent_for(owner, board_name):
         n += 1
     sid = str(uuid.uuid4())
     register_session(sid, name, project=owner.get("project") or "", cwd=owner.get("cwd") or "",
-                     allowed_tools=json.loads(owner.get("allowed_tools") or "[]"),
-                     permission_mode=owner.get("permission_mode") or "",
+                     allowed_tools=(list(WORKER_TOOLS) if read_only
+                                    else json.loads(owner.get("allowed_tools") or "[]")),
+                     permission_mode="plan" if read_only else owner.get("permission_mode") or "",
                      model=owner.get("model") or "", effort=owner.get("effort") or "",
                      workspace_id=ws, engine=owner.get("engine") or "claude")
-    print(f"[orchestrator] board '{board_name}': thread riêng '{name}' (cwd={owner.get('cwd')})",
+    print(f"[orchestrator] board '{board_name}': {role} riêng '{name}' (cwd={owner.get('cwd')})",
           flush=True)
     return sid
 
@@ -5363,7 +5393,9 @@ def board_view(b, now=None):
             "next_ping": at.isoformat() if at else "",
             "done": done, "total": len(tasks),
             "agent": owner.get("name") or _session_name(b["session_id"]) or b["session_id"],
-            "runs_as": _session_name(b["session_id"]) if b.get("owner_id") else ""}
+            "runs_as": _session_name(b["session_id"]) if b.get("owner_id") else "",
+            "worker_as": _session_name(b["worker_id"]) if b.get("worker_id") else "",
+            "worker_busy": b["id"] in _worker_busy}
 
 
 # ── Board ↔ agent ────────────────────────────────────────────────────────────
@@ -5596,7 +5628,7 @@ def _board_fallback(tasks, now):
     return f"Nothing started yet. Next up: {todo[0]['title']}." if todo else ""
 
 
-async def board_ask(b, prompt):
+async def board_ask(b, prompt, target=None):
     """Chạy MỘT lượt agent của board, trả text. Đi đúng đường signal (khoá session, trần
     run/ngày, audit, run_events) như chat API — board không được là cửa sau bỏ qua mấy luật đó.
     from_session = BOARD_SENDER: miễn trần ping-pong, xem enqueue_signal."""
@@ -5605,7 +5637,7 @@ async def board_ask(b, prompt):
     # để thử đường ống, không phải để agent lên kế hoạch; board vẫn nhắc, bằng câu tự viết.
     if DRY_RUN:
         return ""
-    target = board_thread(b)
+    target = target or board_thread(b)
     sid = enqueue_signal(target, prompt, BOARD_SENDER, 0, 0, b["workspace_id"])
     _inflight.add(sid)   # run_loop đừng nhặt trùng signal này
     try:
@@ -5718,6 +5750,152 @@ async def board_tick(bid, manual=False):
     return nudge
 
 
+# ─── Worker của board: tự chọn một task, tìm hiểu, để lại kết quả trên card ─────────────────
+# Board agent NHẮC; worker LÀM phần tìm hiểu. Hai session riêng, cùng thư mục với agent người dùng
+# chọn — nhưng worker CHỈ ĐỌC (permission plan + tool đọc, xem board_agent_for(read_only=True)).
+# Đó là cách tránh xung đột người dùng chọn: agent chính và worker không bao giờ cùng sửa một
+# file, vì worker không sửa file nào. Việc sửa là của agent chính, đọc findings rồi làm.
+WORKER_TOOLS = ("Read", "Grep", "Glob", "WebSearch", "WebFetch")
+WORKER_SCOPES = ("global", "board")   # một worker chạy cho cả orchestrator / mỗi board một worker
+FINDINGS_MAX = 20000
+_worker_busy: set = set()   # board có worker đang chạy
+_worker_skip: dict = {}     # bid → các task mở lúc worker nói "không task nào cần tìm hiểu"
+
+WORKER_PICK_PROMPT = """You are the research worker for the board "{name}". You never change files: \
+you read the project, search the web and think, and what you find goes onto a task card for the \
+person — and their main agent — to act on.
+
+The board's goal: {goal}
+{context}
+Tasks nobody has researched yet:
+{tasks}
+
+Pick the ONE task where research now would help most: something unclear, risky, or that needs \
+facts, options or a plan before anyone starts. Leave out tasks research cannot help (a break, a \
+call, "send the email"). Reply with ONE json object and nothing else:
+{{"task_id": <the task's number, or null if none needs research>, "why": "<one sentence>"}}"""
+
+WORKER_RESEARCH_PROMPT = """Research task #{id}: {title}
+{detail}
+
+Work on this task only. Read the project files you need and search the web if it helps. Do not \
+create, edit or delete any file, and do not run anything that changes something — the person's \
+main agent may be working in this folder right now.
+
+When you are done, reply with your findings for the task card, in markdown, under 400 words:
+- what you found, with file paths or links;
+- the options, and the one you recommend;
+- concrete next steps for whoever does the task;
+- open questions, if any."""
+
+
+def get_setting(key, default=""):
+    _ensure_db()
+    conn = _conn()
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+
+def set_setting(key, value):
+    _ensure_db()
+    conn = _conn()
+    conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, str(value)))
+    conn.commit()
+    conn.close()
+
+
+def worker_scope():
+    v = get_setting("board_worker_scope", "global")
+    return v if v in WORKER_SCOPES else "global"
+
+
+def _worker_open(tasks):
+    """Task worker còn có thể chọn: chưa xong và chưa ai tìm hiểu."""
+    return [t for t in tasks if t["status"] != "done" and not t.get("worker_state")]
+
+
+def _worker_key(tasks):
+    return ",".join(str(t["id"]) for t in tasks)
+
+
+def worker_should_start(b, tasks, busy, scope):
+    """Có nên chạy worker cho board này ngay bây giờ không. Hàm thuần — board_loop gọi mỗi vòng.
+
+    Không hỏi lại khi lần trước worker đã nói "không task nào cần tìm hiểu" mà danh sách task mở
+    vẫn y nguyên: hỏi lại mỗi phút là đốt quota để nghe cùng một câu trả lời."""
+    if not b.get("worker") or b["status"] != "active" or b["planning"]:
+        return False
+    if b["id"] in busy or (scope == "global" and busy):
+        return False
+    open_ = _worker_open(tasks)
+    return bool(open_) and _worker_skip.get(b["id"]) != _worker_key(open_)
+
+
+def worker_reset():
+    """Orchestrator tắt giữa lúc worker đang tìm hiểu → task kẹt ở 'researching' mãi. Lúc khởi
+    động trả chúng về chưa ai đụng, để worker chọn lại."""
+    _ensure_db()
+    conn = _conn()
+    conn.execute("UPDATE board_tasks SET worker_state = '' WHERE worker_state = 'researching'")
+    conn.commit()
+    conn.close()
+
+
+def board_worker(b):
+    """Session RIÊNG của worker, tạo lần đầu cần, chỉ đọc."""
+    if b.get("worker_id") and get_session(b["worker_id"]):
+        return b["worker_id"]
+    owner = get_session(b.get("owner_id") or b["session_id"]) or {}
+    sid = board_agent_for(owner, b["name"], role="worker", read_only=True)
+    update_board(b["id"], worker_id=sid)
+    return sid
+
+
+async def board_work(bid):
+    """Một lượt của worker: chọn MỘT task, đánh dấu đang tìm hiểu, tìm hiểu, ghi kết quả lên card.
+
+    Hai lượt agent chứ không phải một: người dùng phải thấy task nào đang được tìm hiểu NGAY khi
+    worker chọn xong, không phải lúc nó đã làm xong. board_ask đi đúng đường signal (khoá session,
+    trần run/ngày, audit) như board agent."""
+    pick = None
+    try:
+        b = get_board(bid)
+        open_ = _worker_open(board_tasks(bid)) if b else []
+        if not open_:
+            return
+        sid = board_worker(b)
+        listing = "\n".join(f"- #{t['id']} [{t['status']}] {t['title']} ({t['priority']})"
+                            + (f"\n      {t['detail']}" if t["detail"] else "") for t in open_)
+        reply = await board_ask(b, WORKER_PICK_PROMPT.format(
+            name=b["name"], goal=b["goal"] or "(none)", tasks=listing,
+            context=f"Context: {b['context']}\n" if b["context"] else ""), target=sid)
+        want = (_json_obj(reply) or {}).get("task_id")
+        pick = next((t for t in open_ if str(t["id"]) == str(want)), None)
+        if not pick:
+            _worker_skip[bid] = _worker_key(open_)
+            return
+        update_task(pick["id"], worker_state="researching", findings="", worker_at=_now())
+        publish({"type": "board", "board": bid, "workspace_id": b["workspace_id"]})
+        text = (await board_ask(b, WORKER_RESEARCH_PROMPT.format(
+            id=pick["id"], title=pick["title"], detail=pick["detail"]), target=sid)).strip()
+        update_task(pick["id"], worker_state="researched" if text else "failed",
+                    findings=text[:FINDINGS_MAX] or "The worker came back with nothing.",
+                    worker_at=_now())
+        pick = None
+    except Exception as e:  # noqa: BLE001
+        print(f"[orchestrator] board {bid} worker error: {e}", file=sys.stderr)
+        if pick:
+            update_task(pick["id"], worker_state="failed", findings=f"The worker stopped: {e}",
+                        worker_at=_now())
+    finally:
+        _worker_busy.discard(bid)
+        b = get_board(bid)
+        if b:
+            publish({"type": "board", "board": bid, "workspace_id": b["workspace_id"]})
+
+
 async def _board_tick_guarded(bid):
     try:
         await board_tick(bid)
@@ -5735,13 +5913,19 @@ async def board_loop():
     và orchestrator tắt đi bật lại không mất lịch nào, vì chẳng có lịch nào để mất.
     """
     print(f"[orchestrator] boards: tick={BOARD_TICK:.0f}s, min gap={BOARD_MIN_GAP:.0f}m")
+    worker_reset()
     while True:
         try:
             now = datetime.now()
+            scope = worker_scope()
             for b in list_boards():
+                tasks = board_tasks(b["id"])
+                if worker_should_start(b, tasks, _worker_busy, scope):
+                    _worker_busy.add(b["id"])
+                    asyncio.create_task(board_work(b["id"]))
                 if b["id"] in _board_busy or b["status"] != "active" or b["planning"]:
                     continue
-                at = board_next_ping(b, board_tasks(b["id"]), now)
+                at = board_next_ping(b, tasks, now)
                 if at and at <= now:
                     _board_busy.add(b["id"])
                     asyncio.create_task(_board_tick_guarded(b["id"]))
@@ -6161,6 +6345,7 @@ def build_app():
       - /signal/mcp  → signal_mcp (send_signal, compact_context, list_agents)
       - /assets/mcp  → asset_fetch (tìm texture/model/sound)
       - /library/mcp → library_mcp (tìm và đo tiếng/ảnh trong Library — chỉ đọc)
+      - /boards/mcp  → board_mcp (đọc board, thêm/sửa task — cùng hàm với tab Boards)
     signal_mcp chạy in-process (gọi thẳng hàm orchestrator, không self-call HTTP).
     """
     from contextlib import AsyncExitStack, asynccontextmanager
@@ -6175,6 +6360,7 @@ def build_app():
     import signal_mcp
     import asset_fetch
     import library_mcp
+    import board_mcp
 
     # signal_mcp gọi thẳng các hàm orchestrator thay vì POST HTTP về chính mình.
     signal_mcp._INPROC = True
@@ -6185,6 +6371,7 @@ def build_app():
     signal_app = signal_mcp.mcp.streamable_http_app()
     asset_app = asset_fetch.mcp.streamable_http_app()
     library_app = library_mcp.mcp.streamable_http_app()
+    board_app = board_mcp.mcp.streamable_http_app()
 
     async def health(request: Request):
         # embedded_terminal: CI Windows kiểm tra cờ này để bắt trường hợp pywinpty không được
@@ -6949,15 +7136,28 @@ def build_app():
             return JSONResponse({"error": "no such board"}, status_code=404)
         body = await request.json()
         patch = {k: body[k] for k in ("name", "goal", "context", "status", "quiet_from",
-                                      "quiet_to") if k in body}
+                                      "quiet_to", "worker") if k in body}
         if "status" in patch and patch["status"] not in ("active", "paused", "done"):
             return JSONResponse({"error": "status must be active, paused or done"}, status_code=400)
+        if "worker" in patch:
+            patch["worker"] = 1 if patch["worker"] else 0
+            _worker_skip.pop(bid, None)   # vừa bật lại: cho worker nhìn danh sách lần nữa
         for k in ("quiet_from", "quiet_to"):
             if k in patch:
                 patch[k] = int(patch[k]) % 24
         update_board(bid, strikes=0, **patch)
         publish({"type": "board", "board": bid, "workspace_id": b["workspace_id"]})
         return JSONResponse(board_view(get_board(bid)))
+
+    async def api_board_worker(request: Request):
+        """Worker chạy một cái cho cả orchestrator (global) hay mỗi board một cái (board)."""
+        if request.method == "POST":
+            scope = (await request.json()).get("scope")
+            if scope not in WORKER_SCOPES:
+                return JSONResponse({"error": "scope must be global or board"}, status_code=400)
+            set_setting("board_worker_scope", scope)
+            publish({"type": "board"})
+        return JSONResponse({"scope": worker_scope(), "busy": sorted(_worker_busy)})
 
     async def api_board_delete(request: Request):
         bid = request.path_params["bid"]
@@ -7028,9 +7228,14 @@ def build_app():
             return JSONResponse({"error": "no such task on this board"}, status_code=404)
         body = await request.json()
         patch = {k: body[k] for k in ("title", "detail", "estimate_min", "priority", "status",
-                                      "position") if k in body}
+                                      "position", "worker_state") if k in body}
         if patch.get("status") not in (None, "todo", "doing", "done"):
             return JSONResponse({"error": "status must be todo, doing or done"}, status_code=400)
+        # Người dùng chỉ được XOÁ kết quả để worker tìm hiểu lại; 'researching' là việc của worker.
+        if patch.get("worker_state") not in (None, ""):
+            return JSONResponse({"error": "worker_state can only be reset to ''"}, status_code=400)
+        if "worker_state" in patch:
+            patch["findings"] = ""
         if patch.get("priority") not in (None, "high", "normal", "low"):
             return JSONResponse({"error": "priority must be high, normal or low"}, status_code=400)
         update_task(tid, **patch)
@@ -7779,12 +7984,13 @@ def build_app():
             await stack.enter_async_context(signal_app.router.lifespan_context(app))
             await stack.enter_async_context(asset_app.router.lifespan_context(app))
             await stack.enter_async_context(library_app.router.lifespan_context(app))
+            await stack.enter_async_context(board_app.router.lifespan_context(app))
             task = asyncio.create_task(run_loop())
             btask = asyncio.create_task(board_loop())
             print(f"[orchestrator] Dashboard: http://{ORCH_HOST}:{ORCH_PORT}")
             print(f"[orchestrator] API docs:  http://{ORCH_HOST}:{ORCH_PORT}/docs"
                   + (f"  (dry_run={DRY_RUN})" if DRY_RUN else ""))
-            print("[orchestrator] MCP mounted: /signal/mcp, /assets/mcp, /library/mcp")
+            print("[orchestrator] MCP mounted: /signal/mcp, /assets/mcp, /library/mcp, /boards/mcp")
             # Agent chạy shell với bypassPermissions. CORS mở (không có API key nào khác chặn) =
             # bất kỳ trang web nào người dùng mở cũng POST được /v1 và sai khiến agent trên máy này.
             # In thành KHỐI có viền: người double-click .exe chỉ thấy console vài giây trước khi
@@ -7843,6 +8049,7 @@ def build_app():
         WebSocketRoute("/ws/editor", ws_editor),
         Route("/api/skills/templates", api_skill_templates),
         Route("/api/tools", api_tools),
+        Route("/api/board-worker", api_board_worker, methods=["GET", "POST"]),
         Route("/api/boards", api_boards),
         Route("/api/boards", api_board_create, methods=["POST"]),
         Route("/api/boards/{bid}", api_board_update, methods=["POST"]),
@@ -7915,10 +8122,11 @@ def build_app():
         Route("/openapi.json", api_openapi),
         Route("/docs", api_docs),
         # MCP server nội bộ mount chung port (đặt trước static "/"): /signal/mcp, /assets/mcp,
-        # /library/mcp.
+        # /library/mcp, /boards/mcp.
         Mount("/signal", app=signal_app),
         Mount("/assets", app=asset_app),
         Mount("/library", app=library_app),
+        Mount("/boards", app=board_app),
     ]
 
     # Dashboard (Phase C): serve static UI at "/" (must be last — catches the rest).

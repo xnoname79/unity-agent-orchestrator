@@ -477,6 +477,12 @@
     background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-card);
     padding: 8px 12px; font-size: 12px; cursor: pointer; }
   .bd-agent:hover { border-color: var(--accent); }
+  .bd-settings { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 15px 0; }
+  .bd-settings .hint { margin: 0; }
+  .bd-settings select { margin-left: 4px; }
+  .bd-head button.on { color: var(--accent); border-color: var(--accent); }
+  .tk-find { margin-top: 12px; }
+  .tk-find h4 { margin: 0 0 6px; font-size: 12px; display: flex; align-items: center; gap: 8px; }
   .bd-agent .hint { margin: 0; }
   .bd-bar { height: 4px; border-radius: 3px; background: var(--panel2); overflow: hidden; }
   .bd-bar > i { display: block; height: 100%; background: var(--green); }
@@ -1057,6 +1063,16 @@
         <div id="boards-view">
           <section class="panel">
             <h2>Boards <span id="bd-count" class="hint" style="margin:0"></span></h2>
+            <!-- Worker: tự chọn task, tìm hiểu, ghi kết quả lên card — CHỈ ĐỌC, không sửa file. -->
+            <div class="bd-settings">
+              <label class="hint" title="Research workers read the project and the web and write
+                findings on a task card. They never edit files.">Research workers run
+                <select id="bd-scope" class="mini" onchange="boardScope(this.value)">
+                  <option value="global">one at a time, across all boards</option>
+                  <option value="board">one per board</option>
+                </select></label>
+              <span id="bd-tools" class="hint"></span>
+            </div>
             <div id="bd-list" class="bd-list"></div>
             <div id="bd-empty" class="empty" hidden>No boards yet. Name one, pick the agent that
               should look after it, and say what you want done.</div>

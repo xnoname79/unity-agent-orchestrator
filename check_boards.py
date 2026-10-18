@@ -427,6 +427,219 @@ async def test_board_reads_what_you_said_in_chat():
         so.CLAUDE_PROJECTS_DIR, so.CODEX_SESSIONS_DIR, so.AGY_CONVERSATIONS_DIR = keep
 
 
+# ── Worker: tự chọn task, tìm hiểu, ghi kết quả — chỉ đọc ─────────────────────
+
+def test_worker_scheduling():
+    """Khi nào chạy worker. Chạy thừa là đốt quota hỏi đi hỏi lại một danh sách không đổi."""
+    so._worker_skip.clear()
+    open_ = [task("todo", tid=1) | {"worker_state": ""}, task("done", tid=2) | {"worker_state": ""}]
+    on = board(id="b1", worker=1, planning=0)
+    check("a board with the worker off never starts one",
+          not so.worker_should_start(board(id="b1", worker=0, planning=0), open_, set(), "global"), "")
+    check("a board with the worker on and an open task starts one",
+          so.worker_should_start(on, open_, set(), "global"), "")
+    check("a paused or planning board does not",
+          not so.worker_should_start(on | {"status": "paused"}, open_, set(), "global")
+          and not so.worker_should_start(on | {"planning": 1}, open_, set(), "global"), "")
+    check("one at a time across boards: another board's worker blocks it",
+          not so.worker_should_start(on, open_, {"b2"}, "global"), "")
+    check("one per board: another board's worker does not",
+          so.worker_should_start(on, open_, {"b2"}, "board"), "")
+    check("never two workers on one board",
+          not so.worker_should_start(on, open_, {"b1"}, "board"), "")
+    done = [t | {"worker_state": "researched"} if t["id"] == 1 else t for t in open_]
+    check("nothing left to research → no worker", not so.worker_should_start(on, done, set(), "board"), "")
+    so._worker_skip["b1"] = so._worker_key(so._worker_open(open_))
+    check("after 'nothing needs research', the same list is not asked about again",
+          not so.worker_should_start(on, open_, set(), "board"), "")
+    more = open_ + [task("todo", tid=3) | {"worker_state": ""}]
+    check("a new task gets it looked at again", so.worker_should_start(on, more, set(), "board"), "")
+    so._worker_skip.clear()
+
+
+def test_worker_is_read_only():
+    """Người dùng chọn: worker CHỈ ĐỌC, để agent chính và worker không bao giờ cùng sửa một file.
+    Không được thừa hưởng quyền bypass của agent gốc."""
+    so.register_session("sess-wo", "coder", cwd="/tmp/projw", model="opus",
+                        permission_mode="bypassPermissions", allowed_tools=["Bash", "Edit"],
+                        workspace_id="default")
+    bid = so.create_board("default", so.board_agent_for(so.get_session("sess-wo"), "w"), "w",
+                          owner_id="sess-wo")
+    wid = so.board_worker(so.get_board(bid))
+    w = so.get_session(wid)
+    check("the worker is its own session, in the same folder, with the same model",
+          wid not in ("sess-wo", so.get_board(bid)["session_id"]) and w["cwd"] == "/tmp/projw"
+          and w["model"] == "opus" and w["name"] == "coder-worker", str(w)[:160])
+    check("it runs read-only whatever the agent it copies is allowed",
+          w["permission_mode"] == "plan"
+          and json.loads(w["allowed_tools"]) == list(so.WORKER_TOOLS), str(w)[:200])
+    check("asking again reuses it", so.board_worker(so.get_board(bid)) == wid, "made a second one")
+    check("it is hidden like the board's own session",
+          so.board_threads().get(wid, {}).get("role") == "worker", str(so.board_threads()))
+    flags = so._codex_flags(permission_mode="plan")
+    check("on codex, read-only is the read-only sandbox",
+          'sandbox_mode="read-only"' in flags and "--dangerously-bypass-approvals-and-sandbox"
+          not in flags and 'sandbox_mode="workspace-write"' not in flags, str(flags))
+    so.delete_board(bid)
+    check("deleting the board takes the worker, never the agent you chat with",
+          so.get_session(wid) is None and so.get_session("sess-wo") is not None, "")
+
+
+async def test_worker_researches_one_task():
+    so.register_session("sess-wr", "researcher-owner", cwd="/tmp/projr", workspace_id="default")
+    bid = so.create_board("default", so.board_agent_for(so.get_session("sess-wr"), "r"), "r",
+                          owner_id="sess-wr")
+    so.update_board(bid, worker=1, goal="ship the auth rewrite")
+    ta = so.add_task(bid, "write the migration")
+    tb = so.add_task(bid, "pick a token library", detail="jwt or paseto?")
+    tc = so.add_task(bid, "already done")
+    so.update_task(tc, status="done")
+    td = so.add_task(bid, "looked at before")
+    so.update_task(td, worker_state="researched", findings="old notes")
+    seen, real_ask = [], so.board_ask
+
+    async def fake_ask(b, prompt, target=None):
+        state = {t["id"]: t["worker_state"] for t in so.board_tasks(bid)}
+        seen.append((prompt, target, state))
+        return ('{"task_id": %d, "why": "the choice blocks everything"}' % tb if len(seen) == 1
+                else "## Findings\n- paseto: no alg confusion\n- next: add pyseto")
+    so.board_ask = fake_ask
+    try:
+        so._worker_busy.add(bid)
+        await so.board_work(bid)
+    finally:
+        so.board_ask = real_ask
+    pick_prompt, target, _ = seen[0]
+    check("the worker is offered only tasks nobody has finished or researched",
+          "write the migration" in pick_prompt and "pick a token library" in pick_prompt
+          and "already done" not in pick_prompt and "looked at before" not in pick_prompt,
+          pick_prompt[-400:])
+    check("it runs on the worker's own session", target == so.get_board(bid)["worker_id"],
+          str(target))
+    check("the task it picked shows 'researching' while it works",
+          seen[1][2][tb] == "researching" and seen[1][2][ta] == "", str(seen[1][2]))
+    check("the research prompt is about that task only, and forbids changing files",
+          "pick a token library" in seen[1][0] and "jwt or paseto?" in seen[1][0]
+          and "Do not" in seen[1][0] and "write the migration" not in seen[1][0], seen[1][0])
+    t = {x["id"]: x for x in so.board_tasks(bid)}
+    check("the findings land on that task card",
+          t[tb]["worker_state"] == "researched" and "paseto" in t[tb]["findings"]
+          and t[tb]["status"] == "todo", str(t[tb]))
+    check("no other task is touched", t[ta]["worker_state"] == "" and t[td]["findings"] == "old notes",
+          str(t[ta]))
+    check("the worker frees its slot", bid not in so._worker_busy, str(so._worker_busy))
+
+    async def ask_none(b, prompt, target=None):
+        return '{"task_id": null, "why": "nothing needs research"}'
+
+    async def ask_bad_id(b, prompt, target=None):
+        return '{"task_id": %d}' % tc   # task đã xong: không được chọn
+
+    for fake, label in ((ask_none, "says none"), (ask_bad_id, "names a task it was not offered")):
+        so._worker_skip.clear()
+        before = {x["id"]: x["worker_state"] for x in so.board_tasks(bid)}
+        so.board_ask = fake
+        try:
+            await so.board_work(bid)
+        finally:
+            so.board_ask = real_ask
+        after = {x["id"]: x["worker_state"] for x in so.board_tasks(bid)}
+        check(f"when the worker {label}, nothing is marked, and the list is not asked about again",
+              after == before and so._worker_skip.get(bid) == str(ta),
+              f"{before} → {after}, skip={so._worker_skip}")
+    so._worker_skip.clear()
+
+    calls = []
+
+    async def ask_empty(b, prompt, target=None):
+        calls.append(1)
+        if len(calls) == 1:
+            return '{"task_id": %d}' % ta
+        return ""
+    so.board_ask = ask_empty
+    try:
+        await so.board_work(bid)
+    finally:
+        so.board_ask = real_ask
+    t = {x["id"]: x for x in so.board_tasks(bid)}
+    check("an empty answer is a failure the card says, not silent 'researched'",
+          t[ta]["worker_state"] == "failed" and t[ta]["findings"], str(t[ta]))
+
+    so.update_task(ta, worker_state="")
+    calls.clear()
+
+    async def ask_crash(b, prompt, target=None):
+        calls.append(1)
+        if len(calls) == 1:
+            return '{"task_id": %d}' % ta
+        raise RuntimeError("daily run cap reached")
+    so.board_ask = ask_crash
+    try:
+        await so.board_work(bid)
+    finally:
+        so.board_ask = real_ask
+    t = {x["id"]: x for x in so.board_tasks(bid)}
+    check("a crash mid-research marks the task failed with the reason",
+          t[ta]["worker_state"] == "failed" and "daily run cap" in t[ta]["findings"]
+          and bid not in so._worker_busy, str(t[ta]))
+
+    so.update_task(ta, worker_state="researching")
+    so.worker_reset()
+    check("a restart frees a task left 'researching'",
+          {x["id"]: x for x in so.board_tasks(bid)}[ta]["worker_state"] == "", "still stuck")
+    so.delete_board(bid)
+
+
+async def test_board_mcp():
+    """Agent đọc/sửa board qua MCP: chỉ trong workspace của nó, không xoá gì."""
+    import board_mcp
+    so.register_session("sess-m1", "planner", workspace_id="default")
+    so.register_session("sess-m2", "stranger", workspace_id="ws-other")
+    mine = so.create_board("default", so.board_agent_for(so.get_session("sess-m1"), "mine"), "mine",
+                           owner_id="sess-m1")
+    theirs = so.create_board("ws-other", so.board_agent_for(so.get_session("sess-m2"), "theirs"),
+                             "theirs", owner_id="sess-m2")
+    so.update_board(mine, strikes=3)
+    out = await board_mcp.list_boards(from_role="planner")
+    names = {x["name"] for x in json.loads(out)}
+    check("list_boards shows your workspace's boards only", "mine" in names and "theirs" not in names,
+          out[:200])
+    for bad in ("", "ghost"):
+        out = await board_mcp.list_boards(from_role=bad)
+        check(f"from_role {bad!r} is refused", out.startswith("⛔"), out[:120])
+    out = await board_mcp.get_board(theirs, from_role="planner")
+    check("another workspace's board cannot be read", out.startswith("⛔"), out[:120])
+    out = json.loads(await board_mcp.add_task(mine, "check the logs", from_role="planner",
+                                              priority="high", estimate_min=20))
+    tid = next(t["id"] for t in out["tasks"] if t["title"] == "check the logs")
+    check("add_task puts the task on the board", out["total"] == 1, str(out)[:160])
+    check("an agent touching the board counts as work, like a person dragging a card",
+          so.get_board(mine)["strikes"] == 0, str(so.get_board(mine)["strikes"]))
+    out = json.loads(await board_mcp.update_task(mine, tid, from_role="planner", status="doing"))
+    t = next(x for x in out["tasks"] if x["id"] == tid)
+    check("update_task moves it, and the reminder clock starts", t["status"] == "doing"
+          and t["started_at"], str(t))
+    for kw, label in (({"status": "sideways"}, "a bogus status"), ({"priority": "urgent"},
+                      "a bogus priority"), ({}, "an empty change")):
+        out = await board_mcp.update_task(mine, tid, from_role="planner", **kw)
+        check(f"{label} is refused", out.startswith("⛔"), out[:120])
+    other_task = so.add_task(theirs, "secret")
+    out = await board_mcp.update_task(mine, other_task, from_role="planner", title="mine now")
+    check("a task from another board cannot be edited through yours", out.startswith("⛔")
+          and so.board_tasks(theirs)[0]["title"] == "secret", out[:120])
+    out = await board_mcp.add_task(mine, "  ", from_role="planner")
+    check("a task needs a title", out.startswith("⛔"), out[:120])
+    so.update_task(tid, worker_state="researched", findings="use the audit log")
+    out = json.loads(await board_mcp.get_board(mine, from_role="planner"))
+    check("get_board carries the worker's findings", out["tasks"][0]["findings"] == "use the audit log",
+          str(out)[:200])
+    tools = {t.name for t in await board_mcp.mcp.list_tools()}
+    check("the board tools read, add and update — nothing deletes",
+          tools == {"list_boards", "get_board", "add_task", "update_task"}, str(tools))
+    so.delete_board(mine)
+    so.delete_board(theirs)
+
+
 def test_wiring():
     """Nút và tab phải có thật — backend đúng mà UI không gọi tới thì tính năng không tồn tại."""
     here = Path(__file__).parent
@@ -448,6 +661,12 @@ def test_wiring():
             ("window.boardNew", "app.js", js),
             ("board_ping", "app.js", js),
             ('Route("/api/boards"', "session_orchestrator.py", py),
+            ('Route("/api/board-worker"', "session_orchestrator.py", py),
+            ('Mount("/boards", app=board_app)', "session_orchestrator.py", py),
+            ('id="bd-scope"', "index.html", html),
+            ("window.boardWorker", "app.js", js),
+            ("window.taskResearchAgain", "app.js", js),
+            ('url: location.origin + "/boards/mcp"', "app.js", js),
             ("asyncio.create_task(board_loop())", "session_orchestrator.py", py)):
         check(f"{where} wires up {want}", want in blob, "not found")
 
@@ -470,6 +689,10 @@ async def main():
     test_board_signals_skip_the_ping_pong_cap()
     test_board_never_writes_the_chat_transcript()
     test_old_board_upgrades_itself()
+    test_worker_scheduling()
+    test_worker_is_read_only()
+    await test_worker_researches_one_task()
+    await test_board_mcp()
     await test_board_reads_what_you_said_in_chat()
     test_wiring()
 
@@ -517,6 +740,31 @@ async def main():
         check("other agents cannot see a board's session to message it",
               "boardbot-board" not in {a["role"] for a in peers}
               and "boardbot" in {a["role"] for a in peers}, str(peers))
+        r = await c.post(f"/api/boards/{bid}", json={"worker": True})
+        check("the worker is switched on per board", r.status_code == 200 and r.json()["worker"] == 1,
+              r.text[:120])
+        so.board_worker(so.get_board(bid))
+        r = await c.get("/api/sessions?workspace_id=default")
+        rows = {x["name"]: x for x in r.json()}
+        check("the worker's session is flagged too, as a worker",
+              ((rows.get("boardbot-worker") or {}).get("board") or {}).get("role") == "worker",
+              str(rows.get("boardbot-worker"))[:160])
+        so.update_task(tid, worker_state="researched", findings="notes")
+        r = await c.post(f"/api/boards/{bid}/tasks/{tid}", json={"worker_state": "researching"})
+        check("a person cannot fake the worker's state", r.status_code == 400, str(r.status_code))
+        r = await c.post(f"/api/boards/{bid}/tasks/{tid}", json={"worker_state": ""})
+        t = next(x for x in r.json()["tasks"] if x["id"] == tid)
+        check("'Research again' clears the findings so the worker can pick it again",
+              t["worker_state"] == "" and t["findings"] == "", str(t))
+        r = await c.get("/api/board-worker")
+        check("workers run one at a time across boards unless you say otherwise",
+              r.json()["scope"] == "global", r.text)
+        r = await c.post("/api/board-worker", json={"scope": "board"})
+        check("you can switch to one per board", r.json()["scope"] == "board"
+              and so.worker_scope() == "board", r.text)
+        r = await c.post("/api/board-worker", json={"scope": "everywhere"})
+        check("a bogus scope is refused", r.status_code == 400 and so.worker_scope() == "board",
+              r.text)
         r = await c.delete(f"/api/boards/{bid}")
         check("DELETE takes the tasks with it",
               r.status_code == 200 and not so.board_tasks(bid), r.text[:90])

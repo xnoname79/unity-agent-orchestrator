@@ -274,6 +274,47 @@ are a clock talking, not two agents in a loop.
 If the agent run fails, the board still nudges you — with a line it works out itself from the
 clock. A broken run is not a reason for your plan to go quiet.
 
+### A research worker
+
+Press **Worker off** on a board to switch it on. A worker is a second agent for the board,
+`<agent>-worker`, that does the research part of the tasks for you: it looks at the open tasks
+nobody has researched yet, picks the one where research would help most (it leaves a break or a
+phone call alone), marks it **researching**, reads the project and searches the web, and writes
+its findings onto the task card — what it found with file paths or links, the options, the one it
+recommends, and next steps. Open the task to read them; **Research again** clears them so the
+worker can take the task again.
+
+The worker **never edits files**. It runs read-only whatever the agent it copies is allowed
+(Claude's plan mode with only the Read, Grep, Glob, WebSearch and WebFetch tools; Codex's read-only
+sandbox), so it can work in the same folder while you and your main agent change code there:
+nothing it does can clash with your edits. Acting on the findings is for you or your main agent.
+
+At the top of the Boards tab, choose whether workers run **one at a time across all boards** (the
+default) or **one per board**. Each worker run goes through the same lock, daily run cap and audit
+log as any other run. If the worker finds nothing worth researching, it is not asked again until
+the task list changes.
+
+### Board tools for agents
+
+Agents can read and update boards themselves through MCP tools served at `/boards/mcp`, instead
+of calling the HTTP API:
+
+| Tool | Does |
+|---|---|
+| `list_boards(from_role)` | The boards in the agent's workspace, with progress |
+| `get_board(board_id, from_role)` | One board and its tasks, including the worker's findings |
+| `add_task(board_id, title, from_role, …)` | Adds a task it discovered while working |
+| `update_task(board_id, task_id, from_role, …)` | Moves a task to doing or done, rewrites it, re-estimates it |
+
+An agent only sees boards in its own workspace, and no tool deletes anything. An agent moving a
+card counts as work being done, the same as you dragging it, so the next nudge is not sterner.
+Press **Give agents the board tools** in the Boards tab to register the server with every
+installed CLI, or once by hand:
+
+```bash
+claude mcp add --transport http --scope user boards http://127.0.0.1:8992/boards/mcp
+```
+
 Reminders arrive as a card in the corner of the dashboard, and as a desktop notification when the
 window is in the background. The browser asks permission the first time you create a board, which
 is the first moment the question means anything. Either way the orchestrator has to be running:
