@@ -428,8 +428,10 @@ claude mcp add --transport http --scope user library http://127.0.0.1:8992/libra
 **Speak text** in the Library drawer turns English text into natural speech on this machine, with
 [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0) through
 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx). Nothing is sent anywhere. Pick one of 28
-voices — US or UK, female or male — and a speed (slower helps when you are learning); the result
-is a WAV in the Library, measured like any other sound and findable by the words it says.
+voices — US or UK, female or male — and a speed (slower helps when you are learning). Speech is
+a WAV in the system temp folder (`orch-speech/`, `/tmp/orch-speech` on Linux), not in the Library,
+so it is cleared when the computer restarts on Linux and macOS. Windows does not empty its temp
+folder on restart; Disk Cleanup or Storage Sense does.
 
 The voice model is not bundled: the first time, the dialog offers a one-off **Download**
 (350 MB, unpacked to `~/.session_orch_db/tts/`). Speech takes about 1.5× as long to make as it
@@ -438,7 +440,7 @@ more is not faster on a hyper-threaded laptop. English only for now, and British
 American pronunciation.
 
 Agents get the same voice through MCP tools served at `/voice/mcp`: `speak(text, voice, speed)`
-saves the speech to the Library and returns its path, and `list_voices()` lists the voices.
+writes the speech to that temp folder and returns its path, and `list_voices()` lists the voices.
 Connect it from the 🔌 button (**Built into the orchestrator** › `voice`), or once by hand:
 
 ```bash

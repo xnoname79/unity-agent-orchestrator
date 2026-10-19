@@ -13,7 +13,8 @@ The quiet ways it goes wrong:
     wrap round to a loud click;
   - each generation fills two CPU cores for longer than the speech lasts, so two must never run
     at once;
-  - what is spoken lands in the Library like any other sound, findable by the words it says.
+  - speech is for using now: it goes to the system temp folder (cleared on restart), never into
+    the Library, and the file route takes only the names we make — nothing else in /tmp.
 
 Neither sherpa-onnx nor the 350 MB model is used: _tts_generate and _tts_fetch are replaced by
 fakes, so this runs offline and on Windows.
@@ -48,6 +49,7 @@ import voice_mcp                      # noqa: E402
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 so.SOUNDS_DIR = Path(tempfile.mkdtemp())
+so.TTS_OUT = Path(tempfile.mkdtemp()) / "orch-speech"
 so.TTS_DIR = Path(tempfile.mkdtemp())
 fails = []
 calls = []
@@ -162,19 +164,25 @@ async def main():
         first = [int.from_bytes(frames[i:i + 2], "little", signed=True) for i in range(0, 10, 2)]
         check("samples past full scale are clamped, not wrapped into a click",
               first == [0, 16383, -16383, 32767, -32767], str(first))
-        check("the library entry says what was said, by whom and how",
+        check("the reply says what was said, by whom and how",
               s["text"].startswith("Could you") and s["voice"] == "bf_emma" and s["by"] == "user"
-              and s["duration"] == 1.0 and s["license"] == "Kokoro-82M, Apache-2.0"
-              and s["channel"] == "Kokoro · Emma · UK female", str(s))
+              and s["duration"] == 1.0, str(s))
+        check("the speech goes to the temp folder, readable only by you",
+              Path(s["path"]).parent == so.TTS_OUT
+              and (os.name == "nt" or so.TTS_OUT.stat().st_mode & 0o077 == 0),
+              f"{s['path']} {oct(so.TTS_OUT.stat().st_mode)}")
         lib = (await c.get("/api/sounds")).json()["items"]
-        check("it shows up in the Library", any(i["name"] == s["name"] for i in lib), str(lib)[:120])
-        hits = so.library_search("station")["items"]
-        check("and agents find it by the words it says", any(i["name"] == s["name"] for i in hits),
-              str(hits)[:160])
-        long = "word " * 40 + "\nsecond line"
-        r = await c.post("/api/tts/speak", json={"text": long})
-        check("a long text gets a short title", len(r.json()["title"]) <= 81
-              and r.json()["title"].endswith("…"), r.json()["title"])
+        check("and never into the Library", not lib and not list(so.SOUNDS_DIR.iterdir()),
+              str(lib)[:120])
+        r = await c.get(f"/api/tts/files/{s['name']}")
+        check("the dialog can play it back", r.status_code == 200
+              and r.headers["content-type"] == "audio/wav" and r.content[:4] == b"RIFF",
+              f"{r.status_code} {r.headers.get('content-type')}")
+        (so.TTS_OUT.parent / "secret.wav").write_bytes(b"RIFF")
+        (so.TTS_OUT / "secret.wav").write_bytes(b"RIFF")   # tên không do ta đặt, dù nằm đúng chỗ
+        for bad in ("..%2Fsecret.wav", "secret.wav", "20261019-151706-6dda3e.mp3", "x"):
+            r = await c.get(f"/api/tts/files/{bad}")
+            check(f"name {bad!r} is not served", r.status_code in (404, 405), str(r.status_code))
 
         live["max"] = 0
         await asyncio.gather(*(so.tts_speak(f"line {i}") for i in range(3)))
@@ -185,15 +193,13 @@ async def main():
     check("list_voices says it is ready and offers the voices", v["ready"] and len(v["voices"]) == 28,
           str(v)[:120])
     out = json.loads(await voice_mcp.speak("Nice to meet you.", "am_adam", 1.0, "tutor"))
-    check("speak saves to the Library, signed by the agent, with a path to copy",
+    check("speak writes to the temp folder, signed by the agent, with a path to copy",
           out["by"] == "tutor" and Path(out["path"]).is_file() and calls[-1][1] == 11, str(out)[:160])
     msg = await voice_mcp.speak("hi", "nobody")
     check("a bad voice reads as an instruction", msg.startswith("⛔"), msg)
     tools = {t.name for t in await voice_mcp.mcp.list_tools()}
     check("the voice tools are speak and list_voices", tools == {"speak", "list_voices"}, str(tools))
 
-    # Tiếng mới vào thư viện được đo ở nền (ffmpeg): chờ xong, kẻo asyncio.run treo lúc đóng.
-    await asyncio.gather(*so._SOUND_BG, return_exceptions=True)
 
     # ── Nối dây ──────────────────────────────────────────────────────────────
     py = (HERE / "session_orchestrator.py").read_text(encoding="utf-8")

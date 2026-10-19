@@ -4068,10 +4068,9 @@ async function ttsSpeak() {
       { text, voice: $("tts-voice").value, speed: +$("tts-speed").value });
     const au = $("tts-audio");
     au.hidden = false;
-    au.src = sndUrl(s.name);
+    au.src = "/api/tts/files/" + encodeURIComponent(s.name);
     au.play().catch(() => {});
-    showMsg("tts-msg", `Saved to the Library — ${s.duration}s of speech.`, true);
-    if (libIsOpen()) await libLoad();
+    showMsg("tts-msg", `${s.duration}s of speech — saved to ${s.path}, cleared on restart.`, true);
   } catch (e) { showMsg("tts-msg", mcpErr(e), false); }
   finally { $("tts-go").disabled = false; }
 }

@@ -65,6 +65,7 @@ import struct
 import subprocess
 import sys
 import tarfile
+import tempfile
 import uuid
 import wave
 from datetime import datetime, timedelta, timezone
@@ -2504,7 +2505,6 @@ def library_items():
                     "format": s.get("format") or "", "license": s.get("license") or "",
                     "source": s.get("source") or "", "by": s.get("by") or "",
                     "uploaded": s.get("uploaded") or "", "created": s.get("created") or "",
-                    "text": s.get("text") or "",
                     "path": s["path"], "inspected": bool(ins), **({"inspect": ins} if ins else {})})
     for i in list_images():
         w, h = image_size(IMAGES_DIR / i["name"])
@@ -2515,8 +2515,7 @@ def library_items():
     return sorted(out, key=lambda x: x["name"], reverse=True)
 
 
-_LIB_TEXT = ("title", "channel", "license", "uploaded", "prompt", "drawn", "by", "format", "kind",
-             "text")
+_LIB_TEXT = ("title", "channel", "license", "uploaded", "prompt", "drawn", "by", "format", "kind")
 
 
 def library_search(query="", kind="", min_seconds=0, max_seconds=0, limit=20):
@@ -2556,6 +2555,9 @@ def library_search(query="", kind="", min_seconds=0, max_seconds=0, limit=20):
 #
 # Model KHÔNG đóng gói kèm (350 MB): tải một lần khi người dùng bấm Download, như yt-dlp.
 TTS_DIR = DB_DIR / "tts"
+# Tiếng đọc ra là đồ dùng một lần: thư mục tạm của OS, tự mất khi khởi động lại máy (Linux, macOS),
+# KHÔNG vào thư viện Sounds.
+TTS_OUT = Path(tempfile.gettempdir()) / "orch-speech"
 TTS_PACKAGE = "kokoro-multi-lang-v1_0"
 TTS_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/{TTS_PACKAGE}.tar.bz2"
 TTS_SIZE = 349_906_910
@@ -2686,8 +2688,7 @@ def _write_wav(dst, samples, rate):
 
 
 async def tts_speak(text, voice=TTS_DEFAULT_VOICE, speed=1.0, by=""):
-    """Đọc text thành một file WAV trong thư viện Sounds — panel, Library và agent (voice_mcp,
-    library_mcp) đều thấy nó như mọi tiếng khác."""
+    """Đọc text thành một file WAV trong TTS_OUT (thư mục tạm, mất khi khởi động lại máy)."""
     text = str(text or "").strip()
     if not text or len(text) > TTS_MAX_CHARS:
         raise ValueError(f"give the text to speak, up to {TTS_MAX_CHARS} characters")
@@ -2706,17 +2707,20 @@ async def tts_speak(text, voice=TTS_DEFAULT_VOICE, speed=1.0, by=""):
                           "Library › Speak text (350 MB, once)")
     async with _tts_lock:
         samples, rate = await asyncio.to_thread(_tts_generate, text, TTS_VOICES.index(voice), speed)
-    SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
-    dst = SOUNDS_DIR / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.wav"
+    # 0700: /tmp dùng chung mọi user trên máy, mà đây là chữ người dùng gõ.
+    TTS_OUT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    dst = TTS_OUT / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.wav"
     await asyncio.to_thread(_write_wav, dst, samples, rate)
-    first = text.splitlines()[0]
-    meta = {"title": first[:80] + ("…" if len(first) > 80 or "\n" in text else ""),
-            "channel": f"Kokoro · {_tts_label(voice)}", "duration": round(len(samples) / rate, 2),
-            "source": "", "license": "Kokoro-82M, Apache-2.0", "format": "wav", "by": by or "",
-            "created": _now(), "text": text, "voice": voice, "speed": speed}
-    dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-    _inspect_later(dst.name)
-    return {**meta, "name": dst.name, "path": str(dst)}
+    return {"name": dst.name, "path": str(dst), "duration": round(len(samples) / rate, 2),
+            "voice": voice, "speed": speed, "text": text, "by": by or "", "created": _now()}
+
+
+def tts_path(name):
+    """File tiếng đọc trong TTS_OUT mang tên này, hoặc None — tên từ URL, chỉ nhận đúng mẫu ta đặt."""
+    if not re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{6}\.wav", name or ""):
+        return None
+    p = TTS_OUT / name
+    return p if p.is_file() else None
 
 
 # ─── Card thư mục: duyệt project NGAY TRONG dashboard ─────────────────────────
@@ -6539,7 +6543,7 @@ def build_app():
       - /signal/mcp  → signal_mcp (send_signal, compact_context, list_agents)
       - /library/mcp → library_mcp (tìm và đo tiếng/ảnh trong Library — chỉ đọc)
       - /boards/mcp  → board_mcp (đọc board, thêm/sửa task — cùng hàm với tab Boards)
-      - /voice/mcp   → voice_mcp (đọc thành tiếng bằng Kokoro, lưu vào Library)
+      - /voice/mcp   → voice_mcp (đọc thành tiếng bằng Kokoro, ra thư mục tạm)
     signal_mcp chạy in-process (gọi thẳng hàm orchestrator, không self-call HTTP).
     """
     from contextlib import AsyncExitStack, asynccontextmanager
@@ -7268,6 +7272,13 @@ def build_app():
                                                 b.get("speed", 1.0), "user"))
         except (ValueError, LookupError, RuntimeError) as e:
             return _sound_err(e)
+
+    async def api_tts_file(request: Request):
+        p = tts_path(request.path_params["name"])
+        if not p:
+            return JSONResponse({"error": "no such speech — it may have been cleared on restart"},
+                                status_code=404)
+        return FileResponse(p, media_type="audio/wav", headers={"X-Content-Type-Options": "nosniff"})
 
     async def api_sounds_upload(request: Request):
         try:
@@ -8298,6 +8309,7 @@ def build_app():
         Route("/api/tts", api_tts),
         Route("/api/tts/download", api_tts_download, methods=["POST"]),
         Route("/api/tts/speak", api_tts_speak, methods=["POST"]),
+        Route("/api/tts/files/{name}", api_tts_file),
         Route("/api/sounds/drafts/{name}", api_sound_file),
         Route("/api/sounds/drafts/{name}", api_sound_delete, methods=["DELETE"]),
         Route("/api/sounds/drafts/{name}/peaks", api_sound_peaks),
