@@ -171,7 +171,7 @@ async def main():
               str(names["signal"]))
         built = {b["name"]: b for b in top["builtins"]}
         check("every server the orchestrator mounts is offered, connected or not",
-              set(built) == {"signal", "boards", "library"}, str(sorted(built)))
+              set(built) == {"signal", "boards", "library", "voice"}, str(sorted(built)))
         check("with a URL the CLIs on this machine can reach, not the browser's address",
               built["boards"]["url"] == f"http://127.0.0.1:{so.ORCH_PORT}/boards/mcp",
               built["boards"]["url"])

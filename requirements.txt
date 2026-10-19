@@ -1,8 +1,8 @@
-# GHIM mcp < 2: bản 2.0.0 BỎ `mcp.server.fastmcp`, mà cả 3 MCP server ở đây
-# (signal_mcp, library_mcp, board_mcp) đều `from mcp.server.fastmcp import FastMCP`.
+# GHIM mcp < 2: bản 2.0.0 BỎ `mcp.server.fastmcp`, mà cả 4 MCP server ở đây
+# (signal_mcp, library_mcp, board_mcp, voice_mcp) đều `from mcp.server.fastmcp import FastMCP`.
 # Không ghim thì CI cài 2.x, build vẫn qua nhưng binary chết ngay lúc serve với
 # "ModuleNotFoundError: No module named 'mcp.server.fastmcp'".
-# Muốn lên 2.x thì phải viết lại cả 3 server theo API mới, không phải đổi 1 dòng.
+# Muốn lên 2.x thì phải viết lại cả 4 server theo API mới, không phải đổi 1 dòng.
 mcp>=1.26,<2
 httpx
 websockets
@@ -13,6 +13,8 @@ uvicorn
 # /v1/images/edits nhận multipart (client.images.edit của SDK OpenAI); starlette chỉ đọc được form
 # khi có gói này. Đang tới theo mcp, khai tường minh cùng lý do như hai dòng trên.
 python-multipart
+# Đọc thành tiếng (Kokoro). Model 350 MB KHÔNG ở đây: tải một lần khi người dùng bấm Download.
+sherpa-onnx
 # Terminal nhúng trên Windows: stdlib KHÔNG bọc ConPTY, pty/termios/fcntl là module Unix.
 # pywinpty là bindings ConPTY (cùng thứ Jupyter/terminado dùng). Chỉ cài trên Windows —
 # Linux/macOS đã có pty trong stdlib, kéo thêm dep ở đó là thừa và build sẽ hỏng.

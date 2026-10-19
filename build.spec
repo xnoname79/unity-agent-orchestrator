@@ -13,7 +13,7 @@ datas = [
 ]
 binaries, hiddenimports = [], [
     # 3 module MCP được import BÊN TRONG build_app() — PyInstaller vẫn thấy, khai thêm cho chắc.
-    "signal_mcp", "library_mcp", "board_mcp",
+    "signal_mcp", "library_mcp", "board_mcp", "voice_mcp",
 ]
 # Bỏ qua khi quét submodule. `mcp.cli` import `typer` — dep TUỲ CHỌN (chỉ có nếu cài `mcp[cli]`).
 # Thiếu typer thì module đó gọi sys.exit(1), mà SystemExit KHÔNG phải Exception nên tham số
@@ -29,7 +29,9 @@ def _keep(name):
 # uvicorn nạp protocol/loop/lifespan bằng chuỗi lúc chạy → phân tích tĩnh không thấy, thiếu là
 # binary chạy được tới lúc serve rồi chết "ModuleNotFoundError: uvicorn.protocols...".
 # mcp cũng nạp động theo transport.
-for pkg in ("uvicorn", "mcp"):
+# sherpa_onnx (đọc thành tiếng) được import BÊN TRONG _tts_generate và mang thư viện native
+# (onnxruntime) — gom tay như winpty, thiếu là binary chỉ chết lúc người dùng bấm Speak.
+for pkg in ("uvicorn", "mcp", "sherpa_onnx"):
     d, b, h = collect_all(pkg, filter_submodules=_keep)
     datas += d
     binaries += b

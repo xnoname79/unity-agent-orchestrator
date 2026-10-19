@@ -423,6 +423,28 @@ or once by hand:
 claude mcp add --transport http --scope user library http://127.0.0.1:8992/library/mcp
 ```
 
+## Speak text
+
+**Speak text** in the Library drawer turns English text into natural speech on this machine, with
+[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0) through
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx). Nothing is sent anywhere. Pick one of 28
+voices — US or UK, female or male — and a speed (slower helps when you are learning); the result
+is a WAV in the Library, measured like any other sound and findable by the words it says.
+
+The voice model is not bundled: the first time, the dialog offers a one-off **Download**
+(350 MB, unpacked to `~/.session_orch_db/tts/`). Speech takes about 1.5× as long to make as it
+lasts on a laptop CPU, one request at a time; `ORCH_TTS_THREADS` (default 2) sets the CPU threads —
+more is not faster on a hyper-threaded laptop. English only for now, and British voices use
+American pronunciation.
+
+Agents get the same voice through MCP tools served at `/voice/mcp`: `speak(text, voice, speed)`
+saves the speech to the Library and returns its path, and `list_voices()` lists the voices.
+Connect it from the 🔌 button (**Built into the orchestrator** › `voice`), or once by hand:
+
+```bash
+claude mcp add --transport http --scope user voice http://127.0.0.1:8992/voice/mcp
+```
+
 ## Tools for video and audio
 
 Nothing for video or audio ships with the orchestrator. The agents work by running commands in
@@ -689,6 +711,7 @@ python3 check_tools.py                      # the media tool panel tells the tru
 python3 check_boards.py                     # a board nudges like a friend, not an alarm clock
 python3 check_sounds.py                     # a search or link never reaches yt-dlp as a flag
 python3 check_library.py                    # agents' library search and sound measurements are right
+python3 check_tts.py                        # a downloaded voice cannot write outside its folder
 ```
 
 ## License

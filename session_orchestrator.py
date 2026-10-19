@@ -50,6 +50,7 @@ import argparse
 import array
 import asyncio
 import base64
+import importlib.util
 import json
 import math
 import operator
@@ -63,7 +64,9 @@ import sqlite3
 import struct
 import subprocess
 import sys
+import tarfile
 import uuid
+import wave
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -1528,6 +1531,7 @@ MCP_BUILTINS = (
     ("signal", "/signal/mcp", "Agents message each other"),
     ("boards", "/boards/mcp", "Agents read and update boards"),
     ("library", "/library/mcp", "Agents search and inspect the Library's sounds and images"),
+    ("voice", "/voice/mcp", "Agents turn text into speech"),
 )
 
 
@@ -2500,6 +2504,7 @@ def library_items():
                     "format": s.get("format") or "", "license": s.get("license") or "",
                     "source": s.get("source") or "", "by": s.get("by") or "",
                     "uploaded": s.get("uploaded") or "", "created": s.get("created") or "",
+                    "text": s.get("text") or "",
                     "path": s["path"], "inspected": bool(ins), **({"inspect": ins} if ins else {})})
     for i in list_images():
         w, h = image_size(IMAGES_DIR / i["name"])
@@ -2510,7 +2515,8 @@ def library_items():
     return sorted(out, key=lambda x: x["name"], reverse=True)
 
 
-_LIB_TEXT = ("title", "channel", "license", "uploaded", "prompt", "drawn", "by", "format", "kind")
+_LIB_TEXT = ("title", "channel", "license", "uploaded", "prompt", "drawn", "by", "format", "kind",
+             "text")
 
 
 def library_search(query="", kind="", min_seconds=0, max_seconds=0, limit=20):
@@ -2540,6 +2546,177 @@ def library_search(query="", kind="", min_seconds=0, max_seconds=0, limit=20):
         hits.append((score, it))
     hits.sort(key=lambda h: h[0], reverse=True)    # sort ổn định: cùng điểm thì giữ mới-trước
     return {"total": len(hits), "items": [it for _, it in hits[:limit]]}
+
+
+# ─── Đọc thành tiếng: Kokoro qua sherpa-onnx, chạy ngay trên máy này ──────────────────────────
+# Kokoro-82M (Apache-2.0, dữ liệu huấn luyện giấy phép thoáng) — đo 2026-10-19 trên i7-10875H:
+# Piper nhanh hơn ~15× nhưng giọng kém tự nhiên, và giọng Lessac trong bài research là "research
+# only". Bản int8 CHẬM HƠN fp32 4-5× trên CPU desktop, nên dùng fp32. Chỉ tiếng Anh (28 giọng
+# Mỹ/Anh) — người dùng muốn làm chức năng học tiếng Anh trên nền này.
+#
+# Model KHÔNG đóng gói kèm (350 MB): tải một lần khi người dùng bấm Download, như yt-dlp.
+TTS_DIR = DB_DIR / "tts"
+TTS_PACKAGE = "kokoro-multi-lang-v1_0"
+TTS_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/{TTS_PACKAGE}.tar.bz2"
+TTS_SIZE = 349_906_910
+# Đo: 8 luồng CHẬM hơn 2 luồng với đoạn dài (siêu phân luồng giành nhau), nên mặc định 2.
+TTS_THREADS = int(os.environ.get("ORCH_TTS_THREADS", "2"))
+TTS_MAX_CHARS = 3000
+# Đúng thứ tự speaker id trong model (đọc từ metadata id2speaker): 0-27 là giọng tiếng Anh.
+TTS_VOICES = ("af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore", "af_nicole",
+              "af_nova", "af_river", "af_sarah", "af_sky", "am_adam", "am_echo", "am_eric",
+              "am_fenrir", "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa", "bf_alice",
+              "bf_emma", "bf_isabella", "bf_lily", "bm_daniel", "bm_fable", "bm_george", "bm_lewis")
+TTS_DEFAULT_VOICE = "af_heart"   # giọng được chấm cao nhất của Kokoro v1.0
+TTS_INSTALL = "python3 -m pip install sherpa-onnx"
+_tts = None                      # sherpa_onnx.OfflineTts: nạp một lần (~3.6 s, ~330 MB RAM)
+_tts_lock = asyncio.Lock()       # một lượt đọc một lúc: mỗi lượt đã ăn trọn 2 lõi CPU
+_tts_dl = {"state": "", "done": 0, "total": TTS_SIZE, "error": ""}
+_tts_tasks: set = set()
+
+
+def _tts_label(voice):
+    """af_heart → 'Heart · US female'."""
+    return (f"{voice[3:].title()} · {'US' if voice[0] == 'a' else 'UK'} "
+            f"{'female' if voice[1] == 'f' else 'male'}")
+
+
+def _tts_ready():
+    return (TTS_DIR / TTS_PACKAGE / "model.onnx").is_file()
+
+
+def tts_status():
+    return {"engine": importlib.util.find_spec("sherpa_onnx") is not None, "install": TTS_INSTALL,
+            "ready": _tts_ready(), "download": dict(_tts_dl), "default": TTS_DEFAULT_VOICE,
+            "voices": [{"id": v, "label": _tts_label(v)} for v in TTS_VOICES]}
+
+
+async def _tts_fetch(url, dst, progress):
+    """Tải url về dst từng mẩu (350 MB không gom vào RAM), báo tiến độ qua progress(done)."""
+    async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30, read=120)) as c:
+        async with c.stream("GET", url) as r:
+            r.raise_for_status()
+            done = 0
+            with open(dst, "wb") as f:
+                async for chunk in r.aiter_bytes(1 << 20):
+                    f.write(chunk)
+                    done += len(chunk)
+                    progress(done)
+
+
+def _tts_unpack(archive, dest):
+    """Giải nén vào dest. filter='data' chặn đường dẫn thoát ra ngoài, symlink lạ, file thiết bị —
+    file tải từ mạng không được ghi ra chỗ nào khác ngoài thư mục của nó."""
+    if not hasattr(tarfile, "data_filter"):
+        raise RuntimeError("this Python is too old to unpack the voice safely — use 3.11.4 or newer")
+    shutil.rmtree(dest, ignore_errors=True)
+    with tarfile.open(archive, "r:bz2") as t:
+        t.extractall(dest, filter="data")
+    if not (dest / TTS_PACKAGE / "model.onnx").is_file():
+        raise RuntimeError("the download did not contain the Kokoro model")
+
+
+async def tts_download():
+    """Tải + giải nén giọng Kokoro, một lần. Đang tải thì không tải lần hai. Hỏng giữa chừng thì
+    không để lại gì: file .part và thư mục giải nén dở đều bị xoá."""
+    if _tts_dl["state"] in ("downloading", "unpacking"):
+        return
+    _tts_dl.update(state="downloading", done=0, error="")
+    await _tts_download_run()
+
+
+async def _tts_download_run():
+    TTS_DIR.mkdir(parents=True, exist_ok=True)
+    part = TTS_DIR / f"{TTS_PACKAGE}.tar.bz2.part"
+    tmp = TTS_DIR / ".unpacking"
+    try:
+        await _tts_fetch(TTS_URL, part, lambda done: _tts_dl.update(done=done))
+        _tts_dl["state"] = "unpacking"
+        await asyncio.to_thread(_tts_unpack, part, tmp)
+        shutil.rmtree(TTS_DIR / TTS_PACKAGE, ignore_errors=True)
+        os.replace(tmp / TTS_PACKAGE, TTS_DIR / TTS_PACKAGE)
+        _tts_dl["state"] = ""
+    except Exception as e:  # noqa: BLE001 — mọi kiểu hỏng đều phải hiện lên panel, không chết lặng
+        _tts_dl.update(state="failed", error=str(e) or type(e).__name__)
+    finally:
+        part.unlink(missing_ok=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def tts_download_start():
+    """Bắt đầu tải ở nền. Trạng thái đổi NGAY, trước khi trả lời request: dialog đọc nó để biết
+    có phải hỏi tiến độ không — đợi task chạy mới đổi thì dialog thấy 'chưa tải' và đứng yên."""
+    if _tts_dl["state"] in ("downloading", "unpacking"):
+        return
+    _tts_dl.update(state="downloading", done=0, error="")
+    t = asyncio.create_task(_tts_download_run())
+    _tts_tasks.add(t)
+    t.add_done_callback(_tts_tasks.discard)
+
+
+def _tts_generate(text, sid, speed):
+    """Chạy trong thread (CPU, ~1.4× độ dài tiếng). Trả (samples float [-1,1], sample_rate)."""
+    global _tts
+    if _tts is None:
+        import sherpa_onnx
+        m = TTS_DIR / TTS_PACKAGE
+        # shortcut: một từ điển phát âm (Mỹ) cho cả giọng Anh — `lang` của Kokoro chốt lúc nạp
+        # model, hai bộ là hai lần 330 MB RAM; nạp thêm bản en-gb khi người học cần giọng Anh chuẩn.
+        _tts = sherpa_onnx.OfflineTts(sherpa_onnx.OfflineTtsConfig(
+            model=sherpa_onnx.OfflineTtsModelConfig(
+                kokoro=sherpa_onnx.OfflineTtsKokoroModelConfig(
+                    model=str(m / "model.onnx"), voices=str(m / "voices.bin"),
+                    tokens=str(m / "tokens.txt"), data_dir=str(m / "espeak-ng-data"),
+                    lexicon=str(m / "lexicon-us-en.txt")),
+                num_threads=TTS_THREADS, provider="cpu")))
+    a = _tts.generate(text, sid=sid, speed=speed)
+    return a.samples, a.sample_rate
+
+
+def _write_wav(dst, samples, rate):
+    """WAV 16-bit mono bằng stdlib: không cần numpy/soundfile (~49 MB) cho việc này."""
+    pcm = array.array("h", (int(max(-1.0, min(1.0, x)) * 32767) for x in samples))
+    if sys.byteorder == "big":
+        pcm.byteswap()
+    with wave.open(str(dst), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm.tobytes())
+
+
+async def tts_speak(text, voice=TTS_DEFAULT_VOICE, speed=1.0, by=""):
+    """Đọc text thành một file WAV trong thư viện Sounds — panel, Library và agent (voice_mcp,
+    library_mcp) đều thấy nó như mọi tiếng khác."""
+    text = str(text or "").strip()
+    if not text or len(text) > TTS_MAX_CHARS:
+        raise ValueError(f"give the text to speak, up to {TTS_MAX_CHARS} characters")
+    if voice not in TTS_VOICES:
+        raise ValueError(f"voice must be one of: {', '.join(TTS_VOICES)}")
+    try:
+        speed = float(speed)
+    except (TypeError, ValueError):
+        raise ValueError("speed must be a number")
+    if not 0.5 <= speed <= 2.0:
+        raise ValueError("speed must be between 0.5 (slow) and 2.0 (fast)")
+    if importlib.util.find_spec("sherpa_onnx") is None:
+        raise LookupError(f"text to speech needs sherpa-onnx — install it: {TTS_INSTALL}")
+    if not _tts_ready():
+        raise LookupError("the Kokoro voice is not downloaded yet — press Download in "
+                          "Library › Speak text (350 MB, once)")
+    async with _tts_lock:
+        samples, rate = await asyncio.to_thread(_tts_generate, text, TTS_VOICES.index(voice), speed)
+    SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
+    dst = SOUNDS_DIR / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.wav"
+    await asyncio.to_thread(_write_wav, dst, samples, rate)
+    first = text.splitlines()[0]
+    meta = {"title": first[:80] + ("…" if len(first) > 80 or "\n" in text else ""),
+            "channel": f"Kokoro · {_tts_label(voice)}", "duration": round(len(samples) / rate, 2),
+            "source": "", "license": "Kokoro-82M, Apache-2.0", "format": "wav", "by": by or "",
+            "created": _now(), "text": text, "voice": voice, "speed": speed}
+    dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    _inspect_later(dst.name)
+    return {**meta, "name": dst.name, "path": str(dst)}
 
 
 # ─── Card thư mục: duyệt project NGAY TRONG dashboard ─────────────────────────
@@ -6362,6 +6539,7 @@ def build_app():
       - /signal/mcp  → signal_mcp (send_signal, compact_context, list_agents)
       - /library/mcp → library_mcp (tìm và đo tiếng/ảnh trong Library — chỉ đọc)
       - /boards/mcp  → board_mcp (đọc board, thêm/sửa task — cùng hàm với tab Boards)
+      - /voice/mcp   → voice_mcp (đọc thành tiếng bằng Kokoro, lưu vào Library)
     signal_mcp chạy in-process (gọi thẳng hàm orchestrator, không self-call HTTP).
     """
     from contextlib import AsyncExitStack, asynccontextmanager
@@ -6376,6 +6554,7 @@ def build_app():
     import signal_mcp
     import library_mcp
     import board_mcp
+    import voice_mcp
 
     # signal_mcp gọi thẳng các hàm orchestrator thay vì POST HTTP về chính mình.
     signal_mcp._INPROC = True
@@ -6386,6 +6565,7 @@ def build_app():
     signal_app = signal_mcp.mcp.streamable_http_app()
     library_app = library_mcp.mcp.streamable_http_app()
     board_app = board_mcp.mcp.streamable_http_app()
+    voice_app = voice_mcp.mcp.streamable_http_app()
 
     async def health(request: Request):
         # embedded_terminal: CI Windows kiểm tra cờ này để bắt trường hợp pywinpty không được
@@ -7067,6 +7247,27 @@ def build_app():
     def _sound_req(request):
         return sound_path(request.path_params["name"],
                           draft=request.url.path.startswith("/api/sounds/drafts/"))
+
+    async def api_tts(request: Request):
+        """Đọc thành tiếng: GET = tình trạng (engine, giọng đã tải chưa, tiến độ tải, danh sách
+        giọng); POST /speak = đọc; POST /download = tải giọng (350 MB, chạy nền, GET để xem)."""
+        return JSONResponse(tts_status())
+
+    async def api_tts_download(request: Request):
+        if not tts_status()["engine"]:
+            return JSONResponse({"error": f"install sherpa-onnx first: {TTS_INSTALL}"},
+                                status_code=409)
+        if not _tts_ready():
+            tts_download_start()
+        return JSONResponse(tts_status(), status_code=202)
+
+    async def api_tts_speak(request: Request):
+        b = await _body(request)
+        try:
+            return JSONResponse(await tts_speak(b.get("text"), b.get("voice") or TTS_DEFAULT_VOICE,
+                                                b.get("speed", 1.0), "user"))
+        except (ValueError, LookupError, RuntimeError) as e:
+            return _sound_err(e)
 
     async def api_sounds_upload(request: Request):
         try:
@@ -8005,12 +8206,13 @@ def build_app():
             await stack.enter_async_context(signal_app.router.lifespan_context(app))
             await stack.enter_async_context(library_app.router.lifespan_context(app))
             await stack.enter_async_context(board_app.router.lifespan_context(app))
+            await stack.enter_async_context(voice_app.router.lifespan_context(app))
             task = asyncio.create_task(run_loop())
             btask = asyncio.create_task(board_loop())
             print(f"[orchestrator] Dashboard: http://{ORCH_HOST}:{ORCH_PORT}")
             print(f"[orchestrator] API docs:  http://{ORCH_HOST}:{ORCH_PORT}/docs"
                   + (f"  (dry_run={DRY_RUN})" if DRY_RUN else ""))
-            print("[orchestrator] MCP mounted: /signal/mcp, /library/mcp, /boards/mcp")
+            print("[orchestrator] MCP mounted: /signal/mcp, /library/mcp, /boards/mcp, /voice/mcp")
             # Agent chạy shell với bypassPermissions. CORS mở (không có API key nào khác chặn) =
             # bất kỳ trang web nào người dùng mở cũng POST được /v1 và sai khiến agent trên máy này.
             # In thành KHỐI có viền: người double-click .exe chỉ thấy console vài giây trước khi
@@ -8093,6 +8295,9 @@ def build_app():
         Route("/api/sounds", api_sounds_extract, methods=["POST"]),
         Route("/api/sounds/search", api_sounds_search, methods=["POST"]),
         Route("/api/sounds/upload", api_sounds_upload, methods=["POST"]),
+        Route("/api/tts", api_tts),
+        Route("/api/tts/download", api_tts_download, methods=["POST"]),
+        Route("/api/tts/speak", api_tts_speak, methods=["POST"]),
         Route("/api/sounds/drafts/{name}", api_sound_file),
         Route("/api/sounds/drafts/{name}", api_sound_delete, methods=["DELETE"]),
         Route("/api/sounds/drafts/{name}/peaks", api_sound_peaks),
@@ -8142,10 +8347,11 @@ def build_app():
         Route("/openapi.json", api_openapi),
         Route("/docs", api_docs),
         # MCP server nội bộ mount chung port (đặt trước static "/"): /signal/mcp, /library/mcp,
-        # /boards/mcp.
+        # /boards/mcp, /voice/mcp.
         Mount("/signal", app=signal_app),
         Mount("/library", app=library_app),
         Mount("/boards", app=board_app),
+        Mount("/voice", app=voice_app),
     ]
 
     # Dashboard (Phase C): serve static UI at "/" (must be last — catches the rest).

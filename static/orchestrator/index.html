@@ -1184,6 +1184,8 @@
     <section>
       <div class="lib-head"><h4>Sounds <span id="lib-n-snd" class="hint"></span></h4>
         <span class="spacer"></span>
+        <button class="secondary" onclick="ttsOpen()"
+          title="Turn English text into speech with a natural voice, on this machine">Speak text</button>
         <button class="secondary" onclick="libPick()"
           title="Add an mp3 from this computer — you can cut it before it is kept">Upload mp3</button>
         <input id="lib-file" type="file" accept=".mp3,audio/mpeg" hidden onchange="libUpload(this)"></div>
@@ -1308,6 +1310,35 @@
       <button id="sed-save" class="primary" onclick="sedSave()">Save to library</button>
     </div>
     <audio id="sed-audio" preload="auto"></audio>
+  </div>
+</div>
+
+<!-- Đọc thành tiếng (Kokoro, chạy trên máy này). Mở từ Library; kết quả là một tiếng trong thư
+     viện. Lần đầu phải tải giọng (350 MB) — nút Download nằm ngay trong modal. -->
+<div id="tts-modal" class="modal-overlay" onclick="if (event.target === this) ttsClose()" hidden>
+  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="tts-title">
+    <h3 id="tts-title"><svg class="ic"><use href="#i-music"/></svg> Speak text
+      <span class="spacer"></span>
+      <button class="icon-btn" onclick="ttsClose()" title="Close">
+        <svg class="ic"><use href="#i-x"/></svg></button></h3>
+    <div class="hint">English text to natural speech, made on this machine with Kokoro
+      (Apache-2.0) — nothing is sent anywhere. The result is saved to the Library.</div>
+    <div id="tts-status" class="snd-status"></div>
+    <label for="tts-text">What should it say?</label>
+    <textarea id="tts-text" rows="5" maxlength="3000"
+      placeholder="e.g. Could you tell me the way to the station, please?"></textarea>
+    <div class="snd-opts">
+      <label>Voice <select id="tts-voice"></select></label>
+      <label title="Slower is easier to follow when you are learning">Speed <select id="tts-speed">
+        <option value="0.7">slow</option><option value="0.85">a little slow</option>
+        <option value="1" selected>normal</option><option value="1.15">a little fast</option>
+        <option value="1.3">fast</option></select></label>
+    </div>
+    <div class="spawn-actions ai-actions">
+      <button id="tts-go" class="primary" onclick="ttsSpeak()">Speak</button>
+    </div>
+    <div id="tts-msg" class="form-msg"></div>
+    <audio id="tts-audio" controls hidden></audio>
   </div>
 </div>
 

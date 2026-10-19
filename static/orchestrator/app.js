@@ -3401,6 +3401,7 @@ window.mcpClose = mcpClose;
 document.addEventListener("keydown", (e) => {
   // Editor nằm trên Sounds: Esc chỉ hỏi bỏ bản nháp, không đóng luôn Sounds bên dưới.
   if (e.key === "Escape" && !$("sed-modal").hidden) return sedDiscard();
+  if (e.key === "Escape" && !$("tts-modal").hidden) return ttsClose();
   if (e.key === "Escape" && libIsOpen()) libClose();
   if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
   if (e.key === "Escape" && !$("img-modal").hidden) imgClose();
@@ -3996,6 +3997,85 @@ $("lib-drawer").addEventListener("click", async (ev) => {
     await libLoad();
   } catch (e) { showMsg("lib-msg", mcpErr(e), false); }
 });
+
+// ── Speak text (Kokoro) ──────────────────────────────────────────────────────
+// Đọc ở server (sherpa-onnx), kết quả là một tiếng trong thư viện. Lần đầu phải tải giọng: modal
+// hỏi /api/tts mỗi giây trong lúc tải để hiện tiến độ.
+let ttsPoll = 0;
+
+function ttsPaint(st) {
+  const mb = (n) => Math.round(n / 1048576);
+  const d = st.download || {};
+  let html;
+  if (!st.engine) {
+    html = `<div>${badge("missing", "b-red")} <b>sherpa-onnx</b> is not installed.</div>
+      <div class="tool-fix"><code>${esc(st.install)}</code></div>`;
+  } else if (d.state === "downloading" || d.state === "unpacking") {
+    html = `<div>${badge(d.state, "b-blue")} Kokoro voice — ${d.state === "unpacking" ? "unpacking…"
+      : `${mb(d.done)} of ${mb(d.total)} MB`}</div>`;
+  } else if (!st.ready) {
+    html = `<div>${d.state === "failed" ? badge("failed", "b-red") + ` ${esc(d.error)}<br>` : ""}
+      The Kokoro voice is downloaded once (${mb(d.total)} MB).
+      <button class="secondary" onclick="ttsDownload()">Download</button></div>`;
+  } else {
+    html = `<div>${badge("ready", "b-green")} Kokoro · ${st.voices.length} English voices</div>`;
+  }
+  $("tts-status").innerHTML = html;
+  $("tts-go").disabled = !(st.engine && st.ready);
+  if (!$("tts-voice").options.length) {
+    const group = (p, label) => `<optgroup label="${label}">${st.voices.filter((v) => v.id.startsWith(p))
+      .map((v) => `<option value="${esc(v.id)}">${esc(v.label.split(" · ")[0])}</option>`).join("")}</optgroup>`;
+    $("tts-voice").innerHTML = group("af", "US female") + group("am", "US male")
+      + group("bf", "UK female") + group("bm", "UK male");
+    $("tts-voice").value = st.default;
+  }
+  clearTimeout(ttsPoll);
+  if (!$("tts-modal").hidden && (d.state === "downloading" || d.state === "unpacking")) {
+    ttsPoll = setTimeout(() => ttsLoad().catch(() => {}), 1000);
+  }
+}
+
+async function ttsLoad() { ttsPaint(await api("/api/tts")); }
+
+function ttsOpen() {
+  $("tts-modal").hidden = false;
+  $("tts-msg").textContent = "";
+  $("tts-text").focus();
+  ttsLoad().catch((e) => showMsg("tts-msg", "Error: " + e, false));
+}
+window.ttsOpen = ttsOpen;
+
+function ttsClose() {
+  $("tts-modal").hidden = true;
+  $("tts-audio").pause();
+  clearTimeout(ttsPoll);
+}
+window.ttsClose = ttsClose;
+
+async function ttsDownload() {
+  try { ttsPaint(await api("/api/tts/download", "POST", {})); }
+  catch (e) { showMsg("tts-msg", mcpErr(e), false); }
+}
+window.ttsDownload = ttsDownload;
+
+async function ttsSpeak() {
+  const text = $("tts-text").value.trim();
+  if (!text) return showMsg("tts-msg", "Type what it should say.", false);
+  $("tts-go").disabled = true;
+  showMsg("tts-msg", "Speaking… about as long as the speech itself.", true);
+  try {
+    const s = await api("/api/tts/speak", "POST",
+      { text, voice: $("tts-voice").value, speed: +$("tts-speed").value });
+    const au = $("tts-audio");
+    au.hidden = false;
+    au.src = sndUrl(s.name);
+    au.play().catch(() => {});
+    showMsg("tts-msg", `Saved to the Library — ${s.duration}s of speech.`, true);
+    if (libIsOpen()) await libLoad();
+  } catch (e) { showMsg("tts-msg", mcpErr(e), false); }
+  finally { $("tts-go").disabled = false; }
+}
+window.ttsSpeak = ttsSpeak;
 
 function sedHide() {
   const au = $("sed-audio");
