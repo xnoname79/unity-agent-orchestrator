@@ -4104,7 +4104,7 @@ async function pdfOpen(name) {
     const task = lib.getDocument({ url: docUrl(name), wasmUrl: PDFJS + "wasm/",
       iccUrl: PDFJS + "iccs/", standardFontDataUrl: PDFJS + "standard_fonts/", enableXfa: false });
     const doc = await task.promise;
-    pdf = { name, task, doc, view, box, st };
+    pdf = { name, task, doc, view, box, st, openPages: new Set() };   // openPages: nhóm quote đang mở
     bus.on("pagesinit", () => {
       view.currentScaleValue = st.scale || "page-width";
       // Có bookmark thì mở ngay dòng đó; không thì đúng chỗ đã dừng lần trước (không chỉ đúng trang).
@@ -4219,15 +4219,32 @@ function pdfSideRender() {
         <button class="icon-btn" data-bm-rm="1" title="Remove bookmark">
           <svg class="ic sm"><use href="#i-trash"/></svg></button></div></div>`
     : `<div class="hint">Select text on a page, then Bookmark — the file opens at that line next time.</div>`;
-  $("pdf-quotes").innerHTML = [...st.highlights].sort((a, b) => a.page - b.page).map((h) => `<div class="pdf-item">
+  // Một nhóm <details> mỗi trang; trong trang theo thứ tự từ trên xuống (y PDF lớn = cao hơn).
+  const top = (h) => Math.max(h.rects[0][2], h.rects[0][4]);
+  const pages = new Map();
+  for (const h of [...st.highlights].sort((a, b) => a.page - b.page || top(b) - top(a))) {
+    pages.set(h.page, [...(pages.get(h.page) || []), h]);
+  }
+  $("pdf-quotes").innerHTML = [...pages].map(([page, hs]) => `<details class="pdf-grp" data-page="${page}"
+      ${pdf.openPages.has(page) ? "open" : ""}><summary>Page ${page}
+      <span class="hint">${plural(hs.length, "quote")}</span></summary>
+    ${hs.map((h) => `<div class="pdf-item">
       <blockquote>${esc(h.text)}</blockquote>
-      <div class="row"><span>p. ${h.page}</span><span class="spacer"></span>
+      <div class="row"><span class="spacer"></span>
         <button class="secondary" data-hl-go="${esc(h.id)}">Go</button>
         <button class="secondary" data-hl-say="${esc(h.id)}">Speak</button>
         <button class="secondary" data-hl-copy="${esc(h.id)}">Copy</button>
         <button class="icon-btn" data-hl-rm="${esc(h.id)}" title="Delete quote">
-          <svg class="ic sm"><use href="#i-trash"/></svg></button></div></div>`).join("");
+          <svg class="ic sm"><use href="#i-trash"/></svg></button></div></div>`).join("")}</details>`).join("");
 }
+
+// Nhớ nhóm nào đang mở, để vẽ lại danh sách (thêm/xoá quote) không gập hết lại. toggle không
+// nổi bọt → bắt ở capture.
+$("pdf-quotes").addEventListener("toggle", (ev) => {
+  const page = +ev.target.dataset.page;
+  if (!pdf || !page) return;
+  if (ev.target.open) pdf.openPages.add(page); else pdf.openPages.delete(page);
+}, true);
 
 $("pdf-side").addEventListener("click", async (ev) => {
   const b = ev.target.closest("button");
@@ -4328,6 +4345,7 @@ function pdfHighlight() {
   }
   pdf.st.highlights.push({ id: rid(), page: rects[0][0], text, rects, color: HL_COLOR,
                            created: new Date().toISOString() });
+  pdf.openPages.add(rects[0][0]);   // quote vừa thêm phải thấy ngay
   pdfSave({ highlights: pdf.st.highlights }, true);
   getSelection().removeAllRanges();
   $("pdf-sel").hidden = true;
