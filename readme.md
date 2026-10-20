@@ -33,7 +33,9 @@ installed on your machine, so each provider keeps its own login and subscription
 - **Images** — generate and edit pictures, with up to three reference images.
 - **Sounds** — search YouTube (AI-generated, filtered by length), pull out the audio, crop it in a
   waveform editor.
-- **Library** — every kept image and sound in one drawer. Upload an mp3 and crop it.
+- **Library** — every kept image, sound and PDF in one drawer. Upload an mp3 and crop it.
+- **PDF reader** — reopens where you stopped, marks the line you reached, keeps bookmarks and
+  highlighted quotes, and reads any quote aloud. Each PDF keeps its own state.
 - **Speak text** — natural English speech made on your machine (Kokoro, 28 US and UK voices).
 - **Media tools** — checks for ffmpeg, ImageMagick, yt-dlp, SoX and ExifTool, and tells you how to
   install what is missing.

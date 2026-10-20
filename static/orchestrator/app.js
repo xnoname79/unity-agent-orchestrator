@@ -3402,6 +3402,7 @@ document.addEventListener("keydown", (e) => {
   // Editor nằm trên Sounds: Esc chỉ hỏi bỏ bản nháp, không đóng luôn Sounds bên dưới.
   if (e.key === "Escape" && !$("sed-modal").hidden) return sedDiscard();
   if (e.key === "Escape" && !$("tts-modal").hidden) return ttsClose();
+  if (e.key === "Escape" && !$("pdf-reader").hidden) return pdfMarking ? pdfMarkLine() : pdfClose();
   if (e.key === "Escape" && libIsOpen()) libClose();
   if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
   if (e.key === "Escape" && !$("img-modal").hidden) imgClose();
@@ -3911,13 +3912,17 @@ window.sedDiscard = sedDiscard;
 // cùng markup với hai modal kia — ở đây chỉ gom lại, thêm tải mp3 lên (qua editor để cắt).
 // Agent đọc đúng thư viện này qua /library/mcp: search_media, inspect_media.
 let libKey = "";      // như sndLibKey: poll chỉ vẽ lại khi danh sách đổi, kẻo <audio> đang phát bị cắt
+let libDocKey = "";   // cùng lý do cho Documents: vẽ lại mỗi 5 giây là mất focus bàn phím
 
 const libIsOpen = () => $("lib-drawer").classList.contains("open");
 
 async function libLoad() {
-  const [imgs, snd] = await Promise.all([api("/api/images"), api("/api/sounds")]);
+  const [imgs, snd, docs] = await Promise.all([api("/api/images"), api("/api/sounds"), api("/api/documents")]);
   $("lib-n-snd").textContent = snd.items.length ? `(${snd.items.length})` : "";
   $("lib-n-img").textContent = imgs.length ? `(${imgs.length})` : "";
+  $("lib-n-doc").textContent = docs.length ? `(${docs.length})` : "";
+  const dkey = JSON.stringify(docs);
+  if (dkey !== libDocKey) { libDocKey = dkey; $("lib-doc").innerHTML = docRows(docs); }
   const key = [...snd.items, ...imgs].map((i) => i.name).join("|");
   if (key === libKey) return;
   libKey = key;
@@ -3928,7 +3933,7 @@ async function libLoad() {
 function libOpen() {
   $("lib-drawer").classList.add("open");
   $("lib-overlay").classList.add("open");
-  libKey = "";
+  libKey = libDocKey = "";
   libLoad().catch((e) => showMsg("lib-msg", "Error: " + e, false));
   libAgents();
 }
@@ -3996,6 +4001,442 @@ $("lib-drawer").addEventListener("click", async (ev) => {
     await libLoad();
   } catch (e) { showMsg("lib-msg", mcpErr(e), false); }
 });
+
+// ── Documents + PDF reader ───────────────────────────────────────────────────
+// PDF tải lên nằm trong Library; mở ra là trình đọc cả cửa sổ, dựng trên PDFViewer của pdf.js
+// (vendor/pdfjs, chỉ nạp lần đầu). Ta chỉ thêm: highlight, dòng đã đánh dấu, bookmark, đọc to.
+// Toạ độ lưu ở đơn vị PDF (getPagePoint) nên zoom kiểu gì cũng khớp chữ. Trạng thái từng file ở
+// server (POST /api/documents/<name>/state, từng khoá một — xem doc_update).
+const PDFJS = "/vendor/pdfjs/";
+const docUrl = (name) => "/api/documents/" + encodeURIComponent(name);
+const HL_COLOR = "#ffd54f";
+const HL_TEXT_MAX = 5000, HL_RECTS_MAX = 500;   // = DOC_TEXT_MAX, DOC_RECTS_MAX ở server
+const TTS_CHUNK = 300;   // ký tự mỗi lần đọc: đọc chậm hơn thời gian thực, đoạn ngắn thì tiếng đến sớm
+let pdfMods = null;      // { lib, V } sau lần nạp đầu
+let pdf = null;          // tài liệu đang mở: { name, doc, view, box, st }
+let pdfMarking = false;
+let pdfPending = {}, pdfSaveT = 0;
+let pdfSpeaking = 0;     // tăng lên = huỷ lượt đọc đang chạy
+
+const rid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const plural = (n, w) => `${n} ${w}${n > 1 ? "s" : ""}`;
+
+function docRows(list) {
+  return list.length ? list.map((d) => `<div class="snd-row">
+      <svg class="ic"><use href="#i-doc"/></svg>
+      <div class="snd-meta">
+        <button class="doc-open" data-doc-open="${esc(d.name)}" title="${esc(d.title)}">${esc(d.title)}</button>
+        <span class="hint">${esc([d.pages ? (d.page ? `page ${d.page} of ${d.pages}` : plural(d.pages, "page")) : "",
+          d.highlights ? plural(d.highlights, "quote") : "", d.bookmarks ? plural(d.bookmarks, "bookmark") : "",
+          fmtBytes(d.size)].filter(Boolean).join(" · "))}</span></div>
+      <button class="icon-btn" data-doc-rm="${esc(d.name)}" title="Delete">
+        <svg class="ic sm"><use href="#i-trash"/></svg></button>
+    </div>`).join("") : `<div class="hint">Nothing yet — upload a PDF to read it here.</div>`;
+}
+
+function docPick() {
+  $("doc-file").click();
+}
+window.docPick = docPick;
+
+async function docUpload(input) {
+  const f = input.files[0];
+  input.value = "";
+  if (!f) return;
+  showMsg("lib-msg", `Uploading ${f.name}…`, true);
+  try {
+    const r = await fetch("/api/documents/upload?name=" + encodeURIComponent(f.name), { method: "POST", body: f });
+    if (!r.ok) throw await r.text();
+    const d = await r.json();
+    $("lib-msg").textContent = "";
+    await libLoad();
+    pdfOpen(d.name);
+  } catch (e) { showMsg("lib-msg", `${f.name}: ${mcpErr(e)}`, false); }
+}
+window.docUpload = docUpload;
+
+$("lib-doc").addEventListener("click", async (ev) => {
+  const open = ev.target.closest("[data-doc-open]");
+  if (open) return pdfOpen(open.dataset.docOpen);
+  const rm = ev.target.closest("[data-doc-rm]");
+  if (!rm || !confirm("Delete this document, with its bookmarks and quotes?")) return;
+  try {
+    await api(docUrl(rm.dataset.docRm), "DELETE");
+    await libLoad();
+  } catch (e) { showMsg("lib-msg", mcpErr(e), false); }
+});
+
+async function pdfJs() {
+  if (pdfMods) return pdfMods;
+  const css = Object.assign(document.createElement("link"),
+    { rel: "stylesheet", href: PDFJS + "web/pdf_viewer.css" });
+  const cssReady = new Promise((ok) => { css.onload = css.onerror = ok; });
+  document.head.append(css);
+  const lib = await import(PDFJS + "build/pdf.min.mjs");
+  lib.GlobalWorkerOptions.workerSrc = PDFJS + "build/pdf.worker.min.mjs";
+  // pdf_viewer.mjs đọc globalThis.pdfjsLib mà pdf.min.mjs vừa gán — phải nạp sau.
+  const V = await import(PDFJS + "web/pdf_viewer.mjs");
+  await cssReady;
+  return (pdfMods = { lib, V });
+}
+
+async function pdfOpen(name) {
+  if (pdf) await pdfClose();
+  $("pdf-reader").hidden = false;
+  $("pdf-title").textContent = "Opening…";
+  $("pdf-msg").textContent = "";
+  $("pdf-side").hidden = matchMedia("(max-width: 720px)").matches;
+  $("pdf-side-btn").classList.toggle("on", !$("pdf-side").hidden);
+  try {
+    const [{ lib, V }, st] = await Promise.all([pdfJs(), api(docUrl(name) + "/state")]);
+    st.bookmarks ||= [];
+    st.highlights ||= [];
+    $("pdf-title").textContent = $("pdf-title").title = st.title || name;
+    // Container dựng mới mỗi lần mở: viewer cũ cùng listener/observer của nó đi theo DOM cũ.
+    $("pdf-pane").innerHTML = `<div class="pdf-scroll"><div class="pdfViewer"></div></div>`;
+    const box = $("pdf-pane").firstElementChild;
+    const bus = new V.EventBus();
+    const link = new V.PDFLinkService({ eventBus: bus, externalLinkTarget: V.LinkTarget.BLANK,
+                                        externalLinkRel: "noopener noreferrer nofollow" });
+    // Không truyền scriptingManager = JavaScript trong PDF không bao giờ chạy. ENABLE: link
+    // bấm được, ô form thì chỉ vẽ ra, không gõ được.
+    const view = new V.PDFViewer({ container: box, eventBus: bus, linkService: link,
+                                   annotationMode: lib.AnnotationMode.ENABLE,
+                                   imageResourcesPath: PDFJS + "web/images/" });
+    link.setViewer(view);
+    const task = lib.getDocument({ url: docUrl(name), wasmUrl: PDFJS + "wasm/",
+      iccUrl: PDFJS + "iccs/", standardFontDataUrl: PDFJS + "standard_fonts/", enableXfa: false });
+    const doc = await task.promise;
+    pdf = { name, task, doc, view, box, st };
+    bus.on("pagesinit", () => {
+      view.currentScaleValue = st.scale || "page-width";
+      const p = st.pos;   // mở lại đúng chỗ đã dừng, không chỉ đúng trang
+      if (p) view.scrollPageIntoView({ pageNumber: Math.min(p.page, doc.numPages),
+                                       destArray: [null, { name: "XYZ" }, p.left, p.top, null] });
+      $("pdf-page").value = view.currentPageNumber;   // pagechanging chỉ bắn khi trang ĐỔI
+    });
+    bus.on("pagerendered", (e) => pdfPaint(e.pageNumber));
+    bus.on("pagechanging", (e) => { $("pdf-page").value = e.pageNumber; });
+    bus.on("scalechanging", (e) => { $("pdf-zoom").value = e.presetValue || String(+e.scale.toFixed(2)); });
+    bus.on("updateviewarea", ({ location: l }) => {
+      if (pdf?.view !== view) return;
+      const s = view.currentScaleValue;
+      pdfSave({ pos: { page: l.pageNumber, top: l.top, left: l.left },
+                scale: isNaN(+s) ? s : String(+(+s).toFixed(2)) });
+    });
+    box.addEventListener("scroll", () => { $("pdf-sel").hidden = true; }, { passive: true });
+    view.setDocument(doc);
+    link.setDocument(doc);
+    $("pdf-count").textContent = `of ${doc.numPages}`;
+    $("pdf-page").max = doc.numPages;
+    if (st.pages !== doc.numPages) pdfSave({ pages: doc.numPages }, true);
+    pdfSideRender();
+  } catch (e) { showMsg("pdf-msg", "Could not open it: " + mcpErr(e?.message || e), false); }
+}
+
+async function pdfClose() {
+  pdfStop();
+  if (pdfMarking) pdfMarkLine();
+  $("pdf-sel").hidden = true;
+  clearTimeout(pdfSaveT);
+  await pdfFlush();
+  pdf?.task.destroy();   // dừng worker của tài liệu này
+  pdf = null;
+  $("pdf-pane").innerHTML = "";
+  $("pdf-reader").hidden = true;
+  if (libIsOpen()) libLoad().catch(() => {});
+}
+window.pdfClose = pdfClose;
+
+// Vị trí cuộn gửi gộp, 1 giây sau lần cuộn cuối; highlight/bookmark gửi ngay (now).
+function pdfSave(part, now) {
+  Object.assign(pdfPending, part);
+  clearTimeout(pdfSaveT);
+  pdfSaveT = setTimeout(pdfFlush, now ? 0 : 1000);
+}
+
+async function pdfFlush() {
+  const body = pdfPending;
+  pdfPending = {};
+  if (!pdf || !Object.keys(body).length) return;
+  try { await api(docUrl(pdf.name) + "/state", "POST", body); }
+  catch (e) { showMsg("pdf-msg", "Not saved — " + mcpErr(e), false); }
+}
+
+function pdfGo(v) {
+  if (pdf) pdf.view.currentPageNumber = Math.min(Math.max(1, Math.round(+v) || 1), pdf.doc.numPages);
+}
+window.pdfGo = pdfGo;
+
+function pdfZoom(v) {
+  if (pdf) pdf.view.currentScaleValue = v;
+}
+window.pdfZoom = pdfZoom;
+
+function pdfSide() {
+  $("pdf-side").hidden = !$("pdf-side").hidden;
+  $("pdf-side-btn").classList.toggle("on", !$("pdf-side").hidden);
+}
+window.pdfSide = pdfSide;
+
+// Lớp của ta trên trang n: highlight + dòng đã đánh dấu. pdf.js xoá mọi thứ lạ khỏi trang khi
+// trang ra khỏi màn hình hay đổi zoom, nên vẽ lại sau mỗi lần trang được vẽ (pagerendered).
+function pdfPaint(n) {
+  const pv = pdf?.view.getPageView(n - 1);
+  if (!pv?.div) return;
+  pv.div.querySelector(":scope > .pdf-hl")?.remove();
+  const vp = pv.viewport, st = pdf.st;
+  const pct = (v, of) => `${(v / of * 100).toFixed(3)}%`;
+  const box = (x1, y1, x2, y2) => {
+    const [a, b] = vp.convertToViewportPoint(x1, y1), [c, d] = vp.convertToViewportPoint(x2, y2);
+    return `left:${pct(Math.min(a, c), vp.width)};top:${pct(Math.min(b, d), vp.height)};`
+      + `width:${pct(Math.abs(c - a), vp.width)};height:${pct(Math.abs(d - b), vp.height)}`;
+  };
+  let html = "";
+  for (const h of st.highlights) {
+    for (const r of h.rects) if (r[0] === n) html += `<div class="hl" style="${box(...r.slice(1))};background:${h.color}"></div>`;
+  }
+  if (st.line?.page === n) html += `<div class="line" style="${box(0, st.line.y1, vp.viewBox[2], st.line.y2)};left:0;width:100%"></div>`;
+  if (!html) return;
+  const layer = document.createElement("div");
+  layer.className = "pdf-hl";
+  layer.innerHTML = html;
+  pv.div.append(layer);
+}
+
+// ── Dòng đang đọc: bấm Mark line rồi bấm vào một dòng trên trang ──
+function pdfMarkLine() {
+  if (!pdf) return;
+  pdfMarking = !pdfMarking;
+  pdf.box.classList.toggle("marking", pdfMarking);
+  $("pdf-mark").textContent = pdfMarking ? "Cancel" : "Mark line";
+  if (pdfMarking) showMsg("pdf-msg", "Click the line where you stopped.", true);
+  else $("pdf-msg").textContent = "";
+}
+window.pdfMarkLine = pdfMarkLine;
+
+// capture: lúc đánh dấu, cú bấm trúng một link trong PDF không được mở link đó.
+$("pdf-pane").addEventListener("click", (ev) => {
+  const page = pdfMarking && ev.target.closest(".page");
+  if (!page) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  const n = +page.dataset.pageNumber, pv = pdf.view.getPageView(n - 1);
+  const layer = pv.textLayer?.div;
+  if (!layer) return;
+  const at = layer.getBoundingClientRect();
+  // Bám theo đúng dòng chữ dưới con trỏ; bấm vào chỗ trống thì lấy một dải quanh con trỏ.
+  let top = ev.clientY - 8, bottom = ev.clientY + 8;
+  for (const s of layer.querySelectorAll("span")) {
+    const r = s.getBoundingClientRect();
+    if (r.height && r.top <= ev.clientY && ev.clientY <= r.bottom) { top = r.top; bottom = r.bottom; break; }
+  }
+  const [, y1] = pv.getPagePoint(0, top - at.top), [, y2] = pv.getPagePoint(0, bottom - at.top);
+  const old = pdf.st.line?.page;
+  pdf.st.line = { page: n, y1: +Math.max(y1, y2).toFixed(2), y2: +Math.min(y1, y2).toFixed(2) };
+  pdfSave({ line: pdf.st.line }, true);
+  pdfMarkLine();
+  pdfPaint(n);
+  if (old && old !== n) pdfPaint(old);
+}, true);
+
+function pdfGoLine() {
+  const l = pdf?.st.line;
+  if (!l) return showMsg("pdf-msg", "No line marked yet — press Mark line, then click a line.", false);
+  pdf.view.scrollPageIntoView({ pageNumber: l.page, destArray: [null, { name: "XYZ" }, null, l.y1 + 60, null] });
+}
+window.pdfGoLine = pdfGoLine;
+
+function pdfBookmark() {
+  if (!pdf) return;
+  const n = pdf.view.currentPageNumber;
+  const label = prompt("Name this bookmark:", `Page ${n}`);
+  if (label === null) return;
+  pdf.st.bookmarks.push({ id: rid(), page: n, label: label.trim().slice(0, 120) || `Page ${n}`,
+                          created: new Date().toISOString() });
+  pdfSave({ bookmarks: pdf.st.bookmarks }, true);
+  pdfSideRender();
+}
+window.pdfBookmark = pdfBookmark;
+
+function pdfSideRender() {
+  const st = pdf.st;
+  $("pdf-bms").innerHTML = [...st.bookmarks].sort((a, b) => a.page - b.page).map((b) => `<div class="pdf-bm">
+      <button class="doc-open" data-go="${b.page}">p. ${b.page} · ${esc(b.label)}</button>
+      <button class="icon-btn" data-bm-rm="${esc(b.id)}" title="Remove bookmark">
+        <svg class="ic sm"><use href="#i-x"/></svg></button></div>`).join("")
+    || `<div class="hint">None yet — press Bookmark on a page.</div>`;
+  $("pdf-quotes").innerHTML = [...st.highlights].sort((a, b) => a.page - b.page).map((h) => `<div class="pdf-item">
+      <blockquote>${esc(h.text)}</blockquote>
+      <div class="row"><span>p. ${h.page}</span><span class="spacer"></span>
+        <button class="secondary" data-hl-go="${esc(h.id)}">Go</button>
+        <button class="secondary" data-hl-say="${esc(h.id)}">Speak</button>
+        <button class="secondary" data-hl-copy="${esc(h.id)}">Copy</button>
+        <button class="icon-btn" data-hl-rm="${esc(h.id)}" title="Delete quote">
+          <svg class="ic sm"><use href="#i-trash"/></svg></button></div></div>`).join("");
+}
+
+$("pdf-side").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button");
+  if (!b || !pdf) return;
+  const st = pdf.st, d = b.dataset;
+  const h = st.highlights.find((x) => x.id === (d.hlGo || d.hlSay || d.hlCopy || d.hlRm));
+  if (d.go) pdf.view.currentPageNumber = +d.go;
+  else if (d.bmRm) {
+    st.bookmarks = st.bookmarks.filter((x) => x.id !== d.bmRm);
+    pdfSave({ bookmarks: st.bookmarks }, true);
+    pdfSideRender();
+  } else if (!h) return;
+  else if (d.hlGo) {
+    const r = h.rects[0];
+    pdf.view.scrollPageIntoView({ pageNumber: r[0], destArray: [null, { name: "XYZ" }, null, Math.max(r[2], r[4]) + 60, null] });
+  } else if (d.hlSay) pdfSpeak(h.text);
+  else if (d.hlCopy) {
+    await navigator.clipboard.writeText(h.text).then(() => showMsg("pdf-msg", "Copied.", true),
+      () => showMsg("pdf-msg", "The browser did not allow copying.", false));
+  } else if (d.hlRm && confirm("Delete this quote?")) {
+    st.highlights = st.highlights.filter((x) => x !== h);
+    pdfSave({ highlights: st.highlights }, true);
+    pdfSideRender();
+    new Set(h.rects.map((r) => r[0])).forEach(pdfPaint);
+  }
+});
+
+// ── Chọn chữ → nút Highlight / Speak nổi cạnh vùng chọn ──
+function pdfSelRange() {
+  const sel = getSelection();
+  if (!pdf || pdfMarking || sel.isCollapsed || !sel.rangeCount || !sel.toString().trim()) return null;
+  const r = sel.getRangeAt(0);
+  return $("pdf-pane").contains(r.commonAncestorContainer) ? r : null;
+}
+
+const pdfSelText = () => getSelection().toString().replace(/\s+/g, " ").trim();
+
+$("pdf-pane").addEventListener("mousedown", () => { $("pdf-sel").hidden = true; });
+$("pdf-pane").addEventListener("mouseup", () => setTimeout(() => {
+  const r = pdfSelRange(), pop = $("pdf-sel");
+  pop.hidden = !r;
+  if (!r) return;
+  const rs = r.getClientRects(), last = rs[rs.length - 1] || r.getBoundingClientRect();
+  pop.style.left = Math.min(Math.max(8, last.left), innerWidth - 190) + "px";
+  pop.style.top = Math.min(last.bottom + 6, innerHeight - 44) + "px";
+}));
+// Bấm nút không được làm mất vùng chọn trước khi nút kịp đọc nó.
+$("pdf-sel").addEventListener("mousedown", (e) => e.preventDefault());
+
+// Hộp chữ của vùng chọn, đổi sang đơn vị PDF: [trang, x1, y1, x2, y2]. Đi từng text node (không
+// lấy getClientRects của cả range: nó trả thêm khung của cả span/div, có cái phủ hết trang).
+function pdfSelRects(range) {
+  const root = range.commonAncestorContainer;
+  const walk = document.createTreeWalker(root.nodeType === 3 ? root.parentNode : root, NodeFilter.SHOW_TEXT);
+  const out = [];
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+    const page = range.intersectsNode(n) && n.parentElement.closest(".textLayer")?.closest(".page");
+    if (!page) continue;
+    const num = +page.dataset.pageNumber, pv = pdf.view.getPageView(num - 1);
+    const at = pv.textLayer.div.getBoundingClientRect();
+    const sub = document.createRange();
+    sub.selectNodeContents(n);
+    if (n === range.startContainer) sub.setStart(n, range.startOffset);
+    if (n === range.endContainer) sub.setEnd(n, range.endOffset);
+    // Ngang theo đúng phần chữ được chọn, dọc theo span của pdf.js (= khung chữ trong PDF): hộp
+    // của text node cao theo font trình duyệt, lệch vài px so với chữ vẽ trên canvas.
+    const line = n.parentElement.getBoundingClientRect();
+    for (const b of sub.getClientRects()) {
+      if (b.width < 1 || b.height < 1) continue;
+      const [x1, y1] = pv.getPagePoint(b.left - at.left, line.bottom - at.top);
+      const [x2, y2] = pv.getPagePoint(b.right - at.left, line.top - at.top);
+      out.push([num, Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)]);
+    }
+  }
+  // Gộp các mẩu cùng dòng (pdf.js cắt một dòng thành nhiều span) → ít hộp, viền không chồng.
+  out.sort((a, b) => a[0] - b[0] || b[4] - a[4] || a[1] - b[1]);
+  const merged = [];
+  for (const r of out) {
+    const l = merged[merged.length - 1];
+    if (l && l[0] === r[0] && Math.abs(l[2] - r[2]) < 2 && Math.abs(l[4] - r[4]) < 2 && r[1] <= l[3] + 4) {
+      l[1] = Math.min(l[1], r[1]); l[2] = Math.min(l[2], r[2]);
+      l[3] = Math.max(l[3], r[3]); l[4] = Math.max(l[4], r[4]);
+    } else merged.push(r);
+  }
+  return merged.map(([p, ...xy]) => [p, ...xy.map((v) => +v.toFixed(2))]);
+}
+
+function pdfHighlight() {
+  const r = pdfSelRange();
+  if (!r) return;
+  const text = pdfSelText(), rects = pdfSelRects(r);
+  if (!rects.length) return;
+  if (text.length > HL_TEXT_MAX || rects.length > HL_RECTS_MAX) {
+    return showMsg("pdf-msg", `Too long for one quote — select up to ${HL_TEXT_MAX} characters.`, false);
+  }
+  pdf.st.highlights.push({ id: rid(), page: rects[0][0], text, rects, color: HL_COLOR,
+                           created: new Date().toISOString() });
+  pdfSave({ highlights: pdf.st.highlights }, true);
+  getSelection().removeAllRanges();
+  $("pdf-sel").hidden = true;
+  pdfSideRender();
+  new Set(rects.map((x) => x[0])).forEach(pdfPaint);
+}
+window.pdfHighlight = pdfHighlight;
+
+function pdfSpeakSel() {
+  if (!pdfSelRange()) return;
+  $("pdf-sel").hidden = true;
+  pdfSpeak(pdfSelText());
+}
+window.pdfSpeakSel = pdfSpeakSel;
+
+// Câu trọn vẹn, gom tới ~TTS_CHUNK ký tự một đoạn.
+function ttsChunks(text) {
+  const out = [];
+  let cur = "";
+  for (const s of text.match(/[^.!?]+[.!?]*\s*/g) || [text]) {
+    if (cur && (cur + s).length > TTS_CHUNK) { out.push(cur.trim()); cur = ""; }
+    cur += s;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  // shortcut: một "câu" dài quá 3000 ký tự (không có dấu chấm) bị cắt ngang chữ; tách theo dấu
+  // phẩy khi gặp tài liệu như vậy thật.
+  return out.flatMap((c) => c.match(/[\s\S]{1,3000}/g));
+}
+
+// Đọc từng đoạn bằng Kokoro (giọng và tốc độ đang chọn trong Tools › Speak text); đoạn sau được
+// tạo trong lúc đoạn trước đang phát.
+async function pdfSpeak(text) {
+  const run = ++pdfSpeaking, au = $("pdf-audio"), chunks = ttsChunks(text);
+  const say = (t) => api("/api/tts/speak", "POST",
+    { text: t, voice: $("tts-voice").value || "af_heart", speed: +$("tts-speed").value || 1 });
+  $("pdf-stop").hidden = false;
+  showMsg("pdf-msg", "Preparing the voice…", true);
+  try {
+    let next = say(chunks[0]);
+    for (let i = 0; i < chunks.length; i++) {
+      const s = await next;
+      if (run !== pdfSpeaking) return;
+      next = i + 1 < chunks.length ? say(chunks[i + 1]) : null;
+      next?.catch(() => {});   // lỗi của đoạn sau báo khi tới lượt nó, không thành unhandled
+      au.src = "/api/tts/files/" + encodeURIComponent(s.name);
+      showMsg("pdf-msg", chunks.length > 1 ? `Reading ${i + 1} of ${chunks.length}…` : "Reading…", true);
+      await au.play();
+      await new Promise((ok) => { au.onended = au.onpause = ok; });
+      if (run !== pdfSpeaking) return;
+    }
+    $("pdf-msg").textContent = "";
+  } catch (e) {
+    if (run === pdfSpeaking) showMsg("pdf-msg", mcpErr(e?.message || e), false);
+  } finally {
+    if (run === pdfSpeaking) $("pdf-stop").hidden = true;
+  }
+}
+
+function pdfStop() {
+  pdfSpeaking++;
+  $("pdf-audio").pause();
+  $("pdf-stop").hidden = true;
+  $("pdf-msg").textContent = "";
+}
+window.pdfStop = pdfStop;
 
 // ── Speak text (Kokoro) ──────────────────────────────────────────────────────
 // Đọc ở server (sherpa-onnx), file nằm ở thư mục temp, không vào thư viện. Lần đầu phải tải giọng:

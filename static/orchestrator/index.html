@@ -828,6 +828,61 @@
   .lib-head .spacer { flex: 1; }
   #lib-drawer .img-grid { margin-top: 8px; }
   #lib-drawer section + section { margin-top: 20px; }
+  .doc-open { all: unset; cursor: pointer; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .doc-open:hover, .doc-open:focus-visible { color: var(--accent); text-decoration: underline; }
+  /* ── PDF reader: cả cửa sổ, trên drawer Library (21), dưới modal (30) ─────── */
+  .pdf-reader { position: fixed; inset: 0; z-index: 25; display: flex; flex-direction: column;
+    background: var(--canvas); }
+  .pdf-reader[hidden] { display: none; }
+  .pdf-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; flex-wrap: wrap;
+    background: var(--panel); border-bottom: 1px solid var(--border); }
+  .pdf-bar .pdf-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    min-width: 60px; flex: 0 1 auto; }
+  .pdf-bar .spacer { flex: 1; }
+  .pdf-bar label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 12px;
+    color: var(--muted); }
+  .pdf-bar input { width: 64px; padding: 3px 6px; }
+  .pdf-bar .form-msg { margin: 0; }
+  .pdf-main { flex: 1; display: flex; min-height: 0; }
+  /* PDFViewer đòi container position:absolute. */
+  .pdf-pane { position: relative; flex: 1; min-width: 0; }
+  .pdf-scroll { position: absolute; inset: 0; overflow: auto; }
+  /* pdf.js tính khổ trang theo content-box; `* { border-box }` của dashboard ăn mất viền 9px →
+     trang bị bóp và mọi lớp đặt lên trang (chữ chọn được, highlight) lệch khỏi hình. */
+  .pdfViewer, .pdfViewer * { box-sizing: content-box; }
+  .pdf-side { width: 300px; flex: none; overflow-y: auto; padding: 10px 12px; background: var(--panel);
+    border-left: 1px solid var(--border); }
+  .pdf-side[hidden] { display: none; }
+  .pdf-side h4 { margin: 4px 0 8px; font-size: 12.5px; }
+  .pdf-side h4 + .hint { margin-top: -4px; }
+  .pdf-side section + section { margin-top: 18px; }
+  .pdf-item { padding: 7px 9px; margin-bottom: 6px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--r-ctl); font-size: 12.5px; }
+  .pdf-item blockquote { margin: 0 0 6px; padding-left: 8px; border-left: 3px solid var(--amber);
+    white-space: pre-wrap; overflow-wrap: anywhere; max-height: 9.5em; overflow: hidden; }
+  .pdf-item .row { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11.5px; }
+  .pdf-item .row .spacer { flex: 1; }
+  .pdf-item button { font-size: 11.5px; padding: 2px 7px; }
+  .pdf-bm { display: flex; align-items: center; gap: 6px; }
+  .pdf-bm .doc-open { flex: 1; }
+  /* Lớp của ta trên mỗi trang: highlight + dòng đã đánh dấu. pointer-events:none để chọn chữ
+     xuyên qua; % theo khổ trang nên khớp cả lúc pdf.js co giãn trang trước khi vẽ lại. */
+  .pdf-hl { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+  .pdf-hl .hl { position: absolute; mix-blend-mode: multiply; opacity: .55; border-radius: 2px; }
+  /* Dòng đã đánh dấu: nền nhạt + gạch chân, và một vạch ở lề trái trang (trong viền 9px của pdf.js)
+     để lướt qua vẫn thấy. */
+  .pdf-hl .line { position: absolute; left: 0; right: 0; background: var(--blue-soft);
+    box-shadow: inset 0 -2px 0 var(--blue); }
+  .pdf-hl .line::before { content: ""; position: absolute; left: -8px; top: 0; bottom: 0; width: 5px;
+    background: var(--blue); border-radius: 3px; }
+  .pdf-scroll.marking .textLayer, .pdf-scroll.marking .textLayer span { cursor: crosshair; }
+  .pdf-sel { position: fixed; z-index: 26; display: flex; gap: 4px; padding: 4px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: var(--r-ctl); box-shadow: var(--sh-2); }
+  .pdf-sel[hidden] { display: none; }
+  .pdf-sel button { font-size: 12px; padding: 4px 9px; }
+  @media (max-width: 720px) { .pdf-side { position: absolute; right: 0; top: 0; bottom: 0; z-index: 4;
+    width: min(300px, 85vw); box-shadow: var(--sh-3); } .pdf-main { position: relative; } }
   /* Danh sách cửa sổ trong drawer */
   .ev { display: flex; gap: 9px; padding: 7px 10px; margin: 5px 0; background: var(--panel);
     border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: var(--r-ctl); }
@@ -917,7 +972,7 @@
   <span class="tb-sep" aria-hidden="true"></span>
   <button id="tools-menu-btn" class="icon-btn lib-btn" popovertarget="tools-menu" title="Make images and speech">
     <svg class="ic"><use href="#i-apps"/></svg><span class="lib-lbl">Tools</span></button>
-  <button id="lib-btn" class="icon-btn lib-btn" onclick="libOpen()" title="Images and sounds you have kept">
+  <button id="lib-btn" class="icon-btn lib-btn" onclick="libOpen()" title="Images, sounds and documents you have kept">
     <svg class="ic"><use href="#i-library"/></svg><span class="lib-lbl">Library</span></button>
   <span class="tb-sep" aria-hidden="true"></span>
   <button id="theme-btn" class="icon-btn" onclick="cycleTheme()" title="Theme">
@@ -1210,6 +1265,14 @@
       <div class="lib-head"><h4>Images <span id="lib-n-img" class="hint"></span></h4></div>
       <div id="lib-img" class="img-grid"></div>
     </section>
+    <section>
+      <div class="lib-head"><h4>Documents <span id="lib-n-doc" class="hint"></span></h4>
+        <span class="spacer"></span>
+        <button class="secondary" onclick="docPick()"
+          title="Add a PDF from this computer to read here">Upload PDF</button>
+        <input id="doc-file" type="file" accept=".pdf,application/pdf" hidden onchange="docUpload(this)"></div>
+      <div id="lib-doc" class="snd-list"></div>
+    </section>
   </div>
 </aside>
 
@@ -1395,6 +1458,49 @@
     <div id="img-msg" class="form-msg"></div>
     <div id="img-grid" class="img-grid"></div>
   </div>
+</div>
+
+<!-- PDF reader: pdf.js (vendor/pdfjs) chỉ nạp lần đầu mở một tài liệu. Trạng thái đọc của từng
+     file (vị trí, dòng đánh dấu, bookmark, highlight) lưu ở server — xem doc_update. -->
+<div id="pdf-reader" class="pdf-reader" role="dialog" aria-modal="true" aria-labelledby="pdf-title" hidden>
+  <div class="pdf-bar">
+    <button class="icon-btn" onclick="pdfClose()" title="Back to the Library (Esc)">
+      <svg class="ic"><use href="#i-back"/></svg></button>
+    <b id="pdf-title" class="pdf-title"></b>
+    <label>Page <input id="pdf-page" type="number" min="1" onchange="pdfGo(this.value)">
+      <span id="pdf-count"></span></label>
+    <select id="pdf-zoom" class="mini" onchange="pdfZoom(this.value)" title="Zoom">
+      <option value="page-width">Fit width</option>
+      <option value="page-fit">Whole page</option>
+      <option value="0.75">75%</option>
+      <option value="1">100%</option>
+      <option value="1.25">125%</option>
+      <option value="1.5">150%</option>
+      <option value="2">200%</option>
+    </select>
+    <span class="spacer"></span>
+    <span id="pdf-msg" class="form-msg"></span>
+    <button id="pdf-stop" class="secondary" onclick="pdfStop()" hidden>Stop reading</button>
+    <button id="pdf-mark" class="secondary" onclick="pdfMarkLine()"
+      title="Then click the line where you stopped reading">Mark line</button>
+    <button id="pdf-goline" class="secondary" onclick="pdfGoLine()" title="Jump to the line you marked">Go to line</button>
+    <button class="secondary" onclick="pdfBookmark()" title="Bookmark the page you are on">Bookmark</button>
+    <button id="pdf-side-btn" class="icon-btn on" onclick="pdfSide()" title="Bookmarks and quotes">
+      <svg class="ic"><use href="#i-book"/></svg></button>
+  </div>
+  <div class="pdf-main">
+    <div id="pdf-pane" class="pdf-pane"></div>
+    <aside id="pdf-side" class="pdf-side">
+      <section><h4>Bookmarks</h4><div id="pdf-bms"></div></section>
+      <section><h4>Quotes</h4><div class="hint">Select text on the page, then Highlight.</div>
+        <div id="pdf-quotes"></div></section>
+    </aside>
+  </div>
+  <div id="pdf-sel" class="pdf-sel" hidden>
+    <button class="secondary" onclick="pdfHighlight()">Highlight</button>
+    <button class="secondary" onclick="pdfSpeakSel()">Speak</button>
+  </div>
+  <audio id="pdf-audio" hidden></audio>
 </div>
 
 <!-- Nội dung dựng từ MODEL_TABS trong app.js — danh sách cứng ở đây trước đây chỉ có model

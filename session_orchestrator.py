@@ -53,6 +53,7 @@ import base64
 import importlib.util
 import json
 import math
+import mimetypes
 import operator
 import os
 import re
@@ -2337,6 +2338,184 @@ def sound_download_name(p):
         title = ""
     title = " ".join(re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", title).split()).strip(" .")[:120]
     return (title or p.stem) + p.suffix
+
+
+# ─── Documents: PDF người dùng tải lên để đọc trong dashboard ──────────────────
+# Trình đọc (pdf.js, vendor/pdfjs) chạy hết trong trình duyệt; server chỉ giữ file và TRẠNG THÁI
+# đọc của từng file trong .json cạnh nó: trang/vị trí lần cuối, dòng đã đánh dấu, bookmark,
+# highlight. Toạ độ highlight/dòng là đơn vị PDF (gốc dưới-trái) nên zoom kiểu gì cũng khớp chữ.
+DOCS_DIR = DB_DIR / "documents"
+DOC_UPLOAD_MAX = 200 * 1024 * 1024
+_DOC_NAME_OK = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}\.pdf$")
+_DOC_ID_OK = re.compile(r"^[\w-]{1,40}$")
+_DOC_SCALE_OK = re.compile(r"^(auto|page-width|page-fit|page-actual|\d{1,2}(\.\d{1,4})?)$")
+_DOC_COLOR_OK = re.compile(r"^#[0-9a-f]{6}$")
+DOC_MAX_BOOKMARKS = 500
+DOC_MAX_HIGHLIGHTS = 2000
+DOC_TEXT_MAX = 5000        # ký tự mỗi highlight; trình đọc báo trước khi gửi
+DOC_RECTS_MAX = 500        # ô chữ nhật mỗi highlight ≈ 2 trang dày chữ
+
+
+async def doc_upload(chunks, filename=""):
+    """Một PDF → thư viện. Ghi ra đĩa từng mẩu, có trần, như sound_upload."""
+    DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    dst = DOCS_DIR / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.pdf"
+    size, ok = 0, False
+    try:
+        with open(dst, "wb") as f:
+            async for chunk in chunks:
+                size += len(chunk)
+                if size > DOC_UPLOAD_MAX:
+                    raise ValueError(f"documents up to {DOC_UPLOAD_MAX // 2**20} MB")
+                f.write(chunk)
+        with open(dst, "rb") as f:
+            head = f.read(1024)
+        # Chuẩn cho phép rác trước %PDF- (trong 1 KB đầu), pdf.js cũng nhận vậy.
+        if b"%PDF-" not in head:
+            raise ValueError("only PDF files for now")
+        name = str(filename or "")[:160]
+        _doc_write(dst, {"title": name[:-4] if name.lower().endswith(".pdf") else name,
+                         "uploaded": name, "created": _now()})
+        ok = True
+    finally:
+        if not ok:
+            dst.unlink(missing_ok=True)
+    return _doc_item(dst)
+
+
+def doc_path(name):
+    """File PDF mang tên này, hoặc None. Tên từ URL — chỉ nhận đúng mẫu ta đặt."""
+    if not _DOC_NAME_OK.match(name or ""):
+        return None
+    p = DOCS_DIR / name
+    return p if p.is_file() else None
+
+
+def doc_meta(p):
+    try:
+        meta = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _doc_write(p, meta):
+    # tmp rồi replace: ghi hỏng giữa chừng (mất điện, đĩa đầy) không được xoá sạch highlight cũ.
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, p.with_suffix(".json"))
+
+
+def _doc_item(p):
+    m = doc_meta(p)
+    return {"name": p.name, "title": m.get("title") or p.stem, "created": m.get("created", ""),
+            "size": p.stat().st_size, "pages": m.get("pages"), "page": (m.get("pos") or {}).get("page"),
+            "bookmarks": len(m.get("bookmarks") or []), "highlights": len(m.get("highlights") or [])}
+
+
+def list_docs():
+    """Tài liệu đã tải lên, mới nhất trước."""
+    return sorted((_doc_item(p) for p in DOCS_DIR.glob("*.pdf") if _DOC_NAME_OK.match(p.name)),
+                  key=lambda i: i["name"], reverse=True)
+
+
+def _doc_obj(v, what):
+    if not isinstance(v, dict):
+        raise ValueError(f"{what} must be an object")
+    return v
+
+
+def _doc_int(v, what, hi=100_000):
+    if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= hi:
+        raise ValueError(f"{what} must be a whole number from 1 to {hi}")
+    return v
+
+
+def _doc_num(v, what):
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        raise ValueError(f"{what} must be a number")
+    return round(float(v), 2)
+
+
+def _doc_str(v, what, most, pattern=None):
+    if not isinstance(v, str) or len(v) > most or (pattern and not pattern.match(v)):
+        raise ValueError(f"{what} is not valid")
+    return v
+
+
+def _doc_list(v, what, most, item):
+    if not isinstance(v, list) or len(v) > most:
+        raise ValueError(f"{what}: a list of up to {most}")
+    return [item(x) for x in v]
+
+
+def _doc_bookmark(b):
+    b = _doc_obj(b, "a bookmark")
+    return {"id": _doc_str(b.get("id"), "bookmark id", 40, _DOC_ID_OK),
+            "page": _doc_int(b.get("page"), "bookmark page"),
+            "label": _doc_str(b.get("label", ""), "bookmark name", 120),
+            "created": _doc_str(b.get("created", ""), "bookmark time", 40)}
+
+
+def _doc_rect(r):
+    # [trang, x1, y1, x2, y2]: một highlight có thể vắt qua hai trang.
+    if not isinstance(r, list) or len(r) != 5:
+        raise ValueError("a highlight box is [page, x1, y1, x2, y2]")
+    return [_doc_int(r[0], "highlight page")] + [_doc_num(x, "highlight box") for x in r[1:]]
+
+
+def _doc_highlight(h):
+    h = _doc_obj(h, "a highlight")
+    rects = _doc_list(h.get("rects"), "highlight boxes", DOC_RECTS_MAX, _doc_rect)
+    if not rects:
+        raise ValueError("a highlight needs at least one box")
+    return {"id": _doc_str(h.get("id"), "highlight id", 40, _DOC_ID_OK),
+            "page": _doc_int(h.get("page"), "highlight page"),
+            "text": _doc_str(h.get("text"), f"highlight text (up to {DOC_TEXT_MAX} characters)",
+                             DOC_TEXT_MAX),
+            "rects": rects,
+            "color": _doc_str(h.get("color", "#ffd54f"), "highlight colour", 7, _DOC_COLOR_OK),
+            "created": _doc_str(h.get("created", ""), "highlight time", 40)}
+
+
+def _doc_line(v):
+    if v is None:
+        return None
+    v = _doc_obj(v, "the reading line")
+    return {"page": _doc_int(v.get("page"), "line page"), "y1": _doc_num(v.get("y1"), "line top"),
+            "y2": _doc_num(v.get("y2"), "line bottom")}
+
+
+def _doc_pos(v):
+    v = _doc_obj(v, "the reading position")
+    return {"page": _doc_int(v.get("page"), "page"), "top": _doc_num(v.get("top"), "top"),
+            "left": _doc_num(v.get("left"), "left")}
+
+
+# Mỗi khoá trình đọc được ghi, và cách kiểm. Khoá nào không gửi thì giữ nguyên: lưu vị trí cuộn
+# (vài giây một lần) không bao giờ đè lên danh sách highlight.
+_DOC_FIELDS = {
+    "pages": lambda v: _doc_int(v, "pages"),
+    "scale": lambda v: _doc_str(v, "zoom", 12, _DOC_SCALE_OK),
+    "pos": _doc_pos,
+    "line": _doc_line,
+    "bookmarks": lambda v: _doc_list(v, "bookmarks", DOC_MAX_BOOKMARKS, _doc_bookmark),
+    "highlights": lambda v: _doc_list(v, "highlights", DOC_MAX_HIGHLIGHTS, _doc_highlight),
+}
+
+
+def doc_update(name, body):
+    """Ghi một phần trạng thái đọc. Kiểm HẾT trước, ghi sau: một trường sai là không ghi gì."""
+    p = doc_path(name)
+    if not p:
+        raise LookupError("no such document")
+    body = _doc_obj(body, "the request")
+    # shortcut: hai tab cùng mở một PDF thì danh sách highlight của tab ghi sau thắng; thêm
+    # endpoint thêm/xoá từng cái khi có người thật sự đọc một file ở hai nơi.
+    new = {k: check(body[k]) for k, check in _DOC_FIELDS.items() if k in body}
+    meta = {**doc_meta(p), **new}
+    _doc_write(p, meta)
+    return {**meta, "name": p.name}
 
 
 # ─── Library cho agent: tìm và "nhìn" media đã giữ lại ─────────────────────────
@@ -7320,6 +7499,46 @@ def build_app():
         p.with_suffix(".json").unlink(missing_ok=True)
         return JSONResponse({"deleted": p.name})
 
+    # ── Documents: PDF + trạng thái đọc của từng file ───────────────────────
+    async def api_documents(request: Request):
+        return JSONResponse(list_docs())
+
+    async def api_documents_upload(request: Request):
+        try:
+            return JSONResponse(await doc_upload(request.stream(),
+                                                 request.query_params.get("name", "")))
+        except ValueError as e:
+            return _sound_err(e)
+
+    async def api_doc_file(request: Request):
+        p = doc_path(request.path_params["name"])
+        if not p:
+            return JSONResponse({"error": "no such document"}, status_code=404)
+        return FileResponse(p, media_type="application/pdf",
+                            headers={"X-Content-Type-Options": "nosniff"})
+
+    async def api_doc_state(request: Request):
+        p = doc_path(request.path_params["name"])
+        if not p:
+            return JSONResponse({"error": "no such document"}, status_code=404)
+        return JSONResponse({**doc_meta(p), "name": p.name})
+
+    async def api_doc_state_save(request: Request):
+        try:
+            return JSONResponse(doc_update(request.path_params["name"], await _body(request)))
+        except ValueError as e:
+            return _sound_err(e)
+        except LookupError as e:
+            return JSONResponse({"error": str(e)}, status_code=404)
+
+    async def api_doc_delete(request: Request):
+        p = doc_path(request.path_params["name"])
+        if not p:
+            return JSONResponse({"error": "no such document"}, status_code=404)
+        p.unlink()
+        p.with_suffix(".json").unlink(missing_ok=True)
+        return JSONResponse({"deleted": p.name})
+
     # ── Boards: kế hoạch một ngày của người dùng ─────────────────────────────
     # Mọi thao tác của NGƯỜI DÙNG lên board đều reset strikes về 0: họ vừa chạm vào kế hoạch
     # nghĩa là lời nhắc trước đã tới được, nên lần sau không cần lùi xa nữa (xem BOARD_BACKOFF).
@@ -8306,6 +8525,12 @@ def build_app():
         Route("/api/sounds", api_sounds_extract, methods=["POST"]),
         Route("/api/sounds/search", api_sounds_search, methods=["POST"]),
         Route("/api/sounds/upload", api_sounds_upload, methods=["POST"]),
+        Route("/api/documents", api_documents),
+        Route("/api/documents/upload", api_documents_upload, methods=["POST"]),
+        Route("/api/documents/{name}", api_doc_file),
+        Route("/api/documents/{name}", api_doc_delete, methods=["DELETE"]),
+        Route("/api/documents/{name}/state", api_doc_state),
+        Route("/api/documents/{name}/state", api_doc_state_save, methods=["POST"]),
         Route("/api/tts", api_tts),
         Route("/api/tts/download", api_tts_download, methods=["POST"]),
         Route("/api/tts/speak", api_tts_speak, methods=["POST"]),
@@ -8381,6 +8606,10 @@ def build_app():
                 resp.headers.setdefault("cache-control", "no-cache")
                 return resp
 
+        # pdf.js là ES module: trình duyệt từ chối .mjs/.wasm sai MIME, mà trên Windows bảng MIME
+        # đọc từ registry, có máy trả text/plain.
+        mimetypes.add_type("text/javascript", ".mjs")
+        mimetypes.add_type("application/wasm", ".wasm")
         routes.append(Mount("/", app=NoCacheStatic(directory=str(static_dir), html=True)))
 
     # OriginGuard NGOÀI CÙNG: chặn trước khi CORS kịp trả lời preflight hộ một origin lạ.
