@@ -5,8 +5,9 @@ The quiet ways it goes wrong:
 
   - an upload is a stranger's file on our disk: only PDF, under a size cap checked WHILE it
     streams, and a refused file must leave nothing behind;
-  - the reader saves its scroll position every second; that save must never wipe the list of
-    highlights or bookmarks, and one bad field must leave the whole state as it was;
+  - the reader saves its scroll position every second; that save must never wipe the
+    highlights or the bookmark, and one bad field must leave the whole state as it was;
+  - a quote longer than text to speech takes could be saved but never read aloud;
   - highlight colour, ids and boxes go back into the page as inline style and data attributes,
     so the server only keeps values of the exact shape the reader makes (a colour like
     "red;background:url(…)" is CSS injection);
@@ -60,7 +61,8 @@ def on_disk():
 
 HL = {"id": "kx1abc", "page": 1, "text": "Learning English takes patience.",
       "rects": [[1, 71.9, 721.5, 534.6, 735.0]], "color": "#ffd54f", "created": "2026-10-20T08:00:00Z"}
-BM = {"id": "bm1", "page": 2, "label": "Chapter two", "created": "2026-10-20T08:00:00Z"}
+BM = {"page": 1, "y1": 605.86, "y2": 593.86, "text": "Good habits are built slowly",
+      "created": "2026-10-20T08:00:00Z"}
 
 
 async def main():
@@ -109,23 +111,24 @@ async def main():
 
         # ── Trạng thái đọc ───────────────────────────────────────────────────
         st = f"/api/documents/{name}/state"
-        r = await c.post(st, json={"pages": 3, "highlights": [HL], "bookmarks": [BM],
-                                   "line": {"page": 1, "y1": 605.86, "y2": 593.86}})
-        check("highlights, bookmarks and the marked line are saved",
-              r.status_code == 200 and r.json()["highlights"] == [HL] and r.json()["bookmarks"] == [BM],
+        r = await c.post(st, json={"pages": 3, "highlights": [HL], "bookmark": BM})
+        check("highlights and the bookmarked line are saved",
+              r.status_code == 200 and r.json()["highlights"] == [HL] and r.json()["bookmark"] == BM,
               r.text[:200])
         r = await c.post(st, json={"pos": {"page": 2, "top": 400.123, "left": 0}, "scale": "1.5"})
         s = (await c.get(st)).json()
-        check("saving the scroll position keeps every highlight, bookmark and the line",
-              r.status_code == 200 and s["highlights"] == [HL] and s["bookmarks"] == [BM]
-              and s["line"]["page"] == 1 and s["pos"] == {"page": 2, "top": 400.12, "left": 0.0}
+        check("saving the scroll position keeps every highlight and the bookmark",
+              r.status_code == 200 and s["highlights"] == [HL] and s["bookmark"] == BM
+              and s["pos"] == {"page": 2, "top": 400.12, "left": 0.0}
               and s["title"] == "English Reader.v2", str(s)[:240])
         lib = (await c.get("/api/documents")).json()
         check("the Library row shows where you are and what you kept",
-              [(i["page"], i["pages"], i["highlights"], i["bookmarks"]) for i in lib] == [(2, 3, 1, 1)], str(lib))
-        r = await c.post(st, json={"line": None})
-        check("the line can be cleared", r.status_code == 200 and (await c.get(st)).json()["line"] is None,
-              r.text[:120])
+              [(i["page"], i["pages"], i["highlights"], i["bookmark"]) for i in lib] == [(2, 3, 1, 1)], str(lib))
+        r = await c.post(st, json={"bookmark": None})
+        check("the bookmark can be removed", r.status_code == 200 and (await c.get(st)).json()["bookmark"] is None
+              and (await c.get("/api/documents")).json()[0]["bookmark"] is None, r.text[:120])
+        check("any quote fits one text to speech call", so.DOC_TEXT_MAX <= so.TTS_MAX_CHARS,
+              f"{so.DOC_TEXT_MAX} > {so.TTS_MAX_CHARS}")
 
         bad_bodies = (
             ("a page of 0", {"pos": {"page": 0, "top": 1, "left": 0}}),
@@ -139,8 +142,9 @@ async def main():
             ("a box with 4 numbers, no page", {"highlights": [{**HL, "rects": [[71.9, 721.5, 534.6, 735.0]]}]}),
             ("a highlight with no box", {"highlights": [{**HL, "rects": []}]}),
             ("a quote too long", {"highlights": [{**HL, "text": "x" * (so.DOC_TEXT_MAX + 1)}]}),
-            ("too many bookmarks", {"bookmarks": [BM] * (so.DOC_MAX_BOOKMARKS + 1)}),
-            ("a list where an object belongs", {"line": [1, 2, 3]}),
+            ("a bookmark label too long", {"bookmark": {**BM, "text": "x" * 301}}),
+            ("a bookmark with no line", {"bookmark": {"page": 1, "text": "x"}}),
+            ("a list where an object belongs", {"bookmark": [1, 2, 3]}),
         )
         good = (await c.get(st)).json()
         for why, body in bad_bodies:

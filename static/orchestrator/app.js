@@ -3402,7 +3402,7 @@ document.addEventListener("keydown", (e) => {
   // Editor nằm trên Sounds: Esc chỉ hỏi bỏ bản nháp, không đóng luôn Sounds bên dưới.
   if (e.key === "Escape" && !$("sed-modal").hidden) return sedDiscard();
   if (e.key === "Escape" && !$("tts-modal").hidden) return ttsClose();
-  if (e.key === "Escape" && !$("pdf-reader").hidden) return pdfMarking ? pdfMarkLine() : pdfClose();
+  if (e.key === "Escape" && !$("pdf-reader").hidden) return pdfClose();
   if (e.key === "Escape" && libIsOpen()) libClose();
   if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
   if (e.key === "Escape" && !$("img-modal").hidden) imgClose();
@@ -4004,19 +4004,17 @@ $("lib-drawer").addEventListener("click", async (ev) => {
 
 // ── Documents + PDF reader ───────────────────────────────────────────────────
 // PDF tải lên nằm trong Library; mở ra là trình đọc cả cửa sổ, dựng trên PDFViewer của pdf.js
-// (vendor/pdfjs, chỉ nạp lần đầu). Ta chỉ thêm: highlight, dòng đã đánh dấu, bookmark, đọc to.
+// (vendor/pdfjs, chỉ nạp lần đầu). Ta chỉ thêm: highlight, bookmark (MỘT dòng mỗi file — lần mở
+// sau nhảy thẳng tới đó), và mở dialog Speak text với chữ đang chọn.
 // Toạ độ lưu ở đơn vị PDF (getPagePoint) nên zoom kiểu gì cũng khớp chữ. Trạng thái từng file ở
 // server (POST /api/documents/<name>/state, từng khoá một — xem doc_update).
 const PDFJS = "/vendor/pdfjs/";
 const docUrl = (name) => "/api/documents/" + encodeURIComponent(name);
 const HL_COLOR = "#ffd54f";
-const HL_TEXT_MAX = 5000, HL_RECTS_MAX = 500;   // = DOC_TEXT_MAX, DOC_RECTS_MAX ở server
-const TTS_CHUNK = 300;   // ký tự mỗi lần đọc: đọc chậm hơn thời gian thực, đoạn ngắn thì tiếng đến sớm
+const HL_TEXT_MAX = 3000, HL_RECTS_MAX = 500;   // = DOC_TEXT_MAX, DOC_RECTS_MAX ở server
 let pdfMods = null;      // { lib, V } sau lần nạp đầu
-let pdf = null;          // tài liệu đang mở: { name, doc, view, box, st }
-let pdfMarking = false;
+let pdf = null;          // tài liệu đang mở: { name, task, doc, view, box, st }
 let pdfPending = {}, pdfSaveT = 0;
-let pdfSpeaking = 0;     // tăng lên = huỷ lượt đọc đang chạy
 
 const rid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const plural = (n, w) => `${n} ${w}${n > 1 ? "s" : ""}`;
@@ -4026,9 +4024,9 @@ function docRows(list) {
       <svg class="ic"><use href="#i-doc"/></svg>
       <div class="snd-meta">
         <button class="doc-open" data-doc-open="${esc(d.name)}" title="${esc(d.title)}">${esc(d.title)}</button>
-        <span class="hint">${esc([d.pages ? (d.page ? `page ${d.page} of ${d.pages}` : plural(d.pages, "page")) : "",
-          d.highlights ? plural(d.highlights, "quote") : "", d.bookmarks ? plural(d.bookmarks, "bookmark") : "",
-          fmtBytes(d.size)].filter(Boolean).join(" · "))}</span></div>
+        <span class="hint">${esc([d.pages ? (d.bookmark ? `bookmark on page ${d.bookmark} of ${d.pages}`
+          : d.page ? `page ${d.page} of ${d.pages}` : plural(d.pages, "page")) : "",
+          d.highlights ? plural(d.highlights, "quote") : "", fmtBytes(d.size)].filter(Boolean).join(" · "))}</span></div>
       <button class="icon-btn" data-doc-rm="${esc(d.name)}" title="Delete">
         <svg class="ic sm"><use href="#i-trash"/></svg></button>
     </div>`).join("") : `<div class="hint">Nothing yet — upload a PDF to read it here.</div>`;
@@ -4059,7 +4057,7 @@ $("lib-doc").addEventListener("click", async (ev) => {
   const open = ev.target.closest("[data-doc-open]");
   if (open) return pdfOpen(open.dataset.docOpen);
   const rm = ev.target.closest("[data-doc-rm]");
-  if (!rm || !confirm("Delete this document, with its bookmarks and quotes?")) return;
+  if (!rm || !confirm("Delete this document, with its bookmark and quotes?")) return;
   try {
     await api(docUrl(rm.dataset.docRm), "DELETE");
     await libLoad();
@@ -4089,7 +4087,6 @@ async function pdfOpen(name) {
   $("pdf-side-btn").classList.toggle("on", !$("pdf-side").hidden);
   try {
     const [{ lib, V }, st] = await Promise.all([pdfJs(), api(docUrl(name) + "/state")]);
-    st.bookmarks ||= [];
     st.highlights ||= [];
     $("pdf-title").textContent = $("pdf-title").title = st.title || name;
     // Container dựng mới mỗi lần mở: viewer cũ cùng listener/observer của nó đi theo DOM cũ.
@@ -4110,9 +4107,11 @@ async function pdfOpen(name) {
     pdf = { name, task, doc, view, box, st };
     bus.on("pagesinit", () => {
       view.currentScaleValue = st.scale || "page-width";
-      const p = st.pos;   // mở lại đúng chỗ đã dừng, không chỉ đúng trang
-      if (p) view.scrollPageIntoView({ pageNumber: Math.min(p.page, doc.numPages),
-                                       destArray: [null, { name: "XYZ" }, p.left, p.top, null] });
+      // Có bookmark thì mở ngay dòng đó; không thì đúng chỗ đã dừng lần trước (không chỉ đúng trang).
+      const p = st.pos;
+      if (st.bookmark) pdfGoBookmark();
+      else if (p) view.scrollPageIntoView({ pageNumber: Math.min(p.page, doc.numPages),
+                                            destArray: [null, { name: "XYZ" }, p.left, p.top, null] });
       $("pdf-page").value = view.currentPageNumber;   // pagechanging chỉ bắn khi trang ĐỔI
     });
     bus.on("pagerendered", (e) => pdfPaint(e.pageNumber));
@@ -4135,8 +4134,6 @@ async function pdfOpen(name) {
 }
 
 async function pdfClose() {
-  pdfStop();
-  if (pdfMarking) pdfMarkLine();
   $("pdf-sel").hidden = true;
   clearTimeout(pdfSaveT);
   await pdfFlush();
@@ -4179,7 +4176,7 @@ function pdfSide() {
 }
 window.pdfSide = pdfSide;
 
-// Lớp của ta trên trang n: highlight + dòng đã đánh dấu. pdf.js xoá mọi thứ lạ khỏi trang khi
+// Lớp của ta trên trang n: highlight + dòng đã bookmark. pdf.js xoá mọi thứ lạ khỏi trang khi
 // trang ra khỏi màn hình hay đổi zoom, nên vẽ lại sau mỗi lần trang được vẽ (pagerendered).
 function pdfPaint(n) {
   const pv = pdf?.view.getPageView(n - 1);
@@ -4196,7 +4193,8 @@ function pdfPaint(n) {
   for (const h of st.highlights) {
     for (const r of h.rects) if (r[0] === n) html += `<div class="hl" style="${box(...r.slice(1))};background:${h.color}"></div>`;
   }
-  if (st.line?.page === n) html += `<div class="line" style="${box(0, st.line.y1, vp.viewBox[2], st.line.y2)};left:0;width:100%"></div>`;
+  const bm = st.bookmark;
+  if (bm?.page === n) html += `<div class="line" style="${box(0, bm.y1, 0, bm.y2)};left:0;width:100%"></div>`;
   if (!html) return;
   const layer = document.createElement("div");
   layer.className = "pdf-hl";
@@ -4204,68 +4202,23 @@ function pdfPaint(n) {
   pv.div.append(layer);
 }
 
-// ── Dòng đang đọc: bấm Mark line rồi bấm vào một dòng trên trang ──
-function pdfMarkLine() {
-  if (!pdf) return;
-  pdfMarking = !pdfMarking;
-  pdf.box.classList.toggle("marking", pdfMarking);
-  $("pdf-mark").textContent = pdfMarking ? "Cancel" : "Mark line";
-  if (pdfMarking) showMsg("pdf-msg", "Click the line where you stopped.", true);
-  else $("pdf-msg").textContent = "";
+// Mở ngay dòng đã bookmark, chừa vài dòng phía trên để thấy đang ở đoạn nào.
+function pdfGoBookmark() {
+  const b = pdf.st.bookmark;
+  pdf.view.scrollPageIntoView({ pageNumber: Math.min(b.page, pdf.doc.numPages),
+                                destArray: [null, { name: "XYZ" }, null, b.y1 + 40, null] });
 }
-window.pdfMarkLine = pdfMarkLine;
-
-// capture: lúc đánh dấu, cú bấm trúng một link trong PDF không được mở link đó.
-$("pdf-pane").addEventListener("click", (ev) => {
-  const page = pdfMarking && ev.target.closest(".page");
-  if (!page) return;
-  ev.preventDefault();
-  ev.stopPropagation();
-  const n = +page.dataset.pageNumber, pv = pdf.view.getPageView(n - 1);
-  const layer = pv.textLayer?.div;
-  if (!layer) return;
-  const at = layer.getBoundingClientRect();
-  // Bám theo đúng dòng chữ dưới con trỏ; bấm vào chỗ trống thì lấy một dải quanh con trỏ.
-  let top = ev.clientY - 8, bottom = ev.clientY + 8;
-  for (const s of layer.querySelectorAll("span")) {
-    const r = s.getBoundingClientRect();
-    if (r.height && r.top <= ev.clientY && ev.clientY <= r.bottom) { top = r.top; bottom = r.bottom; break; }
-  }
-  const [, y1] = pv.getPagePoint(0, top - at.top), [, y2] = pv.getPagePoint(0, bottom - at.top);
-  const old = pdf.st.line?.page;
-  pdf.st.line = { page: n, y1: +Math.max(y1, y2).toFixed(2), y2: +Math.min(y1, y2).toFixed(2) };
-  pdfSave({ line: pdf.st.line }, true);
-  pdfMarkLine();
-  pdfPaint(n);
-  if (old && old !== n) pdfPaint(old);
-}, true);
-
-function pdfGoLine() {
-  const l = pdf?.st.line;
-  if (!l) return showMsg("pdf-msg", "No line marked yet — press Mark line, then click a line.", false);
-  pdf.view.scrollPageIntoView({ pageNumber: l.page, destArray: [null, { name: "XYZ" }, null, l.y1 + 60, null] });
-}
-window.pdfGoLine = pdfGoLine;
-
-function pdfBookmark() {
-  if (!pdf) return;
-  const n = pdf.view.currentPageNumber;
-  const label = prompt("Name this bookmark:", `Page ${n}`);
-  if (label === null) return;
-  pdf.st.bookmarks.push({ id: rid(), page: n, label: label.trim().slice(0, 120) || `Page ${n}`,
-                          created: new Date().toISOString() });
-  pdfSave({ bookmarks: pdf.st.bookmarks }, true);
-  pdfSideRender();
-}
-window.pdfBookmark = pdfBookmark;
 
 function pdfSideRender() {
   const st = pdf.st;
-  $("pdf-bms").innerHTML = [...st.bookmarks].sort((a, b) => a.page - b.page).map((b) => `<div class="pdf-bm">
-      <button class="doc-open" data-go="${b.page}">p. ${b.page} · ${esc(b.label)}</button>
-      <button class="icon-btn" data-bm-rm="${esc(b.id)}" title="Remove bookmark">
-        <svg class="ic sm"><use href="#i-x"/></svg></button></div>`).join("")
-    || `<div class="hint">None yet — press Bookmark on a page.</div>`;
+  const b = st.bookmark;
+  $("pdf-bm").innerHTML = b ? `<div class="pdf-item bm">
+      <blockquote>${esc(b.text)}</blockquote>
+      <div class="row"><span>p. ${b.page}</span><span class="spacer"></span>
+        <button class="secondary" data-bm-go="1">Go</button>
+        <button class="icon-btn" data-bm-rm="1" title="Remove bookmark">
+          <svg class="ic sm"><use href="#i-trash"/></svg></button></div></div>`
+    : `<div class="hint">Select text on a page, then Bookmark — the file opens at that line next time.</div>`;
   $("pdf-quotes").innerHTML = [...st.highlights].sort((a, b) => a.page - b.page).map((h) => `<div class="pdf-item">
       <blockquote>${esc(h.text)}</blockquote>
       <div class="row"><span>p. ${h.page}</span><span class="spacer"></span>
@@ -4280,17 +4233,20 @@ $("pdf-side").addEventListener("click", async (ev) => {
   const b = ev.target.closest("button");
   if (!b || !pdf) return;
   const st = pdf.st, d = b.dataset;
-  const h = st.highlights.find((x) => x.id === (d.hlGo || d.hlSay || d.hlCopy || d.hlRm));
-  if (d.go) pdf.view.currentPageNumber = +d.go;
-  else if (d.bmRm) {
-    st.bookmarks = st.bookmarks.filter((x) => x.id !== d.bmRm);
-    pdfSave({ bookmarks: st.bookmarks }, true);
+  if (d.bmGo) return pdfGoBookmark();
+  if (d.bmRm) {
+    const page = st.bookmark.page;
+    st.bookmark = null;
+    pdfSave({ bookmark: null }, true);
     pdfSideRender();
-  } else if (!h) return;
-  else if (d.hlGo) {
+    return pdfPaint(page);
+  }
+  const h = st.highlights.find((x) => x.id === (d.hlGo || d.hlSay || d.hlCopy || d.hlRm));
+  if (!h) return;
+  if (d.hlGo) {
     const r = h.rects[0];
     pdf.view.scrollPageIntoView({ pageNumber: r[0], destArray: [null, { name: "XYZ" }, null, Math.max(r[2], r[4]) + 60, null] });
-  } else if (d.hlSay) pdfSpeak(h.text);
+  } else if (d.hlSay) ttsOpen(h.text);
   else if (d.hlCopy) {
     await navigator.clipboard.writeText(h.text).then(() => showMsg("pdf-msg", "Copied.", true),
       () => showMsg("pdf-msg", "The browser did not allow copying.", false));
@@ -4302,10 +4258,10 @@ $("pdf-side").addEventListener("click", async (ev) => {
   }
 });
 
-// ── Chọn chữ → nút Highlight / Speak nổi cạnh vùng chọn ──
+// ── Chọn chữ → nút Highlight / Bookmark / Speak nổi cạnh vùng chọn ──
 function pdfSelRange() {
   const sel = getSelection();
-  if (!pdf || pdfMarking || sel.isCollapsed || !sel.rangeCount || !sel.toString().trim()) return null;
+  if (!pdf || sel.isCollapsed || !sel.rangeCount || !sel.toString().trim()) return null;
   const r = sel.getRangeAt(0);
   return $("pdf-pane").contains(r.commonAncestorContainer) ? r : null;
 }
@@ -4318,7 +4274,7 @@ $("pdf-pane").addEventListener("mouseup", () => setTimeout(() => {
   pop.hidden = !r;
   if (!r) return;
   const rs = r.getClientRects(), last = rs[rs.length - 1] || r.getBoundingClientRect();
-  pop.style.left = Math.min(Math.max(8, last.left), innerWidth - 190) + "px";
+  pop.style.left = Math.min(Math.max(8, last.left), innerWidth - pop.offsetWidth - 8) + "px";
   pop.style.top = Math.min(last.bottom + 6, innerHeight - 44) + "px";
 }));
 // Bấm nút không được làm mất vùng chọn trước khi nút kịp đọc nó.
@@ -4380,63 +4336,31 @@ function pdfHighlight() {
 }
 window.pdfHighlight = pdfHighlight;
 
+// Bookmark = dòng đầu của vùng chọn. Mỗi file một bookmark: đặt cái mới là thay cái cũ.
+function pdfBookmarkSel() {
+  const r = pdfSelRange();
+  const top = r && pdfSelRects(r)[0];   // pdfSelRects sắp theo trang, rồi từ trên xuống
+  if (!top) return;
+  const old = pdf.st.bookmark?.page;
+  pdf.st.bookmark = { page: top[0], y1: top[4], y2: top[2], text: pdfSelText().slice(0, 300),
+                      created: new Date().toISOString() };
+  pdfSave({ bookmark: pdf.st.bookmark }, true);
+  getSelection().removeAllRanges();
+  $("pdf-sel").hidden = true;
+  pdfSideRender();
+  pdfPaint(top[0]);
+  if (old && old !== top[0]) pdfPaint(old);
+  showMsg("pdf-msg", "Bookmarked — the file opens at this line next time.", true);
+}
+window.pdfBookmarkSel = pdfBookmarkSel;
+
+// Đọc to qua đúng dialog Speak text: chọn giọng, tốc độ rồi bấm Speak ở đó.
 function pdfSpeakSel() {
   if (!pdfSelRange()) return;
   $("pdf-sel").hidden = true;
-  pdfSpeak(pdfSelText());
+  ttsOpen(pdfSelText());
 }
 window.pdfSpeakSel = pdfSpeakSel;
-
-// Câu trọn vẹn, gom tới ~TTS_CHUNK ký tự một đoạn.
-function ttsChunks(text) {
-  const out = [];
-  let cur = "";
-  for (const s of text.match(/[^.!?]+[.!?]*\s*/g) || [text]) {
-    if (cur && (cur + s).length > TTS_CHUNK) { out.push(cur.trim()); cur = ""; }
-    cur += s;
-  }
-  if (cur.trim()) out.push(cur.trim());
-  // shortcut: một "câu" dài quá 3000 ký tự (không có dấu chấm) bị cắt ngang chữ; tách theo dấu
-  // phẩy khi gặp tài liệu như vậy thật.
-  return out.flatMap((c) => c.match(/[\s\S]{1,3000}/g));
-}
-
-// Đọc từng đoạn bằng Kokoro (giọng và tốc độ đang chọn trong Tools › Speak text); đoạn sau được
-// tạo trong lúc đoạn trước đang phát.
-async function pdfSpeak(text) {
-  const run = ++pdfSpeaking, au = $("pdf-audio"), chunks = ttsChunks(text);
-  const say = (t) => api("/api/tts/speak", "POST",
-    { text: t, voice: $("tts-voice").value || "af_heart", speed: +$("tts-speed").value || 1 });
-  $("pdf-stop").hidden = false;
-  showMsg("pdf-msg", "Preparing the voice…", true);
-  try {
-    let next = say(chunks[0]);
-    for (let i = 0; i < chunks.length; i++) {
-      const s = await next;
-      if (run !== pdfSpeaking) return;
-      next = i + 1 < chunks.length ? say(chunks[i + 1]) : null;
-      next?.catch(() => {});   // lỗi của đoạn sau báo khi tới lượt nó, không thành unhandled
-      au.src = "/api/tts/files/" + encodeURIComponent(s.name);
-      showMsg("pdf-msg", chunks.length > 1 ? `Reading ${i + 1} of ${chunks.length}…` : "Reading…", true);
-      await au.play();
-      await new Promise((ok) => { au.onended = au.onpause = ok; });
-      if (run !== pdfSpeaking) return;
-    }
-    $("pdf-msg").textContent = "";
-  } catch (e) {
-    if (run === pdfSpeaking) showMsg("pdf-msg", mcpErr(e?.message || e), false);
-  } finally {
-    if (run === pdfSpeaking) $("pdf-stop").hidden = true;
-  }
-}
-
-function pdfStop() {
-  pdfSpeaking++;
-  $("pdf-audio").pause();
-  $("pdf-stop").hidden = true;
-  $("pdf-msg").textContent = "";
-}
-window.pdfStop = pdfStop;
 
 // ── Speak text (Kokoro) ──────────────────────────────────────────────────────
 // Đọc ở server (sherpa-onnx), file nằm ở thư mục temp, không vào thư viện. Lần đầu phải tải giọng:
@@ -4477,9 +4401,15 @@ function ttsPaint(st) {
 
 async function ttsLoad() { ttsPaint(await api("/api/tts")); }
 
-function ttsOpen() {
+// text: chữ mang sang từ trình đọc PDF. Nút Tools gọi không tham số → giữ chữ đang có.
+function ttsOpen(text) {
   $("tts-modal").hidden = false;
   $("tts-msg").textContent = "";
+  if (text !== undefined) {
+    $("tts-text").value = text;
+    $("tts-audio").pause();
+    $("tts-audio").hidden = true;   // tiếng cũ thuộc chữ cũ
+  }
   $("tts-text").focus();
   ttsLoad().catch((e) => showMsg("tts-msg", "Error: " + e, false));
 }

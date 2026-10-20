@@ -861,22 +861,20 @@
     border-radius: var(--r-ctl); font-size: 12.5px; }
   .pdf-item blockquote { margin: 0 0 6px; padding-left: 8px; border-left: 3px solid var(--amber);
     white-space: pre-wrap; overflow-wrap: anywhere; max-height: 9.5em; overflow: hidden; }
+  .pdf-item.bm blockquote { border-left-color: var(--blue); }
   .pdf-item .row { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11.5px; }
   .pdf-item .row .spacer { flex: 1; }
   .pdf-item button { font-size: 11.5px; padding: 2px 7px; }
-  .pdf-bm { display: flex; align-items: center; gap: 6px; }
-  .pdf-bm .doc-open { flex: 1; }
-  /* Lớp của ta trên mỗi trang: highlight + dòng đã đánh dấu. pointer-events:none để chọn chữ
+  /* Lớp của ta trên mỗi trang: highlight + dòng đã bookmark. pointer-events:none để chọn chữ
      xuyên qua; % theo khổ trang nên khớp cả lúc pdf.js co giãn trang trước khi vẽ lại. */
   .pdf-hl { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
   .pdf-hl .hl { position: absolute; mix-blend-mode: multiply; opacity: .55; border-radius: 2px; }
-  /* Dòng đã đánh dấu: nền nhạt + gạch chân, và một vạch ở lề trái trang (trong viền 9px của pdf.js)
+  /* Dòng đã bookmark: nền nhạt + gạch chân, và một vạch ở lề trái trang (trong viền 9px của pdf.js)
      để lướt qua vẫn thấy. */
   .pdf-hl .line { position: absolute; left: 0; right: 0; background: var(--blue-soft);
     box-shadow: inset 0 -2px 0 var(--blue); }
   .pdf-hl .line::before { content: ""; position: absolute; left: -8px; top: 0; bottom: 0; width: 5px;
     background: var(--blue); border-radius: 3px; }
-  .pdf-scroll.marking .textLayer, .pdf-scroll.marking .textLayer span { cursor: crosshair; }
   .pdf-sel { position: fixed; z-index: 26; display: flex; gap: 4px; padding: 4px; background: var(--panel);
     border: 1px solid var(--border); border-radius: var(--r-ctl); box-shadow: var(--sh-2); }
   .pdf-sel[hidden] { display: none; }
@@ -1461,7 +1459,7 @@
 </div>
 
 <!-- PDF reader: pdf.js (vendor/pdfjs) chỉ nạp lần đầu mở một tài liệu. Trạng thái đọc của từng
-     file (vị trí, dòng đánh dấu, bookmark, highlight) lưu ở server — xem doc_update. -->
+     file (vị trí, bookmark, highlight) lưu ở server — xem doc_update. -->
 <div id="pdf-reader" class="pdf-reader" role="dialog" aria-modal="true" aria-labelledby="pdf-title" hidden>
   <div class="pdf-bar">
     <button class="icon-btn" onclick="pdfClose()" title="Back to the Library (Esc)">
@@ -1480,27 +1478,23 @@
     </select>
     <span class="spacer"></span>
     <span id="pdf-msg" class="form-msg"></span>
-    <button id="pdf-stop" class="secondary" onclick="pdfStop()" hidden>Stop reading</button>
-    <button id="pdf-mark" class="secondary" onclick="pdfMarkLine()"
-      title="Then click the line where you stopped reading">Mark line</button>
-    <button id="pdf-goline" class="secondary" onclick="pdfGoLine()" title="Jump to the line you marked">Go to line</button>
-    <button class="secondary" onclick="pdfBookmark()" title="Bookmark the page you are on">Bookmark</button>
-    <button id="pdf-side-btn" class="icon-btn on" onclick="pdfSide()" title="Bookmarks and quotes">
+    <button id="pdf-side-btn" class="icon-btn on" onclick="pdfSide()" title="Bookmark and quotes">
       <svg class="ic"><use href="#i-book"/></svg></button>
   </div>
   <div class="pdf-main">
     <div id="pdf-pane" class="pdf-pane"></div>
     <aside id="pdf-side" class="pdf-side">
-      <section><h4>Bookmarks</h4><div id="pdf-bms"></div></section>
+      <section><h4>Bookmark</h4><div id="pdf-bm"></div></section>
       <section><h4>Quotes</h4><div class="hint">Select text on the page, then Highlight.</div>
         <div id="pdf-quotes"></div></section>
     </aside>
   </div>
   <div id="pdf-sel" class="pdf-sel" hidden>
     <button class="secondary" onclick="pdfHighlight()">Highlight</button>
-    <button class="secondary" onclick="pdfSpeakSel()">Speak</button>
+    <button class="secondary" onclick="pdfBookmarkSel()"
+      title="Open this file at this line next time">Bookmark</button>
+    <button class="secondary" onclick="pdfSpeakSel()" title="Read it aloud — pick the voice and speed">Speak</button>
   </div>
-  <audio id="pdf-audio" hidden></audio>
 </div>
 
 <!-- Nội dung dựng từ MODEL_TABS trong app.js — danh sách cứng ở đây trước đây chỉ có model

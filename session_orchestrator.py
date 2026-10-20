@@ -2342,17 +2342,16 @@ def sound_download_name(p):
 
 # ─── Documents: PDF người dùng tải lên để đọc trong dashboard ──────────────────
 # Trình đọc (pdf.js, vendor/pdfjs) chạy hết trong trình duyệt; server chỉ giữ file và TRẠNG THÁI
-# đọc của từng file trong .json cạnh nó: trang/vị trí lần cuối, dòng đã đánh dấu, bookmark,
-# highlight. Toạ độ highlight/dòng là đơn vị PDF (gốc dưới-trái) nên zoom kiểu gì cũng khớp chữ.
+# đọc của từng file trong .json cạnh nó: vị trí lần cuối, bookmark (MỘT dòng — lần mở sau nhảy
+# thẳng tới đó), highlight. Toạ độ là đơn vị PDF (gốc dưới-trái) nên zoom kiểu gì cũng khớp chữ.
 DOCS_DIR = DB_DIR / "documents"
 DOC_UPLOAD_MAX = 200 * 1024 * 1024
 _DOC_NAME_OK = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}\.pdf$")
 _DOC_ID_OK = re.compile(r"^[\w-]{1,40}$")
 _DOC_SCALE_OK = re.compile(r"^(auto|page-width|page-fit|page-actual|\d{1,2}(\.\d{1,4})?)$")
 _DOC_COLOR_OK = re.compile(r"^#[0-9a-f]{6}$")
-DOC_MAX_BOOKMARKS = 500
 DOC_MAX_HIGHLIGHTS = 2000
-DOC_TEXT_MAX = 5000        # ký tự mỗi highlight; trình đọc báo trước khi gửi
+DOC_TEXT_MAX = 3000        # ký tự mỗi highlight = TTS_MAX_CHARS: quote nào cũng đọc to được một lần
 DOC_RECTS_MAX = 500        # ô chữ nhật mỗi highlight ≈ 2 trang dày chữ
 
 
@@ -2410,7 +2409,7 @@ def _doc_item(p):
     m = doc_meta(p)
     return {"name": p.name, "title": m.get("title") or p.stem, "created": m.get("created", ""),
             "size": p.stat().st_size, "pages": m.get("pages"), "page": (m.get("pos") or {}).get("page"),
-            "bookmarks": len(m.get("bookmarks") or []), "highlights": len(m.get("highlights") or [])}
+            "bookmark": (m.get("bookmark") or {}).get("page"), "highlights": len(m.get("highlights") or [])}
 
 
 def list_docs():
@@ -2449,14 +2448,6 @@ def _doc_list(v, what, most, item):
     return [item(x) for x in v]
 
 
-def _doc_bookmark(b):
-    b = _doc_obj(b, "a bookmark")
-    return {"id": _doc_str(b.get("id"), "bookmark id", 40, _DOC_ID_OK),
-            "page": _doc_int(b.get("page"), "bookmark page"),
-            "label": _doc_str(b.get("label", ""), "bookmark name", 120),
-            "created": _doc_str(b.get("created", ""), "bookmark time", 40)}
-
-
 def _doc_rect(r):
     # [trang, x1, y1, x2, y2]: một highlight có thể vắt qua hai trang.
     if not isinstance(r, list) or len(r) != 5:
@@ -2478,12 +2469,15 @@ def _doc_highlight(h):
             "created": _doc_str(h.get("created", ""), "highlight time", 40)}
 
 
-def _doc_line(v):
+def _doc_bookmark(v):
+    # Dòng đã bookmark: y1 = mép trên, y2 = mép dưới (đơn vị PDF), text = vài chữ đầu để nhận ra.
     if v is None:
         return None
-    v = _doc_obj(v, "the reading line")
-    return {"page": _doc_int(v.get("page"), "line page"), "y1": _doc_num(v.get("y1"), "line top"),
-            "y2": _doc_num(v.get("y2"), "line bottom")}
+    v = _doc_obj(v, "the bookmark")
+    return {"page": _doc_int(v.get("page"), "bookmark page"), "y1": _doc_num(v.get("y1"), "bookmark top"),
+            "y2": _doc_num(v.get("y2"), "bookmark bottom"),
+            "text": _doc_str(v.get("text", ""), "bookmark text (up to 300 characters)", 300),
+            "created": _doc_str(v.get("created", ""), "bookmark time", 40)}
 
 
 def _doc_pos(v):
@@ -2498,8 +2492,7 @@ _DOC_FIELDS = {
     "pages": lambda v: _doc_int(v, "pages"),
     "scale": lambda v: _doc_str(v, "zoom", 12, _DOC_SCALE_OK),
     "pos": _doc_pos,
-    "line": _doc_line,
-    "bookmarks": lambda v: _doc_list(v, "bookmarks", DOC_MAX_BOOKMARKS, _doc_bookmark),
+    "bookmark": _doc_bookmark,
     "highlights": lambda v: _doc_list(v, "highlights", DOC_MAX_HIGHLIGHTS, _doc_highlight),
 }
 
