@@ -146,7 +146,7 @@ python3 -m pip install --upgrade yt-dlp
 
 Restart the orchestrator after installing, then check the wrench in the top bar.
 
-**Speak text** needs its voice once: **Library › Speak text › Download** (350 MB).
+**Speak text** needs its voice once: **Tools › Speak text › Download** (350 MB).
 
 ### 5. Settings
 

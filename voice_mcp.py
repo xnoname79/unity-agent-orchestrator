@@ -5,7 +5,7 @@ Kokoro-82M (Apache-2.0) through sherpa-onnx: 28 English voices, US and UK, male 
 call writes a WAV into the system temp folder (orch-speech/), which is cleared when the computer
 restarts — speech is for using now, not for keeping in the Library.
 
-English only for now. The voice model (350 MB) is downloaded once, by the user, from Library ›
+English only for now. The voice model (350 MB) is downloaded once, by the user, from Tools ›
 Speak text; until then speak() says so.
 
 Mounted by the orchestrator at /voice/mcp — no separate process, no extra port:

@@ -140,6 +140,13 @@
   .tb-sep { width: 1px; height: 20px; background: var(--border); flex: none; }
   .icon-btn.lib-btn { width: auto; gap: 6px; padding: 0 9px; font-size: 12.5px; }
   @media (max-width: 560px) { .lib-lbl { display: none; } .icon-btn.lib-btn { padding: 0; width: 28px; } }
+  /* Menu Tools: popover → trình duyệt tự đóng khi bấm ra ngoài hay Esc. top/left đặt theo nút
+     lúc mở (app.js), vì popover nằm ở top layer, không theo header. */
+  .menu { margin: 0; inset: auto; padding: 4px; min-width: 170px; background: var(--panel);
+    color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl); box-shadow: var(--sh-2); }
+  .menu button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px;
+    border: 0; background: transparent; color: var(--text); text-align: left; font-size: 13px; }
+  .menu button:hover, .menu button:focus-visible { background: var(--panel2); }
   .pill { font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border);
     color: var(--muted); white-space: nowrap; }
   .pill.live { color: var(--green); border-color: var(--green); background: var(--green-soft); }
@@ -354,7 +361,6 @@
   .form-card .sed-row label { display: inline-flex; align-items: center; gap: 6px; margin: 0;
     text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--muted); }
   .form-card .sed-row input { width: 92px; padding: 4px 8px; font-variant-numeric: tabular-nums; }
-  .img-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .img-refs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 22px; }
   .img-ref { position: relative; width: 56px; height: 56px; overflow: hidden;
     border: 1px solid var(--border); border-radius: var(--r-ctl); }
@@ -885,6 +891,8 @@
   <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5 17.5 10.5"/></symbol>
   <symbol id="i-window" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01"/></symbol>
   <symbol id="i-library" viewBox="0 0 24 24"><path d="M4 4v16M8 8v12M12 6v14M16 6l4 14"/></symbol>
+  <symbol id="i-apps" viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></symbol>
+  <symbol id="i-speak" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L12 18V6L7.5 9.5z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
   <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
   <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9.5" r="1.5"/><path d="m20 15.5-4.5-4.5L6 20"/></symbol>
   <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M15.5 3.5a5 5 0 0 0-6.2 6.2L3.9 15a2 2 0 0 0 0 2.8l2.3 2.3a2 2 0 0 0 2.8 0l5.3-5.4a5 5 0 0 0 6.2-6.2l-3 3-2.8-2.8z"/></symbol>
@@ -900,8 +908,6 @@
   <div class="spacer"></div>
   <span id="pane-pick" class="pane-pick" hidden></span>
   <span id="dry" class="pill dry" hidden>DRY-RUN</span>
-  <button class="icon-btn" onclick="imgOpen()" title="Images">
-    <svg class="ic"><use href="#i-image"/></svg></button>
   <button id="tools-btn" class="icon-btn" onclick="toolsOpen()" title="Media tools">
     <svg class="ic"><use href="#i-wrench"/></svg></button>
   <button id="mcp-btn" class="icon-btn" onclick="mcpOpen()" title="MCP servers">
@@ -909,12 +915,23 @@
   <button id="split-btn" class="icon-btn" onclick="toggleSplit()" title="Side-by-side (needs 2 open workspaces)">
     <svg class="ic"><use href="#i-split"/></svg></button>
   <span class="tb-sep" aria-hidden="true"></span>
+  <button id="tools-menu-btn" class="icon-btn lib-btn" popovertarget="tools-menu" title="Make images and speech">
+    <svg class="ic"><use href="#i-apps"/></svg><span class="lib-lbl">Tools</span></button>
   <button id="lib-btn" class="icon-btn lib-btn" onclick="libOpen()" title="Images and sounds you have kept">
     <svg class="ic"><use href="#i-library"/></svg><span class="lib-lbl">Library</span></button>
+  <span class="tb-sep" aria-hidden="true"></span>
   <button id="theme-btn" class="icon-btn" onclick="cycleTheme()" title="Theme">
     <svg class="ic"><use href="#i-theme"/></svg></button>
   <span id="conn" class="pill dead">offline</span>
 </header>
+<!-- popovertargetaction="hide": chọn xong thì menu tự đóng, khỏi viết JS. -->
+<div id="tools-menu" class="menu" popover>
+  <button popovertarget="tools-menu" popovertargetaction="hide" onclick="imgOpen()">
+    <svg class="ic"><use href="#i-image"/></svg> Images</button>
+  <button popovertarget="tools-menu" popovertargetaction="hide" onclick="ttsOpen()"
+    title="Turn English text into speech with a natural voice, on this machine">
+    <svg class="ic"><use href="#i-speak"/></svg> Speak text</button>
+</div>
 
 <main>
   <!-- SHELL · home: workspace list + spawn form -->
@@ -1184,8 +1201,6 @@
     <section>
       <div class="lib-head"><h4>Sounds <span id="lib-n-snd" class="hint"></span></h4>
         <span class="spacer"></span>
-        <button class="secondary" onclick="ttsOpen()"
-          title="Turn English text into speech with a natural voice, on this machine">Speak text</button>
         <button class="secondary" onclick="libPick()"
           title="Add an mp3 from this computer — you can cut it before it is kept">Upload mp3</button>
         <input id="lib-file" type="file" accept=".mp3,audio/mpeg" hidden onchange="libUpload(this)"></div>
@@ -1317,7 +1332,7 @@
      viện. Lần đầu phải tải giọng (350 MB) — nút Download nằm ngay trong modal. -->
 <div id="tts-modal" class="modal-overlay" onclick="if (event.target === this) ttsClose()" hidden>
   <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="tts-title">
-    <h3 id="tts-title"><svg class="ic"><use href="#i-music"/></svg> Speak text
+    <h3 id="tts-title"><svg class="ic"><use href="#i-speak"/></svg> Speak text
       <span class="spacer"></span>
       <button class="icon-btn" onclick="ttsClose()" title="Close">
         <svg class="ic"><use href="#i-x"/></svg></button></h3>
@@ -1352,25 +1367,20 @@
       <button class="icon-btn" onclick="imgClose()" title="Close">
         <svg class="ic"><use href="#i-x"/></svg></button></h3>
     <div class="hint">Drawn by the Antigravity CLI (<code>agy</code>) on the Google account it is
-      signed in with — no API key, usually in under a minute. Google picks the drawing model;
-      the model you choose here only rewrites your description.</div>
+      signed in with — no API key, usually in under a minute.</div>
     <label>Describe the image</label>
     <textarea id="img-prompt" rows="3"
       placeholder="e.g. a red apple on a wooden table, soft morning light"></textarea>
-    <div class="img-opts">
-      <div><label for="img-ratio">Shape</label>
-        <select id="img-ratio">
-          <option value="1:1">Square · 1:1</option>
-          <option value="4:3">Landscape · 4:3</option>
-          <option value="3:2">Landscape · 3:2</option>
-          <option value="16:9">Wide · 16:9</option>
-          <option value="3:4">Portrait · 3:4</option>
-          <option value="2:3">Portrait · 2:3</option>
-          <option value="9:16">Tall · 9:16</option>
-        </select></div>
-      <div><label for="img-writer">Description</label>
-        <select id="img-writer"></select></div>
-    </div>
+    <label for="img-ratio">Shape</label>
+    <select id="img-ratio">
+      <option value="1:1">Square · 1:1</option>
+      <option value="4:3">Landscape · 4:3</option>
+      <option value="3:2">Landscape · 3:2</option>
+      <option value="16:9">Wide · 16:9</option>
+      <option value="3:4">Portrait · 3:4</option>
+      <option value="2:3">Portrait · 2:3</option>
+      <option value="9:16">Tall · 9:16</option>
+    </select>
     <label>Reference images · up to 3</label>
     <div id="img-refs" class="img-refs"></div>
     <div class="hint">The new image edits, combines or follows these — keep the same character

@@ -2704,7 +2704,7 @@ async def tts_speak(text, voice=TTS_DEFAULT_VOICE, speed=1.0, by=""):
         raise LookupError(f"text to speech needs sherpa-onnx — install it: {TTS_INSTALL}")
     if not _tts_ready():
         raise LookupError("the Kokoro voice is not downloaded yet — press Download in "
-                          "Library › Speak text (350 MB, once)")
+                          "Tools › Speak text (350 MB, once)")
     async with _tts_lock:
         samples, rate = await asyncio.to_thread(_tts_generate, text, TTS_VOICES.index(voice), speed)
     # 0700: /tmp dùng chung mọi user trên máy, mà đây là chữ người dùng gõ.

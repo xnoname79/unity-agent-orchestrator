@@ -3490,13 +3490,6 @@ const IMG_REFS_MAX = 3;   // = IMAGE_REFS_MAX ở server: giới hạn của ch�
 let imgList = [];         // thư viện lần tải gần nhất — bấm Reference vẽ lại từ đây, khỏi gọi server
 let imgRefs = [];         // tên ảnh đang chọn làm ảnh mẫu cho lần vẽ tới
 
-// Model chỉ VIẾT LẠI lời mô tả — model vẽ do server Google chọn. Lấy từ tab agy của MODEL_TABS,
-// chung với form spawn; bỏ "Auto" vì giá trị rỗng ở đây nghĩa là "giữ nguyên lời người dùng".
-$("img-writer").innerHTML = `<option value="">My words, exactly</option>` + MODEL_TABS
-  .find((t) => t.engine === "agy").models.filter((m) => m.id.startsWith("agy:"))
-  .map((m) => `<option value="${esc(m.id.slice(4))}">Improved by Gemini ${esc(m.name)}</option>`)
-  .join("");
-
 const imgUrl = (name) => "/api/images/" + encodeURIComponent(name);
 
 // pick=false: không có nút Reference (Library chỉ xem/xoá, ảnh mẫu chọn trong modal Images).
@@ -3542,6 +3535,14 @@ function imgOpen() {
 }
 window.imgOpen = imgOpen;
 
+// Menu Tools nằm ở top layer: đặt nó ngay dưới nút mỗi lần mở, canh mép phải nếu sát lề.
+$("tools-menu").addEventListener("beforetoggle", (e) => {
+  if (e.newState !== "open") return;
+  const r = $("tools-menu-btn").getBoundingClientRect(), m = $("tools-menu");
+  m.style.top = r.bottom + 4 + "px";
+  m.style.left = Math.max(8, Math.min(r.left, innerWidth - 178)) + "px";
+});
+
 function imgClose() {
   $("img-modal").hidden = true;
 }
@@ -3583,13 +3584,11 @@ window.imgUpload = imgUpload;
 async function imgGenerate() {
   const prompt = $("img-prompt").value.trim();
   if (!prompt) return showMsg("img-msg", "Describe the image first.", false);
-  const writer = $("img-writer").value;
   $("img-go").disabled = true;
-  showMsg("img-msg", writer ? "Rewriting the description, then drawing… usually under a minute."
-    : "Drawing… usually under a minute.", true);
+  showMsg("img-msg", "Drawing… usually under a minute.", true);
   try {
-    const made = await api("/api/images", "POST",
-      { prompt, writer, ratio: $("img-ratio").value, refs: imgRefs });
+    // Không gửi writer: dialog luôn vẽ đúng lời người dùng. API OpenAI vẫn nhận writer qua model.
+    const made = await api("/api/images", "POST", { prompt, ratio: $("img-ratio").value, refs: imgRefs });
     showMsg("img-msg", made.length > 1 ? `Done — ${made.length} images.` : "Done.", true);
     await imgLoad();
   } catch (e) { showMsg("img-msg", mcpErr(e), false); }
@@ -3999,8 +3998,8 @@ $("lib-drawer").addEventListener("click", async (ev) => {
 });
 
 // ── Speak text (Kokoro) ──────────────────────────────────────────────────────
-// Đọc ở server (sherpa-onnx), kết quả là một tiếng trong thư viện. Lần đầu phải tải giọng: modal
-// hỏi /api/tts mỗi giây trong lúc tải để hiện tiến độ.
+// Đọc ở server (sherpa-onnx), file nằm ở thư mục temp, không vào thư viện. Lần đầu phải tải giọng:
+// modal hỏi /api/tts mỗi giây trong lúc tải để hiện tiến độ.
 let ttsPoll = 0;
 
 function ttsPaint(st) {
