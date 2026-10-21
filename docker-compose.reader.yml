@@ -3,7 +3,8 @@
 #   READER_DOMAIN=reader.example.com docker compose -f docker-compose.reader.yml up -d --build
 #   docker compose -f docker-compose.reader.yml exec reader python reader_server.py adduser alice
 #
-# READER_DOMAIN must already point at this server, and ports 80 and 443 must be open.
+# READER_DOMAIN must already point at this server, and port 443 must be open. Port 80 is not used:
+# the certificate comes over 443 (TLS-ALPN), so another web server can keep port 80.
 services:
   reader:
     build:
@@ -24,7 +25,6 @@ services:
     restart: unless-stopped
     depends_on: [reader]
     ports:
-      - "80:80"
       - "443:443"
       - "443:443/udp"
     environment:

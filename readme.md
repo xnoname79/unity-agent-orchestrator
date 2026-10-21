@@ -249,7 +249,8 @@ Logs: `journalctl --user -u orchestrator -f`.
 Just the PDF reader and Speak text, for several people, on a Linux server with Docker (about 1 GB
 of RAM and 2 CPU cores). Nothing else from the orchestrator is on it.
 
-1. Point a domain at the server and open ports 80 and 443.
+1. Point a domain at the server (with Cloudflare: an A record, proxy status **DNS only**) and open
+   port 443. Port 80 is not used, so another web server can keep it.
 2. On the server:
 
    ```bash

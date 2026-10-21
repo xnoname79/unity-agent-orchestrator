@@ -1,4 +1,15 @@
+{
+	# Cổng 80 không publish (máy chủ có thể đang chạy web khác ở đó): không redirect http → https.
+	auto_https disable_redirects
+}
+
 {$READER_DOMAIN} {
+	# Chứng chỉ chỉ qua TLS-ALPN trên 443 — thử HTTP-01 sẽ rơi vào web server khác đang giữ cổng 80.
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
 	encode zstd gzip
 	header Strict-Transport-Security "max-age=31536000"
 	# PDF đến 200 MB (DOC_UPLOAD_MAX) cộng chút dư.
