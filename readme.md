@@ -36,8 +36,7 @@ installed on your machine, so each provider keeps its own login and subscription
 - **Library** — every kept image, sound and PDF in one drawer. Upload an mp3 and crop it.
 - **PDF reader** — named bookmarks on any line (the PDF reopens at the one you used last, otherwise
   where you stopped), highlighted quotes grouped by page, and any selection read aloud. Each PDF
-  keeps its own state. **Explain** asks a small model on your machine (Ollama) what a selected
-  word or sentence means, what kind of word it is, and for everyday examples.
+  keeps its own state.
   Can also run on your own server for phones, with an account per person (see setup step 7).
 - **Speak text** — natural English speech made on your machine (Kokoro, 28 US and UK voices).
 - **Media tools** — checks for ffmpeg, ImageMagick, yt-dlp, SoX and ExifTool, and tells you how to
@@ -153,10 +152,6 @@ Restart the orchestrator after installing, then check the wrench in the top bar.
 
 **Speak text** needs its voice once: **Tools › Speak text › Download** (350 MB).
 
-**Explain** in the PDF reader needs [Ollama](https://ollama.com) and a model, once:
-`ollama pull gemma3:270m` (300 MB, answers in about a second, but often guesses wrong). For better
-answers, pull a bigger model such as `gemma4:e2b` and set `ORCH_LLM_MODEL=gemma4:e2b`.
-
 ### 5. Settings
 
 Put these in a `.env` file next to `session_orchestrator.py` (or next to `agent-orch.exe`):
@@ -252,8 +247,8 @@ Logs: `journalctl --user -u orchestrator -f`.
 
 ### 7. Host the reader for your phone (optional)
 
-Just the PDF reader, Speak text and Explain, for several people, on a Linux server with Docker
-(about 2 GB of RAM and 2 CPU cores). Nothing else from the orchestrator is on it.
+Just the PDF reader and Speak text, for several people, on a Linux server with Docker (about 1 GB
+of RAM and 2 CPU cores). Nothing else from the orchestrator is on it.
 
 1. Point a domain at the server (with Cloudflare: an A record, proxy status **DNS only**) and open
    port 443. Port 80 is not used, so another web server can keep it.
@@ -265,7 +260,6 @@ Just the PDF reader, Speak text and Explain, for several people, on a Linux serv
    echo "READER_DOMAIN=reader.example.com" > .env
    docker compose -f docker-compose.reader.yml up -d --build
    docker compose -f docker-compose.reader.yml exec reader python reader_server.py adduser alice
-   docker compose -f docker-compose.reader.yml exec ollama ollama pull gemma3:270m
    ```
 
 3. On the phone, open `https://reader.example.com`, sign in, then Share › **Add to Home Screen**.
