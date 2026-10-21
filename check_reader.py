@@ -173,9 +173,9 @@ async def main():
         check("one person gets one speech at a time", sorted([first.status_code, second.status_code]) == [200, 429],
               f"{first.status_code} {second.status_code}")
         old = Path(s["path"])
+        b = (await bob.post("/api/tts/speak", json={"text": "Bye."}, headers={"origin": BASE})).json()
+        fresh = Path(b["path"])
         os.utime(old, (0, 0))
-        await alice.post("/api/tts/speak", json={"text": "Again."}, headers={"origin": BASE})
-        check("speech older than an hour is cleared", not old.exists(), str(old))
 
         # ── Đăng xuất / đổi mật khẩu ─────────────────────────────────────────
         r = await alice.post("/api/logout", headers={"origin": BASE})
@@ -185,6 +185,15 @@ async def main():
         bob_id = rs._q("SELECT id FROM users WHERE name = 'bob'", one=True)["id"]
         rs._q("DELETE FROM sessions WHERE user_id = ?", (bob_id,))   # = passwd: đăng xuất mọi nơi
         check("revoked sessions stop working at once", (await bob.get("/api/me")).status_code == 401, "")
+
+    # Dọn theo giờ, không chờ ai đọc tiếp: lifespan chạy lượt dọn đầu tiên ngay khi server lên.
+    async with app.router.lifespan_context(app):
+        for _ in range(50):
+            if not old.exists():
+                break
+            await asyncio.sleep(0.05)
+    check("speech older than an hour is cleared on a timer, even if nobody speaks again",
+          not old.exists() and fresh.exists(), f"old={old.exists()} fresh={fresh.exists()}")
 
     # ── Image Docker: không có bí mật, không có agent ────────────────────────
     dockerfile = (HERE / "Dockerfile.reader").read_text(encoding="utf-8")

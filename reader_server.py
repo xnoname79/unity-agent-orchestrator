@@ -60,6 +60,7 @@ SPEECH = Path(tempfile.gettempdir()) / "reader-speech"
 COOKIE = "reader_session"
 SESSION_DAYS = 30
 SPEECH_KEEP = 3600          # giây: tiếng đọc chỉ để nghe ngay, container thì không khởi động lại
+SWEEP_EVERY = 600           # giây giữa hai lần dọn tiếng đọc cũ
 _NAME_OK = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")
 PASSWORD_MIN = 10
 # Bản host phải là trang reader: server gắn cờ này vào <html> trước khi trả trang (xem app.js READER).
@@ -180,11 +181,27 @@ def _uid(request):
     return request.scope["user"]["id"]
 
 
-def _sweep_speech(user_id):
-    d = SPEECH / str(int(user_id))
-    for p in d.glob("*.wav") if d.is_dir() else ():
-        if p.stat().st_mtime < time.time() - SPEECH_KEEP:
-            p.unlink(missing_ok=True)
+def sweep_speech():
+    """Xoá tiếng đọc quá SPEECH_KEEP của MỌI người. Server ít khi khởi động lại nên /tmp không tự
+    sạch; dọn theo giờ chứ không đợi chính người đó đọc tiếp — người thôi dùng cũng không để lại gì."""
+    cutoff = time.time() - SPEECH_KEEP
+    for p in SPEECH.glob("*/*.wav"):
+        with contextlib.suppress(OSError):   # file vừa bị xoá ở chỗ khác
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(app):
+    async def loop():
+        while True:
+            await asyncio.to_thread(sweep_speech)
+            await asyncio.sleep(SWEEP_EVERY)
+    task = asyncio.create_task(loop())
+    try:
+        yield
+    finally:
+        task.cancel()
 
 
 # ─── Cổng: phiên đăng nhập + header an toàn ───────────────────────────────────
@@ -222,7 +239,6 @@ class Gate:
                 if user["id"] in _speaking:
                     return await _refuse(send_safe, 429, "one at a time — wait for the speech you asked for")
                 _speaking.add(user["id"])
-                _sweep_speech(user["id"])
                 try:
                     return await self.app(scope, receive, send_safe)
                 finally:
@@ -305,7 +321,7 @@ def build_app():
     # Ngoài cùng trước: sai tên miền → từ chối ngay; rồi chặn request xuyên site (CSRF); rồi phiên.
     middleware = ([Middleware(TrustedHostMiddleware, allowed_hosts=HOSTS)] if HOSTS else []) + [
         Middleware(so.OriginGuard), Middleware(Gate)]
-    return Starlette(routes=routes, middleware=middleware)
+    return Starlette(routes=routes, middleware=middleware, lifespan=_lifespan)
 
 
 def mimetypes_fix():
