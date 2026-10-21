@@ -2355,17 +2355,21 @@ DOC_TEXT_MAX = 3000        # ký tự mỗi highlight = TTS_MAX_CHARS: quote nà
 DOC_RECTS_MAX = 500        # ô chữ nhật mỗi highlight ≈ 2 trang dày chữ
 
 
-async def doc_upload(chunks, filename=""):
-    """Một PDF → thư viện. Ghi ra đĩa từng mẩu, có trần, như sound_upload."""
-    DOCS_DIR.mkdir(parents=True, exist_ok=True)
-    dst = DOCS_DIR / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.pdf"
+async def doc_upload(chunks, filename="", home=None, limit=None):
+    """Một PDF → thư viện. Ghi ra đĩa từng mẩu, có trần, như sound_upload. home: thư mục tài liệu
+    (mặc định DOCS_DIR; bản host mỗi người một thư mục). limit: chỗ trống còn lại, nếu có hạn mức."""
+    home = home or DOCS_DIR
+    cap = DOC_UPLOAD_MAX if limit is None else min(limit, DOC_UPLOAD_MAX)
+    home.mkdir(parents=True, exist_ok=True)
+    dst = home / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.pdf"
     size, ok = 0, False
     try:
         with open(dst, "wb") as f:
             async for chunk in chunks:
                 size += len(chunk)
-                if size > DOC_UPLOAD_MAX:
-                    raise ValueError(f"documents up to {DOC_UPLOAD_MAX // 2**20} MB")
+                if size > cap:
+                    raise ValueError(f"documents up to {DOC_UPLOAD_MAX // 2**20} MB" if cap == DOC_UPLOAD_MAX
+                                     else f"not enough space left — {cap // 2**20} MB free")
                 f.write(chunk)
         with open(dst, "rb") as f:
             head = f.read(1024)
@@ -2382,11 +2386,11 @@ async def doc_upload(chunks, filename=""):
     return _doc_item(dst)
 
 
-def doc_path(name):
+def doc_path(name, home=None):
     """File PDF mang tên này, hoặc None. Tên từ URL — chỉ nhận đúng mẫu ta đặt."""
     if not _DOC_NAME_OK.match(name or ""):
         return None
-    p = DOCS_DIR / name
+    p = (home or DOCS_DIR) / name
     return p if p.is_file() else None
 
 
@@ -2412,9 +2416,9 @@ def _doc_item(p):
             "bookmark": (m.get("bookmark") or {}).get("page"), "highlights": len(m.get("highlights") or [])}
 
 
-def list_docs():
+def list_docs(home=None):
     """Tài liệu đã tải lên, mới nhất trước."""
-    return sorted((_doc_item(p) for p in DOCS_DIR.glob("*.pdf") if _DOC_NAME_OK.match(p.name)),
+    return sorted((_doc_item(p) for p in (home or DOCS_DIR).glob("*.pdf") if _DOC_NAME_OK.match(p.name)),
                   key=lambda i: i["name"], reverse=True)
 
 
@@ -2497,9 +2501,9 @@ _DOC_FIELDS = {
 }
 
 
-def doc_update(name, body):
+def doc_update(name, body, home=None):
     """Ghi một phần trạng thái đọc. Kiểm HẾT trước, ghi sau: một trường sai là không ghi gì."""
-    p = doc_path(name)
+    p = doc_path(name, home)
     if not p:
         raise LookupError("no such document")
     body = _doc_obj(body, "the request")
@@ -2859,8 +2863,10 @@ def _write_wav(dst, samples, rate):
         w.writeframes(pcm.tobytes())
 
 
-async def tts_speak(text, voice=TTS_DEFAULT_VOICE, speed=1.0, by=""):
-    """Đọc text thành một file WAV trong TTS_OUT (thư mục tạm, mất khi khởi động lại máy)."""
+async def tts_speak(text, voice=TTS_DEFAULT_VOICE, speed=1.0, by="", out=None):
+    """Đọc text thành một file WAV trong out (mặc định TTS_OUT: thư mục tạm, mất khi khởi động lại
+    máy; bản host mỗi người một thư mục)."""
+    out = out or TTS_OUT
     text = str(text or "").strip()
     if not text or len(text) > TTS_MAX_CHARS:
         raise ValueError(f"give the text to speak, up to {TTS_MAX_CHARS} characters")
@@ -2880,19 +2886,128 @@ async def tts_speak(text, voice=TTS_DEFAULT_VOICE, speed=1.0, by=""):
     async with _tts_lock:
         samples, rate = await asyncio.to_thread(_tts_generate, text, TTS_VOICES.index(voice), speed)
     # 0700: /tmp dùng chung mọi user trên máy, mà đây là chữ người dùng gõ.
-    TTS_OUT.mkdir(mode=0o700, parents=True, exist_ok=True)
-    dst = TTS_OUT / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.wav"
+    out.mkdir(mode=0o700, parents=True, exist_ok=True)
+    dst = out / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.wav"
     await asyncio.to_thread(_write_wav, dst, samples, rate)
     return {"name": dst.name, "path": str(dst), "duration": round(len(samples) / rate, 2),
             "voice": voice, "speed": speed, "text": text, "by": by or "", "created": _now()}
 
 
-def tts_path(name):
-    """File tiếng đọc trong TTS_OUT mang tên này, hoặc None — tên từ URL, chỉ nhận đúng mẫu ta đặt."""
+def tts_path(name, out=None):
+    """File tiếng đọc trong out (mặc định TTS_OUT) mang tên này, hoặc None — tên từ URL, chỉ nhận
+    đúng mẫu ta đặt."""
     if not re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{6}\.wav", name or ""):
         return None
-    p = TTS_OUT / name
+    p = (out or TTS_OUT) / name
     return p if p.is_file() else None
+
+
+# ─── Route dùng chung: Documents + Speak text ─────────────────────────────────
+# Dashboard (một người, thư mục cố định) và reader_server.py (bản host nhiều người, mỗi người một
+# thư mục) dùng CHUNG các handler này — chỉ khác hàm trả thư mục cho từng request.
+
+def _media_err(e):
+    code = 400 if isinstance(e, ValueError) else 409 if isinstance(e, LookupError) else 502
+    from starlette.responses import JSONResponse
+    return JSONResponse({"error": str(e)}, status_code=code)
+
+
+async def _json_body(request):
+    try:
+        return await request.json()
+    except (ValueError, TypeError):
+        return {}
+
+
+def doc_routes(home_of, limit_of=lambda request: None):
+    """/api/documents… — home_of(request): thư mục tài liệu của người đang hỏi; limit_of(request):
+    chỗ trống còn lại (byte) hoặc None nếu không có hạn mức."""
+    from starlette.responses import FileResponse, JSONResponse
+    from starlette.routing import Route
+
+    def missing():
+        return JSONResponse({"error": "no such document"}, status_code=404)
+
+    async def listing(request):
+        return JSONResponse(list_docs(home_of(request)))
+
+    async def upload(request):
+        try:
+            return JSONResponse(await doc_upload(request.stream(), request.query_params.get("name", ""),
+                                                 home_of(request), limit_of(request)))
+        except ValueError as e:
+            return _media_err(e)
+
+    async def file(request):
+        p = doc_path(request.path_params["name"], home_of(request))
+        return FileResponse(p, media_type="application/pdf",
+                            headers={"X-Content-Type-Options": "nosniff"}) if p else missing()
+
+    async def state(request):
+        p = doc_path(request.path_params["name"], home_of(request))
+        return JSONResponse({**doc_meta(p), "name": p.name}) if p else missing()
+
+    async def save(request):
+        try:
+            return JSONResponse(doc_update(request.path_params["name"], await _json_body(request),
+                                           home_of(request)))
+        except ValueError as e:
+            return _media_err(e)
+        except LookupError:
+            return missing()
+
+    async def delete(request):
+        p = doc_path(request.path_params["name"], home_of(request))
+        if not p:
+            return missing()
+        p.unlink()
+        p.with_suffix(".json").unlink(missing_ok=True)
+        return JSONResponse({"deleted": p.name})
+
+    return [Route("/api/documents", listing),
+            Route("/api/documents/upload", upload, methods=["POST"]),
+            Route("/api/documents/{name}", file),
+            Route("/api/documents/{name}", delete, methods=["DELETE"]),
+            Route("/api/documents/{name}/state", state),
+            Route("/api/documents/{name}/state", save, methods=["POST"])]
+
+
+def tts_routes(out_of, by_of=lambda request: "user", download=True):
+    """/api/tts… — GET = tình trạng (engine, giọng đã tải chưa, tiến độ tải, danh sách giọng);
+    POST /speak = đọc; POST /download = tải giọng (350 MB, chạy nền). out_of(request): thư mục
+    tiếng đọc của người đang hỏi. download=False: bản host, giọng có sẵn trong image."""
+    from starlette.responses import FileResponse, JSONResponse
+    from starlette.routing import Route
+
+    async def status(request):
+        return JSONResponse(tts_status())
+
+    async def fetch(request):
+        if not tts_status()["engine"]:
+            return JSONResponse({"error": f"install sherpa-onnx first: {TTS_INSTALL}"}, status_code=409)
+        if not _tts_ready():
+            tts_download_start()
+        return JSONResponse(tts_status(), status_code=202)
+
+    async def speak(request):
+        b = await _json_body(request)
+        try:
+            return JSONResponse(await tts_speak(b.get("text"), b.get("voice") or TTS_DEFAULT_VOICE,
+                                                b.get("speed", 1.0), by_of(request), out_of(request)))
+        except (ValueError, LookupError, RuntimeError) as e:
+            return _media_err(e)
+
+    async def file(request):
+        p = tts_path(request.path_params["name"], out_of(request))
+        if not p:
+            return JSONResponse({"error": "no such speech — it may have been cleared on restart"},
+                                status_code=404)
+        return FileResponse(p, media_type="audio/wav", headers={"X-Content-Type-Options": "nosniff"})
+
+    return [Route("/api/tts", status),
+            Route("/api/tts/speak", speak, methods=["POST"]),
+            Route("/api/tts/files/{name}", file),
+            *([Route("/api/tts/download", fetch, methods=["POST"])] if download else [])]
 
 
 # ─── Card thư mục: duyệt project NGAY TRONG dashboard ─────────────────────────
@@ -7424,34 +7539,6 @@ def build_app():
         return sound_path(request.path_params["name"],
                           draft=request.url.path.startswith("/api/sounds/drafts/"))
 
-    async def api_tts(request: Request):
-        """Đọc thành tiếng: GET = tình trạng (engine, giọng đã tải chưa, tiến độ tải, danh sách
-        giọng); POST /speak = đọc; POST /download = tải giọng (350 MB, chạy nền, GET để xem)."""
-        return JSONResponse(tts_status())
-
-    async def api_tts_download(request: Request):
-        if not tts_status()["engine"]:
-            return JSONResponse({"error": f"install sherpa-onnx first: {TTS_INSTALL}"},
-                                status_code=409)
-        if not _tts_ready():
-            tts_download_start()
-        return JSONResponse(tts_status(), status_code=202)
-
-    async def api_tts_speak(request: Request):
-        b = await _body(request)
-        try:
-            return JSONResponse(await tts_speak(b.get("text"), b.get("voice") or TTS_DEFAULT_VOICE,
-                                                b.get("speed", 1.0), "user"))
-        except (ValueError, LookupError, RuntimeError) as e:
-            return _sound_err(e)
-
-    async def api_tts_file(request: Request):
-        p = tts_path(request.path_params["name"])
-        if not p:
-            return JSONResponse({"error": "no such speech — it may have been cleared on restart"},
-                                status_code=404)
-        return FileResponse(p, media_type="audio/wav", headers={"X-Content-Type-Options": "nosniff"})
-
     async def api_sounds_upload(request: Request):
         try:
             return JSONResponse(await sound_upload(request.stream(),
@@ -7488,46 +7575,6 @@ def build_app():
         p = _sound_req(request)
         if not p:
             return JSONResponse({"error": "no such sound"}, status_code=404)
-        p.unlink()
-        p.with_suffix(".json").unlink(missing_ok=True)
-        return JSONResponse({"deleted": p.name})
-
-    # ── Documents: PDF + trạng thái đọc của từng file ───────────────────────
-    async def api_documents(request: Request):
-        return JSONResponse(list_docs())
-
-    async def api_documents_upload(request: Request):
-        try:
-            return JSONResponse(await doc_upload(request.stream(),
-                                                 request.query_params.get("name", "")))
-        except ValueError as e:
-            return _sound_err(e)
-
-    async def api_doc_file(request: Request):
-        p = doc_path(request.path_params["name"])
-        if not p:
-            return JSONResponse({"error": "no such document"}, status_code=404)
-        return FileResponse(p, media_type="application/pdf",
-                            headers={"X-Content-Type-Options": "nosniff"})
-
-    async def api_doc_state(request: Request):
-        p = doc_path(request.path_params["name"])
-        if not p:
-            return JSONResponse({"error": "no such document"}, status_code=404)
-        return JSONResponse({**doc_meta(p), "name": p.name})
-
-    async def api_doc_state_save(request: Request):
-        try:
-            return JSONResponse(doc_update(request.path_params["name"], await _body(request)))
-        except ValueError as e:
-            return _sound_err(e)
-        except LookupError as e:
-            return JSONResponse({"error": str(e)}, status_code=404)
-
-    async def api_doc_delete(request: Request):
-        p = doc_path(request.path_params["name"])
-        if not p:
-            return JSONResponse({"error": "no such document"}, status_code=404)
         p.unlink()
         p.with_suffix(".json").unlink(missing_ok=True)
         return JSONResponse({"deleted": p.name})
@@ -8518,16 +8565,9 @@ def build_app():
         Route("/api/sounds", api_sounds_extract, methods=["POST"]),
         Route("/api/sounds/search", api_sounds_search, methods=["POST"]),
         Route("/api/sounds/upload", api_sounds_upload, methods=["POST"]),
-        Route("/api/documents", api_documents),
-        Route("/api/documents/upload", api_documents_upload, methods=["POST"]),
-        Route("/api/documents/{name}", api_doc_file),
-        Route("/api/documents/{name}", api_doc_delete, methods=["DELETE"]),
-        Route("/api/documents/{name}/state", api_doc_state),
-        Route("/api/documents/{name}/state", api_doc_state_save, methods=["POST"]),
-        Route("/api/tts", api_tts),
-        Route("/api/tts/download", api_tts_download, methods=["POST"]),
-        Route("/api/tts/speak", api_tts_speak, methods=["POST"]),
-        Route("/api/tts/files/{name}", api_tts_file),
+        # lambda: đọc DOCS_DIR/TTS_OUT lúc request, không phải lúc dựng app (check_*.py đổi chúng).
+        *doc_routes(lambda request: DOCS_DIR),
+        *tts_routes(lambda request: TTS_OUT),
         Route("/api/sounds/drafts/{name}", api_sound_file),
         Route("/api/sounds/drafts/{name}", api_sound_delete, methods=["DELETE"]),
         Route("/api/sounds/drafts/{name}/peaks", api_sound_peaks),

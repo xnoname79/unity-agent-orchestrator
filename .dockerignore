@@ -1,0 +1,14 @@
+# Build context của Dockerfile.reader: không bao giờ gửi bí mật hay dữ liệu vào Docker.
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+reader-data
+.git
+.venv
+.codex
+.agents
+__pycache__
+build
+dist

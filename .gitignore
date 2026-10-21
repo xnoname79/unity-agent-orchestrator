@@ -14,3 +14,6 @@ __pycache__
 
 .codex
 .agents
+
+# Reader (reader_server.py) khi chạy không qua Docker
+reader-data

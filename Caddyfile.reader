@@ -1,0 +1,10 @@
+{$READER_DOMAIN} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
+	# PDF đến 200 MB (DOC_UPLOAD_MAX) cộng chút dư.
+	request_body {
+		max_size 210MB
+	}
+	# Caddy giữ nguyên Host và thêm X-Forwarded-For — OriginGuard và READER_HOSTS cần đúng Host.
+	reverse_proxy reader:8080
+}

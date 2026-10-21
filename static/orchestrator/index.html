@@ -75,6 +75,28 @@
      không có màn Home, không có pane lồng pane. */
   .pane header, .pane #ws-list-view, .pane #panes { display: none; }
   main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  /* ── Bản host (reader_server.py gắn data-mode="reader"): chỉ Documents, PDF reader, Speak text.
+     Library thành cả trang; mọi thứ của agent ẩn. ─────────────────────────────────────────── */
+  .reader-bar, .reader-text { display: none; }
+  [data-mode="reader"] .reader-bar { display: flex; align-items: center; gap: 8px; }
+  [data-mode="reader"] .reader-text { display: inline; }
+  [data-mode="reader"] .desk-text { display: none; }
+  [data-mode="reader"] body { height: 100dvh; }   /* iPhone: 100vh nằm dưới thanh công cụ Safari */
+  [data-mode="reader"] header > :not(.brand, .spacer, .reader-bar, #theme-btn),
+  [data-mode="reader"] main, [data-mode="reader"] #lib-overlay, [data-mode="reader"] .lib-media,
+  [data-mode="reader"] #lib-agents, [data-mode="reader"] #lib-drawer .drawer-head,
+  .signed-out #lib-drawer, .signed-out .reader-bar { display: none; }
+  [data-mode="reader"] #lib-drawer { position: static; transform: none; width: auto; flex: 1;
+    min-height: 0; border-left: 0; box-shadow: none; z-index: auto; }
+  /* iOS phóng to trang khi focus ô chữ nhỏ hơn 16px; nút cần đủ to cho ngón tay. */
+  [data-mode="reader"] :is(input, textarea, select) { font-size: 16px !important; }   /* thắng mọi rule riêng */
+  [data-mode="reader"] .icon-btn { width: 36px; height: 36px; }
+  [data-mode="reader"] #theme-btn { order: 1; }                 /* ra mép phải, sau Sign out */
+  [data-mode="reader"] #lib-drawer section { margin-top: 0; }   /* mục ẩn vẫn tính section + section */
+  .login-view { flex: 1; display: grid; place-items: center; padding: 16px; }
+  .login-view[hidden] { display: none; }
+  .login-view form { width: min(360px, 100%); }
+  .login-view h3 img { width: 22px; height: 22px; }
 
   /* Icon sprite: <svg class="ic"><use href="#i-play"/></svg> */
   #sprite { display: none; }
@@ -979,7 +1001,25 @@
   <button id="theme-btn" class="icon-btn" onclick="cycleTheme()" title="Theme">
     <svg class="ic"><use href="#i-theme"/></svg></button>
   <span id="conn" class="pill dead">offline</span>
+  <span class="reader-bar">
+    <button class="secondary" onclick="ttsOpen()" title="Turn English text into speech">
+      <svg class="ic sm"><use href="#i-speak"/></svg> Speak text</button>
+    <span id="reader-user" class="hint"></span>
+    <button class="secondary" onclick="readerLogout()">Sign out</button>
+  </span>
 </header>
+<!-- Bản host: màn đăng nhập. Tài khoản do người quản trị tạo trên server (reader_server.py adduser). -->
+<div id="login-view" class="login-view" hidden>
+  <form class="form-card" onsubmit="readerLogin(event)">
+    <h3><img src="/logo.png" alt=""> Sign in</h3>
+    <label for="login-name">Name</label>
+    <input id="login-name" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+    <label for="login-pw">Password</label>
+    <input id="login-pw" type="password" autocomplete="current-password" required>
+    <div class="spawn-actions"><button id="login-go" class="primary" type="submit">Sign in</button></div>
+    <div id="login-msg" class="form-msg"></div>
+  </form>
+</div>
 <!-- popovertargetaction="hide": chọn xong thì menu tự đóng, khỏi viết JS. -->
 <div id="tools-menu" class="menu" popover>
   <button popovertarget="tools-menu" popovertargetaction="hide" onclick="imgOpen()">
@@ -1254,7 +1294,7 @@
   <div class="drawer-body">
     <div id="lib-agents" class="hint"></div>
     <div id="lib-msg" class="form-msg"></div>
-    <section>
+    <section class="lib-media">
       <div class="lib-head"><h4>Sounds <span id="lib-n-snd" class="hint"></span></h4>
         <span class="spacer"></span>
         <button class="secondary" onclick="libPick()"
@@ -1262,7 +1302,7 @@
         <input id="lib-file" type="file" accept=".mp3,audio/mpeg" hidden onchange="libUpload(this)"></div>
       <div id="lib-snd" class="snd-list"></div>
     </section>
-    <section>
+    <section class="lib-media">
       <div class="lib-head"><h4>Images <span id="lib-n-img" class="hint"></span></h4></div>
       <div id="lib-img" class="img-grid"></div>
     </section>
@@ -1400,9 +1440,10 @@
       <span class="spacer"></span>
       <button class="icon-btn" onclick="ttsClose()" title="Close">
         <svg class="ic"><use href="#i-x"/></svg></button></h3>
-    <div class="hint">English text to natural speech, made on this machine with Kokoro
-      (Apache-2.0) — nothing is sent anywhere. Speech goes to a temp folder and is cleared when
-      the computer restarts.</div>
+    <div class="hint"><span class="desk-text">English text to natural speech, made on this machine
+      with Kokoro (Apache-2.0) — nothing is sent anywhere. Speech goes to a temp folder and is
+      cleared when the computer restarts.</span><span class="reader-text">English text to natural
+      speech, made on this server with Kokoro (Apache-2.0). Each recording is kept for an hour.</span></div>
     <div id="tts-status" class="snd-status"></div>
     <label for="tts-text">What should it say?</label>
     <textarea id="tts-text" rows="5" maxlength="3000"

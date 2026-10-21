@@ -1,0 +1,40 @@
+# Reader on your own server, with HTTPS from Caddy (automatic certificate for READER_DOMAIN).
+#
+#   READER_DOMAIN=reader.example.com docker compose -f docker-compose.reader.yml up -d --build
+#   docker compose -f docker-compose.reader.yml exec reader python reader_server.py adduser alice
+#
+# READER_DOMAIN must already point at this server, and ports 80 and 443 must be open.
+services:
+  reader:
+    build:
+      context: .
+      dockerfile: Dockerfile.reader
+    restart: unless-stopped
+    environment:
+      READER_HOSTS: ${READER_DOMAIN:?set READER_DOMAIN to the domain that points at this server}
+      READER_QUOTA_MB: ${READER_QUOTA_MB:-1024}
+      # Chỉ Caddy với tới được container này (không publish cổng), nên tin X-Forwarded-For của nó
+      # để giới hạn đăng nhập đếm theo IP thật của người dùng.
+      READER_PROXY: "*"
+    volumes:
+      - reader-data:/data
+
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    depends_on: [reader]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      READER_DOMAIN: ${READER_DOMAIN}
+    volumes:
+      - ./Caddyfile.reader:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  reader-data:
+  caddy-data:
+  caddy-config:

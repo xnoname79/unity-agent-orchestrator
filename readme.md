@@ -36,6 +36,7 @@ installed on your machine, so each provider keeps its own login and subscription
 - **Library** — every kept image, sound and PDF in one drawer. Upload an mp3 and crop it.
 - **PDF reader** — bookmark a line and the PDF reopens right there (otherwise where you stopped),
   keep highlighted quotes, and hear any selection read aloud. Each PDF keeps its own state.
+  Can also run on your own server for phones, with an account per person (see setup step 7).
 - **Speak text** — natural English speech made on your machine (Kokoro, 28 US and UK voices).
 - **Media tools** — checks for ffmpeg, ImageMagick, yt-dlp, SoX and ExifTool, and tells you how to
   install what is missing.
@@ -243,7 +244,33 @@ loginctl enable-linger "$USER"     # start at boot, not only when you log in
 Logs: `journalctl --user -u orchestrator -f`.
 </details>
 
+### 7. Host the reader for your phone (optional)
+
+Just the PDF reader and Speak text, for several people, on a Linux server with Docker (about 1 GB
+of RAM and 2 CPU cores). Nothing else from the orchestrator is on it.
+
+1. Point a domain at the server and open ports 80 and 443.
+2. On the server:
+
+   ```bash
+   git clone https://github.com/xnoname79/unity-agent-orchestrator.git
+   cd unity-agent-orchestrator
+   echo "READER_DOMAIN=reader.example.com" > .env
+   docker compose -f docker-compose.reader.yml up -d --build
+   docker compose -f docker-compose.reader.yml exec reader python reader_server.py adduser alice
+   ```
+
+3. On the phone, open `https://reader.example.com`, sign in, then Share › **Add to Home Screen**.
+
+Accounts are made only on the server: `adduser`, `passwd`, `deluser`, `users` (same `exec`
+command). Each person gets 1 GB; change it with `READER_QUOTA_MB=` in `.env`. Documents live in the
+`reader-data` Docker volume.
+
+> [!WARNING]
+> Every account can upload files and use the server's CPU. Only make accounts for people you trust.
+
 ### Update
 
 From source: `git pull`, then `pip install -r requirements.txt`, then restart. Prebuilt: download
-the new zip and replace the folder, keeping your `.env`.
+the new zip and replace the folder, keeping your `.env`. Hosted reader: `git pull`, then
+`docker compose -f docker-compose.reader.yml up -d --build`.
