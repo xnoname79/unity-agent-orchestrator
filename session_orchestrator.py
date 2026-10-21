@@ -2342,14 +2342,15 @@ def sound_download_name(p):
 
 # ─── Documents: PDF người dùng tải lên để đọc trong dashboard ──────────────────
 # Trình đọc (pdf.js, vendor/pdfjs) chạy hết trong trình duyệt; server chỉ giữ file và TRẠNG THÁI
-# đọc của từng file trong .json cạnh nó: vị trí lần cuối, bookmark (MỘT dòng — lần mở sau nhảy
-# thẳng tới đó), highlight. Toạ độ là đơn vị PDF (gốc dưới-trái) nên zoom kiểu gì cũng khớp chữ.
+# đọc của từng file trong .json cạnh nó: vị trí lần cuối, bookmark (mỗi cái một dòng, đặt tên được —
+# lần mở sau nhảy tới cái vừa thêm hay vừa tới gần nhất), highlight. Toạ độ là đơn vị PDF (gốc dưới-trái) nên zoom kiểu gì cũng khớp chữ.
 DOCS_DIR = DB_DIR / "documents"
 DOC_UPLOAD_MAX = 200 * 1024 * 1024
 _DOC_NAME_OK = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}\.pdf$")
 _DOC_ID_OK = re.compile(r"^[\w-]{1,40}$")
 _DOC_SCALE_OK = re.compile(r"^(auto|page-width|page-fit|page-actual|\d{1,2}(\.\d{1,4})?)$")
 _DOC_COLOR_OK = re.compile(r"^#[0-9a-f]{6}$")
+DOC_MAX_BOOKMARKS = 500
 DOC_MAX_HIGHLIGHTS = 2000
 DOC_TEXT_MAX = 3000        # ký tự mỗi highlight = TTS_MAX_CHARS: quote nào cũng đọc to được một lần
 DOC_RECTS_MAX = 500        # ô chữ nhật mỗi highlight ≈ 2 trang dày chữ
@@ -2399,7 +2400,14 @@ def doc_meta(p):
         meta = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         meta = {}
-    return meta if isinstance(meta, dict) else {}
+    if not isinstance(meta, dict):
+        return {}
+    # Bản trước chỉ có MỘT bookmark ("bookmark"): đọc ra thành danh sách; lần ghi sau lưu dạng mới.
+    old = meta.pop("bookmark", None)
+    if isinstance(old, dict) and "bookmarks" not in meta:
+        meta["bookmarks"] = [{**old, "id": "bm-first", "name": " ".join(str(old.get("text", "")).split()[:6]),
+                              "used": old.get("created", "")}]
+    return meta
 
 
 def _doc_write(p, meta):
@@ -2411,9 +2419,12 @@ def _doc_write(p, meta):
 
 def _doc_item(p):
     m = doc_meta(p)
+    bms = m.get("bookmarks") or []
+    # page = trang sẽ mở: bookmark vừa thêm/vừa tới gần nhất, không có thì chỗ đọc lần cuối.
+    page = max(bms, key=lambda b: b.get("used", ""))["page"] if bms else (m.get("pos") or {}).get("page")
     return {"name": p.name, "title": m.get("title") or p.stem, "created": m.get("created", ""),
-            "size": p.stat().st_size, "pages": m.get("pages"), "page": (m.get("pos") or {}).get("page"),
-            "bookmark": (m.get("bookmark") or {}).get("page"), "highlights": len(m.get("highlights") or [])}
+            "size": p.stat().st_size, "pages": m.get("pages"), "page": page,
+            "bookmarks": len(bms), "highlights": len(m.get("highlights") or [])}
 
 
 def list_docs(home=None):
@@ -2474,14 +2485,16 @@ def _doc_highlight(h):
 
 
 def _doc_bookmark(v):
-    # Dòng đã bookmark: y1 = mép trên, y2 = mép dưới (đơn vị PDF), text = vài chữ đầu để nhận ra.
-    if v is None:
-        return None
-    v = _doc_obj(v, "the bookmark")
-    return {"page": _doc_int(v.get("page"), "bookmark page"), "y1": _doc_num(v.get("y1"), "bookmark top"),
+    # Một dòng đã bookmark: y1 = mép trên, y2 = mép dưới (đơn vị PDF); text = chữ của dòng để nhận ra,
+    # name = tên người dùng đặt; used = lúc thêm hay lúc bấm Go gần nhất (cái mới nhất là chỗ mở lại).
+    v = _doc_obj(v, "a bookmark")
+    return {"id": _doc_str(v.get("id"), "bookmark id", 40, _DOC_ID_OK),
+            "name": _doc_str(v.get("name", ""), "bookmark name (up to 120 characters)", 120),
+            "page": _doc_int(v.get("page"), "bookmark page"), "y1": _doc_num(v.get("y1"), "bookmark top"),
             "y2": _doc_num(v.get("y2"), "bookmark bottom"),
             "text": _doc_str(v.get("text", ""), "bookmark text (up to 300 characters)", 300),
-            "created": _doc_str(v.get("created", ""), "bookmark time", 40)}
+            "created": _doc_str(v.get("created", ""), "bookmark time", 40),
+            "used": _doc_str(v.get("used", ""), "bookmark time", 40)}
 
 
 def _doc_pos(v):
@@ -2496,7 +2509,7 @@ _DOC_FIELDS = {
     "pages": lambda v: _doc_int(v, "pages"),
     "scale": lambda v: _doc_str(v, "zoom", 12, _DOC_SCALE_OK),
     "pos": _doc_pos,
-    "bookmark": _doc_bookmark,
+    "bookmarks": lambda v: _doc_list(v, "bookmarks", DOC_MAX_BOOKMARKS, _doc_bookmark),
     "highlights": lambda v: _doc_list(v, "highlights", DOC_MAX_HIGHLIGHTS, _doc_highlight),
 }
 

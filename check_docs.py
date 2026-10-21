@@ -6,7 +6,9 @@ The quiet ways it goes wrong:
   - an upload is a stranger's file on our disk: only PDF, under a size cap checked WHILE it
     streams, and a refused file must leave nothing behind;
   - the reader saves its scroll position every second; that save must never wipe the
-    highlights or the bookmark, and one bad field must leave the whole state as it was;
+    highlights or bookmarks, and one bad field must leave the whole state as it was;
+  - the reader reopens at the bookmark added or gone to last — the Library row must agree;
+  - files saved when there was only ONE bookmark must come back as a list, not lose it;
   - a quote longer than text to speech takes could be saved but never read aloud;
   - highlight colour, ids and boxes go back into the page as inline style and data attributes,
     so the server only keeps values of the exact shape the reader makes (a colour like
@@ -61,8 +63,10 @@ def on_disk():
 
 HL = {"id": "kx1abc", "page": 1, "text": "Learning English takes patience.",
       "rects": [[1, 71.9, 721.5, 534.6, 735.0]], "color": "#ffd54f", "created": "2026-10-20T08:00:00Z"}
-BM = {"page": 1, "y1": 605.86, "y2": 593.86, "text": "Good habits are built slowly",
-      "created": "2026-10-20T08:00:00Z"}
+BM1 = {"id": "bm1", "name": "Chapter one", "page": 1, "y1": 605.86, "y2": 593.86,
+       "text": "Good habits are built slowly", "created": "2026-10-20T08:00:00Z", "used": "2026-10-20T08:00:00Z"}
+BM2 = {"id": "bm2", "name": "Chapter three", "page": 3, "y1": 700.0, "y2": 688.0,
+       "text": "She opened the window", "created": "2026-10-20T09:00:00Z", "used": "2026-10-20T09:00:00Z"}
 
 
 async def main():
@@ -111,22 +115,44 @@ async def main():
 
         # ── Trạng thái đọc ───────────────────────────────────────────────────
         st = f"/api/documents/{name}/state"
-        r = await c.post(st, json={"pages": 3, "highlights": [HL], "bookmark": BM})
-        check("highlights and the bookmarked line are saved",
-              r.status_code == 200 and r.json()["highlights"] == [HL] and r.json()["bookmark"] == BM,
+        r = await c.post(st, json={"pages": 3, "highlights": [HL], "bookmarks": [BM1, BM2]})
+        check("highlights and several named bookmarks are saved",
+              r.status_code == 200 and r.json()["highlights"] == [HL] and r.json()["bookmarks"] == [BM1, BM2],
               r.text[:200])
         r = await c.post(st, json={"pos": {"page": 2, "top": 400.123, "left": 0}, "scale": "1.5"})
         s = (await c.get(st)).json()
-        check("saving the scroll position keeps every highlight and the bookmark",
-              r.status_code == 200 and s["highlights"] == [HL] and s["bookmark"] == BM
+        check("saving the scroll position keeps every highlight and bookmark",
+              r.status_code == 200 and s["highlights"] == [HL] and s["bookmarks"] == [BM1, BM2]
               and s["pos"] == {"page": 2, "top": 400.12, "left": 0.0}
               and s["title"] == "English Reader.v2", str(s)[:240])
         lib = (await c.get("/api/documents")).json()
-        check("the Library row shows where you are and what you kept",
-              [(i["page"], i["pages"], i["highlights"], i["bookmark"]) for i in lib] == [(2, 3, 1, 1)], str(lib))
-        r = await c.post(st, json={"bookmark": None})
-        check("the bookmark can be removed", r.status_code == 200 and (await c.get(st)).json()["bookmark"] is None
-              and (await c.get("/api/documents")).json()[0]["bookmark"] is None, r.text[:120])
+        check("the Library row opens at the bookmark used last, not where you scrolled",
+              [(i["page"], i["pages"], i["highlights"], i["bookmarks"]) for i in lib] == [(3, 3, 1, 2)], str(lib))
+        renamed = {**BM1, "name": "Start here", "used": "2026-10-20T10:00:00Z"}
+        await c.post(st, json={"bookmarks": [renamed, BM2]})
+        lib = (await c.get("/api/documents")).json()
+        check("rename and Go are saved; going to a bookmark makes it the one that opens",
+              (await c.get(st)).json()["bookmarks"][0]["name"] == "Start here" and lib[0]["page"] == 1, str(lib))
+        await c.post(st, json={"bookmarks": []})
+        lib = (await c.get("/api/documents")).json()
+        check("with no bookmarks left it opens where you stopped", (lib[0]["page"], lib[0]["bookmarks"]) == (2, 0),
+              str(lib))
+        side = so.DOCS_DIR / name.replace(".pdf", ".json")
+        old = json.loads(side.read_text(encoding="utf-8"))
+        old.pop("bookmarks")
+        old["bookmark"] = {"page": 2, "y1": 500.0, "y2": 488.0, "text": "Reading aloud helps you hear the rhythm",
+                           "created": "2026-10-19T08:00:00Z"}
+        side.write_text(json.dumps(old), encoding="utf-8")
+        s = (await c.get(st)).json()
+        check("a file saved with the old single bookmark comes back as a one-item list",
+              "bookmark" not in s and len(s["bookmarks"]) == 1 and s["bookmarks"][0]["page"] == 2
+              and s["bookmarks"][0]["name"] == "Reading aloud helps you hear the", str(s.get("bookmarks"))[:200])
+        await c.post(st, json={"pos": {"page": 1, "top": 1, "left": 0}})
+        disk = json.loads(side.read_text(encoding="utf-8"))
+        check("the next save writes it in the new shape", "bookmark" not in disk and len(disk["bookmarks"]) == 1,
+              str(disk)[:200])
+        r = await c.post(st, json={"bookmarks": (await c.get(st)).json()["bookmarks"]})
+        check("the converted bookmark passes the same checks as new ones", r.status_code == 200, r.text[:120])
         check("any quote fits one text to speech call", so.DOC_TEXT_MAX <= so.TTS_MAX_CHARS,
               f"{so.DOC_TEXT_MAX} > {so.TTS_MAX_CHARS}")
 
@@ -142,9 +168,11 @@ async def main():
             ("a box with 4 numbers, no page", {"highlights": [{**HL, "rects": [[71.9, 721.5, 534.6, 735.0]]}]}),
             ("a highlight with no box", {"highlights": [{**HL, "rects": []}]}),
             ("a quote too long", {"highlights": [{**HL, "text": "x" * (so.DOC_TEXT_MAX + 1)}]}),
-            ("a bookmark label too long", {"bookmark": {**BM, "text": "x" * 301}}),
-            ("a bookmark with no line", {"bookmark": {"page": 1, "text": "x"}}),
-            ("a list where an object belongs", {"bookmark": [1, 2, 3]}),
+            ("a bookmark name too long", {"bookmarks": [{**BM1, "name": "x" * 121}]}),
+            ("a bookmark id that breaks out of an attribute", {"bookmarks": [{**BM1, "id": '"><b>'}]}),
+            ("a bookmark with no line", {"bookmarks": [{"id": "b", "page": 1, "text": "x"}]}),
+            ("too many bookmarks", {"bookmarks": [BM1] * (so.DOC_MAX_BOOKMARKS + 1)}),
+            ("an object where the list belongs", {"bookmarks": {"page": 1}}),
         )
         good = (await c.get(st)).json()
         for why, body in bad_bodies:

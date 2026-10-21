@@ -34,8 +34,9 @@ installed on your machine, so each provider keeps its own login and subscription
 - **Sounds** — search YouTube (AI-generated, filtered by length), pull out the audio, crop it in a
   waveform editor.
 - **Library** — every kept image, sound and PDF in one drawer. Upload an mp3 and crop it.
-- **PDF reader** — bookmark a line and the PDF reopens right there (otherwise where you stopped),
-  keep highlighted quotes, and hear any selection read aloud. Each PDF keeps its own state.
+- **PDF reader** — named bookmarks on any line (the PDF reopens at the one you used last, otherwise
+  where you stopped), highlighted quotes grouped by page, and any selection read aloud. Each PDF
+  keeps its own state.
   Can also run on your own server for phones, with an account per person (see setup step 7).
 - **Speak text** — natural English speech made on your machine (Kokoro, 28 US and UK voices).
 - **Media tools** — checks for ffmpeg, ImageMagick, yt-dlp, SoX and ExifTool, and tells you how to
