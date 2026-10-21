@@ -80,6 +80,7 @@ jobs:
           python check_tts.py
           python check_docs.py
           python check_reader.py
+          python check_explain.py
 
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean

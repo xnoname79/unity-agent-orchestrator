@@ -2915,7 +2915,115 @@ def tts_path(name, out=None):
     return p if p.is_file() else None
 
 
-# ─── Route dùng chung: Documents + Speak text ─────────────────────────────────
+# ─── Explain: model nhỏ chạy cục bộ (Ollama) giải nghĩa chữ chọn trong trình đọc PDF ──────────
+# Mặc định gemma3:270m vì vừa máy chủ nhỏ không GPU (~320 MB RAM, ~1 s). Đo 2026-10-21: nó hay đoán
+# SAI nghĩa và từ loại (bank bờ sông → ngân hàng, "run out of" → adjective) và chép lại câu của người
+# đọc làm ví dụ; gemma4:e2b đúng cả 4 ca thử nhưng ~11 s trên GPU 4 GB. Đổi model: ORCH_LLM_MODEL.
+# Code tự quyết word/phrase/sentence và bỏ câu chép lại; phần còn lại là "AI đoán" — UI nói rõ.
+LLM_URL = os.environ.get("ORCH_LLM_URL", "http://127.0.0.1:11434").rstrip("/")
+LLM_MODEL = os.environ.get("ORCH_LLM_MODEL", "gemma3:270m")
+EXPLAIN_TERM_MAX = 300
+EXPLAIN_CONTEXT_MAX = 1000
+EXPLAIN_POS = ("noun", "verb", "adjective", "adverb", "pronoun", "preposition", "conjunction",
+               "interjection", "determiner")
+_llm_lock = asyncio.Lock()       # một câu hỏi một lúc: model trên CPU, xếp hàng còn hơn giành lõi
+_EXPLAIN_SYSTEM = (
+    "You help people learning English. Answer in simple English. meaning: what it means in general. "
+    "meaning_here: what it means in the reader's text. examples: new sentences someone would say in "
+    "everyday conversation — never repeat the reader's text.\n"
+    'Example question: Explain the phrase "cold feet" as used in: "He got cold feet before the wedding." '
+    "Every example must use the exact words.\n"
+    'Example answer: {"meaning": "fear or doubt that stops you from doing something you planned", '
+    '"meaning_here": "he became nervous and was not sure he wanted to get married", '
+    '"examples": ["I wanted to sing on stage, but I got cold feet.", '
+    '"Don\'t get cold feet now, the trip is booked!"]}')
+
+
+def _words(s):
+    return re.findall(r"[a-z0-9']+", s.lower())
+
+
+def _copied(s, *texts):
+    """s gần như chép lại một trong texts: ≥ 80% số từ của s có sẵn ở đó."""
+    w = _words(s)
+    pools = [set(_words(t)) for t in texts if t]
+    return not w or any(sum(x in p for x in w) >= 0.8 * len(w) for p in pools)
+
+
+def _explain_reply(raw, term, kind, context):
+    """Trả lời của model → dict đã kiểm. Schema của Ollama chỉ ép HÌNH DẠNG; kiểu và độ dài vẫn kiểm
+    lại vì chữ này đi thẳng vào trang."""
+    try:
+        d = json.loads(raw)
+    except (TypeError, ValueError):
+        d = None
+    meaning = d.get("meaning") if isinstance(d, dict) else None
+    if not isinstance(meaning, str) or not meaning.strip():
+        raise RuntimeError("the model gave an unusable answer — try again")
+
+    def clean(v, cap):
+        return " ".join(v.split())[:cap] if isinstance(v, str) else ""
+
+    here = clean(d.get("meaning_here"), 600)
+    examples = []
+    for e in d.get("examples") if isinstance(d.get("examples"), list) else []:
+        e = clean(e, 300)
+        if e and not _copied(e, context, term, *examples):
+            examples.append(e)
+    pos = d.get("part_of_speech")
+    return {"term": term, "kind": kind, "model": LLM_MODEL,
+            "part_of_speech": pos if kind == "word" and pos in EXPLAIN_POS else "",
+            "meaning": clean(meaning, 600),
+            "meaning_here": "" if _copied(here, context, term) else here,
+            "examples": examples[:3]}
+
+
+async def explain(term, context=""):
+    """Giải nghĩa term (chữ đang chọn) theo context (câu quanh nó, để biết "bank" là bờ sông hay
+    ngân hàng) bằng model cục bộ qua Ollama."""
+    term = " ".join(str(term or "").split())
+    context = " ".join(str(context or "").split())[:EXPLAIN_CONTEXT_MAX]
+    if len(term.split()) == 1:
+        term = term.strip(".,;:!?\"'()[]“”‘’…")   # chọn cả dấu câu dính theo
+    if not term or len(term) > EXPLAIN_TERM_MAX:
+        raise ValueError(f"select a word or sentence to explain, up to {EXPLAIN_TERM_MAX} characters")
+    n = len(term.split())
+    # Code quyết, không để model: model nhỏ gọi cả câu tục ngữ là "pronoun".
+    kind = "word" if n == 1 else "sentence" if n >= 8 or term[-1] in ".!?" else "phrase"
+    if kind == "sentence":
+        around = f' The text around it: "{context}".' if context and context != term else ""
+        ask = f'Explain the sentence "{term}".{around} For examples, give other ways to say the same thing.'
+    else:
+        where = f' as used in: "{context}"' if context else ""
+        ask = f'Explain the {kind} "{term}"{where}. Every example must use the exact words.'
+    props = {"meaning": {"type": "string"}, "meaning_here": {"type": "string"},
+             "examples": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 3}}
+    if kind == "word":
+        props = {"part_of_speech": {"type": "string", "enum": list(EXPLAIN_POS)}, **props}
+    body = {"model": LLM_MODEL, "stream": False, "options": {"temperature": 0},
+            "format": {"type": "object", "properties": props, "required": list(props)},
+            "messages": [{"role": "system", "content": _EXPLAIN_SYSTEM}, {"role": "user", "content": ask}]}
+    try:
+        # read 180 s: lần đầu Ollama còn nạp model; trên CPU model lớn hơn mất cả phút.
+        async with _llm_lock, httpx.AsyncClient(timeout=httpx.Timeout(10, read=180)) as c:
+            r = await c.post(f"{LLM_URL}/api/chat", json=body)
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        raise LookupError(f"Explain needs Ollama running at {LLM_URL} with the model: "
+                          f"ollama pull {LLM_MODEL}")
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"the model did not answer ({type(e).__name__}) — try again")
+    if r.status_code == 404:
+        raise LookupError(f"the model is not downloaded yet — run: ollama pull {LLM_MODEL}")
+    if r.status_code != 200:
+        raise RuntimeError(f"Ollama answered {r.status_code} — try again")
+    try:
+        raw = r.json()["message"]["content"]
+    except (ValueError, KeyError, TypeError):
+        raw = None
+    return _explain_reply(raw, term, kind, context)
+
+
+# ─── Route dùng chung: Documents + Speak text + Explain ───────────────────────
 # Dashboard (một người, thư mục cố định) và reader_server.py (bản host nhiều người, mỗi người một
 # thư mục) dùng CHUNG các handler này — chỉ khác hàm trả thư mục cho từng request.
 
@@ -3021,6 +3129,22 @@ def tts_routes(out_of, by_of=lambda request: "user", download=True):
             Route("/api/tts/speak", speak, methods=["POST"]),
             Route("/api/tts/files/{name}", file),
             *([Route("/api/tts/download", fetch, methods=["POST"])] if download else [])]
+
+
+def explain_routes():
+    """/api/explain — POST {text, context}: giải nghĩa chữ chọn trong trình đọc PDF."""
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    async def ask(request):
+        b = await _json_body(request)
+        b = b if isinstance(b, dict) else {}
+        try:
+            return JSONResponse(await explain(b.get("text"), b.get("context")))
+        except (ValueError, LookupError, RuntimeError) as e:
+            return _media_err(e)
+
+    return [Route("/api/explain", ask, methods=["POST"])]
 
 
 # ─── Card thư mục: duyệt project NGAY TRONG dashboard ─────────────────────────
@@ -8581,6 +8705,7 @@ def build_app():
         # lambda: đọc DOCS_DIR/TTS_OUT lúc request, không phải lúc dựng app (check_*.py đổi chúng).
         *doc_routes(lambda request: DOCS_DIR),
         *tts_routes(lambda request: TTS_OUT),
+        *explain_routes(),
         Route("/api/sounds/drafts/{name}", api_sound_file),
         Route("/api/sounds/drafts/{name}", api_sound_delete, methods=["DELETE"]),
         Route("/api/sounds/drafts/{name}/peaks", api_sound_peaks),

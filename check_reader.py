@@ -4,14 +4,15 @@
 It sits on the open internet, so the quiet ways it goes wrong are about who can do what:
 
   - nothing of the orchestrator's agent side may be reachable: no sessions, terminals, /v1, MCP,
-    image generation or voice download — only documents and speech, and only when signed in;
+    image generation or voice download — only documents, speech and Explain, and only when signed in;
   - one person must never see, change or delete another's documents or speech, whatever name
     they put in the URL;
   - passwords are only ever stored as scrypt hashes, guessing is capped, a wrong name and a
     wrong password look the same, and the session cookie cannot be read by page scripts;
   - another website must not be able to post as a signed-in person (CSRF), and a request for a
     domain the site does not serve is refused;
-  - storage is capped per person, and one person cannot queue up speech for everyone else.
+  - storage is capped per person, and one person cannot queue up speech or explanations for
+    everyone else.
 
 The voice is faked (_tts_generate), so this runs offline and without the 350 MB model.
 
@@ -86,6 +87,8 @@ async def main():
         for path in ("/api/documents", "/api/tts", "/api/me"):
             r = await anon.get(path)
             check(f"{path} needs a session", r.status_code == 401, f"{r.status_code} {r.text[:80]}")
+        r = await anon.post("/api/explain", json={"text": "bank"}, headers={"origin": BASE})
+        check("/api/explain needs a session", r.status_code == 401, f"{r.status_code} {r.text[:80]}")
 
         await sign_in(alice, "alice", "alice-password")
         for method, path in (("GET", "/api/sessions"), ("POST", "/api/spawn"), ("GET", "/api/workspaces"),
@@ -172,6 +175,18 @@ async def main():
             alice.post("/api/tts/speak", json={"text": "Two."}, headers={"origin": BASE}))
         check("one person gets one speech at a time", sorted([first.status_code, second.status_code]) == [200, 429],
               f"{first.status_code} {second.status_code}")
+
+        async def slow_explain(text, context=""):
+            await asyncio.sleep(0.2)
+            return {"term": text}
+        so.explain = slow_explain
+        first, second, speech = await asyncio.gather(
+            alice.post("/api/explain", json={"text": "bank"}, headers={"origin": BASE}),
+            alice.post("/api/explain", json={"text": "bank"}, headers={"origin": BASE}),
+            alice.post("/api/tts/speak", json={"text": "Three."}, headers={"origin": BASE}))
+        check("one explanation at a time per person, not blocked by their speech",
+              sorted([first.status_code, second.status_code]) == [200, 429] and speech.status_code == 200
+              and "explanation" in (first.text + second.text), f"{first.status_code} {second.status_code} {speech.status_code}")
         old = Path(s["path"])
         b = (await bob.post("/api/tts/speak", json={"text": "Bye."}, headers={"origin": BASE})).json()
         fresh = Path(b["path"])

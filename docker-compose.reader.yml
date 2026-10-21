@@ -2,6 +2,7 @@
 #
 #   READER_DOMAIN=reader.example.com docker compose -f docker-compose.reader.yml up -d --build
 #   docker compose -f docker-compose.reader.yml exec reader python reader_server.py adduser alice
+#   docker compose -f docker-compose.reader.yml exec ollama ollama pull gemma3:270m   # for Explain, once
 #
 # READER_DOMAIN must already point at this server, and port 443 must be open. Port 80 is not used:
 # the certificate comes over 443 (TLS-ALPN), so another web server can keep port 80.
@@ -17,8 +18,25 @@ services:
       # Chỉ Caddy với tới được container này (không publish cổng), nên tin X-Forwarded-For của nó
       # để giới hạn đăng nhập đếm theo IP thật của người dùng.
       READER_PROXY: "*"
+      ORCH_LLM_URL: http://ollama:11434
+      ORCH_LLM_MODEL: ${ORCH_LLM_MODEL:-gemma3:270m}
     volumes:
       - reader-data:/data
+
+  # Model cho Explain. KHÔNG publish cổng: Ollama không có mật khẩu — ai với tới 11434 là chạy được
+  # model và tải model mới về máy chủ. Trần 1 GB: gemma3:270m nạp vào chiếm ~320 MB.
+  ollama:
+    image: ollama/ollama:0.40.6
+    restart: unless-stopped
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    volumes:
+      - ollama-data:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
   caddy:
     image: caddy:2.10
@@ -38,3 +56,4 @@ volumes:
   reader-data:
   caddy-data:
   caddy-config:
+  ollama-data:

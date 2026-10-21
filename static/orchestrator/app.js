@@ -3406,6 +3406,7 @@ document.addEventListener("keydown", (e) => {
   // Editor nằm trên Sounds: Esc chỉ hỏi bỏ bản nháp, không đóng luôn Sounds bên dưới.
   if (e.key === "Escape" && !$("sed-modal").hidden) return sedDiscard();
   if (e.key === "Escape" && !$("tts-modal").hidden) return ttsClose();
+  if (e.key === "Escape" && !$("exp-modal").hidden) return expClose();
   if (e.key === "Escape" && !$("pdf-reader").hidden) return pdfClose();
   if (e.key === "Escape" && libIsOpen() && !READER) libClose();   // bản host: Library là cả trang
   if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
@@ -4299,7 +4300,7 @@ $("pdf-side").addEventListener("click", async (ev) => {
   }
 });
 
-// ── Chọn chữ → nút Highlight / Bookmark / Speak nổi cạnh vùng chọn ──
+// ── Chọn chữ → nút Highlight / Bookmark / Speak / Explain nổi cạnh vùng chọn ──
 function pdfSelRange() {
   const sel = getSelection();
   if (!pdf || sel.isCollapsed || !sel.rangeCount || !sel.toString().trim()) return null;
@@ -4425,6 +4426,77 @@ function pdfSpeakSel() {
   ttsOpen(sel.text);
 }
 window.pdfSpeakSel = pdfSpeakSel;
+
+// ── Explain: model nhỏ (Ollama) giải nghĩa chữ chọn ──
+// Câu quanh chỗ chọn (≤ 300 ký tự mỗi bên, cắt ở dấu chấm câu): model cần nó để biết "bank" là bờ
+// sông hay ngân hàng. Chỉ là gợi ý thêm — lỗi gì cũng trả "" chứ không chặn việc hỏi.
+function pdfAround(range) {
+  try {
+    const layer = range.startContainer.parentElement?.closest(".textLayer");
+    if (!layer) return "";
+    const part = (sc, so, ec, eo) => {
+      const r = document.createRange();
+      r.setStart(sc, so);
+      r.setEnd(ec, eo);
+      return r.toString().replace(/\s+/g, " ");
+    };
+    const before = part(layer, 0, range.startContainer, range.startOffset).slice(-300);
+    const after = part(range.endContainer, range.endOffset, layer, layer.childNodes.length).slice(0, 300);
+    return (before.slice(before.search(/[^.!?]*$/)) + range.toString() + after.match(/^[^.!?]*[.!?]?/)[0])
+      .replace(/\s+/g, " ").trim();
+  } catch { return ""; }
+}
+
+function pdfExplainSel() {
+  const sel = pdfPick();
+  if (!sel) return;
+  $("pdf-sel").hidden = true;
+  expOpen(sel.text, pdfAround(sel.range));
+}
+window.pdfExplainSel = pdfExplainSel;
+
+let exp = null, expSeq = 0;
+
+async function expOpen(text, context) {
+  const n = ++expSeq;
+  exp = null;
+  $("exp-modal").hidden = false;
+  $("exp-body").innerHTML = `<div class="exp-term">${esc(text)}</div>`;
+  showMsg("exp-msg", "Thinking… the first answer can take half a minute while the model loads.", true);
+  try {
+    const r = await api("/api/explain", "POST", { text, context });
+    if (n !== expSeq) return;   // đã hỏi chữ khác, hoặc đã đóng, trong lúc chờ
+    exp = r;
+    expPaint(r);
+    $("exp-msg").textContent = "";
+  } catch (e) {
+    if (n === expSeq) showMsg("exp-msg", mcpErr(e), false);
+  }
+}
+
+// Chữ của model đi qua esc() hết: nó đọc chữ trong PDF của người lạ, có thể bị xui viết HTML.
+function expPaint(r) {
+  const para = (title, text) => text ? `<h4>${title}</h4><p>${esc(text)}</p>` : "";
+  const sentence = r.kind === "sentence";
+  $("exp-body").innerHTML = `<div class="exp-term">${esc(r.term)}${badge(esc(r.part_of_speech || r.kind), "b-blue")}</div>
+    <div class="hint">AI guess by ${esc(r.model)} — it can be wrong.</div>
+    ${para("Meaning", r.meaning)}${para("In this text", r.meaning_here)}
+    <h4>${sentence ? "Other ways to say it" : "Examples"}</h4>
+    ${r.examples.length ? `<ul class="exp-ex">${r.examples.map((x, i) => `<li><span>${esc(x)}</span>
+      <button class="secondary" data-say="${i}" title="Read it aloud">Speak</button></li>`).join("")}</ul>`
+      : `<p class="hint">No new examples this time.</p>`}`;
+}
+
+$("exp-body").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-say]");
+  if (b && exp) ttsOpen(exp.examples[+b.dataset.say]);
+});
+
+function expClose() {
+  $("exp-modal").hidden = true;
+  expSeq++;   // trả lời về muộn không vẽ vào dialog đã đóng
+}
+window.expClose = expClose;
 
 // ── Speak text (Kokoro) ──────────────────────────────────────────────────────
 // Đọc ở server (sherpa-onnx), file nằm ở thư mục temp, không vào thư viện. Lần đầu phải tải giọng:
@@ -4978,6 +5050,7 @@ function readerSignedOut() {
     $("pdf-reader").hidden = true;
   }
   ttsClose();
+  expClose();
   $("lib-doc").innerHTML = "";
   libDocKey = "";
   if (first) $("login-name").focus();

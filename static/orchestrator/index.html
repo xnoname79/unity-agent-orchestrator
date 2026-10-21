@@ -905,6 +905,14 @@
     border: 1px solid var(--border); border-radius: var(--r-ctl); box-shadow: var(--sh-2); }
   .pdf-sel[hidden] { display: none; }
   .pdf-sel button { font-size: 12px; padding: 4px 9px; }
+  .exp-term { font-size: 17px; font-weight: 600; margin: 2px 0; overflow-wrap: anywhere; }
+  .exp-term .badge { vertical-align: middle; margin-left: 6px; }
+  .exp-body h4 { margin: 12px 0 4px; font-size: 12.5px; color: var(--muted); }
+  .exp-body p { margin: 0; }
+  .exp-ex { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+  .exp-ex li { display: flex; gap: 8px; align-items: flex-start; }
+  .exp-ex li span { flex: 1; }
+  .exp-ex button { font-size: 12px; padding: 3px 8px; }
   @media (max-width: 720px) { .pdf-side { position: absolute; right: 0; top: 0; bottom: 0; z-index: 4;
     width: min(300px, 85vw); box-shadow: var(--sh-3); } .pdf-main { position: relative; } }
   /* Danh sách cửa sổ trong drawer */
@@ -1433,6 +1441,19 @@
   </div>
 </div>
 
+<!-- Explain: model nhỏ (Ollama) giải nghĩa chữ chọn trong trình đọc PDF. Đặt TRƯỚC tts-modal để
+     Speak một câu ví dụ mở Speak text đè lên trên, đóng nó là quay lại đây. -->
+<div id="exp-modal" class="modal-overlay" onclick="if (event.target === this) expClose()" hidden>
+  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="exp-title">
+    <h3 id="exp-title"><svg class="ic"><use href="#i-book"/></svg> Explain
+      <span class="spacer"></span>
+      <button class="icon-btn" onclick="expClose()" title="Close">
+        <svg class="ic"><use href="#i-x"/></svg></button></h3>
+    <div id="exp-body" class="exp-body" aria-live="polite"></div>
+    <div id="exp-msg" class="form-msg"></div>
+  </div>
+</div>
+
 <!-- Đọc thành tiếng (Kokoro, chạy trên máy này). Mở từ Library; kết quả là một tiếng trong thư
      viện. Lần đầu phải tải giọng (350 MB) — nút Download nằm ngay trong modal. -->
 <div id="tts-modal" class="modal-overlay" onclick="if (event.target === this) ttsClose()" hidden>
@@ -1539,6 +1560,8 @@
     <button class="secondary" onclick="pdfBookmarkSel()"
       title="Add a bookmark at this line">Bookmark</button>
     <button class="secondary" onclick="pdfSpeakSel()" title="Read it aloud — pick the voice and speed">Speak</button>
+    <button class="secondary" onclick="pdfExplainSel()"
+      title="What it means, what kind of word it is, and examples">Explain</button>
   </div>
 </div>
 
