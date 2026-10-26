@@ -1263,7 +1263,8 @@ function startTerm(t) {
   // chữ cao hơn, hàng hở ra thành vạch ngang. Ở cuối thì trình duyệt chỉ với tới nó cho glyph mà
   // các font trước KHÔNG có, tức đúng mấy icon Nerd Font của nvim/lazygit.
   // Font đọc ở máy chạy TRÌNH DUYỆT, không phải máy chạy orchestrator.
-  t.term = new Terminal({ fontSize: 12, cursorBlink: true, scrollback: 5000,
+  // scrollback 1000: TUI bận đổ đầy 5000 dòng sau vài giờ, ~10-15 MB mỗi terminal × số card × số pane.
+  t.term = new Terminal({ fontSize: 12, cursorBlink: true, scrollback: 1000,
                           fontFamily: 'courier-new, courier, monospace, "Iosevka Nerd Font", '
                                       + '"Symbols Nerd Font Mono", "JetBrainsMono Nerd Font"',
                           theme: { background: bg || "#0c0e12", foreground: "#e6e8eb" } });
@@ -3402,6 +3403,7 @@ document.addEventListener("keydown", (e) => {
   // Editor nằm trên Sounds: Esc chỉ hỏi bỏ bản nháp, không đóng luôn Sounds bên dưới.
   if (e.key === "Escape" && !$("sed-modal").hidden) return sedDiscard();
   if (e.key === "Escape" && !$("tts-modal").hidden) return ttsClose();
+  if (e.key === "Escape" && !$("perf-modal").hidden) return perfClose();
   if (e.key === "Escape" && libIsOpen()) libClose();
   if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
   if (e.key === "Escape" && !$("img-modal").hidden) imgClose();
@@ -3545,6 +3547,81 @@ $("tools-menu").addEventListener("beforetoggle", (e) => {
 // Bấm vào workspace (iframe) không tới được trang này nên trình duyệt không tự đóng menu; trang
 // mất focus thì đóng theo.
 addEventListener("blur", () => { if ($("tools-menu").matches(":popover-open")) $("tools-menu").hidePopover(); });
+
+// ── Performance (Tools) ──────────────────────────────────────────────────────
+// Hỏi /api/perf mỗi 2 s khi bảng đang mở (CPU là độ chênh giữa hai lần hỏi). Lời khuyên viết
+// cho người không rành kỹ thuật: cái gì đang ăn máy, và nên làm gì.
+let perfT = 0;
+const fmtMB = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(1) + " GB" : Math.round(b / 1048576) + " MB";
+const fmtAge = (s) => s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} m`
+  : s >= 60 ? `${Math.floor(s / 60)} m` : `${s} s`;
+
+// Số đo của trang này; shell cộng thêm của các pane (iframe cùng origin) — canvas sống ở pane.
+window.perfPage = () => ({ refreshes: refreshLog.filter((t) => Date.now() - t < 60000).length,
+                           terms: Object.keys(cvTerms).length });
+
+function perfPageStats() {
+  const wins = [window, ...[...document.querySelectorAll("#panes iframe")].map((f) => f.contentWindow)];
+  const st = wins.map((w) => { try { return w.perfPage(); } catch { return null; } }).filter(Boolean);
+  return { refreshes: st.reduce((a, x) => a + x.refreshes, 0), terms: st.reduce((a, x) => a + x.terms, 0),
+           heap: performance.memory?.usedJSHeapSize || 0 };   // chỉ Chrome/Edge có performance.memory
+}
+
+function perfOpen() {
+  $("perf-modal").hidden = false;
+  showMsg("perf-msg", "Measuring…", true);
+  perfLoad();
+}
+window.perfOpen = perfOpen;
+
+function perfClose() {
+  $("perf-modal").hidden = true;
+  clearTimeout(perfT);
+}
+window.perfClose = perfClose;
+
+async function perfLoad() {
+  clearTimeout(perfT);
+  if ($("perf-modal").hidden) return;
+  try {
+    perfPaint(await api("/api/perf"), perfPageStats());
+    $("perf-msg").textContent = "";
+  } catch (e) { showMsg("perf-msg", mcpErr(e), false); }
+  if (!$("perf-modal").hidden) perfT = setTimeout(perfLoad, document.hidden ? 10000 : 2000);
+}
+
+function perfPaint(d, page) {
+  const sy = d.system, sv = d.server;
+  const terms = d.processes.filter((p) => p.kind === "terminal");
+  const termRam = terms.reduce((a, p) => a + p.ram, 0);
+  const tips = [];
+  if (sy.ram_used / sy.ram_total > 0.85)
+    tips.push(["red", `Memory is almost full (${fmtMB(sy.ram_used)} of ${fmtMB(sy.ram_total)}). Close agent terminals you are not using, or other apps.`]);
+  if (sy.cpu > 85) tips.push(["red", `The computer is very busy (CPU ${Math.round(sy.cpu)}%).`]);
+  if (terms.length >= 5)
+    tips.push(["amber", `${terms.length} agent terminals are open and use ${fmtMB(termRam)}. Each one is a whole Claude, Codex or agy app — close the ones you are not using.`]);
+  if (sv.lag_ms > 250)
+    tips.push(["amber", `The orchestrator froze for ${sv.lag_ms} ms in the last minute — terminals and the canvas stutter while it does.`]);
+  if (d.zombies)
+    tips.push(["amber", `${d.zombies} finished processes were never cleaned up. Restart the orchestrator to clear them.`]);
+  if (page.refreshes > 30) tips.push(["amber", `This page redrew ${page.refreshes} times in the last minute.`]);
+  if (page.heap > 800 * 1048576) tips.push(["amber", `This page uses ${fmtMB(page.heap)} of memory. Reload it to free it.`]);
+  if (!tips.length) tips.push(["green", "Everything looks fine."]);
+  const label = { red: "high", amber: "check", green: "ok" };
+  $("perf-tips").innerHTML = tips.map(([c, t]) => `<div>${badge(label[c], "b-" + c)} ${esc(t)}</div>`).join("");
+  $("perf-sum").innerHTML = `
+    <div><b>Computer</b> CPU ${Math.round(sy.cpu)}% · memory ${fmtMB(sy.ram_used)} of ${fmtMB(sy.ram_total)}</div>
+    <div><b>Orchestrator</b> CPU ${sv.cpu}% · ${fmtMB(sv.ram)} · running ${fmtAge(sv.uptime)} ·
+      longest freeze in the last minute ${sv.lag_ms} ms</div>
+    <div><b>This page</b> ${page.refreshes} redraws in the last minute · ${page.terms} terminals${
+      page.heap ? " · " + fmtMB(page.heap) + " browser memory" : ""}</div>`;
+  const KIND = { terminal: "Terminal", run: "Run", editor: "Editor", other: "Other" };
+  $("perf-rows").innerHTML = d.processes.map((p) => `<tr>
+      <td>${esc(p.agent || p.name)}${p.workspace ? ` <span class="hint">${esc(p.workspace)}</span>` : ""}</td>
+      <td title="${p.processes} process${p.processes === 1 ? "" : "es"}">${KIND[p.kind] || esc(p.kind)}</td>
+      <td>${p.cpu}%</td><td>${fmtMB(p.ram)}</td><td>${fmtAge(p.age)}</td></tr>`).join("")
+    || `<tr><td colspan="5" class="hint">No agent is running anything right now.</td></tr>`;
+}
 
 function imgClose() {
   $("img-modal").hidden = true;
@@ -4259,6 +4336,7 @@ window.openRun = openRun;
 
 function closeDrawer() {
   openRunId = null;
+  $("dr-body").innerHTML = "";   // run dài có thể để lại hàng nghìn dòng, mở lần sau dựng lại
   $("drawer").classList.remove("open");
   $("drawer-overlay").classList.remove("open");
 }
@@ -4338,6 +4416,8 @@ function appendLiveEvent(ev) {
     last.querySelector(".t").textContent = shortTime(ev.ts);
   } else {
     body.insertAdjacentHTML("beforeend", evRow({ kind: ev.kind, summary: ev.summary, ts: ev.ts }));
+    // Run dài để mở drawer cả buổi: giữ 500 dòng cuối, đầy đủ thì xem lại bằng cách mở run.
+    while (body.childElementCount > 500) body.firstElementChild.remove();
   }
   scrollDrawerBottom();
 }
@@ -4366,7 +4446,25 @@ function setConn(ok) {
   el.textContent = ok ? "live" : "offline";
 }
 
-async function refreshAll() {
+// Một lượt refresh một lúc: lượt chậm mà lượt mới vẫn chen vào là chồng fetch + dựng canvas lên
+// nhau. Mọi lời gọi trong lúc đang chạy gộp thành ĐÚNG một lượt chạy sau, và nhận promise của lượt
+// đó — ai await (vd tạo workspace xong mở tab của nó) vẫn thấy dữ liệu mới.
+let refreshRun = null, refreshNext = null, refreshDirty = false;
+const refreshLog = [];   // thời điểm các lượt refresh — bảng Performance đếm theo phút
+
+function refreshAll() {
+  if (refreshRun) {
+    refreshNext ??= refreshRun.then(() => { refreshNext = null; return refreshAll(); });
+    return refreshNext;
+  }
+  refreshDirty = false;
+  refreshLog.push(Date.now());
+  if (refreshLog.length > 600) refreshLog.shift();
+  refreshRun = refreshNow().finally(() => { refreshRun = null; });
+  return refreshRun;
+}
+
+async function refreshNow() {
   try {
     // Group chỉ có ở shell — pane không có màn Home nên không tốn một lượt gọi cho nó.
     const [workspaces, health, groups] = await Promise.all(
@@ -4427,13 +4525,20 @@ async function refreshAll() {
 // ── Live updates (SSE) ───────────────────────────────────────────────────────
 
 let debounce;
+// Pane đang ẩn (đang xem tab workspace khác) hay tab trình duyệt ở nền: không ai nhìn thì chỉ
+// đánh dấu, hiện lại mới refresh một lượt.
+const unseen = () => document.hidden || (PANE && !!window.frameElement?.hidden);
+
 function scheduleRefresh() {
+  if (unseen()) { refreshDirty = true; return; }
   clearTimeout(debounce);
   debounce = setTimeout(refreshAll, 150);
 }
+document.addEventListener("visibilitychange", () => { if (refreshDirty && !unseen()) scheduleRefresh(); });
 
 function connectSSE() {
-  const es = new EventSource("/api/events");
+  // Chỉ event của workspace này (+ event chung): không lọc thì mỗi pane refresh theo mọi workspace.
+  const es = new EventSource("/api/events" + wsQuery());
   es.addEventListener("ready", () => $("conn").className = "pill live", $("conn").textContent = "live");
   es.onopen = () => { $("conn").className = "pill live"; $("conn").textContent = "live"; };
   es.onmessage = (m) => {
@@ -4441,7 +4546,9 @@ function connectSSE() {
     try { ev = JSON.parse(m.data); } catch { /* keepalive */ }
     if (ev && ev.type === "run_event") appendLiveEvent(ev);  // live vào drawer, không cần refetch
     if (ev && ev.type === "board_ping") boardPing(ev);
-    scheduleRefresh();  // tables (debounced)
+    // run_event là từng bước của run, chỉ drawer cần (đã append ở trên). Refresh theo nó là 6
+    // fetch + dựng lại canvas cho MỖI bước của mọi agent; đầu/cuối run đã có run_start/run.
+    if (ev && ev.type !== "run_event") scheduleRefresh();
   };
   es.onerror = () => {
     $("conn").className = "pill dead"; $("conn").textContent = "reconnecting…";
@@ -4470,7 +4577,10 @@ if (PANE) {
   window.addEventListener("message", (e) => {
     if (e.origin !== location.origin) return;
     const m = e.data || {};
-    if (m.t === "show") requestAnimationFrame(() => Object.values(cvTerms).forEach(fitTerm));
+    if (m.t === "show") {
+      requestAnimationFrame(() => Object.values(cvTerms).forEach(fitTerm));
+      if (refreshDirty) scheduleRefresh();   // lúc ẩn đã bỏ qua refresh
+    }
     else if (m.t === "theme") applyTheme(m.pref);
   });
   refreshAll();
@@ -4507,5 +4617,5 @@ if (PANE) {
   loadTemplates();
   toolsBadge();
   // Màn Home hiện số session mỗi workspace — poll nhẹ, không cần SSE (xem trên).
-  setInterval(() => { if (ACTIVE < 0) refreshAll(); }, 5000);
+  setInterval(() => { if (ACTIVE < 0 && !document.hidden) refreshAll(); }, 5000);
 }

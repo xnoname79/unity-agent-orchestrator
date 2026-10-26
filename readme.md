@@ -35,6 +35,8 @@ installed on your machine, so each provider keeps its own login and subscription
   waveform editor.
 - **Library** — every kept image and sound in one drawer. Upload an mp3 and crop it.
 - **Speak text** — natural English speech made on your machine (Kokoro, 28 US and UK voices).
+- **Performance** — **Tools › Performance** shows what is using your computer's CPU and memory: each
+  agent's terminal, run and editor, the orchestrator itself, and plain advice when something is off.
 - **Media tools** — checks for ffmpeg, ImageMagick, yt-dlp, SoX and ExifTool, and tells you how to
   install what is missing.
 

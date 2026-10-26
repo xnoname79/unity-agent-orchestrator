@@ -50,6 +50,7 @@ import argparse
 import array
 import asyncio
 import base64
+import contextlib
 import importlib.util
 import json
 import math
@@ -66,8 +67,11 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
+import time
 import uuid
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -246,6 +250,10 @@ def _conn():
     conn = sqlite3.connect(_db_path())
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # NORMAL: commit không fsync (WAL vẫn không hỏng được; mất điện chỉ có thể mất vài lượt ghi
+    # cuối). FULL = mỗi bước run là một fsync NGAY TRÊN event loop — máy đang bận ghi đĩa thì đo
+    # được 160+ ms mỗi lượt, terminal và canvas của mọi agent đứng theo.
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -328,6 +336,9 @@ def init_db():
             ts TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
+        -- /api/sessions đếm run hôm nay mỗi lần dashboard refresh; run_loop hỏi signal pending mỗi 5 s.
+        CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at);
+        CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
         -- Hạn mức run/ngày được người dùng nới thêm ("Allow +N") cho từng session, theo ngày.
         -- extra = tổng số run được cộng thêm cho session đó trong ngày `day` (YYYY-MM-DD).
         CREATE TABLE IF NOT EXISTS daily_allowance (
@@ -1135,9 +1146,11 @@ def eligible_signals():
     """Signal sẵn sàng inject: pending & không cần approval, HOẶC đã được approved."""
     _ensure_db()
     conn = _conn()
+    # ORDER BY +id: run_loop hỏi câu này mỗi 5 s; "+" để SQLite dùng idx_signals_status cho hai vế
+    # OR rồi mới sắp xếp, thay vì quét cả bảng theo thứ tự id (bảng chỉ lớn dần).
     rows = conn.execute(
         "SELECT * FROM signals WHERE (status = 'pending' AND requires_approval = 0) "
-        "OR status = 'approved' ORDER BY id"
+        "OR status = 'approved' ORDER BY +id"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -1312,14 +1325,19 @@ def _today():
     return datetime.now().date().isoformat()
 
 
+def _day_range(day):
+    """[day, ngày sau) — so chuỗi ISO theo khoảng thì dùng được idx_runs_started, LIKE thì không."""
+    return day, (datetime.fromisoformat(day) + timedelta(days=1)).date().isoformat()
+
+
 def runs_today(session_id, day=None):
-    """Số run của session trong 1 ngày (mặc định hôm nay). Đếm theo prefix started_at."""
+    """Số run của session trong 1 ngày (mặc định hôm nay), theo started_at."""
     _ensure_db()
     day = day or _today()
     conn = _conn()
     row = conn.execute(
-        "SELECT COUNT(*) c FROM runs WHERE session_id = ? AND started_at LIKE ?",
-        (session_id, day + "%"),
+        "SELECT COUNT(*) c FROM runs WHERE session_id = ? AND started_at >= ? AND started_at < ?",
+        (session_id, *_day_range(day)),
     ).fetchone()
     conn.close()
     return row["c"]
@@ -1371,9 +1389,32 @@ def daily_stats(session_id, day=None):
     """Trạng thái cap-theo-ngày của 1 session: đã dùng / hạn mức / còn lại / có bị chặn không.
     Base cap lấy theo workspace của session (override) rồi mới cộng phần 'Allow +N'."""
     day = day or _today()
-    base = _daily_base_for_session(session_id)
-    used = runs_today(session_id, day)
-    limit = base + daily_extra(session_id, day) if base else 0
+    return _daily_view(_daily_base_for_session(session_id), runs_today(session_id, day),
+                       daily_extra(session_id, day))
+
+
+def daily_stats_all(sessions, day=None):
+    """daily_stats cho cả danh sách bằng MỘT kết nối. /api/sessions gọi mỗi lần dashboard refresh;
+    gọi daily_stats từng session là ~4 kết nối mỗi session — đo 170 ms cho 16 session."""
+    _ensure_db()
+    day = day or _today()
+    conn = _conn()
+    used = dict(conn.execute("SELECT session_id, COUNT(*) FROM runs WHERE started_at >= ? "
+                             "AND started_at < ? GROUP BY session_id", _day_range(day)).fetchall())
+    extra = dict(conn.execute("SELECT session_id, extra FROM daily_allowance WHERE day = ?",
+                              (day,)).fetchall())
+    caps = dict(conn.execute("SELECT id, max_runs_per_day FROM workspaces").fetchall())
+    conn.close()
+    out = {}
+    for s in sessions:
+        cap = caps.get(s.get("workspace_id") or DEFAULT_WORKSPACE)   # như _daily_base_for_session
+        base = int(cap) if cap is not None else MAX_RUNS_PER_DAY
+        out[s["id"]] = _daily_view(base, used.get(s["id"], 0), extra.get(s["id"], 0))
+    return out
+
+
+def _daily_view(base, used, extra):
+    limit = base + extra if base else 0
     return {
         "used_today": used,
         "daily_limit": limit,                       # 0 = tắt cap ngày
@@ -2721,6 +2762,96 @@ def tts_path(name):
         return None
     p = TTS_OUT / name
     return p if p.is_file() else None
+
+
+# ─── Performance (Tools › Performance) ────────────────────────────────────────
+# Máy chậm dần sau vài giờ làm việc mà người dùng không biết vì đâu: bảng này nói thẳng tiến
+# trình nào của orchestrator đang ăn RAM/CPU (terminal của agent nào, run nào, editor nào) và
+# server có bị kẹt không. psutil chỉ nạp khi có người mở bảng — bản cài từ source chưa
+# `pip install -r requirements.txt` lại vẫn chạy được, chỉ bảng này báo thiếu.
+PERF_INSTALL = "python3 -m pip install psutil"
+_perf_procs: dict = {}     # pid → psutil.Process: cpu_percent() đo TỪ LẦN GỌI TRƯỚC nên phải giữ object
+_loop_lag = [0.0]          # event loop bị chặn lâu nhất (giây) trong ~60 s gần nhất
+
+
+async def _lag_sampler():
+    """Ngủ 0.5 s rồi xem thức muộn bao nhiêu: muộn bấy nhiêu là event loop kẹt bấy nhiêu — lúc đó
+    terminal, SSE và lệnh MCP của mọi agent cùng đứng."""
+    window = []
+    while True:
+        t = time.monotonic()
+        await asyncio.sleep(0.5)
+        window = [*window[-119:], time.monotonic() - t - 0.5]
+        _loop_lag[0] = max(window)
+
+
+def _perf_kind(cmd, pid, ids):
+    """(kind, session_id) của một tiến trình con: terminal/editor theo sổ _PTYS, còn lại là run nếu
+    argv mang id của một session (claude --resume <id>, codex exec resume <id>…)."""
+    if pid in _PTYS:
+        return _PTYS[pid]["kind"], _PTYS[pid]["session"]
+    sid = next((ids[a] for a in cmd if a in ids), "")
+    return ("run" if sid else "other"), sid
+
+
+def perf_snapshot():
+    """Ảnh chụp CPU/RAM: cả máy, chính server, và từng tiến trình con (gộp cả cây con của nó —
+    claude kéo theo node, MCP server…). CPU tính theo % CẢ MÁY để các con số so được với nhau."""
+    try:
+        import psutil
+    except ImportError:
+        raise LookupError(f"performance details need psutil — install it: {PERF_INSTALL}") from None
+
+    def proc(pid):
+        if pid not in _perf_procs:
+            _perf_procs[pid] = psutil.Process(pid)
+            _perf_procs[pid].cpu_percent(None)   # mồi: lần đầu luôn trả 0
+        return _perf_procs[pid]
+
+    first = not _perf_procs
+    me = proc(os.getpid())
+    psutil.cpu_percent(None)
+    if first:
+        time.sleep(0.3)   # chạy trong thread; không mồi thì lần mở bảng đầu tiên toàn số 0
+    cores = psutil.cpu_count() or 1
+    sessions = {x["id"]: x for x in list_sessions()}
+    wsn = {w["id"]: w.get("name") or w["id"] for w in list_workspaces()}
+    ids = {}
+    for x in sessions.values():
+        ids[x["id"]] = x["id"]
+        if x.get("resume_id"):
+            ids[x["resume_id"]] = x["id"]
+    seen, out, zombies = {me.pid}, [], 0
+    for child in me.children():
+        try:
+            if child.status() == psutil.STATUS_ZOMBIE:
+                zombies += 1
+                continue
+            p = proc(child.pid)
+            tree = [p] + [proc(c.pid) for c in p.children(recursive=True)]
+            cpu = ram = 0
+            for t in tree:
+                with contextlib.suppress(psutil.Error):
+                    cpu += t.cpu_percent(None)
+                    ram += t.memory_info().rss
+                seen.add(t.pid)
+            kind, sid = _perf_kind(p.cmdline(), p.pid, ids)
+            x = sessions.get(sid) or {}
+            out.append({"pid": p.pid, "name": p.name(), "kind": kind, "session": sid,
+                        "agent": x.get("name") or "", "workspace": wsn.get(x.get("workspace_id"), ""),
+                        "cpu": round(cpu / cores, 1), "ram": ram, "processes": len(tree),
+                        "age": round(time.time() - p.create_time())})
+        except psutil.Error:   # vừa thoát giữa chừng
+            continue
+    for pid in [k for k in _perf_procs if k not in seen]:
+        del _perf_procs[pid]
+    vm = psutil.virtual_memory()
+    return {"system": {"cpu": psutil.cpu_percent(None), "cores": cores,
+                       "ram_used": vm.total - vm.available, "ram_total": vm.total},
+            "server": {"cpu": round(me.cpu_percent(None) / cores, 1), "ram": me.memory_info().rss,
+                       "threads": me.num_threads(), "uptime": round(time.time() - me.create_time()),
+                       "lag_ms": round(_loop_lag[0] * 1000)},
+            "processes": sorted(out, key=lambda r: -r["ram"]), "zombies": zombies}
 
 
 # ─── Card thư mục: duyệt project NGAY TRONG dashboard ─────────────────────────
@@ -4152,12 +4283,30 @@ class _PosixPty:
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
     def close(self):
-        for fn in (lambda: os.kill(self.pid, 15), lambda: os.close(self.fd),
-                   lambda: os.waitpid(self.pid, os.WNOHANG)):
+        for fn in (lambda: os.kill(self.pid, 15), lambda: os.close(self.fd)):
             try:
                 fn()
             except OSError:
                 pass
+        # waitpid(WNOHANG) ngay sau kill luôn hụt (con chưa kịp chết) → zombie tích tới lúc restart
+        # (đo: 36 sau 2.4 giờ). Đợi ở thread riêng để không chặn event loop.
+        threading.Thread(target=_reap, args=(self.pid,), daemon=True).start()
+
+
+def _reap(pid, grace=5.0):
+    """Thu xác con: đợi tối đa grace giây sau SIGTERM, TUI kẹt không chịu thoát thì SIGKILL."""
+    end = time.monotonic() + grace
+    while time.monotonic() < end:
+        try:
+            if os.waitpid(pid, os.WNOHANG)[0]:
+                return
+        except ChildProcessError:
+            return
+        time.sleep(0.1)
+    with contextlib.suppress(OSError):
+        os.kill(pid, 9)
+    with contextlib.suppress(ChildProcessError):
+        os.waitpid(pid, 0)
 
 
 class _WinPty:
@@ -4166,6 +4315,7 @@ class _WinPty:
     def __init__(self, argv, cwd, env):
         from winpty import PtyProcess
         self.p = PtyProcess.spawn(argv, cwd=cwd, env=env, dimensions=(24, 80))
+        self.pid = self.p.pid
 
     def read(self):
         try:
@@ -4184,6 +4334,13 @@ class _WinPty:
             self.p.terminate(force=True)
         except Exception:  # noqa: BLE001 — đã chết rồi thì thôi
             pass
+
+
+# Mỗi terminal/editor đang mở giữ CHẶT một thread (read chặn tới khi có byte). Pool mặc định của
+# asyncio chỉ ~20 thread và còn phục vụ mọi asyncio.to_thread (TTS, đọc sóng âm…) — ~20 card là
+# terminal mới treo và mọi thứ khác xếp hàng sau. Pool riêng, thread chỉ sinh khi cần.
+_PTY_POOL = ThreadPoolExecutor(max_workers=256, thread_name_prefix="pty")
+_PTYS: dict = {}     # pid → {session, kind: terminal|editor} của PTY đang mở (bảng Performance)
 
 
 def pty_backend():
@@ -6566,6 +6723,11 @@ def build_app():
     # streamable_http_app() tạo ASGI sub-app + session manager (lazy). Mỗi sub-app có
     # lifespan riêng (chạy session manager) — phải nối vào lifespan cha, nếu không
     # /mcp sẽ lỗi 500 vì session manager chưa khởi động.
+    # Stateless: mỗi CLI mở 4 phiên MCP và không bao giờ xoá; giữ phiên thì bộ nhớ chỉ tăng (đo: ~300
+    # phiên / 2.4 giờ). Không tool nào giữ gì giữa các lượt gọi. Đặt ở đây chứ không trong từng
+    # module để signal_mcp chạy độc lập vẫn như cũ.
+    for m in (signal_mcp, library_mcp, board_mcp, voice_mcp):
+        m.mcp.settings.stateless_http = True
     signal_app = signal_mcp.mcp.streamable_http_app()
     library_app = library_mcp.mcp.streamable_http_app()
     board_app = board_mcp.mcp.streamable_http_app()
@@ -6683,7 +6845,10 @@ def build_app():
             return JSONResponse({"error": "not found"}, status_code=404)
         if wid == DEFAULT_WORKSPACE:
             return JSONResponse({"error": "the default workspace cannot be deleted"}, status_code=400)
+        gone = [s["id"] for s in list_sessions() if s.get("workspace_id") == wid]
         res = delete_workspace(wid)
+        for sid in gone:
+            await editor_stop(sid)
         publish({"type": "workspace", "id": wid, "status": "deleted", "workspace_id": wid})
         return JSONResponse({"id": wid, "deleted": True, **res})
 
@@ -6742,10 +6907,10 @@ def build_app():
         # tenant thì con số không có nghĩa.
         pairs = pair_counts(wsf) if wsf else {}
         threads = board_threads()
+        sessions = [s for s in list_sessions() if not wsf or s.get("workspace_id") == wsf]
+        daily = daily_stats_all(sessions)
         out = []
-        for s in list_sessions():
-            if wsf and s.get("workspace_id") != wsf:
-                continue
+        for s in sessions:
             name = s.get("name") or ""
             # Chỉ liệt kê cặp ĐÃ trao đổi trong chu kỳ này; cặp 0 lượt là nhiễu.
             peers = sorted(
@@ -6755,7 +6920,7 @@ def build_app():
             # skill_missing đi kèm LIST chứ không phải endpoint riêng cho từng card: dashboard
             # poll /api/sessions mỗi 5s và đã sát trần 6 kết nối/origin (xem note ở trên), thêm
             # N request nữa mỗi vòng là tự bóp mình. Giá ở đây = 3 stat() / session / vòng.
-            out.append({**s, **daily_stats(s["id"]), "pairs": peers,
+            out.append({**s, **daily[s["id"]], "pairs": peers,
                         "skill_missing": _skill_missing_roots(s.get("cwd") or "", name),
                         "board": threads.get(s["id"])})
         return JSONResponse(out)
@@ -7002,6 +7167,7 @@ def build_app():
         if not s:
             return JSONResponse({"error": "not found"}, status_code=404)
         unregister_session(sid)
+        await editor_stop(sid)   # nvim (+ pyright/gopls) sống tiếp trong tmux mà UI không còn card để đóng
         publish({"type": "session", "id": sid, "status": "removed", "workspace_id": s.get("workspace_id")})
         return JSONResponse({"id": sid, "removed": True})
 
@@ -7076,7 +7242,7 @@ def build_app():
         _write_role_skill(cwd, name, _role_skill(cwd, name))
         return JSONResponse({"written": [str(_skill_path(cwd, name, r)) for r in missing]})
 
-    async def _ws_pty(websocket, argv_for):
+    async def _ws_pty(websocket, argv_for, kind):
         """PTY thật trong browser (xterm.js): spawn argv_for(session) tại cwd của session, bơm 2
         chiều qua WebSocket.
         Client gửi JSON {t:'i', d:<keys>} (input) và {t:'r', c, r} (resize); server gửi bytes thô.
@@ -7115,10 +7281,11 @@ def build_app():
             return
 
         loop = asyncio.get_running_loop()
+        _PTYS[term.pid] = {"session": sid, "kind": kind}
 
         async def pump_out():
             while True:
-                data = await loop.run_in_executor(None, term.read)
+                data = await loop.run_in_executor(_PTY_POOL, term.read)
                 if not data:
                     break
                 await websocket.send_bytes(data)
@@ -7148,6 +7315,13 @@ def build_app():
         finally:
             out_task.cancel()
             term.close()
+            _PTYS.pop(term.pid, None)
+
+    async def api_perf(request: Request):
+        try:
+            return JSONResponse(await asyncio.to_thread(perf_snapshot))
+        except LookupError as e:
+            return JSONResponse({"error": str(e), "install": PERF_INSTALL}, status_code=409)
 
     async def api_skill_templates(request: Request):
         return JSONResponse(_list_skill_templates())
@@ -7560,11 +7734,11 @@ def build_app():
     async def ws_terminal(websocket):
         """Terminal của agent: claude/codex/agy interactive trong PTY (xem terminal_argv)."""
         return await _ws_pty(
-            websocket, lambda s: terminal_argv(s, websocket.query_params.get("cli", "")))
+            websocket, lambda s: terminal_argv(s, websocket.query_params.get("cli", "")), "terminal")
 
     async def ws_editor(websocket):
         """Card editor: nvim trong PTY, bọc tmux nếu máy có (xem editor_argv)."""
-        return await _ws_pty(websocket, editor_argv)
+        return await _ws_pty(websocket, editor_argv, "editor")
 
     async def api_cli_sessions(request: Request):
         """Phiên CLI đã có trong một thư mục — để terminal card chọn phiên muốn chat tiếp.
@@ -7986,7 +8160,9 @@ def build_app():
         ws_filter = request.query_params.get("workspace_id") or None
         if ws_filter is not None and not get_workspace(ws_filter):
             return JSONResponse({"error": f"workspace '{ws_filter}' does not exist"}, status_code=404)
-        q: asyncio.Queue = asyncio.Queue()
+        # Có trần: tab nền bị trình duyệt đóng băng vẫn giữ kết nối, hàng đợi của nó không ai đọc.
+        # publish() bỏ qua QueueFull — tab đó mất vài event cũ, lần refresh sau là đủ.
+        q: asyncio.Queue = asyncio.Queue(maxsize=1000)
         sub = (q, ws_filter)
         _subscribers.add(sub)
 
@@ -8220,6 +8396,7 @@ def build_app():
             await stack.enter_async_context(voice_app.router.lifespan_context(app))
             task = asyncio.create_task(run_loop())
             btask = asyncio.create_task(board_loop())
+            ltask = asyncio.create_task(_lag_sampler())
             print(f"[orchestrator] Dashboard: http://{ORCH_HOST}:{ORCH_PORT}")
             print(f"[orchestrator] API docs:  http://{ORCH_HOST}:{ORCH_PORT}/docs"
                   + (f"  (dry_run={DRY_RUN})" if DRY_RUN else ""))
@@ -8249,6 +8426,7 @@ def build_app():
             finally:
                 task.cancel()
                 btask.cancel()
+                ltask.cancel()
                 # KHÔNG đóng card editor ở đây. Phiên nvim sống trong tmux và CỐ Ý sống tiếp qua
                 # restart — mở lại dashboard là còn nguyên buffer. Đây chính là chỗ bản VS Code cũ
                 # phải dọn tay: serve-web mồ côi mà UI không còn thấy để đóng. tmux không có vấn
@@ -8306,6 +8484,7 @@ def build_app():
         Route("/api/sounds", api_sounds_extract, methods=["POST"]),
         Route("/api/sounds/search", api_sounds_search, methods=["POST"]),
         Route("/api/sounds/upload", api_sounds_upload, methods=["POST"]),
+        Route("/api/perf", api_perf),
         Route("/api/tts", api_tts),
         Route("/api/tts/download", api_tts_download, methods=["POST"]),
         Route("/api/tts/speak", api_tts_speak, methods=["POST"]),
@@ -8428,8 +8607,9 @@ def serve():
     # timeout_graceful_shutdown giữ lại làm chốt chặn cuối: một response dở dang nào KHÁC cũng đủ
     # giữ Ctrl-C lại vô hạn.
     try:
+        # access_log=False: mỗi lượt gọi MCP của mọi agent là một dòng log (journal đo được 2.7 GB).
         _Server(uvicorn.Config(build_app(), host=ORCH_HOST, port=ORCH_PORT,
-                               timeout_graceful_shutdown=5)).run()
+                               timeout_graceful_shutdown=5, access_log=False)).run()
     except KeyboardInterrupt:
         # Ctrl-C là cách tắt BÌNH THƯỜNG, không phải lỗi. Server.run() gọi asyncio.run(), và
         # asyncio.run() của 3.11 dựng lại KeyboardInterrupt sau khi loop dừng — không nuốt ở đây

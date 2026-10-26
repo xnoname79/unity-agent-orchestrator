@@ -13,6 +13,9 @@ uvicorn
 # /v1/images/edits nhận multipart (client.images.edit của SDK OpenAI); starlette chỉ đọc được form
 # khi có gói này. Đang tới theo mcp, khai tường minh cùng lý do như hai dòng trên.
 python-multipart
+# Tools › Performance: CPU/RAM từng tiến trình, như nhau trên Windows, macOS, Linux. Nạp lười —
+# thiếu thì chỉ bảng đó báo, server vẫn chạy.
+psutil
 # Đọc thành tiếng (Kokoro). Model 350 MB KHÔNG ở đây: tải một lần khi người dùng bấm Download.
 sherpa-onnx
 # Terminal nhúng trên Windows: stdlib KHÔNG bọc ConPTY, pty/termios/fcntl là module Unix.

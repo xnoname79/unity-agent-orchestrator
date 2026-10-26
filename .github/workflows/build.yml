@@ -78,6 +78,7 @@ jobs:
           python check_sounds.py
           python check_library.py
           python check_tts.py
+          python check_perf.py
 
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean
