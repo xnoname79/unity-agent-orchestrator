@@ -647,6 +647,24 @@ def get_workspace_by_name(name):
     return dict(row) if row else None
 
 
+def workspace_name_taken(name, except_id=None):
+    """Đã có workspace KHÁC mang tên này chưa (không phân biệt hoa thường, bỏ khoảng trắng hai đầu).
+    Bỏ qua 'default': nó bị giấu khi rỗng, chặn tên mà người dùng không thấy được thì khó hiểu.
+    casefold ở Python chứ không lower() của SQLite — lower() chỉ biết ASCII, tên tiếng Việt lọt."""
+    key = (name or "").strip().casefold()
+    return bool(key) and any((w["name"] or "").strip().casefold() == key
+                             for w in list_workspaces()
+                             if w["id"] not in (except_id, DEFAULT_WORKSPACE))
+
+
+def rename_workspace(workspace_id, name):
+    conn = _conn()
+    conn.execute("UPDATE workspaces SET name = ? WHERE id = ?", (name, workspace_id))
+    conn.commit()
+    conn.close()
+    return get_workspace(workspace_id)
+
+
 def lookup_or_create_workspace(name, max_runs_per_day=None):
     """Idempotent theo NAME: đã có tên đó thì trả workspace cũ, chưa có thì tạo mới. FE chỉ cần
     gửi tên (vd user id/email) là nhận lại 1 workspace ổn định — gọi bao nhiêu lần cũng 1 kết quả.
@@ -6794,8 +6812,12 @@ def build_app():
             body = await request.json()
         except Exception:  # noqa: BLE001
             body = {}
+        name = (body.get("name") or "").strip()
+        if workspace_name_taken(name):
+            return JSONResponse({"error": f"a workspace named '{name}' already exists"},
+                                status_code=409)
         mrpd = body.get("max_runs_per_day")
-        ws = create_workspace(body.get("name", ""), int(mrpd) if mrpd is not None else None,
+        ws = create_workspace(name, int(mrpd) if mrpd is not None else None,
                               body.get("group_id") or DEFAULT_GROUP)
         publish({"type": "workspace", "id": ws["id"], "status": "active", "workspace_id": ws["id"]})
         return JSONResponse(ws)
@@ -6821,6 +6843,22 @@ def build_app():
         ws = get_workspace(request.path_params["wid"])
         if not ws:
             return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(ws)
+
+    async def api_rename_workspace(request: Request):
+        """POST {name}: đổi tên hiển thị. id + thư mục giữ nguyên — mọi thứ tham chiếu theo id."""
+        wid = request.path_params["wid"]
+        if not get_workspace(wid):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        body = await _body(request)
+        name = (body.get("name") or "").strip()
+        if not name:
+            return JSONResponse({"error": "name is required"}, status_code=400)
+        if workspace_name_taken(name, except_id=wid):
+            return JSONResponse({"error": f"a workspace named '{name}' already exists"},
+                                status_code=409)
+        ws = rename_workspace(wid, name)
+        publish({"type": "workspace", "id": wid, "status": ws["status"], "workspace_id": wid})
         return JSONResponse(ws)
 
     async def _set_ws_status(request: Request, status: str):
@@ -8445,6 +8483,7 @@ def build_app():
         Route("/api/workspaces/lookup", api_lookup_workspace, methods=["POST"]),
         Route("/api/workspaces/{wid}", api_workspace_detail),
         Route("/api/workspaces/{wid}", api_delete_workspace, methods=["DELETE"]),
+        Route("/api/workspaces/{wid}", api_rename_workspace, methods=["POST"]),
         Route("/api/workspaces/{wid}/group", api_move_workspace_group, methods=["POST"]),
         Route("/api/workspaces/{wid}/suspend", api_suspend_workspace, methods=["POST"]),
         Route("/api/workspaces/{wid}/activate", api_activate_workspace, methods=["POST"]),

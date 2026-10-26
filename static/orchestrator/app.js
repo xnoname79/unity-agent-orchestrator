@@ -390,19 +390,45 @@ const groupName = (gid) => (GROUPS.find((g) => g.id === gid) || {}).name || gid;
 // tab chỉ còn cái đang mở dở, chứ không phải toàn bộ máy (renderShellTabs cộng phần đó vào).
 const wsOfGroup = (gid) => (gid ? WORKSPACES.filter((w) => w.group_id === gid) : []);
 
+// Hỏi tên workspace, hỏi lại tới khi không trùng tên workspace KHÁC (so như server:
+// trim + không phân biệt hoa thường). null = bấm Cancel. Server vẫn chặn lần nữa (409).
+function askWsName(msg, cur = "", exceptId = "") {
+  for (let name = cur; ;) {
+    name = prompt(msg, name);
+    if (name === null) return null;
+    name = name.trim();
+    const key = name.toLocaleLowerCase();
+    if (!key || !WORKSPACES.some((w) => w.id !== exceptId && w.id !== "default"
+        && (w.name || "").trim().toLocaleLowerCase() === key)) return name;
+    msg = `A workspace named '${name}' already exists. Pick another name:`;
+  }
+}
+
 // Tạo workspace mới (orchestrator sinh id + mkdir thư mục). Hỏi tên hiển thị.
 async function newWorkspace() {
-  const name = prompt("New workspace name (display label):", "");
+  const name = askWsName("New workspace name (display label):");
   if (name === null) return;
   try {
     const w = await api("/api/workspaces", "POST",
-      { name: name.trim(), group_id: CURGROUP || undefined });
+      { name, group_id: CURGROUP || undefined });
     await refreshAll();               // grid phải có card mới trước khi mở nó thành tab
     selectWorkspace(w.id);
     alert(`Created workspace '${w.name}'\nid: ${w.id}\nfolder: ${w.root_dir}`);
   } catch (e) { console.error(e); alert("Could not create workspace: " + e); }
 }
 window.newWorkspace = newWorkspace;
+
+// Đổi tên chỉ đổi nhãn: id, thư mục và agent bên trong giữ nguyên.
+// Chỉ nhận id: tên có dấu ' mà nhét vào onclick='...' là vỡ JS.
+async function renameWs(wid) {
+  const cur = (WORKSPACES.find((w) => w.id === wid) || {}).name || wid;
+  const name = askWsName("Rename workspace:", cur, wid);
+  if (!name || name === cur) return;
+  try { await api(`/api/workspaces/${encodeURIComponent(wid)}`, "POST", { name }); }
+  catch (e) { alert("Could not rename that workspace: " + (e.message || e)); return; }
+  await refreshAll();
+}
+window.renameWs = renameWs;
 
 // Render: grid Home (shell) + dropdown workspace ở form spawn.
 function renderWorkspaces(list) {
@@ -461,7 +487,10 @@ function wsCardHtml(w) {
     <h3>${esc(w.name || w.id)}</h3>
     <div class="ws-id">${esc(w.id)}</div>
     <div class="ws-meta"><span class="ws-count">${w.sessions}</span> session · ${st}
-      ${w.id === "default" ? "" : `<button class="icon-btn danger ws-del"
+      <button class="icon-btn ws-del" title="Rename this workspace"
+        onclick="event.stopPropagation();renameWs('${esc(w.id)}')"
+        >${ic("edit", "sm")}</button>
+      ${w.id === "default" ? "" : `<button class="icon-btn danger"
         title="Unregister every agent in this workspace, then delete the empty workspace"
         onclick="event.stopPropagation();deleteWs('${esc(w.id)}','${esc(w.name || w.id)}',${w.sessions})"
         >${ic("trash", "sm")}</button>`}</div>

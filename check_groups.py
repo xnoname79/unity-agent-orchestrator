@@ -109,6 +109,31 @@ async def main():
         check("moving a workspace that does not exist is 404", r.status_code == 404,
               str(r.status_code))
 
+        # ── tên workspace: đổi được, không trùng (trim + không phân biệt hoa thường) ──
+        r = await c.post("/api/workspaces", json={"name": "  TEAM-A "})
+        check("creating a workspace with a name already in use is refused",
+              r.status_code == 409, f"{r.status_code} {r.text[:80]}")
+        r = await c.post(f"/api/workspaces/{b['id']}", json={"name": "Đội Bếp"})
+        check("a workspace can be renamed", r.json().get("name") == "Đội Bếp", r.text[:80])
+        check("renaming keeps its id and folder",
+              r.json()["root_dir"] == b["root_dir"] and r.json()["id"] == b["id"], r.text[:120])
+        r = await c.post(f"/api/workspaces/{a['id']}", json={"name": "đội bếp"})
+        check("renaming onto another workspace's name is refused, accents included",
+              r.status_code == 409, f"{r.status_code} {r.text[:80]}")
+        r = await c.post(f"/api/workspaces/{b['id']}", json={"name": "đội BẾP"})
+        check("changing only the case of its own name is fine",
+              r.status_code == 200 and r.json()["name"] == "đội BẾP", r.text[:80])
+        r = await c.post(f"/api/workspaces/{b['id']}", json={"name": "  "})
+        check("renaming a workspace to nothing is refused", r.status_code == 400,
+              str(r.status_code))
+        r = await c.post("/api/workspaces/ws_nope", json={"name": "x"})
+        check("renaming a workspace that does not exist is 404", r.status_code == 404,
+              str(r.status_code))
+        r = await c.post("/api/workspaces", json={"name": "default"})
+        check("the hidden default workspace does not block its name",
+              r.status_code == 200, f"{r.status_code} {r.text[:80]}")
+        await c.delete(f"/api/workspaces/{r.json()['id']}")
+
         r = (await c.post(f"/api/groups/{work['id']}", json={"name": "day job"})).json()
         check("a group can be renamed", r["name"] == "day job", str(r))
         r = await c.post(f"/api/groups/{work['id']}", json={"name": ""})
