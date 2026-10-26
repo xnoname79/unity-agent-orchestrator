@@ -10,6 +10,7 @@ from PyInstaller.utils.hooks import collect_all
 datas = [
     ("static", "static"),                    # dashboard (index.html, app.js, vendor xterm)
     (".claude/skills", ".claude/skills"),    # template vai cho dropdown spawn
+    ("LICENSE", "."),                        # MIT: bản build cũng phải kèm notice
 ]
 binaries, hiddenimports = [], [
     # 3 module MCP được import BÊN TRONG build_app() — PyInstaller vẫn thấy, khai thêm cho chắc.

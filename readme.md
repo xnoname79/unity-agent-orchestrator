@@ -247,3 +247,7 @@ Logs: `journalctl --user -u orchestrator -f`.
 
 From source: `git pull`, then `pip install -r requirements.txt`, then restart. Prebuilt: download
 the new zip and replace the folder, keeping your `.env`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
