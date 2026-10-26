@@ -53,7 +53,6 @@ import base64
 import importlib.util
 import json
 import math
-import mimetypes
 import operator
 import os
 import re
@@ -2340,194 +2339,6 @@ def sound_download_name(p):
     return (title or p.stem) + p.suffix
 
 
-# ─── Documents: PDF người dùng tải lên để đọc trong dashboard ──────────────────
-# Trình đọc (pdf.js, vendor/pdfjs) chạy hết trong trình duyệt; server chỉ giữ file và TRẠNG THÁI
-# đọc của từng file trong .json cạnh nó: vị trí lần cuối, bookmark (mỗi cái một dòng, đặt tên được —
-# lần mở sau nhảy tới cái vừa thêm hay vừa tới gần nhất), highlight. Toạ độ là đơn vị PDF (gốc dưới-trái) nên zoom kiểu gì cũng khớp chữ.
-DOCS_DIR = DB_DIR / "documents"
-DOC_UPLOAD_MAX = 200 * 1024 * 1024
-_DOC_NAME_OK = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}\.pdf$")
-_DOC_ID_OK = re.compile(r"^[\w-]{1,40}$")
-_DOC_SCALE_OK = re.compile(r"^(auto|page-width|page-fit|page-actual|\d{1,2}(\.\d{1,4})?)$")
-_DOC_COLOR_OK = re.compile(r"^#[0-9a-f]{6}$")
-DOC_MAX_BOOKMARKS = 500
-DOC_MAX_HIGHLIGHTS = 2000
-DOC_TEXT_MAX = 3000        # ký tự mỗi highlight = TTS_MAX_CHARS: quote nào cũng đọc to được một lần
-DOC_RECTS_MAX = 500        # ô chữ nhật mỗi highlight ≈ 2 trang dày chữ
-
-
-async def doc_upload(chunks, filename="", home=None, limit=None):
-    """Một PDF → thư viện. Ghi ra đĩa từng mẩu, có trần, như sound_upload. home: thư mục tài liệu
-    (mặc định DOCS_DIR; bản host mỗi người một thư mục). limit: chỗ trống còn lại, nếu có hạn mức."""
-    home = home or DOCS_DIR
-    cap = DOC_UPLOAD_MAX if limit is None else min(limit, DOC_UPLOAD_MAX)
-    home.mkdir(parents=True, exist_ok=True)
-    dst = home / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.pdf"
-    size, ok = 0, False
-    try:
-        with open(dst, "wb") as f:
-            async for chunk in chunks:
-                size += len(chunk)
-                if size > cap:
-                    raise ValueError(f"documents up to {DOC_UPLOAD_MAX // 2**20} MB" if cap == DOC_UPLOAD_MAX
-                                     else f"not enough space left — {cap // 2**20} MB free")
-                f.write(chunk)
-        with open(dst, "rb") as f:
-            head = f.read(1024)
-        # Chuẩn cho phép rác trước %PDF- (trong 1 KB đầu), pdf.js cũng nhận vậy.
-        if b"%PDF-" not in head:
-            raise ValueError("only PDF files for now")
-        name = str(filename or "")[:160]
-        _doc_write(dst, {"title": name[:-4] if name.lower().endswith(".pdf") else name,
-                         "uploaded": name, "created": _now()})
-        ok = True
-    finally:
-        if not ok:
-            dst.unlink(missing_ok=True)
-    return _doc_item(dst)
-
-
-def doc_path(name, home=None):
-    """File PDF mang tên này, hoặc None. Tên từ URL — chỉ nhận đúng mẫu ta đặt."""
-    if not _DOC_NAME_OK.match(name or ""):
-        return None
-    p = (home or DOCS_DIR) / name
-    return p if p.is_file() else None
-
-
-def doc_meta(p):
-    try:
-        meta = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        meta = {}
-    if not isinstance(meta, dict):
-        return {}
-    # Bản trước chỉ có MỘT bookmark ("bookmark"): đọc ra thành danh sách; lần ghi sau lưu dạng mới.
-    old = meta.pop("bookmark", None)
-    if isinstance(old, dict) and "bookmarks" not in meta:
-        meta["bookmarks"] = [{**old, "id": "bm-first", "name": " ".join(str(old.get("text", "")).split()[:6]),
-                              "used": old.get("created", "")}]
-    return meta
-
-
-def _doc_write(p, meta):
-    # tmp rồi replace: ghi hỏng giữa chừng (mất điện, đĩa đầy) không được xoá sạch highlight cũ.
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, p.with_suffix(".json"))
-
-
-def _doc_item(p):
-    m = doc_meta(p)
-    bms = m.get("bookmarks") or []
-    # page = trang sẽ mở: bookmark vừa thêm/vừa tới gần nhất, không có thì chỗ đọc lần cuối.
-    page = max(bms, key=lambda b: b.get("used", ""))["page"] if bms else (m.get("pos") or {}).get("page")
-    return {"name": p.name, "title": m.get("title") or p.stem, "created": m.get("created", ""),
-            "size": p.stat().st_size, "pages": m.get("pages"), "page": page,
-            "bookmarks": len(bms), "highlights": len(m.get("highlights") or [])}
-
-
-def list_docs(home=None):
-    """Tài liệu đã tải lên, mới nhất trước."""
-    return sorted((_doc_item(p) for p in (home or DOCS_DIR).glob("*.pdf") if _DOC_NAME_OK.match(p.name)),
-                  key=lambda i: i["name"], reverse=True)
-
-
-def _doc_obj(v, what):
-    if not isinstance(v, dict):
-        raise ValueError(f"{what} must be an object")
-    return v
-
-
-def _doc_int(v, what, hi=100_000):
-    if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= hi:
-        raise ValueError(f"{what} must be a whole number from 1 to {hi}")
-    return v
-
-
-def _doc_num(v, what):
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
-        raise ValueError(f"{what} must be a number")
-    return round(float(v), 2)
-
-
-def _doc_str(v, what, most, pattern=None):
-    if not isinstance(v, str) or len(v) > most or (pattern and not pattern.match(v)):
-        raise ValueError(f"{what} is not valid")
-    return v
-
-
-def _doc_list(v, what, most, item):
-    if not isinstance(v, list) or len(v) > most:
-        raise ValueError(f"{what}: a list of up to {most}")
-    return [item(x) for x in v]
-
-
-def _doc_rect(r):
-    # [trang, x1, y1, x2, y2]: một highlight có thể vắt qua hai trang.
-    if not isinstance(r, list) or len(r) != 5:
-        raise ValueError("a highlight box is [page, x1, y1, x2, y2]")
-    return [_doc_int(r[0], "highlight page")] + [_doc_num(x, "highlight box") for x in r[1:]]
-
-
-def _doc_highlight(h):
-    h = _doc_obj(h, "a highlight")
-    rects = _doc_list(h.get("rects"), "highlight boxes", DOC_RECTS_MAX, _doc_rect)
-    if not rects:
-        raise ValueError("a highlight needs at least one box")
-    return {"id": _doc_str(h.get("id"), "highlight id", 40, _DOC_ID_OK),
-            "page": _doc_int(h.get("page"), "highlight page"),
-            "text": _doc_str(h.get("text"), f"highlight text (up to {DOC_TEXT_MAX} characters)",
-                             DOC_TEXT_MAX),
-            "rects": rects,
-            "color": _doc_str(h.get("color", "#ffd54f"), "highlight colour", 7, _DOC_COLOR_OK),
-            "created": _doc_str(h.get("created", ""), "highlight time", 40)}
-
-
-def _doc_bookmark(v):
-    # Một dòng đã bookmark: y1 = mép trên, y2 = mép dưới (đơn vị PDF); text = chữ của dòng để nhận ra,
-    # name = tên người dùng đặt; used = lúc thêm hay lúc bấm Go gần nhất (cái mới nhất là chỗ mở lại).
-    v = _doc_obj(v, "a bookmark")
-    return {"id": _doc_str(v.get("id"), "bookmark id", 40, _DOC_ID_OK),
-            "name": _doc_str(v.get("name", ""), "bookmark name (up to 120 characters)", 120),
-            "page": _doc_int(v.get("page"), "bookmark page"), "y1": _doc_num(v.get("y1"), "bookmark top"),
-            "y2": _doc_num(v.get("y2"), "bookmark bottom"),
-            "text": _doc_str(v.get("text", ""), "bookmark text (up to 300 characters)", 300),
-            "created": _doc_str(v.get("created", ""), "bookmark time", 40),
-            "used": _doc_str(v.get("used", ""), "bookmark time", 40)}
-
-
-def _doc_pos(v):
-    v = _doc_obj(v, "the reading position")
-    return {"page": _doc_int(v.get("page"), "page"), "top": _doc_num(v.get("top"), "top"),
-            "left": _doc_num(v.get("left"), "left")}
-
-
-# Mỗi khoá trình đọc được ghi, và cách kiểm. Khoá nào không gửi thì giữ nguyên: lưu vị trí cuộn
-# (vài giây một lần) không bao giờ đè lên danh sách highlight.
-_DOC_FIELDS = {
-    "pages": lambda v: _doc_int(v, "pages"),
-    "scale": lambda v: _doc_str(v, "zoom", 12, _DOC_SCALE_OK),
-    "pos": _doc_pos,
-    "bookmarks": lambda v: _doc_list(v, "bookmarks", DOC_MAX_BOOKMARKS, _doc_bookmark),
-    "highlights": lambda v: _doc_list(v, "highlights", DOC_MAX_HIGHLIGHTS, _doc_highlight),
-}
-
-
-def doc_update(name, body, home=None):
-    """Ghi một phần trạng thái đọc. Kiểm HẾT trước, ghi sau: một trường sai là không ghi gì."""
-    p = doc_path(name, home)
-    if not p:
-        raise LookupError("no such document")
-    body = _doc_obj(body, "the request")
-    # shortcut: hai tab cùng mở một PDF thì danh sách highlight của tab ghi sau thắng; thêm
-    # endpoint thêm/xoá từng cái khi có người thật sự đọc một file ở hai nơi.
-    new = {k: check(body[k]) for k, check in _DOC_FIELDS.items() if k in body}
-    meta = {**doc_meta(p), **new}
-    _doc_write(p, meta)
-    return {**meta, "name": p.name}
-
-
 # ─── Library cho agent: tìm và "nhìn" media đã giữ lại ─────────────────────────
 # Agent không có tai: một tiếng với nó chỉ là tiêu đề và độ dài. sound_inspect đo thay bằng
 # ffmpeg — cùng thuật toán inspect_audio của Signal (server/sound.mjs) để hai nơi mô tả một file
@@ -2876,10 +2687,8 @@ def _write_wav(dst, samples, rate):
         w.writeframes(pcm.tobytes())
 
 
-async def tts_speak(text, voice=TTS_DEFAULT_VOICE, speed=1.0, by="", out=None):
-    """Đọc text thành một file WAV trong out (mặc định TTS_OUT: thư mục tạm, mất khi khởi động lại
-    máy; bản host mỗi người một thư mục)."""
-    out = out or TTS_OUT
+async def tts_speak(text, voice=TTS_DEFAULT_VOICE, speed=1.0, by=""):
+    """Đọc text thành một file WAV trong TTS_OUT (thư mục tạm, mất khi khởi động lại máy)."""
     text = str(text or "").strip()
     if not text or len(text) > TTS_MAX_CHARS:
         raise ValueError(f"give the text to speak, up to {TTS_MAX_CHARS} characters")
@@ -2899,128 +2708,19 @@ async def tts_speak(text, voice=TTS_DEFAULT_VOICE, speed=1.0, by="", out=None):
     async with _tts_lock:
         samples, rate = await asyncio.to_thread(_tts_generate, text, TTS_VOICES.index(voice), speed)
     # 0700: /tmp dùng chung mọi user trên máy, mà đây là chữ người dùng gõ.
-    out.mkdir(mode=0o700, parents=True, exist_ok=True)
-    dst = out / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.wav"
+    TTS_OUT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    dst = TTS_OUT / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.wav"
     await asyncio.to_thread(_write_wav, dst, samples, rate)
     return {"name": dst.name, "path": str(dst), "duration": round(len(samples) / rate, 2),
             "voice": voice, "speed": speed, "text": text, "by": by or "", "created": _now()}
 
 
-def tts_path(name, out=None):
-    """File tiếng đọc trong out (mặc định TTS_OUT) mang tên này, hoặc None — tên từ URL, chỉ nhận
-    đúng mẫu ta đặt."""
+def tts_path(name):
+    """File tiếng đọc trong TTS_OUT mang tên này, hoặc None — tên từ URL, chỉ nhận đúng mẫu ta đặt."""
     if not re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{6}\.wav", name or ""):
         return None
-    p = (out or TTS_OUT) / name
+    p = TTS_OUT / name
     return p if p.is_file() else None
-
-
-# ─── Route dùng chung: Documents + Speak text ─────────────────────────────────
-# Dashboard (một người, thư mục cố định) và reader_server.py (bản host nhiều người, mỗi người một
-# thư mục) dùng CHUNG các handler này — chỉ khác hàm trả thư mục cho từng request.
-
-def _media_err(e):
-    code = 400 if isinstance(e, ValueError) else 409 if isinstance(e, LookupError) else 502
-    from starlette.responses import JSONResponse
-    return JSONResponse({"error": str(e)}, status_code=code)
-
-
-async def _json_body(request):
-    try:
-        return await request.json()
-    except (ValueError, TypeError):
-        return {}
-
-
-def doc_routes(home_of, limit_of=lambda request: None):
-    """/api/documents… — home_of(request): thư mục tài liệu của người đang hỏi; limit_of(request):
-    chỗ trống còn lại (byte) hoặc None nếu không có hạn mức."""
-    from starlette.responses import FileResponse, JSONResponse
-    from starlette.routing import Route
-
-    def missing():
-        return JSONResponse({"error": "no such document"}, status_code=404)
-
-    async def listing(request):
-        return JSONResponse(list_docs(home_of(request)))
-
-    async def upload(request):
-        try:
-            return JSONResponse(await doc_upload(request.stream(), request.query_params.get("name", ""),
-                                                 home_of(request), limit_of(request)))
-        except ValueError as e:
-            return _media_err(e)
-
-    async def file(request):
-        p = doc_path(request.path_params["name"], home_of(request))
-        return FileResponse(p, media_type="application/pdf",
-                            headers={"X-Content-Type-Options": "nosniff"}) if p else missing()
-
-    async def state(request):
-        p = doc_path(request.path_params["name"], home_of(request))
-        return JSONResponse({**doc_meta(p), "name": p.name}) if p else missing()
-
-    async def save(request):
-        try:
-            return JSONResponse(doc_update(request.path_params["name"], await _json_body(request),
-                                           home_of(request)))
-        except ValueError as e:
-            return _media_err(e)
-        except LookupError:
-            return missing()
-
-    async def delete(request):
-        p = doc_path(request.path_params["name"], home_of(request))
-        if not p:
-            return missing()
-        p.unlink()
-        p.with_suffix(".json").unlink(missing_ok=True)
-        return JSONResponse({"deleted": p.name})
-
-    return [Route("/api/documents", listing),
-            Route("/api/documents/upload", upload, methods=["POST"]),
-            Route("/api/documents/{name}", file),
-            Route("/api/documents/{name}", delete, methods=["DELETE"]),
-            Route("/api/documents/{name}/state", state),
-            Route("/api/documents/{name}/state", save, methods=["POST"])]
-
-
-def tts_routes(out_of, by_of=lambda request: "user", download=True):
-    """/api/tts… — GET = tình trạng (engine, giọng đã tải chưa, tiến độ tải, danh sách giọng);
-    POST /speak = đọc; POST /download = tải giọng (350 MB, chạy nền). out_of(request): thư mục
-    tiếng đọc của người đang hỏi. download=False: bản host, giọng có sẵn trong image."""
-    from starlette.responses import FileResponse, JSONResponse
-    from starlette.routing import Route
-
-    async def status(request):
-        return JSONResponse(tts_status())
-
-    async def fetch(request):
-        if not tts_status()["engine"]:
-            return JSONResponse({"error": f"install sherpa-onnx first: {TTS_INSTALL}"}, status_code=409)
-        if not _tts_ready():
-            tts_download_start()
-        return JSONResponse(tts_status(), status_code=202)
-
-    async def speak(request):
-        b = await _json_body(request)
-        try:
-            return JSONResponse(await tts_speak(b.get("text"), b.get("voice") or TTS_DEFAULT_VOICE,
-                                                b.get("speed", 1.0), by_of(request), out_of(request)))
-        except (ValueError, LookupError, RuntimeError) as e:
-            return _media_err(e)
-
-    async def file(request):
-        p = tts_path(request.path_params["name"], out_of(request))
-        if not p:
-            return JSONResponse({"error": "no such speech — it may have been cleared on restart"},
-                                status_code=404)
-        return FileResponse(p, media_type="audio/wav", headers={"X-Content-Type-Options": "nosniff"})
-
-    return [Route("/api/tts", status),
-            Route("/api/tts/speak", speak, methods=["POST"]),
-            Route("/api/tts/files/{name}", file),
-            *([Route("/api/tts/download", fetch, methods=["POST"])] if download else [])]
 
 
 # ─── Card thư mục: duyệt project NGAY TRONG dashboard ─────────────────────────
@@ -7552,6 +7252,34 @@ def build_app():
         return sound_path(request.path_params["name"],
                           draft=request.url.path.startswith("/api/sounds/drafts/"))
 
+    async def api_tts(request: Request):
+        """Đọc thành tiếng: GET = tình trạng (engine, giọng đã tải chưa, tiến độ tải, danh sách
+        giọng); POST /speak = đọc; POST /download = tải giọng (350 MB, chạy nền, GET để xem)."""
+        return JSONResponse(tts_status())
+
+    async def api_tts_download(request: Request):
+        if not tts_status()["engine"]:
+            return JSONResponse({"error": f"install sherpa-onnx first: {TTS_INSTALL}"},
+                                status_code=409)
+        if not _tts_ready():
+            tts_download_start()
+        return JSONResponse(tts_status(), status_code=202)
+
+    async def api_tts_speak(request: Request):
+        b = await _body(request)
+        try:
+            return JSONResponse(await tts_speak(b.get("text"), b.get("voice") or TTS_DEFAULT_VOICE,
+                                                b.get("speed", 1.0), "user"))
+        except (ValueError, LookupError, RuntimeError) as e:
+            return _sound_err(e)
+
+    async def api_tts_file(request: Request):
+        p = tts_path(request.path_params["name"])
+        if not p:
+            return JSONResponse({"error": "no such speech — it may have been cleared on restart"},
+                                status_code=404)
+        return FileResponse(p, media_type="audio/wav", headers={"X-Content-Type-Options": "nosniff"})
+
     async def api_sounds_upload(request: Request):
         try:
             return JSONResponse(await sound_upload(request.stream(),
@@ -8578,9 +8306,10 @@ def build_app():
         Route("/api/sounds", api_sounds_extract, methods=["POST"]),
         Route("/api/sounds/search", api_sounds_search, methods=["POST"]),
         Route("/api/sounds/upload", api_sounds_upload, methods=["POST"]),
-        # lambda: đọc DOCS_DIR/TTS_OUT lúc request, không phải lúc dựng app (check_*.py đổi chúng).
-        *doc_routes(lambda request: DOCS_DIR),
-        *tts_routes(lambda request: TTS_OUT),
+        Route("/api/tts", api_tts),
+        Route("/api/tts/download", api_tts_download, methods=["POST"]),
+        Route("/api/tts/speak", api_tts_speak, methods=["POST"]),
+        Route("/api/tts/files/{name}", api_tts_file),
         Route("/api/sounds/drafts/{name}", api_sound_file),
         Route("/api/sounds/drafts/{name}", api_sound_delete, methods=["DELETE"]),
         Route("/api/sounds/drafts/{name}/peaks", api_sound_peaks),
@@ -8652,10 +8381,6 @@ def build_app():
                 resp.headers.setdefault("cache-control", "no-cache")
                 return resp
 
-        # pdf.js là ES module: trình duyệt từ chối .mjs/.wasm sai MIME, mà trên Windows bảng MIME
-        # đọc từ registry, có máy trả text/plain.
-        mimetypes.add_type("text/javascript", ".mjs")
-        mimetypes.add_type("application/wasm", ".wasm")
         routes.append(Mount("/", app=NoCacheStatic(directory=str(static_dir), html=True)))
 
     # OriginGuard NGOÀI CÙNG: chặn trước khi CORS kịp trả lời preflight hộ một origin lạ.
