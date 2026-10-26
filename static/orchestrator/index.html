@@ -140,7 +140,8 @@
   .tb-sep { width: 1px; height: 20px; background: var(--border); flex: none; }
   .icon-btn.lib-btn { width: auto; gap: 6px; padding: 0 9px; font-size: 12.5px; }
   @media (max-width: 560px) { .lib-lbl { display: none; } .icon-btn.lib-btn { padding: 0; width: 28px; } }
-  /* Menu Tools: popover → trình duyệt tự đóng khi bấm ra ngoài hay Esc. top/left đặt theo nút
+  /* Menu Tools: popover → trình duyệt tự đóng khi bấm ra ngoài hay Esc (bấm vào iframe workspace
+     thì app.js đóng theo blur). top/left đặt theo nút
      lúc mở (app.js), vì popover nằm ở top layer, không theo header. */
   .menu { margin: 0; inset: auto; padding: 4px; min-width: 170px; background: var(--panel);
     color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl); box-shadow: var(--sh-2); }

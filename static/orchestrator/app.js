@@ -3542,6 +3542,9 @@ $("tools-menu").addEventListener("beforetoggle", (e) => {
   m.style.top = r.bottom + 4 + "px";
   m.style.left = Math.max(8, Math.min(r.left, innerWidth - 178)) + "px";
 });
+// Bấm vào workspace (iframe) không tới được trang này nên trình duyệt không tự đóng menu; trang
+// mất focus thì đóng theo.
+addEventListener("blur", () => { if ($("tools-menu").matches(":popover-open")) $("tools-menu").hidePopover(); });
 
 function imgClose() {
   $("img-modal").hidden = true;
