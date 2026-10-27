@@ -4,8 +4,10 @@
 
 # Giọng Kokoro (350 MB) ở stage riêng, khoá bằng checksum GitHub công bố: đổi code không phải tải
 # lại, và file bị tráo giữa đường thì build hỏng chứ không chạy.
+# 2026-10-26 sherpa-onnx đóng gói lại file này (checksum đổi, c5f7e2d2… → 60703707…). Đã đối chiếu:
+# cả 377 file bên trong giống hệt bản cũ từng byte. Lần sau "digest mismatch": so như vậy rồi mới đổi.
 FROM python:3.12-slim AS voice
-ADD --checksum=sha256:c5f7e2d2caf082bc1d20fb70334a61d99d20b484500aad32e7cf84c128ea3298 \
+ADD --checksum=sha256:60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4 \
     https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2 \
     /tmp/voice.tar.bz2
 RUN python -c "import tarfile; tarfile.open('/tmp/voice.tar.bz2').extractall('/opt/voice', filter='data')" \
