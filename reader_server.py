@@ -25,6 +25,9 @@ Settings (environment):
     READER_PROXY       proxy IPs whose X-Forwarded-For is trusted for the login limit (127.0.0.1)
     READER_VOICE       folder holding the Kokoro voice        (READER_DATA/voice)
     ORCH_TTS_THREADS   CPU threads per speech                 (2)
+    ORCH_ANTHROPIC_API_KEY  Claude API key for Explain
+    ORCH_ANTHROPIC_WORKSPACE_ID  workspace to bill, for a key not made inside a workspace (wrkspc_…)
+    ORCH_EXPLAIN_MODEL the Claude model Explain uses           (claude-opus-5-5)
 """
 
 import asyncio
@@ -209,7 +212,9 @@ async def _lifespan(app):
 _OPEN = {"/api/login"}
 _HEADERS = [(b"x-content-type-options", b"nosniff"), (b"referrer-policy", b"same-origin"),
             (b"x-frame-options", b"DENY"), (b"cache-control", b"no-cache")]
-_speaking = set()       # người đang chờ một lượt đọc: mỗi người một lượt, kẻo một người xếp hàng cả server
+# Việc nặng / tốn tiền: mỗi người một lượt mỗi loại, kẻo một người xếp hàng cả server.
+_SLOW = {"/api/tts/speak": "speech", "/api/explain": "explanation"}
+_busy = set()           # (user id, path) đang chờ
 
 
 class Gate:
@@ -235,14 +240,16 @@ class Gate:
             if not user:
                 return await _refuse(send_safe, 401, "sign in first")
             scope["user"] = user
-            if path == "/api/tts/speak" and scope["method"] == "POST":
-                if user["id"] in _speaking:
-                    return await _refuse(send_safe, 429, "one at a time — wait for the speech you asked for")
-                _speaking.add(user["id"])
+            if path in _SLOW and scope["method"] == "POST":
+                key = (user["id"], path)
+                if key in _busy:
+                    return await _refuse(send_safe, 429,
+                                         f"one at a time — wait for the {_SLOW[path]} you asked for")
+                _busy.add(key)
                 try:
                     return await self.app(scope, receive, send_safe)
                 finally:
-                    _speaking.discard(user["id"])
+                    _busy.discard(key)
         await self.app(scope, receive, send_safe)
 
 
@@ -316,6 +323,7 @@ def build_app():
                        lambda r: max(0, QUOTA - used_bytes(_uid(r)))),
         *so.tts_routes(lambda r: SPEECH / str(_uid(r)), by_of=lambda r: r.scope["user"]["name"],
                        download=False),
+        *so.explain_routes(lambda r: user_dir(_uid(r)) / "documents"),
         Mount("/", StaticFiles(directory=str(STATIC))),
     ]
     # Ngoài cùng trước: sai tên miền → từ chối ngay; rồi chặn request xuyên site (CSRF); rồi phiên.

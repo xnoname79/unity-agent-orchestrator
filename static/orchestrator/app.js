@@ -3406,6 +3406,10 @@ document.addEventListener("keydown", (e) => {
   // Editor nằm trên Sounds: Esc chỉ hỏi bỏ bản nháp, không đóng luôn Sounds bên dưới.
   if (e.key === "Escape" && !$("sed-modal").hidden) return sedDiscard();
   if (e.key === "Escape" && !$("tts-modal").hidden) return ttsClose();
+  if (e.key === "Escape" && !$("qt-modal").hidden) return qtClose();
+  // Thẻ quote đang xáo, không dialog nào đè lên: ← → như vuốt trái / phải.
+  if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && sw && $("tts-modal").hidden
+      && !e.target.closest?.("select, input, textarea")) return swGo(e.key === "ArrowRight" ? 1 : -1);
   if (e.key === "Escape" && !$("pdf-reader").hidden) return pdfClose();
   if (e.key === "Escape" && libIsOpen() && !READER) libClose();   // bản host: Library là cả trang
   if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
@@ -4224,6 +4228,7 @@ function pdfSideRender() {
   // Theo thứ tự trong sách: trang, rồi từ trên xuống.
   const next = pdfBmNext();
   $("pdf-n-bm").textContent = st.bookmarks.length ? `(${st.bookmarks.length})` : "";
+  $("pdf-n-hl").textContent = st.highlights.length ? `(${st.highlights.length})` : "";
   $("pdf-bm").innerHTML = [...st.bookmarks].sort((a, b) => a.page - b.page || b.y1 - a.y1).map((b) => `
     <div class="pdf-item bm">
       <div class="bm-name">${esc(b.name || `Page ${b.page}`)}</div>
@@ -4244,14 +4249,11 @@ function pdfSideRender() {
   $("pdf-quotes").innerHTML = [...pages].map(([page, hs]) => `<details class="pdf-grp" data-page="${page}"
       ${pdf.openPages.has(page) ? "open" : ""}><summary>Page ${page}
       <span class="hint">${plural(hs.length, "quote")}</span></summary>
-    ${hs.map((h) => `<div class="pdf-item">
-      <blockquote>${esc(h.text)}</blockquote>
+    ${hs.map((h) => `<div class="pdf-item pdf-quote" data-hl-open="${esc(h.id)}">
+      <blockquote class="pdf-q" role="button" tabindex="0" title="Open the whole quote">${esc(h.text)}</blockquote>
       <div class="row"><span class="spacer"></span>
         <button class="secondary" data-hl-go="${esc(h.id)}">Go</button>
-        <button class="secondary" data-hl-say="${esc(h.id)}">Speak</button>
-        <button class="secondary" data-hl-copy="${esc(h.id)}">Copy</button>
-        <button class="icon-btn" data-hl-rm="${esc(h.id)}" title="Delete quote">
-          <svg class="ic sm"><use href="#i-trash"/></svg></button></div></div>`).join("")}</details>`).join("");
+        <button class="secondary" data-hl-copy="${esc(h.id)}">Copy</button></div></div>`).join("")}</details>`).join("");
 }
 
 // Nhớ nhóm nào đang mở, để vẽ lại danh sách (thêm/xoá quote) không gập hết lại. toggle không
@@ -4264,7 +4266,12 @@ $("pdf-quotes").addEventListener("toggle", (ev) => {
 
 $("pdf-side").addEventListener("click", async (ev) => {
   const b = ev.target.closest("button");
-  if (!b || !pdf) return;
+  if (!pdf) return;
+  if (!b) {   // bấm vào thân thẻ quote (không phải nút) → xem trọn
+    const card = ev.target.closest("[data-hl-open]");
+    if (card) qtOpen(card.dataset.hlOpen);
+    return;
+  }
   const st = pdf.st, d = b.dataset;
   const bm = st.bookmarks.find((x) => x.id === (d.bmGo || d.bmName || d.bmRm));
   if (bm) {
@@ -4282,22 +4289,153 @@ $("pdf-side").addEventListener("click", async (ev) => {
     pdfSave({ bookmarks: st.bookmarks }, true);
     return pdfSideRender();
   }
-  const h = st.highlights.find((x) => x.id === (d.hlGo || d.hlSay || d.hlCopy || d.hlRm));
+  const h = st.highlights.find((x) => x.id === (d.hlGo || d.hlCopy));
   if (!h) return;
   if (d.hlGo) {
     const r = h.rects[0];
     pdf.view.scrollPageIntoView({ pageNumber: r[0], destArray: [null, { name: "XYZ" }, null, Math.max(r[2], r[4]) + 60, null] });
-  } else if (d.hlSay) ttsOpen(h.text);
-  else if (d.hlCopy) {
+  } else if (d.hlCopy) {
     await navigator.clipboard.writeText(h.text).then(() => showMsg("pdf-msg", "Copied.", true),
       () => showMsg("pdf-msg", "The browser did not allow copying.", false));
-  } else if (d.hlRm && confirm("Delete this quote?")) {
-    st.highlights = st.highlights.filter((x) => x !== h);
-    pdfSave({ highlights: st.highlights }, true);
-    pdfSideRender();
-    new Set(h.rects.map((r) => r[0])).forEach(pdfPaint);
   }
 });
+
+// Thẻ quote là role=button: Enter / Space mở như bấm chuột.
+$("pdf-side").addEventListener("keydown", (ev) => {
+  const q = ev.target.closest?.(".pdf-q");
+  if (!q || (ev.key !== "Enter" && ev.key !== " ")) return;
+  ev.preventDefault();
+  qtOpen(q.closest("[data-hl-open]").dataset.hlOpen);
+});
+
+// ── Một quote: thẻ ở thanh bên chỉ có chữ cắt gọn + Go / Copy; bấm vào thẻ thì xem trọn ở đây,
+// cùng Speak / Explain / Delete. Lời giải nghĩa hiện ngay dưới quote, không mở dialog thứ hai ──
+let qtId = "", qtShown = null, qtSeq = 0;
+const qtCur = () => pdf?.st.highlights.find((x) => x.id === qtId);
+
+function qtOpen(id) {
+  qtId = id;
+  const h = qtCur();
+  if (!h) return;
+  qtSeq++;   // trả lời về muộn của quote trước không vẽ vào đây
+  $("qt-page").textContent = `Page ${h.page}`;
+  $("qt-text").textContent = h.text;
+  $("qt-msg").textContent = "";
+  qtPaintExp(h);
+  $("qt-modal").hidden = false;
+}
+
+function qtClose() {
+  $("qt-modal").hidden = true;
+  $("qt-modal").classList.remove("deck");   // đóng thẻ = đóng cả bộ xáo
+  $("qt-pos").textContent = "";
+  sw = null;
+  qtCard.style.transition = qtCard.style.transform = qtCard.style.opacity = "";
+  $("qt-set").hidden = true;
+  $("qt-set-btn").setAttribute("aria-expanded", false);
+  qtId = "";
+  qtSeq++;
+}
+
+function qtDelete() {
+  const h = qtCur();
+  if (!h || !confirm("Delete this quote?")) return;
+  pdf.st.highlights = pdf.st.highlights.filter((x) => x !== h);
+  pdfSave({ highlights: pdf.st.highlights }, true);
+  pdfSideRender();
+  new Set(h.rects.map((r) => r[0])).forEach(pdfPaint);
+  if (sw) return swShow(0);   // đang xáo: sang thẻ kế, hết thẻ thì đóng
+  qtClose();
+}
+
+Object.assign(window, { qtClose, qtDelete, qtExplain,
+  qtSpeak: () => { const h = qtCur(); if (h) ttsOpen(h.text); } });
+
+// ── Xáo quote: bộ bài là CHÍNH dialog quote (cùng Explain, Speak, Delete), không có hộp nào bọc
+// ngoài. Vuốt phải sang quote tiếp, vuốt trái về quote trước. Xáo một lần lúc mở, hết vòng thì
+// quay lại từ đầu; đóng thẻ là đóng cả bộ ──
+let sw = null, swDrag = null, swSwiped = false, swBusy = false;
+const qtCard = $("qt-modal").querySelector(".modal");
+
+function swOpen() {
+  const ids = (pdf?.st.highlights || []).map((h) => h.id);
+  if (!ids.length) return showMsg("pdf-msg", "No quotes yet — select text on a page, then Highlight.", false);
+  for (let i = ids.length - 1; i > 0; i--) {   // Fisher–Yates
+    const j = Math.floor(Math.random() * (i + 1));
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+  }
+  sw = { ids, i: 0 };
+  $("qt-modal").classList.add("deck");
+  swShow(0);
+}
+
+// Hiện quote thứ sw.i. dir ≠ 0: thẻ mới trượt vào từ phía ngược với hướng thẻ cũ vừa bay đi.
+function swShow(dir) {
+  sw.ids = sw.ids.filter((id) => pdf.st.highlights.some((h) => h.id === id));   // quote vừa bị xoá
+  if (!sw.ids.length) return qtClose();
+  sw.i = (sw.i + sw.ids.length) % sw.ids.length;
+  qtOpen(sw.ids[sw.i]);
+  $("qt-pos").textContent = ` ${sw.i + 1} of ${sw.ids.length}`;
+  qtCard.scrollTop = 0;
+  qtCard.style.transition = "none";
+  qtCard.style.transform = dir ? `translateX(${-dir * 40}px)` : "";
+  qtCard.style.opacity = dir ? "0" : "";
+  void qtCard.offsetWidth;   // áp chỗ xuất phát trước, rồi mới bật lại transition để nó trượt vào
+  qtCard.style.transition = qtCard.style.transform = qtCard.style.opacity = "";
+}
+
+// 1 = quote tiếp (thẻ bay sang phải, như vuốt phải), -1 = quote trước.
+function swGo(dir) {
+  if (!sw || swBusy) return;
+  swBusy = true;
+  qtCard.style.transition = "transform .18s ease-in, opacity .18s";
+  qtCard.style.transform = `translateX(${dir * 110}%) rotate(${dir * 8}deg)`;
+  qtCard.style.opacity = "0";
+  setTimeout(() => {
+    swBusy = false;
+    if (sw) { sw.i += dir; swShow(dir); }
+  }, 180);
+}
+Object.assign(window, { swOpen, swGo });
+
+// Kéo ngang thẻ (chỉ khi đang xáo) là vuốt; kéo dọc để trình duyệt cuộn thẻ dài (touch-action: pan-y).
+// Bắt đầu trên ô chọn thì để yên cho nó.
+qtCard.addEventListener("pointerdown", (e) => {
+  swSwiped = false;
+  if (sw && !swBusy && !e.target.closest("select, input, textarea"))
+    swDrag = { x: e.clientX, y: e.clientY, dx: 0, id: e.pointerId, on: false };
+});
+qtCard.addEventListener("pointermove", (e) => {
+  const d = swDrag;
+  if (!d || e.pointerId !== d.id) return;
+  d.dx = e.clientX - d.x;
+  if (!d.on && Math.abs(d.dx) > 8 && Math.abs(d.dx) > Math.abs(e.clientY - d.y)) {
+    d.on = true;
+    qtCard.setPointerCapture(e.pointerId);
+  }
+  if (d.on) {
+    qtCard.style.transition = "none";
+    qtCard.style.transform = `translateX(${d.dx}px) rotate(${d.dx / 30}deg)`;
+  }
+});
+function swEnd(e) {
+  const d = swDrag;
+  if (!d || e.pointerId !== d.id) return;
+  swDrag = null;
+  if (!d.on) return;
+  swSwiped = true;
+  if (Math.abs(d.dx) > Math.min(90, qtCard.offsetWidth / 4)) swGo(d.dx > 0 ? 1 : -1);
+  else qtCard.style.transition = qtCard.style.transform = "";   // chưa đủ xa: bật về chỗ cũ
+}
+qtCard.addEventListener("pointerup", swEnd);
+qtCard.addEventListener("pointercancel", swEnd);
+// Cú vuốt bắt đầu trên một nút (Speak, Delete…) không được tính là bấm nút đó.
+qtCard.addEventListener("click", (e) => {
+  if (!swSwiped) return;
+  swSwiped = false;
+  e.stopPropagation();
+  e.preventDefault();
+}, true);
 
 // ── Chọn chữ → nút Highlight / Bookmark / Speak nổi cạnh vùng chọn ──
 function pdfSelRange() {
@@ -4319,9 +4457,19 @@ function pdfSelShow() {
   pop.hidden = !r;
   pdfLast = r && { range: r.cloneRange(), text: pdfSelText() };
   if (!r) return;
-  const rs = r.getClientRects(), last = rs[rs.length - 1] || r.getBoundingClientRect();
-  pop.style.left = Math.min(Math.max(8, last.left), innerWidth - pop.offsetWidth - 8) + "px";
-  pop.style.top = Math.min(last.bottom + 6, innerHeight - 44) + "px";
+  // Hộp của chính chữ được chọn, không phải r.getClientRects(): trên điện thoại vùng chọn hay kết
+  // thúc trong lớp phủ cả trang của pdf.js → nút nhảy xuống đáy màn hình, xa chỗ chọn.
+  const bs = pdfTextBoxes(r).map(([, b]) => b);
+  if (!bs.length) bs.push(r.getBoundingClientRect());
+  const left = Math.min(...bs.map((b) => b.left)), right = Math.max(...bs.map((b) => b.right));
+  // Ngón tay: tay nắm kéo vùng chọn nằm ngay dưới dòng cuối — chừa chỗ để vẫn kéo được.
+  const top = Math.max(...bs.map((b) => b.bottom)) + (matchMedia("(pointer: coarse)").matches ? 28 : 6);
+  // Kẹp trong phần đang THẤY (visualViewport): phóng to bằng hai ngón thì nó nhỏ hơn innerWidth/Height.
+  const vv = visualViewport || { offsetLeft: 0, offsetTop: 0, width: innerWidth, height: innerHeight };
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
+  pop.style.left = clamp((left + right - pop.offsetWidth) / 2, vv.offsetLeft + 8,
+                         vv.offsetLeft + vv.width - pop.offsetWidth - 8) + "px";
+  pop.style.top = clamp(top, vv.offsetTop + 8, vv.offsetTop + vv.height - pop.offsetHeight - 8) + "px";
 }
 
 const pdfPick = () => { const r = pdfSelRange(); return r ? { range: r, text: pdfSelText() } : pdfLast; };
@@ -4338,30 +4486,36 @@ document.addEventListener("selectionchange", () => {
 // Bấm nút không được làm mất vùng chọn trước khi nút kịp đọc nó.
 $("pdf-sel").addEventListener("pointerdown", (e) => e.preventDefault());
 
-// Hộp chữ của vùng chọn, đổi sang đơn vị PDF: [trang, x1, y1, x2, y2]. Đi từng text node (không
-// lấy getClientRects của cả range: nó trả thêm khung của cả span/div, có cái phủ hết trang).
-function pdfSelRects(range) {
+// Khung trên màn hình của từng mẩu chữ được chọn: [[text node, DOMRect], …]. Đi từng text node,
+// không lấy getClientRects của cả range: nó trả thêm khung của cả span/div, có cái phủ hết trang.
+function pdfTextBoxes(range) {
   const root = range.commonAncestorContainer;
   const walk = document.createTreeWalker(root.nodeType === 3 ? root.parentNode : root, NodeFilter.SHOW_TEXT);
   const out = [];
   for (let n = walk.nextNode(); n; n = walk.nextNode()) {
-    const page = range.intersectsNode(n) && n.parentElement.closest(".textLayer")?.closest(".page");
-    if (!page) continue;
-    const num = +page.dataset.pageNumber, pv = pdf.view.getPageView(num - 1);
-    const at = pv.textLayer.div.getBoundingClientRect();
+    if (!range.intersectsNode(n) || !n.parentElement.closest(".textLayer")?.closest(".page")) continue;
     const sub = document.createRange();
     sub.selectNodeContents(n);
     if (n === range.startContainer) sub.setStart(n, range.startOffset);
     if (n === range.endContainer) sub.setEnd(n, range.endOffset);
+    for (const b of sub.getClientRects()) if (b.width >= 1 && b.height >= 1) out.push([n, b]);
+  }
+  return out;
+}
+
+// Hộp chữ của vùng chọn, đổi sang đơn vị PDF: [trang, x1, y1, x2, y2].
+function pdfSelRects(range) {
+  const out = [];
+  for (const [n, b] of pdfTextBoxes(range)) {
+    const page = n.parentElement.closest(".textLayer").closest(".page");
+    const num = +page.dataset.pageNumber, pv = pdf.view.getPageView(num - 1);
+    const at = pv.textLayer.div.getBoundingClientRect();
     // Ngang theo đúng phần chữ được chọn, dọc theo span của pdf.js (= khung chữ trong PDF): hộp
     // của text node cao theo font trình duyệt, lệch vài px so với chữ vẽ trên canvas.
     const line = n.parentElement.getBoundingClientRect();
-    for (const b of sub.getClientRects()) {
-      if (b.width < 1 || b.height < 1) continue;
-      const [x1, y1] = pv.getPagePoint(b.left - at.left, line.bottom - at.top);
-      const [x2, y2] = pv.getPagePoint(b.right - at.left, line.top - at.top);
-      out.push([num, Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)]);
-    }
+    const [x1, y1] = pv.getPagePoint(b.left - at.left, line.bottom - at.top);
+    const [x2, y2] = pv.getPagePoint(b.right - at.left, line.top - at.top);
+    out.push([num, Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)]);
   }
   // Gộp các mẩu cùng dòng (pdf.js cắt một dòng thành nhiều span) → ít hộp, viền không chồng.
   out.sort((a, b) => a[0] - b[0] || b[4] - a[4] || a[1] - b[1]);
@@ -4425,6 +4579,91 @@ function pdfSpeakSel() {
   ttsOpen(sel.text);
 }
 window.pdfSpeakSel = pdfSpeakSel;
+
+// ── Explain: Claude giải nghĩa một quote, hiện ngay trong dialog quote ──
+// Giải thích bằng ngôn ngữ người đọc chọn; từ mới (khó nhất trước), nghĩa và câu ví dụ đời thường
+// bằng tiếng Anh. Server lưu lời giải nghĩa vào quote (h.explain, theo ngôn ngữ): có rồi thì mở
+// quote là thấy ngay. Ngôn ngữ + model đặt ở Explain settings (bánh răng) và nhớ ở máy này — đổi
+// chúng KHÔNG gọi API; chỉ nút Explain gọi, mỗi quote một lần cho mỗi ngôn ngữ.
+function expPref(key) {
+  try { return localStorage.getItem(key) || ""; } catch { return ""; }
+}
+const expLang = () => expPref("exp-lang") || "Vietnamese";
+
+// Ưu tiên ngôn ngữ đang đặt; chưa có thì hiện bản đã có bằng ngôn ngữ khác và chừa nút Explain cho
+// ngôn ngữ đang đặt. Có bản bằng ngôn ngữ đang đặt rồi thì ẩn nút.
+function qtPaintExp(h) {
+  const lang = expLang(), saved = h.explain || {};
+  const shown = saved[lang] ? lang : Object.keys(saved)[0];
+  qtShown = shown ? saved[shown] : null;
+  $("qt-explain").hidden = !!saved[lang];
+  $("qt-explain").textContent = `Explain in ${lang}`;
+  $("qt-exp").innerHTML = qtShown ? expHtml(qtShown, shown) : "";
+}
+
+async function qtExplain() {
+  const h = qtCur();
+  if (!h) return;
+  const n = ++qtSeq, lang = expLang(), model = expPref("exp-model") || undefined;
+  $("qt-explain").disabled = true;
+  showMsg("qt-msg", "Asking Claude…", true);
+  try {
+    const r = await api("/api/explain", "POST", { doc: pdf.name, id: h.id, language: lang, model });
+    // Server đã lưu; giữ một bản ở đây để mở lại quote là có ngay, khỏi hỏi server.
+    (h.explain ||= {})[lang] = { model: r.model, explanation: r.explanation, words: r.words };
+    if (n !== qtSeq) return;   // đã đóng / mở quote khác trong lúc chờ
+    $("qt-msg").textContent = "";
+    qtPaintExp(h);
+  } catch (e) {
+    if (n === qtSeq) showMsg("qt-msg", mcpErr(e), false);
+  } finally {
+    $("qt-explain").disabled = false;
+  }
+}
+
+// Bánh răng: mở/đóng phần chọn ngôn ngữ + model. Danh sách lấy từ server một lần — server mới
+// biết model nào được phép (ORCH_EXPLAIN_MODEL) và nó vẫn kiểm lại mọi lựa chọn.
+let expOpts = null;
+async function qtSetToggle() {
+  const open = $("qt-set").hidden;
+  $("qt-set").hidden = !open;
+  $("qt-set-btn").setAttribute("aria-expanded", open);
+  if (!open || expOpts) return;
+  try { expOpts = await api("/api/explain"); } catch (e) { return showMsg("qt-msg", mcpErr(e), false); }
+  const m = expPref("exp-model");
+  $("qt-set-lang").innerHTML = expOpts.languages.map((l) => `<option>${esc(l)}</option>`).join("");
+  $("qt-set-model").innerHTML = expOpts.models.map((x) => `<option value="${esc(x.id)}">${esc(x.label)}</option>`).join("");
+  $("qt-set-lang").value = expOpts.languages.includes(expLang()) ? expLang() : expOpts.languages[0];
+  $("qt-set-model").value = expOpts.models.some((x) => x.id === m) ? m : expOpts.model;
+}
+
+// Đổi = chỉ nhớ ở máy này và vẽ lại nút Explain / bản đang hiện. Không bao giờ gọi API.
+function expSet(key, value) {
+  try { localStorage.setItem(key, value); } catch {}
+  const h = qtCur();
+  if (h) qtPaintExp(h);
+}
+Object.assign(window, { qtSetToggle, expSet });
+
+// Chữ của model đi qua esc() hết: nó đọc chữ trong PDF của người lạ, có thể bị xui viết HTML.
+function expHtml(r, lang) {
+  return `<div class="hint">AI explanation in ${esc(lang)} by ${esc(r.model)} — it can be wrong.</div>
+    <h4>Explanation</h4><p class="exp-text">${esc(r.explanation)}</p>
+    <h4>New words, hardest first</h4>
+    ${r.words.length ? `<ol class="exp-words">${r.words.map((w, i) => `<li>
+      <div><b>${esc(w.word)}</b> ${badge(esc(w.level), "b-blue")} <span class="hint">${esc(w.part_of_speech)}</span></div>
+      <p>${esc(w.meaning)}</p>
+      <ul class="exp-ex">${w.examples.map((x, j) => `<li><span>${esc(x)}</span>
+        <button class="secondary" data-say="${i}.${j}" title="Read it aloud">Speak</button></li>`).join("")}</ul>
+    </li>`).join("")}</ol>` : `<p class="hint">No new words here.</p>`}`;
+}
+
+$("qt-exp").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-say]");
+  if (!b || !qtShown) return;
+  const [i, j] = b.dataset.say.split(".");
+  ttsOpen(qtShown.words[i].examples[j]);
+});
 
 // ── Speak text (Kokoro) ──────────────────────────────────────────────────────
 // Đọc ở server (sherpa-onnx), file nằm ở thư mục temp, không vào thư viện. Lần đầu phải tải giọng:
@@ -4978,6 +5217,7 @@ function readerSignedOut() {
     $("pdf-reader").hidden = true;
   }
   ttsClose();
+  qtClose();
   $("lib-doc").innerHTML = "";
   libDocKey = "";
   if (first) $("login-name").focus();

@@ -886,6 +886,12 @@
     border-radius: var(--r-ctl); font-size: 12.5px; }
   .pdf-item blockquote { margin: 0 0 6px; padding-left: 8px; border-left: 3px solid var(--amber);
     white-space: pre-wrap; overflow-wrap: anywhere; max-height: 9.5em; overflow: hidden; }
+  /* Thẻ quote: tối đa 4 dòng, bấm vào để xem trọn (qt-modal). */
+  .pdf-quote { cursor: pointer; }
+  .pdf-item .pdf-q { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4;
+    line-clamp: 4; max-height: none; }
+  .qt-text { margin: 4px 0 14px; padding-left: 10px; border-left: 3px solid var(--amber);
+    white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow: auto; }
   .pdf-item.bm blockquote { border-left-color: var(--blue); font-size: 12px; color: var(--muted); max-height: 3.2em; }
   .pdf-item .bm-name { font-weight: 600; margin-bottom: 4px; overflow-wrap: anywhere; }
   .pdf-item .row { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11.5px; }
@@ -905,6 +911,34 @@
     border: 1px solid var(--border); border-radius: var(--r-ctl); box-shadow: var(--sh-2); }
   .pdf-sel[hidden] { display: none; }
   .pdf-sel button { font-size: 12px; padding: 4px 9px; }
+  /* Explain settings trong dialog quote: hàng nhãn thường + select, không phải nhãn mục chữ hoa. */
+  .qt-set { margin: 0 0 12px; padding: 4px 12px 10px; border: 1px solid var(--border);
+    border-radius: var(--r-ctl); background: var(--bg); }
+  .qt-set[hidden] { display: none; }
+  .form-card .qt-set label { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    margin: 8px 0 0; font-size: 13px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text); }
+  .form-card .qt-set select { width: auto; max-width: 78%; padding: 4px 8px; }
+  .qt-set .hint { margin-top: 8px; }
+  .qt-exp:not(:empty) { margin-top: 14px; padding-top: 4px; border-top: 1px solid var(--border); }
+  .pdf-side h4 .icon-btn { width: 22px; height: 22px; margin-left: 4px; vertical-align: middle; }
+  /* Xáo quote: chính dialog quote là thẻ — kéo ngang là vuốt, kéo dọc là cuộn thẻ dài. */
+  .qt-deck-nav { display: none; }
+  #qt-modal.deck .qt-deck-nav { display: flex; align-items: center; gap: 6px; margin: -4px 0 10px; }
+  #qt-modal.deck .qt-deck-nav .hint { flex: 1; text-align: center; }
+  #qt-modal.deck .modal { user-select: none; transition: transform .2s ease-out, opacity .2s; }
+  /* Cả con: quote dài (overflow: auto) là một khung cuộn riêng, touch-action dừng ở đó — thiếu dòng
+     này thì vuốt ngang bắt đầu trên chữ quote bị trình duyệt giành mất (pointercancel). */
+  #qt-modal.deck .modal, #qt-modal.deck .modal * { touch-action: pan-y; }
+  .ic.flip { transform: scaleX(-1); }
+  .exp-body h4 { margin: 14px 0 4px; font-size: 12.5px; color: var(--muted); }
+  .exp-body p { margin: 0; }
+  .exp-text { white-space: pre-line; }
+  .exp-words { margin: 0; padding-left: 20px; display: grid; gap: 12px; }
+  .exp-words .badge { vertical-align: middle; margin: 0 4px; }
+  .exp-ex { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+  .exp-ex li { display: flex; gap: 8px; align-items: flex-start; }
+  .exp-ex li span { flex: 1; }
+  .exp-ex button { font-size: 12px; padding: 3px 8px; }
   @media (max-width: 720px) { .pdf-side { position: absolute; right: 0; top: 0; bottom: 0; z-index: 4;
     width: min(300px, 85vw); box-shadow: var(--sh-3); } .pdf-main { position: relative; } }
   /* Danh sách cửa sổ trong drawer */
@@ -960,6 +994,8 @@
   <symbol id="i-theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-map" viewBox="0 0 24 24"><path d="m9 4-6 3v13l6-3 6 3 6-3V4l-6 3z"/><path d="M9 4v13M15 7v13"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5.2l3.2 2"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/></symbol>
   <symbol id="i-book" viewBox="0 0 24 24"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v18H6.5A1.5 1.5 0 0 1 5 19.5z"/><path d="M9 3v18"/></symbol>
   <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><path d="M14 3v4h4"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24"><path d="M21 4 3 11.5l7 2.4 2.4 7z"/><path d="m10 14 4-4"/></symbol>
@@ -1433,6 +1469,46 @@
   </div>
 </div>
 
+<!-- Một quote, trọn chữ, cùng Speak / Explain / Delete (thẻ ở thanh bên chỉ có Go / Copy). Lời giải
+     nghĩa hiện ngay dưới quote; đã lưu thì có sẵn khi mở. Xáo quote (.deck) dùng chính dialog này làm
+     thẻ để vuốt. Đặt TRƯỚC tts-modal để Speak mở đè lên trên. -->
+<div id="qt-modal" class="modal-overlay" onclick="if (event.target === this) qtClose()" hidden>
+  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="qt-title">
+    <h3 id="qt-title">Quote<span id="qt-pos" aria-live="polite"></span> <span id="qt-page" class="hint"></span>
+      <span class="spacer"></span>
+      <button id="qt-set-btn" class="icon-btn" onclick="qtSetToggle()" title="Explain settings: language and Claude model"
+        aria-label="Explain settings" aria-expanded="false" aria-controls="qt-set">
+        <svg class="ic"><use href="#i-gear"/></svg></button>
+      <button class="icon-btn" onclick="qtClose()" title="Close">
+        <svg class="ic"><use href="#i-x"/></svg></button></h3>
+    <div class="qt-deck-nav">
+      <button class="icon-btn" onclick="swGo(-1)" title="Previous quote — or swipe left" aria-label="Previous quote">
+        <svg class="ic"><use href="#i-back"/></svg></button>
+      <span class="hint">swipe right for the next</span>
+      <button class="icon-btn" onclick="swGo(1)" title="Next quote — or swipe right" aria-label="Next quote">
+        <svg class="ic flip"><use href="#i-back"/></svg></button>
+    </div>
+    <div id="qt-set" class="qt-set" hidden>
+      <label>Explain in <select id="qt-set-lang" class="mini" onchange="expSet('exp-lang', this.value)"></select></label>
+      <label>Model <select id="qt-set-model" class="mini" onchange="expSet('exp-model', this.value)"></select></label>
+      <div class="hint">Saved on this device. Changing these never calls Claude — only the Explain button
+        does, once per quote and language.</div>
+    </div>
+    <blockquote id="qt-text" class="qt-text"></blockquote>
+    <div class="row">
+      <button class="secondary" onclick="qtSpeak()" title="Read it aloud">Speak</button>
+      <button id="qt-explain" class="secondary" onclick="qtExplain()"
+        title="What it means, and its new words with everyday examples. Asks Claude once, then it is saved with the quote."
+        >Explain</button>
+      <span class="spacer"></span>
+      <button class="icon-btn danger" onclick="qtDelete()" title="Delete quote" aria-label="Delete quote">
+        <svg class="ic"><use href="#i-trash"/></svg></button>
+    </div>
+    <div id="qt-msg" class="form-msg"></div>
+    <div id="qt-exp" class="exp-body qt-exp" aria-live="polite"></div>
+  </div>
+</div>
+
 <!-- Đọc thành tiếng (Kokoro, chạy trên máy này). Mở từ Library; kết quả là một tiếng trong thư
      viện. Lần đầu phải tải giọng (350 MB) — nút Download nằm ngay trong modal. -->
 <div id="tts-modal" class="modal-overlay" onclick="if (event.target === this) ttsClose()" hidden>
@@ -1530,7 +1606,9 @@
     <div id="pdf-pane" class="pdf-pane"></div>
     <aside id="pdf-side" class="pdf-side">
       <section><h4>Bookmarks <span id="pdf-n-bm" class="hint"></span></h4><div id="pdf-bm"></div></section>
-      <section><h4>Quotes</h4><div class="hint">Select text on the page, then Highlight.</div>
+      <section><h4>Quotes <span id="pdf-n-hl" class="hint"></span><button class="icon-btn" onclick="swOpen()" aria-label="Shuffle quotes"
+        title="Shuffle your quotes — swipe through them one card at a time"><svg class="ic sm"><use
+        href="#i-shuffle"/></svg></button></h4><div class="hint">Select text on the page, then Highlight.</div>
         <div id="pdf-quotes"></div></section>
     </aside>
   </div>

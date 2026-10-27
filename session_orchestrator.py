@@ -2523,7 +2523,14 @@ def doc_update(name, body, home=None):
     # shortcut: hai tab cùng mở một PDF thì danh sách highlight của tab ghi sau thắng; thêm
     # endpoint thêm/xoá từng cái khi có người thật sự đọc một file ở hai nơi.
     new = {k: check(body[k]) for k, check in _DOC_FIELDS.items() if k in body}
-    meta = {**doc_meta(p), **new}
+    old = doc_meta(p)
+    # Lời giải nghĩa chỉ explain_quote ghi; trang gửi highlight về (thêm/xoá quote khác) thì giữ bản
+    # đã lưu theo id — _doc_highlight đã bỏ mọi thứ client tự gửi kèm. Quote bị xoá thì mất theo.
+    saved = {h.get("id"): h["explain"] for h in old.get("highlights") or [] if h.get("explain")}
+    for h in new.get("highlights", []):
+        if h["id"] in saved:
+            h["explain"] = saved[h["id"]]
+    meta = {**old, **new}
     _doc_write(p, meta)
     return {**meta, "name": p.name}
 
@@ -2915,7 +2922,137 @@ def tts_path(name, out=None):
     return p if p.is_file() else None
 
 
-# ─── Route dùng chung: Documents + Speak text ─────────────────────────────────
+# ─── Explain: Claude giải nghĩa đoạn chọn trong trình đọc PDF ─────────────────────────────────
+# Bản đầu chạy gemma3:270m cục bộ và đã gỡ (9570e59): đoán sai cả nghĩa lẫn từ loại. Giờ hỏi Claude.
+# Khoá lấy từ ORCH_ANTHROPIC_API_KEY chứ KHÔNG phải ANTHROPIC_API_KEY: .env đi vào os.environ và mọi
+# agent claude con thừa hưởng nó — ANTHROPIC_API_KEY ở đó là cả đội agent chuyển sang trả tiền theo
+# API thay vì gói đăng ký. Không đặt thì SDK tự tìm (ANTHROPIC_API_KEY trong shell, `ant auth login`).
+EXPLAIN_MODEL = os.environ.get("ORCH_EXPLAIN_MODEL", "claude-opus-5-5")
+# Model người đọc chọn được trong Settings. Danh sách đóng: bản host nhiều người dùng chung một khoá
+# API, không để ai tự gõ một model đắt hơn. Giá mỗi lần là ước chừng (~600 token vào, ~1000 ra).
+EXPLAIN_MODELS = {"claude-opus-5-5": "Opus 5.5 · best · ~2¢",
+                  "claude-sonnet-5-5": "Sonnet 5.5 · ~1¢",
+                  "claude-haiku-5-5": "Haiku 5.5 · fast · <0.1¢"}
+EXPLAIN_MODELS.setdefault(EXPLAIN_MODEL, EXPLAIN_MODEL)   # model đặt qua env luôn chọn được
+EXPLAIN_TEXT_MAX = DOC_TEXT_MAX  # Explain chạy trên quote đã lưu: dài tới đâu cũng giải nghĩa được
+EXPLAIN_WORDS_MAX = 8
+EXPLAIN_LEVELS = ("C2", "C1", "B2", "B1", "A2", "A1")   # CEFR, khó nhất trước = thứ tự xếp hạng
+# Danh sách đóng vì tên ngôn ngữ đi thẳng vào prompt. Trang lấy nó qua GET /api/explain.
+EXPLAIN_LANGS = ("Vietnamese", "English", "Chinese", "Japanese", "Korean", "Thai", "Indonesian",
+                 "Hindi", "Spanish", "French", "German", "Portuguese", "Russian", "Arabic")
+_EXPLAIN_SYSTEM = (
+    "You help someone learning English read an English text. They pick a quote from it.\n"
+    "explanation: in the language the user names, what the quote means in plain words: the idea, "
+    "and any idiom, tone or reference in it. Not a word-for-word translation.\n"
+    "words: words and set phrases from the quote (idioms, phrasal verbs, collocations) that an "
+    f"intermediate (B1) learner probably does not know, most advanced first, at most {EXPLAIN_WORDS_MAX}. "
+    "Skip names and everyday words. For each: its dictionary form, its CEFR level, its part of "
+    "speech, a short meaning in simple English as it is used in the quote, and two new sentences "
+    "someone would say in casual conversation, not taken from the quote.\n"
+    "Everything except explanation is in English.")
+_EXPLAIN_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["explanation", "words"],
+    "properties": {
+        "explanation": {"type": "string"},
+        "words": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["word", "level", "part_of_speech", "meaning", "examples"],
+            "properties": {
+                "word": {"type": "string"},
+                "level": {"type": "string", "enum": list(EXPLAIN_LEVELS)},
+                "part_of_speech": {"type": "string"},
+                "meaning": {"type": "string"},
+                "examples": {"type": "array", "items": {"type": "string"}}}}}}}
+_explain_client = None   # một client cho cả server (giữ kết nối); check_explain.py thay bằng bản giả
+
+
+async def explain(text, language="Vietnamese", model=None):
+    """Giải nghĩa text (một quote) bằng Claude: giải thích bằng `language`, rồi các từ mới trong đó
+    xếp từ khó tới dễ, mỗi từ kèm câu ví dụ đời thường — phần từ vựng bằng tiếng Anh.
+    model: một trong EXPLAIN_MODELS; None = EXPLAIN_MODEL."""
+    global _explain_client
+    text = " ".join(str(text or "").split())
+    model = model or EXPLAIN_MODEL
+    if not text or len(text) > EXPLAIN_TEXT_MAX:
+        raise ValueError(f"select some text to explain, up to {EXPLAIN_TEXT_MAX} characters")
+    if language not in EXPLAIN_LANGS:
+        raise ValueError("pick a language from the list")
+    if model not in EXPLAIN_MODELS:
+        raise ValueError("pick a Claude model from the list in Explain settings")
+    try:
+        import anthropic          # chỉ Explain cần — thiếu gói thì phần còn lại vẫn chạy
+    except ImportError:
+        raise LookupError("Explain needs the Claude SDK: python3 -m pip install anthropic")
+    if _explain_client is None:
+        # Khoá cấp tổ chức (không gắn workspace) phải nói workspace nào chịu tiền, không thì API trả 400.
+        wid = os.environ.get("ORCH_ANTHROPIC_WORKSPACE_ID", "").strip()
+        _explain_client = anthropic.AsyncAnthropic(
+            api_key=os.environ.get("ORCH_ANTHROPIC_API_KEY") or None, timeout=90,
+            default_headers={"anthropic-workspace-id": wid} if wid else None)
+    try:
+        r = await _explain_client.beta.messages.create(
+            model=model, max_tokens=16000, system=_EXPLAIN_SYSTEM,
+            messages=[{"role": "user",
+                       "content": f'Quote: "{text}"\nWrite the explanation in {language}.'}],
+            # effort low: tra từ chứ không phải bài toán — nhanh và rẻ hơn mà không kém đi.
+            output_config={"effort": "low",
+                           "format": {"type": "json_schema", "schema": _EXPLAIN_SCHEMA}},
+            # Bộ lọc an toàn từ chối nhầm thì server tự chạy lại trên model Anthropic chọn cho loại đó.
+            # Haiku không có fallback phía server (gửi kèm thì từ chối vẫn là từ chối) — khỏi gửi.
+            **({} if model.startswith("claude-haiku") else
+               {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}))
+    except anthropic.AuthenticationError:
+        raise LookupError("the Claude API key was refused — check ORCH_ANTHROPIC_API_KEY")
+    except anthropic.RateLimitError:
+        raise RuntimeError("the Claude API is busy — try again in a minute")
+    except anthropic.APIStatusError as e:
+        raise RuntimeError(f"the Claude API answered {e.status_code}: {e.message[:200]}")
+    except anthropic.APIConnectionError:
+        raise RuntimeError("could not reach the Claude API — check the internet connection")
+    except TypeError as e:        # SDK không tìm được khoá nào — lỗi này không có lớp riêng
+        if "authentication" not in str(e):
+            raise
+        raise LookupError("Explain needs a Claude API key: put ORCH_ANTHROPIC_API_KEY=... "
+                          "in the .env file, then restart")
+    if r.stop_reason == "refusal":
+        raise RuntimeError("Claude declined to explain this text")
+    if r.stop_reason == "max_tokens":
+        raise RuntimeError("the answer was cut off — select less text")
+    try:
+        d = json.loads(next(b.text for b in r.content if b.type == "text"))
+        words = sorted(d["words"], key=lambda w: EXPLAIN_LEVELS.index(w["level"]))
+        return {"text": text, "language": language, "model": r.model,
+                "explanation": d["explanation"],
+                "words": [{**w, "examples": w["examples"][:3]} for w in words[:EXPLAIN_WORDS_MAX]]}
+    except (StopIteration, ValueError, KeyError, TypeError):
+        raise RuntimeError("Claude gave an unusable answer — try again")
+
+
+async def explain_quote(name, hid, language="Vietnamese", home=None, model=None):
+    """Explain cho một quote đã lưu: đã có lời giải nghĩa bằng ngôn ngữ này thì trả luôn, không gọi
+    API; chưa có thì hỏi Claude MỘT lần rồi lưu vào chính highlight đó (explain[language])."""
+    p = doc_path(name if isinstance(name, str) else "", home)
+    if not p:
+        raise LookupError("no such document")
+
+    def find(meta):
+        return next((h for h in meta.get("highlights") or [] if h.get("id") == hid), None)
+    h = find(doc_meta(p))
+    if not h:
+        raise LookupError("no such quote — it may have been deleted")
+    keep = ("model", "explanation", "words")
+    if language in (h.get("explain") or {}):
+        return {**h["explain"][language], "text": h["text"], "language": language}
+    r = await explain(h["text"], language, model)
+    # Đọc lại: trong lúc chờ Claude, người đọc có thể đã thêm/xoá quote. Đã xoá thì thôi, không lưu.
+    meta = doc_meta(p)
+    if h := find(meta):
+        h.setdefault("explain", {})[language] = {k: r[k] for k in keep}
+        _doc_write(p, meta)
+    return r
+
+
+# ─── Route dùng chung: Documents + Speak text + Explain ───────────────────────
 # Dashboard (một người, thư mục cố định) và reader_server.py (bản host nhiều người, mỗi người một
 # thư mục) dùng CHUNG các handler này — chỉ khác hàm trả thư mục cho từng request.
 
@@ -3021,6 +3158,30 @@ def tts_routes(out_of, by_of=lambda request: "user", download=True):
             Route("/api/tts/speak", speak, methods=["POST"]),
             Route("/api/tts/files/{name}", file),
             *([Route("/api/tts/download", fetch, methods=["POST"])] if download else [])]
+
+
+def explain_routes(home_of):
+    """/api/explain — GET: lựa chọn cho Explain settings (ngôn ngữ, model, model mặc định).
+    POST {doc, id, language, model}: giải nghĩa quote `id` của tài liệu `doc`, lưu lại để lần sau
+    không gọi API nữa. home_of(request): thư mục tài liệu của người đang hỏi."""
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    async def options(request):
+        return JSONResponse({"languages": list(EXPLAIN_LANGS), "model": EXPLAIN_MODEL,
+                             "models": [{"id": k, "label": v} for k, v in EXPLAIN_MODELS.items()]})
+
+    async def ask(request):
+        b = await _json_body(request)
+        b = b if isinstance(b, dict) else {}
+        try:
+            return JSONResponse(await explain_quote(b.get("doc"), b.get("id"),
+                                                    b.get("language") or "Vietnamese", home_of(request),
+                                                    b.get("model")))
+        except (ValueError, LookupError, RuntimeError) as e:
+            return _media_err(e)
+
+    return [Route("/api/explain", options), Route("/api/explain", ask, methods=["POST"])]
 
 
 # ─── Card thư mục: duyệt project NGAY TRONG dashboard ─────────────────────────
@@ -8581,6 +8742,7 @@ def build_app():
         # lambda: đọc DOCS_DIR/TTS_OUT lúc request, không phải lúc dựng app (check_*.py đổi chúng).
         *doc_routes(lambda request: DOCS_DIR),
         *tts_routes(lambda request: TTS_OUT),
+        *explain_routes(lambda request: DOCS_DIR),
         Route("/api/sounds/drafts/{name}", api_sound_file),
         Route("/api/sounds/drafts/{name}", api_sound_delete, methods=["DELETE"]),
         Route("/api/sounds/drafts/{name}/peaks", api_sound_peaks),

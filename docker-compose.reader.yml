@@ -3,6 +3,8 @@
 #   READER_DOMAIN=reader.example.com docker compose -f docker-compose.reader.yml up -d --build
 #   docker compose -f docker-compose.reader.yml exec reader python reader_server.py adduser alice
 #
+# Explain needs a Claude API key: ORCH_ANTHROPIC_API_KEY in the .env next to this file.
+#
 # READER_DOMAIN must already point at this server, and port 443 must be open. Port 80 is not used:
 # the certificate comes over 443 (TLS-ALPN), so another web server can keep port 80.
 services:
@@ -17,6 +19,9 @@ services:
       # Chỉ Caddy với tới được container này (không publish cổng), nên tin X-Forwarded-For của nó
       # để giới hạn đăng nhập đếm theo IP thật của người dùng.
       READER_PROXY: "*"
+      ORCH_ANTHROPIC_API_KEY: ${ORCH_ANTHROPIC_API_KEY:-}
+      ORCH_ANTHROPIC_WORKSPACE_ID: ${ORCH_ANTHROPIC_WORKSPACE_ID:-}
+      ORCH_EXPLAIN_MODEL: ${ORCH_EXPLAIN_MODEL:-claude-opus-5-5}
     volumes:
       - reader-data:/data
 
