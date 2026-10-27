@@ -1,278 +1,193 @@
 <img src="images/logo.png" width="72" align="right" alt="">
 
-# Agent Orchestrator
+# Reader
 
-Claude Code, Codex and Antigravity CLI on one canvas, working together. It drives the CLIs already
-installed on your machine, so each provider keeps its own login and subscription.
+A PDF reader for your phone, hosted on your own server, with an account per person.
 
-![The canvas](images/screenshot-canvas.png)
+- **Read** — named bookmarks on any line; each PDF reopens where you left off.
+- **Quotes** — highlight text to save it as a quote, grouped by page. Tap a quote to read it whole,
+  hear it, or delete it.
+- **Speak** — any selection or quote read aloud with natural English voices (Kokoro, made on the
+  server, 28 US and UK voices).
+- **Explain** — Claude explains a quote in the language you pick, then lists its new words (hardest
+  first) with everyday example sentences. The answer is saved with the quote, so opening it again
+  costs nothing.
+- **Shuffle** — your quotes as cards in random order: swipe right for the next, left to go back.
 
-[Download](../../releases) · [Report a bug](../../issues/new)
+It runs with Docker, behind Caddy for HTTPS. Nothing else from this repository is reachable on it.
 
-## Features
+## What you need
 
-**Agents**
-- Live terminal cards for Claude Code, Codex and Antigravity (Gemini) on one canvas, with the model
-  and reasoning effort picked per agent.
-- Agents hand work to each other with `send_signal`. Every run is queued, capped and logged in
-  History.
-- Role playbooks that fill themselves in from the project. Rename an agent at any time.
-- Workspaces (isolated folders and agents) filed into groups, two of them side by side.
-- A folder card to browse a project from the dashboard; `--dev` swaps it for neovim with a git diff
-  view.
-- Guard rails: approval gate, ping-pong and daily caps, kill switch, one prompt at a time per
-  agent, reachable from your own machine only by default.
+- A Linux server with Docker (including the Compose plugin) and git: 2 CPU cores, at least 1 GB of
+  RAM, and a few GB of disk (the image is about 1 GB; each person can store up to 1 GB).
+- A domain pointing at the server: an A record to its IP. On Cloudflare, set it to **DNS only**
+  (grey cloud) — the certificate is fetched directly on port 443, and the proxy would block that.
+- Port 443 open, TCP and UDP. Port 80 is not used, so another web server can keep it.
+- For Explain only: a [Claude API key](https://platform.claude.com/settings/keys). It is billed per
+  use, and promotional credits work.
 
-**Boards**
-- A goal becomes a task list. A read-only board agent nudges you at the right moments and reads
-  your chat with your agent to stay current.
-- An optional research worker picks open tasks by itself and writes findings on the card. It never
-  edits files.
+## Deploy
 
-**Media**
-- **Images** — generate and edit pictures, with up to three reference images.
-- **Sounds** — search YouTube (AI-generated, filtered by length), pull out the audio, crop it in a
-  waveform editor.
-- **Library** — every kept image, sound and PDF in one drawer. Upload an mp3 and crop it.
-- **PDF reader** — named bookmarks on any line (the PDF reopens at the one you used last, otherwise
-  where you stopped), highlighted quotes grouped by page, and any selection read aloud. Each PDF
-  keeps its own state.
-  Can also run on your own server for phones, with an account per person (see setup step 7).
-- **Speak text** — natural English speech made on your machine (Kokoro, 28 US and UK voices).
-- **Media tools** — checks for ffmpeg, ImageMagick, yt-dlp, SoX and ExifTool, and tells you how to
-  install what is missing.
-
-**For agents and other apps**
-- Built-in MCP servers, connected to every CLI with one click: `signal` (message other agents),
-  `boards` (read and update boards), `library` (search media, measure sounds), `voice` (speak).
-- An MCP manager that adds any HTTP MCP server to all installed CLIs at once. Tokens never touch a
-  command line.
-- An OpenAI-compatible API: chat with an agent at `/v1/chat/completions`, make images at
-  `/v1/images/generations`. API docs at `/docs`.
-
-## Setup
-
-### 1. Install a provider CLI
-
-At least one, installed and logged in:
-
-| CLI | Install |
-|---|---|
-| Claude Code | [code.claude.com/docs](https://code.claude.com/docs/en/quickstart#native-install-recommended) |
-| Codex CLI | [learn.chatgpt.com/docs/codex/cli](https://learn.chatgpt.com/docs/codex/cli#getting-started) |
-| Antigravity CLI | [antigravity.google/docs/cli](https://antigravity.google/docs/cli/reference) — the `agy` command |
-
-Images need the Antigravity CLI.
-
-### 2. Install the orchestrator
-
-**Windows (prebuilt).** Download `agent-orch-windows-x64.zip` from [Releases](../../releases).
-Unblock it *before* unzipping, or SmartScreen flags every file inside:
-
-```powershell
-Unblock-File agent-orch-windows-x64.zip
-```
-
-Unzip it and run `agent-orch.exe` inside the folder. Keep the folder together. The console window
-that opens is the server: close it to stop.
-
-**Windows (from source).** PowerShell, with Python 3.12 (`winget install Python.Python.3.12`) and
-Git (`winget install Git.Git`):
-
-```powershell
-git clone https://github.com/xnoname79/unity-agent-orchestrator.git
-cd unity-agent-orchestrator
-py -3.12 -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python session_orchestrator.py serve
-```
-
-**macOS.** The `python3` built into macOS is 3.9, which is too old. Use Homebrew's:
+On the server:
 
 ```bash
-brew install python@3.12 git
-git clone https://github.com/xnoname79/unity-agent-orchestrator.git
-cd unity-agent-orchestrator
-python3.12 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python session_orchestrator.py serve
+git clone -b pdf-reader https://github.com/xnoname79/unity-agent-orchestrator.git reader
+cd reader
+
+cat > .env <<'EOF'
+READER_DOMAIN=reader.example.com
+ORCH_ANTHROPIC_API_KEY=<your key>
+EOF
+chmod 600 .env
+
+docker compose -f docker-compose.reader.yml up -d --build
+docker compose -f docker-compose.reader.yml exec reader python reader_server.py adduser alice
 ```
 
-**Linux** (Debian, Ubuntu; Python 3.10 or newer):
+- Clone the `pdf-reader` branch: the default branch does not have the reader.
+- The first build downloads the voice (350 MB) and checks it against a fixed checksum.
+- `.env` stays on the server. The image never contains it; the key reaches the container when it
+  starts.
+- Leave `ORCH_ANTHROPIC_API_KEY` out to run without Explain.
 
-```bash
-sudo apt install python3 python3-venv git
-git clone https://github.com/xnoname79/unity-agent-orchestrator.git
-cd unity-agent-orchestrator
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python session_orchestrator.py serve
-```
+Check it:
 
-Then open <http://localhost:8992>.
+1. `docker compose -f docker-compose.reader.yml ps` — `reader` and `caddy` are both running.
+2. `docker compose -f docker-compose.reader.yml logs caddy` — the certificate was obtained.
+3. On the phone, open `https://reader.example.com`, sign in, upload a PDF, then Share › **Add to
+   Home Screen** so it opens like an app.
 
-### 3. Connect the agents' tools
+## Settings
 
-In the dashboard, press 🔌 and, under **Built into the orchestrator**, press **Connect** next to
-`signal` — and next to `boards`, `library` and `voice` if you want them. Agents already running
-pick the tools up after a restart.
+In the `.env` next to `docker-compose.reader.yml`. Run `docker compose -f docker-compose.reader.yml up -d`
+after a change.
 
-Or by hand, once per CLI (same pattern for `boards`, `library` and `voice`):
-
-```bash
-claude mcp add --transport http --scope user signal http://127.0.0.1:8992/signal/mcp
-codex mcp add signal --url http://127.0.0.1:8992/signal/mcp
-agy mcp add signal http://127.0.0.1:8992/signal/mcp
-```
-
-### 4. Optional extras
-
-**Media tools**, for agents that edit video and audio, and for the Sounds panel:
-
-```powershell
-# Windows
-winget install Gyan.FFmpeg
-winget install ImageMagick.ImageMagick
-```
-
-```bash
-# macOS
-brew install ffmpeg imagemagick sox exiftool
-# Linux
-sudo apt install ffmpeg imagemagick sox libimage-exiftool-perl
-```
-
-```bash
-# yt-dlp, any OS (needed for Sounds; the distro version is usually too old)
-python3 -m pip install --upgrade yt-dlp
-```
-
-Restart the orchestrator after installing, then check the wrench in the top bar.
-
-**Speak text** needs its voice once: **Tools › Speak text › Download** (350 MB).
-
-### 5. Settings
-
-Put these in a `.env` file next to `session_orchestrator.py` (or next to `agent-orch.exe`):
-
-| Variable | Default | When to set it |
+| Variable | Default | What it does |
 |---|---|---|
-| `ORCH_PORT` | `8992` | Port 8992 is taken |
-| `CLAUDE_BIN` / `ORCH_CODEX_BIN` / `ORCH_AGY_BIN` | `claude` / `codex` / `agy` | The dashboard cannot find an installed CLI |
-| `ORCH_HOST` | `127.0.0.1` | Only to reach it from another machine |
+| `READER_DOMAIN` | — (required) | The domain the site answers to; anything else is refused |
+| `READER_QUOTA_MB` | `1024` | Storage per person |
+| `ORCH_ANTHROPIC_API_KEY` | — | Claude API key for Explain |
+| `ORCH_ANTHROPIC_WORKSPACE_ID` | — | Only if Explain says the key "is not scoped to a workspace": the workspace ID (`wrkspc_…`) from the Claude Console |
+| `ORCH_EXPLAIN_MODEL` | `claude-opus-5-5` | The model Explain starts on |
 
-> [!WARNING]
-> Agents run shell commands with permissions bypassed, and there is no API key.
-> `ORCH_HOST=0.0.0.0` hands that to everyone on your network.
+The key is `ORCH_ANTHROPIC_API_KEY`, not `ANTHROPIC_API_KEY`: on a machine that also runs the
+orchestrator, its Claude Code agents read `ANTHROPIC_API_KEY` and would switch from your
+subscription to the API.
 
-### 6. Keep it running (optional)
+## Accounts
 
-Run it as your own user, never root. Replace the paths with where you unzipped or cloned it.
-
-<details>
-<summary>Windows — Task Scheduler</summary>
-
-```powershell
-$exe = "$HOME\agent-orch-windows-x64\agent-orch.exe"
-Register-ScheduledTask -TaskName "AgentOrchestrator" `
-  -Action  (New-ScheduledTaskAction -Execute $exe -WorkingDirectory (Split-Path $exe)) `
-  -Trigger (New-ScheduledTaskTrigger -AtLogOn) `
-  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable `
-               -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1))
-```
-
-Remove it with `Unregister-ScheduledTask -TaskName "AgentOrchestrator"`.
-</details>
-
-<details>
-<summary>macOS — launchd</summary>
+There is no sign-up page. Make accounts on the server:
 
 ```bash
-cat > ~/Library/LaunchAgents/com.agent-orch.plist <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.agent-orch</string>
-  <key>ProgramArguments</key><array>
-    <string>$HOME/unity-agent-orchestrator/.venv/bin/python</string>
-    <string>$HOME/unity-agent-orchestrator/session_orchestrator.py</string>
-    <string>serve</string>
-  </array>
-  <key>WorkingDirectory</key><string>$HOME/unity-agent-orchestrator</string>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>$HOME/Library/Logs/agent-orch.log</string>
-  <key>StandardErrorPath</key><string>$HOME/Library/Logs/agent-orch.err</string>
-</dict></plist>
-PLIST
-
-launchctl load -w ~/Library/LaunchAgents/com.agent-orch.plist
+docker compose -f docker-compose.reader.yml exec reader python reader_server.py adduser alice   # asks for a password
+docker compose -f docker-compose.reader.yml exec reader python reader_server.py passwd alice    # new password, signs her out everywhere
+docker compose -f docker-compose.reader.yml exec reader python reader_server.py deluser alice   # removes her and her documents
+docker compose -f docker-compose.reader.yml exec reader python reader_server.py users
 ```
-
-Stop it with `launchctl unload -w ~/Library/LaunchAgents/com.agent-orch.plist`.
-</details>
-
-<details>
-<summary>Linux — systemd user service</summary>
-
-```bash
-mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/orchestrator.service <<'UNIT'
-[Unit]
-Description=Agent Orchestrator
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=%h/unity-agent-orchestrator
-ExecStart=%h/unity-agent-orchestrator/.venv/bin/python %h/unity-agent-orchestrator/session_orchestrator.py serve
-Environment=PYTHONUNBUFFERED=1
-Restart=on-failure
-RestartSec=3
-TimeoutStopSec=15
-
-[Install]
-WantedBy=default.target
-UNIT
-
-systemctl --user daemon-reload
-systemctl --user enable --now orchestrator
-loginctl enable-linger "$USER"     # start at boot, not only when you log in
-```
-
-Logs: `journalctl --user -u orchestrator -f`.
-</details>
-
-### 7. Host the reader for your phone (optional)
-
-Just the PDF reader and Speak text, for several people, on a Linux server with Docker (about 1 GB
-of RAM and 2 CPU cores). Nothing else from the orchestrator is on it.
-
-1. Point a domain at the server (with Cloudflare: an A record, proxy status **DNS only**) and open
-   port 443. Port 80 is not used, so another web server can keep it.
-2. On the server:
-
-   ```bash
-   git clone https://github.com/xnoname79/unity-agent-orchestrator.git
-   cd unity-agent-orchestrator
-   echo "READER_DOMAIN=reader.example.com" > .env
-   docker compose -f docker-compose.reader.yml up -d --build
-   docker compose -f docker-compose.reader.yml exec reader python reader_server.py adduser alice
-   ```
-
-3. On the phone, open `https://reader.example.com`, sign in, then Share › **Add to Home Screen**.
-
-Accounts are made only on the server: `adduser`, `passwd`, `deluser`, `users` (same `exec`
-command). Each person gets 1 GB; change it with `READER_QUOTA_MB=` in `.env`. Documents live in the
-`reader-data` Docker volume.
 
 > [!WARNING]
-> Every account can upload files and use the server's CPU. Only make accounts for people you trust.
+> Every account can upload files, use the server's CPU and spend from your Claude key through
+> Explain. Only make accounts for people you trust.
 
-### Update
+## Explain and its cost
 
-From source: `git pull`, then `pip install -r requirements.txt`, then restart. Prebuilt: download
-the new zip and replace the folder, keeping your `.env`. Hosted reader: `git pull`, then
-`docker compose -f docker-compose.reader.yml up -d --build`.
+In a quote, the gear sets the language (14 to pick from) and the model. Both are saved on that
+device; changing them never calls Claude. Only the **Explain in …** button does, once per quote and
+language.
+
+| Model | Rough cost per Explain |
+|---|---|
+| Opus 5.5 (default) | about 2¢ |
+| Sonnet 5.5 | about 1¢ |
+| Haiku 5.5 | under 0.1¢ |
+
+These are estimates; the Claude Console's usage page shows the real cost. To spend only your
+credits: turn off auto-reload in the Console's Billing page and set a spend limit. When the credits
+run out, Explain says so and nothing is charged; the rest of the reader keeps working.
+
+## Try it on your computer first
+
+No Docker and no domain needed. Python 3.10 or newer:
+
+```bash
+git clone -b pdf-reader https://github.com/xnoname79/unity-agent-orchestrator.git reader
+cd reader
+python3 -m venv .venv
+.venv/bin/pip install starlette uvicorn httpx sherpa-onnx anthropic
+
+export READER_DATA=$HOME/reader-test        # accounts and PDFs for this test
+export READER_INSECURE_COOKIE=1             # lets sign-in work over plain http
+.venv/bin/python reader_server.py fetch-voice   # once, 350 MB, for Speak
+.venv/bin/python reader_server.py adduser alice
+.venv/bin/python reader_server.py serve
+```
+
+Open <http://127.0.0.1:8080>. For Explain, put `ORCH_ANTHROPIC_API_KEY=<your key>` in a `.env` file
+next to `reader_server.py`. To try it from a phone on the same Wi-Fi, add `export READER_HOST=0.0.0.0`
+and open `http://<your computer's IP>:8080` — only on a network you trust.
+
+The Docker setup does not work on `localhost`: Caddy can only get its certificate for a real domain.
+
+## Port 443 is already taken
+
+If another web server on the machine owns 443, let it forward to the reader instead of running
+Caddy. In `docker-compose.reader.yml`, delete the `caddy` service and give `reader` a port only the
+machine itself can reach:
+
+```yaml
+  reader:
+    ports:
+      - "127.0.0.1:8080:8080"
+```
+
+Then add a site to your web server. With nginx:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name reader.example.com;
+    # ssl_certificate … (the same way your other sites get theirs)
+    client_max_body_size 210m;                 # PDFs up to 200 MB
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $http_host;      # the reader refuses other domains
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+Keep the `127.0.0.1:` prefix: published to the internet, port 8080 would let people skip HTTPS and
+fake the address that the failed-login limit counts.
+
+To serve on another port instead (say `https://reader.example.com:8443`) you need port 80 free for
+the certificate: in `Caddyfile.reader` write `{$READER_DOMAIN}:8443` and delete the `tls { … }`
+block, and in `docker-compose.reader.yml` publish `8443:8443`, `8443:8443/udp` and `80:80`.
+
+## Update
+
+```bash
+git pull
+docker compose -f docker-compose.reader.yml up -d --build
+```
+
+## Back up
+
+Accounts, documents, quotes and saved explanations live in the `reader_reader-data` Docker volume
+(the prefix is the folder you cloned into). Keep `reader_caddy-data` too: it holds the certificate.
+
+```bash
+docker run --rm -v reader_reader-data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/reader-data.tgz -C /data .
+```
+
+## When something goes wrong
+
+| You see | Do this |
+|---|---|
+| The certificate is never obtained | The domain must point straight at the server (Cloudflare: DNS only) and port 443 must be open |
+| You cannot sign in | The site must be on HTTPS. Testing over http on your computer needs `READER_INSECURE_COOKIE=1` |
+| Explain: "not scoped to a workspace" | Set `ORCH_ANTHROPIC_WORKSPACE_ID`, or make a new key inside a workspace in the Claude Console |
+| Explain: "credit balance is too low" | The credits are used up or expired |
+| Explain: "needs a Claude API key" | Set `ORCH_ANTHROPIC_API_KEY` in `.env`, then `up -d` again |
+
+Logs: `docker compose -f docker-compose.reader.yml logs -f reader`.
