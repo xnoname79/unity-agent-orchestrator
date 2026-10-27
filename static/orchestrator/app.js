@@ -4461,15 +4461,24 @@ function pdfSelShow() {
   // thúc trong lớp phủ cả trang của pdf.js → nút nhảy xuống đáy màn hình, xa chỗ chọn.
   const bs = pdfTextBoxes(r).map(([, b]) => b);
   if (!bs.length) bs.push(r.getBoundingClientRect());
-  const left = Math.min(...bs.map((b) => b.left)), right = Math.max(...bs.map((b) => b.right));
+  // Phóng to bằng hai ngón: toạ độ ở đây là của layout viewport, còn mắt thấy visual viewport (to
+  // gấp k, lệch offset). Tính hết ra pixel MÀN HÌNH, thu thanh nút lại 1/k cho đúng cỡ ngón tay rồi
+  // đổi ngược về CSS — không thì nó to gấp k, tràn khỏi màn hình và che mất chữ đang chọn.
+  const vv = window.visualViewport || { offsetLeft: 0, offsetTop: 0, width: innerWidth, height: innerHeight, scale: 1 };
+  const k = vv.scale || 1, W = vv.width * k, H = vv.height * k, w = pop.offsetWidth, h = pop.offsetHeight;
+  const sx = (x) => (x - vv.offsetLeft) * k, sy = (y) => (y - vv.offsetTop) * k;
+  const left = sx(Math.min(...bs.map((b) => b.left))), right = sx(Math.max(...bs.map((b) => b.right)));
   // Ngón tay: tay nắm kéo vùng chọn nằm ngay dưới dòng cuối — chừa chỗ để vẫn kéo được.
-  const top = Math.max(...bs.map((b) => b.bottom)) + (matchMedia("(pointer: coarse)").matches ? 28 : 6);
-  // Kẹp trong phần đang THẤY (visualViewport): phóng to bằng hai ngón thì nó nhỏ hơn innerWidth/Height.
-  const vv = visualViewport || { offsetLeft: 0, offsetTop: 0, width: innerWidth, height: innerHeight };
+  const top = sy(Math.max(...bs.map((b) => b.bottom))) + (matchMedia("(pointer: coarse)").matches ? 28 : 6);
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
-  pop.style.left = clamp((left + right - pop.offsetWidth) / 2, vv.offsetLeft + 8,
-                         vv.offsetLeft + vv.width - pop.offsetWidth - 8) + "px";
-  pop.style.top = clamp(top, vv.offsetTop + 8, vv.offsetTop + vv.height - pop.offsetHeight - 8) + "px";
+  pop.style.transform = k === 1 ? "" : `scale(${1 / k})`;
+  pop.style.left = vv.offsetLeft + clamp((left + right - w) / 2, 8, W - w - 8) / k + "px";
+  pop.style.top = vv.offsetTop + clamp(top, 8, H - h - 8) / k + "px";
+}
+
+// Đang phóng to / kéo bằng hai ngón: thanh nút đi theo chữ và giữ đúng cỡ màn hình.
+for (const ev of ["resize", "scroll"]) {
+  window.visualViewport?.addEventListener(ev, () => { if (!$("pdf-sel").hidden) pdfSelShow(); });
 }
 
 const pdfPick = () => { const r = pdfSelRange(); return r ? { range: r, text: pdfSelText() } : pdfLast; };
