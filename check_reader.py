@@ -178,7 +178,7 @@ async def main():
 
         async def slow_explain(text, language="", model=None):
             await asyncio.sleep(0.2)
-            return {"model": "m", "explanation": text, "words": []}
+            return {"model": "m", "translation": text, "words": []}
         so.explain = slow_explain
         quote = {"highlights": [{"id": "q1", "page": 1, "text": "alice's secret quote", "rects": [[1, 0, 0, 9, 9]]}]}
         await alice.post(f"/api/documents/{a_doc}/state", json=quote, headers={"origin": BASE})

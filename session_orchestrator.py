@@ -2942,18 +2942,19 @@ EXPLAIN_LANGS = ("Vietnamese", "English", "Chinese", "Japanese", "Korean", "Thai
                  "Hindi", "Spanish", "French", "German", "Portuguese", "Russian", "Arabic")
 _EXPLAIN_SYSTEM = (
     "You help someone learning English read an English text. They pick a quote from it.\n"
-    "explanation: in the language the user names, what the quote means in plain words: the idea, "
-    "and any idiom, tone or reference in it. Not a word-for-word translation.\n"
+    "translation: the whole quote translated into the language the user names: faithful and natural, "
+    "nothing left out, an idiom by what it means rather than word for word, so the reader can match "
+    "each new word below to its place in the translation.\n"
     "words: words and set phrases from the quote (idioms, phrasal verbs, collocations) that an "
     f"intermediate (B1) learner probably does not know, most advanced first, at most {EXPLAIN_WORDS_MAX}. "
     "Skip names and everyday words. For each: its dictionary form, its CEFR level, its part of "
     "speech, a short meaning in simple English as it is used in the quote, and two new sentences "
     "someone would say in casual conversation, not taken from the quote.\n"
-    "Everything except explanation is in English.")
+    "Everything except translation is in English.")
 _EXPLAIN_SCHEMA = {
-    "type": "object", "additionalProperties": False, "required": ["explanation", "words"],
+    "type": "object", "additionalProperties": False, "required": ["translation", "words"],
     "properties": {
-        "explanation": {"type": "string"},
+        "translation": {"type": "string"},
         "words": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
             "required": ["word", "level", "part_of_speech", "meaning", "examples"],
@@ -2993,7 +2994,7 @@ async def explain(text, language="Vietnamese", model=None):
         r = await _explain_client.beta.messages.create(
             model=model, max_tokens=16000, system=_EXPLAIN_SYSTEM,
             messages=[{"role": "user",
-                       "content": f'Quote: "{text}"\nWrite the explanation in {language}.'}],
+                       "content": f'Quote: "{text}"\nTranslate it into {language}.'}],
             # effort low: tra từ chứ không phải bài toán — nhanh và rẻ hơn mà không kém đi.
             output_config={"effort": "low",
                            "format": {"type": "json_schema", "schema": _EXPLAIN_SCHEMA}},
@@ -3022,7 +3023,7 @@ async def explain(text, language="Vietnamese", model=None):
         d = json.loads(next(b.text for b in r.content if b.type == "text"))
         words = sorted(d["words"], key=lambda w: EXPLAIN_LEVELS.index(w["level"]))
         return {"text": text, "language": language, "model": r.model,
-                "explanation": d["explanation"],
+                "translation": d["translation"],
                 "words": [{**w, "examples": w["examples"][:3]} for w in words[:EXPLAIN_WORDS_MAX]]}
     except (StopIteration, ValueError, KeyError, TypeError):
         raise RuntimeError("Claude gave an unusable answer — try again")
@@ -3040,8 +3041,9 @@ async def explain_quote(name, hid, language="Vietnamese", home=None, model=None)
     h = find(doc_meta(p))
     if not h:
         raise LookupError("no such quote — it may have been deleted")
-    keep = ("model", "explanation", "words")
-    if language in (h.get("explain") or {}):
+    keep = ("model", "translation", "words")
+    # Bản lưu trước 2026-10-27 là lời giải thích, không có bản dịch: hỏi lại một lần và ghi đè.
+    if "translation" in (h.get("explain") or {}).get(language, {}):
         return {**h["explain"][language], "text": h["text"], "language": language}
     r = await explain(h["text"], language, model)
     # Đọc lại: trong lúc chờ Claude, người đọc có thể đã thêm/xoá quote. Đã xoá thì thôi, không lưu.

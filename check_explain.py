@@ -61,7 +61,7 @@ def check(name, ok, detail=""):
     print(("ok   " if ok else "FAIL ") + name + (f" — {detail}" if not ok else ""))
 
 
-ANSWER = {"explanation": "Anh ấy chùn bước ngay trước đám cưới.", "words": [
+ANSWER = {"translation": "Anh ấy chùn bước ngay trước đám cưới.", "words": [
     {"word": "cold feet", "level": "B2", "part_of_speech": "idiom",
      "meaning": "sudden fear before doing something planned",
      "examples": ["I got cold feet before my talk.", "Don't get cold feet now!", "Three.", "Four."]},
@@ -152,7 +152,7 @@ async def main():
               f"{body.get('fallbacks')} {req.headers.get('anthropic-beta')}")
         msg = body["messages"][0]["content"]
         check("the saved quote's text and the language reach the prompt",
-              f'"{QUOTE}"' in msg and "in Vietnamese" in msg, msg)
+              f'"{QUOTE}"' in msg and "into Vietnamese" in msg, msg)
 
         def objects(node):
             if isinstance(node, dict):
@@ -168,35 +168,43 @@ async def main():
               [w["level"] for w in d.get("words", [])] == ["C2", "C1", "B2"], str(d.get("words"))[:120])
         check("at most three examples a word", len(d["words"][2]["examples"]) == 3)
         check("the explanation and the model that wrote it are passed on",
-              d["explanation"] == ANSWER["explanation"] and d["model"] == "claude-opus-5-5")
+              d["translation"] == ANSWER["translation"] and d["model"] == "claude-opus-5-5")
 
         # ── trả tiền một lần: lưu cùng quote, lần sau không gọi API ──────────
         s = saved().get("Vietnamese") or {}
         check("the explanation is saved with the quote, as shown",
-              s.get("explanation") == d["explanation"] and s.get("words") == d["words"]
+              s.get("translation") == d["translation"] and s.get("words") == d["words"]
               and s.get("model") == "claude-opus-5-5", str(saved())[:120])
         seen.clear()
         again = await ask()
         check("the same quote in the same language does not call the API again",
               again.status_code == 200 and not seen
-              and {k: again.json()[k] for k in ("explanation", "words", "model")}
-              == {k: d[k] for k in ("explanation", "words", "model")}, f"{again.status_code} {len(seen)}")
+              and {k: again.json()[k] for k in ("translation", "words", "model")}
+              == {k: d[k] for k in ("translation", "words", "model")}, f"{again.status_code} {len(seen)}")
         r = await ask(language="Japanese")
         check("another language is asked once and saved beside the first",
               r.status_code == 200 and len(seen) == 1 and set(saved()) == {"Vietnamese", "Japanese"},
               f"{r.status_code} {len(seen)} {list(saved())}")
 
         # Trang lưu danh sách quote (thêm q2, kèm một lời giải nghĩa tự bịa cho q1).
-        forged = hl("q1", explain={"Vietnamese": {"model": "x", "explanation": "FORGED", "words": []}})
+        forged = hl("q1", explain={"Vietnamese": {"model": "x", "translation": "FORGED", "words": []}})
         so.doc_update(DOC, {"highlights": [forged, hl("q2", "Another quote.")]})
         check("the page saving its quotes keeps the saved explanation, and cannot slip in its own",
-              saved().get("Vietnamese", {}).get("explanation") == ANSWER["explanation"]
+              saved().get("Vietnamese", {}).get("translation") == ANSWER["translation"]
               and "Japanese" in saved() and not saved("q2"), str(saved())[:120])
         so.doc_update(DOC, {"highlights": [hl("q2", "Another quote.")]})
         r = await ask()
         check("deleting a quote deletes its explanation",
               r.status_code == 409 and "no such quote" in r.json().get("error", "")
               and "explain" not in json.dumps(so.doc_meta(so.DOCS_DIR / DOC)), f"{r.status_code} {r.text[:80]}")
+
+        # Bản lưu kiểu cũ (lời giải thích, chưa có bản dịch): hỏi lại đúng một lần rồi ghi đè.
+        fresh(quotes=[hl("q1", explain={"Vietnamese": {"model": "m", "explanation": "old text", "words": []}})])
+        r = await ask()
+        s = saved().get("Vietnamese", {})
+        check("an explanation saved before translations is replaced by a translation",
+              r.status_code == 200 and len(seen) == 1 and s.get("translation") == ANSWER["translation"]
+              and "explanation" not in s, f"{r.status_code} {len(seen)} {s}")
 
         fresh()
         reply["during"] = lambda: so.doc_update(DOC, {"highlights": [hl("q2", "Another quote.")]})
@@ -206,7 +214,7 @@ async def main():
               f"{r.status_code} {so.doc_meta(so.DOCS_DIR / DOC)}")
 
         fresh()
-        reply["answer"] = {"explanation": "x", "words": [
+        reply["answer"] = {"translation": "x", "words": [
             {"word": f"w{i}", "level": "B1", "part_of_speech": "noun", "meaning": "m", "examples": []}
             for i in range(12)]}
         d = (await ask(language="English")).json()
@@ -254,7 +262,7 @@ async def main():
                   f"{r.status_code} {len(seen)} {r.text[:80]}")
         r = await c.post("/api/explain", json={"doc": DOC, "id": "q1"})
         check("no language means Vietnamese", r.status_code == 200
-              and "in Vietnamese" in json.loads(seen[-1].content)["messages"][0]["content"], r.text[:80])
+              and "into Vietnamese" in json.loads(seen[-1].content)["messages"][0]["content"], r.text[:80])
 
         # ── mỗi kiểu hỏng nói đúng chuyện gì đã xảy ra, và không lưu gì ─────
         for name, setup, code, words in (

@@ -9,9 +9,9 @@ A PDF reader for your phone, hosted on your own server, with an account per pers
   hear it, or delete it.
 - **Speak** — any selection or quote read aloud with natural English voices (Kokoro, made on the
   server, 28 US and UK voices).
-- **Explain** — Claude explains a quote in the language you pick, then lists its new words (hardest
-  first) with everyday example sentences. The answer is saved with the quote, so opening it again
-  costs nothing.
+- **Explain** — Claude translates a quote into the language you pick, then lists its new words
+  (hardest first) with their meaning and everyday example sentences. The answer is saved with the
+  quote, so opening it again costs nothing.
 - **Shuffle** — your quotes as cards in random order: swipe right for the next, left to go back.
 
 It runs with Docker, behind Caddy for HTTPS. Nothing else from this repository is reachable on it.

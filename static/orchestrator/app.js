@@ -4591,12 +4591,13 @@ function expPref(key) {
 const expLang = () => expPref("exp-lang") || "Vietnamese";
 
 // Ưu tiên ngôn ngữ đang đặt; chưa có thì hiện bản đã có bằng ngôn ngữ khác và chừa nút Explain cho
-// ngôn ngữ đang đặt. Có bản bằng ngôn ngữ đang đặt rồi thì ẩn nút.
+// ngôn ngữ đang đặt. Có BẢN DỊCH bằng ngôn ngữ đang đặt rồi thì ẩn nút — bản lưu kiểu cũ (lời giải
+// thích, chưa có bản dịch) vẫn hiện, nhưng còn nút để lấy bản dịch.
 function qtPaintExp(h) {
   const lang = expLang(), saved = h.explain || {};
   const shown = saved[lang] ? lang : Object.keys(saved)[0];
   qtShown = shown ? saved[shown] : null;
-  $("qt-explain").hidden = !!saved[lang];
+  $("qt-explain").hidden = saved[lang]?.translation != null;
   $("qt-explain").textContent = `Explain in ${lang}`;
   $("qt-exp").innerHTML = qtShown ? expHtml(qtShown, shown) : "";
 }
@@ -4610,7 +4611,7 @@ async function qtExplain() {
   try {
     const r = await api("/api/explain", "POST", { doc: pdf.name, id: h.id, language: lang, model });
     // Server đã lưu; giữ một bản ở đây để mở lại quote là có ngay, khỏi hỏi server.
-    (h.explain ||= {})[lang] = { model: r.model, explanation: r.explanation, words: r.words };
+    (h.explain ||= {})[lang] = { model: r.model, translation: r.translation, words: r.words };
     if (n !== qtSeq) return;   // đã đóng / mở quote khác trong lúc chờ
     $("qt-msg").textContent = "";
     qtPaintExp(h);
@@ -4647,8 +4648,9 @@ Object.assign(window, { qtSetToggle, expSet });
 
 // Chữ của model đi qua esc() hết: nó đọc chữ trong PDF của người lạ, có thể bị xui viết HTML.
 function expHtml(r, lang) {
-  return `<div class="hint">AI explanation in ${esc(lang)} by ${esc(r.model)} — it can be wrong.</div>
-    <h4>Explanation</h4><p class="exp-text">${esc(r.explanation)}</p>
+  const [title, body] = r.translation != null ? ["Translation", r.translation] : ["Explanation", r.explanation];
+  return `<div class="hint">AI ${title.toLowerCase()} in ${esc(lang)} by ${esc(r.model)} — it can be wrong.</div>
+    <h4>${title}</h4><p class="exp-text">${esc(body)}</p>
     <h4>New words, hardest first</h4>
     ${r.words.length ? `<ol class="exp-words">${r.words.map((w, i) => `<li>
       <div><b>${esc(w.word)}</b> ${badge(esc(w.level), "b-blue")} <span class="hint">${esc(w.part_of_speech)}</span></div>
