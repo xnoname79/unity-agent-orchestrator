@@ -3433,6 +3433,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("sed-modal").hidden) return sedDiscard();
   if (e.key === "Escape" && !$("tts-modal").hidden) return ttsClose();
   if (e.key === "Escape" && !$("perf-modal").hidden) return perfClose();
+  if (e.key === "Escape" && !$("unreg-modal").hidden) return unregClose();
   if (e.key === "Escape" && libIsOpen()) libClose();
   if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
   if (e.key === "Escape" && !$("img-modal").hidden) imgClose();
@@ -3651,6 +3652,74 @@ function perfPaint(d, page) {
       <td>${p.cpu}%</td><td>${fmtMB(p.ram)}</td><td>${fmtAge(p.age)}</td></tr>`).join("")
     || `<tr><td colspan="5" class="hint">No agent is running anything right now.</td></tr>`;
 }
+
+// ── Unregistered agents (Tools) ──────────────────────────────────────────────
+// Unregister chỉ gỡ card; runs, signals và transcript còn nằm lại. Xoá hẳn CHỈ ở đây, không gộp
+// vào nút Unregister: gỡ nhầm một card còn cứu được, xoá hẳn thì không.
+let unregRows = [];
+const unregName = (r) => r.name || r.id.slice(0, 8);
+const unregFree = () => unregRows.filter((r) => !r.in_use.length && !r.running);
+const fmtSize = (b) => b < 1048576 ? Math.max(1, Math.round(b / 1024)) + " KB" : fmtMB(b);
+
+function unregOpen() {
+  $("unreg-modal").hidden = false;
+  showMsg("unreg-msg", "Looking…", true);
+  unregLoad();
+}
+window.unregOpen = unregOpen;
+
+function unregClose() {
+  $("unreg-modal").hidden = true;
+}
+window.unregClose = unregClose;
+
+async function unregLoad() {
+  try { unregRows = (await api("/api/unregistered")).agents || []; }
+  catch (e) { return showMsg("unreg-msg", mcpErr(e), false); }
+  $("unreg-msg").textContent = "";
+  $("unreg-all").hidden = unregFree().length < 2;
+  // Nút gọi theo VỊ TRÍ dòng, không nhét id vào onclick: id lấy từ DB, esc() không chặn dấu '.
+  $("unreg-rows").innerHTML = unregRows.map((r, i) => {
+    const ws = r.workspace || (r.workspace_id === "default" ? "Default" : "deleted workspace");
+    const keep = r.in_use.length ? `used by ${r.in_use.join(", ")}` : r.running ? "running" : "";
+    return `<tr>
+      <td><b>${esc(unregName(r))}</b> <span class="hint">${esc(ws)}${r.cwd ? " · " + esc(r.cwd) : ""}</span>
+        <div class="hint" title="${esc(r.preview)}">${esc(r.preview || "—")}</div></td>
+      <td>${esc(shortDateTime(r.last).slice(0, 16))}</td>
+      <td>${r.runs}</td>
+      <td>${r.transcripts ? fmtSize(r.bytes) : "none"}</td>
+      <td>${keep ? badge(esc(keep), "b-gray", keep === "running" ? "Wait for its run to finish"
+                         : "Switch that card to another session first")
+                 : `<button class="icon-btn danger" title="Delete for good" onclick="unregDelete(${i})"
+                     >${ic("trash", "sm")}</button>`}</td></tr>`;
+  }).join("") || `<tr><td colspan="5" class="hint">Nothing left behind.</td></tr>`;
+}
+
+// i bỏ trống = Delete all (trừ dòng đang được dùng — server cũng từ chối chúng).
+async function unregDelete(i) {
+  const rows = i === undefined ? unregFree() : [unregRows[i]].filter(Boolean);
+  if (!rows.length) return;
+  const runs = rows.reduce((a, r) => a + r.runs, 0), files = rows.reduce((a, r) => a + r.transcripts, 0);
+  const one = rows.length === 1, it = one ? "it" : "they";
+  if (!confirm(`Delete ${one ? `"${unregName(rows[0])}"` : `these ${rows.length} agents`} for good?\n\n`
+      + `${runs} run${runs === 1 ? "" : "s"} with every step, the signals sent to ${one ? "it" : "them"}`
+      + (files ? ` and ${files} transcript file${files === 1 ? "" : "s"}` : "")
+      + ` are removed. This cannot be undone.\n\n`
+      + `Signals ${it} sent, the role SKILL file in the project folder and what you typed in the `
+      + `CLI's own history file stay.`))
+    return;
+  showMsg("unreg-msg", "Deleting…", true);
+  let res;
+  try { res = await api("/api/unregistered/delete", "POST", { ids: rows.map((r) => r.id) }); }
+  catch (e) { return showMsg("unreg-msg", mcpErr(e), false); }
+  const names = Object.fromEntries(rows.map((r) => [r.id, unregName(r)]));
+  await unregLoad();
+  const n = res.deleted.length, errs = Object.entries(res.errors);
+  if (errs.length)
+    showMsg("unreg-msg", (n ? `Deleted ${n}. ` : "") + errs.map(([id, m]) => `${names[id] || id}: ${m}`).join(" · "), false);
+  else showMsg("unreg-msg", `Deleted ${n} agent${n === 1 ? "" : "s"}.`, true);
+}
+window.unregDelete = unregDelete;
 
 function imgClose() {
   $("img-modal").hidden = true;

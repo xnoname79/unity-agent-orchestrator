@@ -333,6 +333,10 @@
   .perf-sum b { display: inline-block; min-width: 92px; }
   .perf-table th, .perf-table td { padding: 6px 8px; font-size: 12px; }
   .perf-table td:nth-child(n+3) { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  /* Cột Agent ăn hết phần còn lại; việc cuối được giao dài cả đoạn → một dòng, cắt bằng … */
+  .unreg-table td:first-child { width: 100%; max-width: 0; }
+  .unreg-table td:first-child .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .unreg-table td:nth-child(n+2) { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .snd-status { display: grid; gap: 6px; margin-bottom: 4px; font-size: 11.5px; }
   .snd-status .tool-fix { margin: 0; }
   .snd-recheck { font-size: 11px; padding: 2px 8px; margin-left: 4px; }
@@ -942,6 +946,9 @@
   <button popovertarget="tools-menu" popovertargetaction="hide" onclick="perfOpen()"
     title="See what is using this computer's CPU and memory">
     <svg class="ic"><use href="#i-gauge"/></svg> Performance</button>
+  <button popovertarget="tools-menu" popovertargetaction="hide" onclick="unregOpen()"
+    title="Agents you unregistered that still leave runs and transcripts behind">
+    <svg class="ic"><use href="#i-trash"/></svg> Unregistered agents</button>
 </div>
 
 <main>
@@ -1355,6 +1362,25 @@
       <tbody id="perf-rows"></tbody>
     </table>
     <div id="perf-msg" class="form-msg"></div>
+  </div>
+</div>
+
+<!-- Unregistered agents: agent đã gỡ mà runs/signals/transcript còn nằm lại — xoá hẳn ở đây. -->
+<div id="unreg-modal" class="modal-overlay" onclick="if (event.target === this) unregClose()" hidden>
+  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="unreg-title">
+    <h3 id="unreg-title"><svg class="ic"><use href="#i-trash"/></svg> Unregistered agents
+      <span class="spacer"></span>
+      <button id="unreg-all" class="danger" onclick="unregDelete()" hidden>Delete all</button>
+      <button class="icon-btn" onclick="unregClose()" title="Close">
+        <svg class="ic"><use href="#i-x"/></svg></button></h3>
+    <div class="hint">Unregister keeps an agent's runs, signals and transcript. Deleting here removes
+      them for good. Signals it sent, its role SKILL file in the project folder and what you typed
+      in the CLI's own history file stay.</div>
+    <table class="perf-table unreg-table">
+      <thead><tr><th>Agent</th><th>Last active</th><th>Runs</th><th>Transcript</th><th></th></tr></thead>
+      <tbody id="unreg-rows"></tbody>
+    </table>
+    <div id="unreg-msg" class="form-msg" aria-live="polite"></div>
   </div>
 </div>
 

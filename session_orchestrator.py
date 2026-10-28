@@ -404,6 +404,16 @@ def init_db():
             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
             PRIMARY KEY (name, session_id)
         );
+        -- Agent đã Unregister: tên/cwd chép lại TRƯỚC khi dòng sessions bị xoá, để bảng
+        -- Unregistered agents còn biết đó là ai (runs/signals chỉ giữ id). Xoá hẳn = xoá dòng này.
+        CREATE TABLE IF NOT EXISTS removed_sessions (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL DEFAULT 'default',
+            name TEXT NOT NULL DEFAULT '',
+            cwd TEXT NOT NULL DEFAULT '',
+            resume_id TEXT NOT NULL DEFAULT '',
+            removed_at TEXT NOT NULL
+        );
     """)
     # migrate: board tạo trước khi thread được tách ra chưa có owner_id. '' = board kiểu cũ,
     # còn dùng chung transcript với người dùng; board_thread() nâng cấp nó ở lần chạy kế tiếp.
@@ -3767,11 +3777,149 @@ async def spawn_session(name, project="", cwd="", allowed_tools=None, permission
 
 
 def unregister_session(session_id):
-    """Gỡ session khỏi orchestrator (giữ lại runs cho audit)."""
+    """Gỡ session khỏi orchestrator (giữ lại runs cho audit). Tên/cwd chép sang removed_sessions
+    để sau này còn xoá hẳn được từ Tools › Unregistered agents (xem purge_unregistered)."""
+    _ensure_db()
     conn = _conn()
+    conn.execute("INSERT OR REPLACE INTO removed_sessions (id, workspace_id, name, cwd, resume_id, removed_at) "
+                 "SELECT id, workspace_id, name, cwd, resume_id, ? FROM sessions WHERE id = ?",
+                 (_now(), session_id))
     conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
     conn.commit()
     conn.close()
+
+
+def _unregistered_db(conn):
+    """{id: dấu vết trong DB} của mọi agent ĐÃ unregister — chỉ đọc DB, không quét đĩa.
+
+    Id lấy từ runs, signals gửi TỚI nó và removed_sessions. Bỏ id còn đăng ký, và id board còn
+    trỏ tới (thread riêng của board là session thật đang chạy, không phải rác)."""
+    keep = {r[0] for r in conn.execute("SELECT id FROM sessions")}
+    for r in conn.execute("SELECT session_id, worker_id, owner_id FROM boards"):
+        keep.update(r)
+    out = {}
+
+    def row(sid, ws):
+        return out.setdefault(sid, {"id": sid, "workspace_id": ws, "name": "", "cwd": "",
+                                    "resume_id": "", "runs": 0, "running": 0, "signals": 0,
+                                    "last": ""})
+    for sid, ws, n, running, last in conn.execute(
+            "SELECT session_id, MAX(workspace_id), COUNT(*), SUM(status = 'running'), MAX(started_at) "
+            "FROM runs GROUP BY session_id"):
+        r = row(sid, ws)
+        r.update(runs=n, running=running or 0, last=max(r["last"], last or ""))
+    for sid, ws, n, last in conn.execute(
+            "SELECT to_session, MAX(workspace_id), COUNT(*), MAX(created_at) FROM signals GROUP BY to_session"):
+        r = row(sid, ws)
+        r.update(signals=n, last=max(r["last"], last or ""))
+    for x in conn.execute("SELECT * FROM removed_sessions"):
+        r = row(x["id"], x["workspace_id"])
+        r.update(name=x["name"], cwd=x["cwd"], resume_id=x["resume_id"], workspace_id=x["workspace_id"],
+                 last=max(r["last"], x["removed_at"]))
+    return {k: v for k, v in out.items() if k and k not in keep}
+
+
+def _unregistered_files(r):
+    """Transcript trên đĩa của một agent đã unregister: [(id, cli, path)]. Thử cả ba CLI — engine
+    không được lưu, và card đổi engine giữa chừng có transcript ở nhiều CLI. Gồm cả phiên nó GHIM
+    (resume_id), trừ khi card còn đăng ký đang dùng phiên đó."""
+    tids = [r["id"]] + ([r["resume_id"]] if r["resume_id"] and r["resume_id"] != r["id"]
+                        and not sessions_using_transcript(r["resume_id"]) else [])
+    return [(t, cli, p) for t in tids for cli in TERMINAL_CLIS if (p := _transcript_path(t, cli))]
+
+
+# Tên vai trong prompt đã lưu: signal thường ghi '[Role: x]', bootstrap SKILL ghi "vai 'x'".
+_ROLE_IN_PROMPT = re.compile(r"\[Role: ([^\]\n]{1,80})\]|vai '([^'\n]{1,80})'")
+
+
+def list_unregistered():
+    """Bảng Tools › Unregistered agents: agent đã gỡ mà còn để lại runs/signals/transcript.
+
+    preview = việc CUỐI nó được giao (prompt run gần nhất) — đủ để nhận ra agent nào. Agent gỡ
+    trước khi có removed_sessions không còn tên: dò lại trong prompt, cwd lấy từ transcript."""
+    _ensure_db()
+    conn = _conn()
+    rows = _unregistered_db(conn)
+    wsn = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM workspaces")}
+    for r in rows.values():
+        last = conn.execute("SELECT prompt FROM runs WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+                            (r["id"],)).fetchone()
+        r["preview"] = " ".join((last[0] if last else "").split())[:160]
+        if not r["name"]:
+            for (p,) in conn.execute("SELECT prompt FROM runs WHERE session_id = ? ORDER BY id LIMIT 20",
+                                     (r["id"],)):
+                if m := _ROLE_IN_PROMPT.search(p[:600]):
+                    r["name"] = m.group(1) or m.group(2)
+                    break
+    conn.close()
+    out = []
+    for r in rows.values():
+        files = _unregistered_files(r)
+        size = 0
+        for tid, cli, p in files:
+            try:
+                size += p.stat().st_size
+            except OSError:
+                continue
+            if tid == r["id"] and cli != "agy" and not (r["cwd"] and r["preview"]):
+                _, cwd, preview = _scan_transcript(p, cli)
+                r["cwd"], r["preview"] = r["cwd"] or cwd, r["preview"] or preview[:160]
+        out.append({**r, "workspace": wsn.get(r["workspace_id"], ""), "transcripts": len(files),
+                    "bytes": size, "in_use": sessions_using_transcript(r["id"])})
+    return sorted(out, key=lambda r: r["last"], reverse=True)
+
+
+def purge_unregistered(sid):
+    """Xoá HẲN một agent đã unregister: transcript trên đĩa, runs + run_events, signal gửi TỚI nó,
+    hạn mức nới thêm và dòng removed_sessions. Không hoàn tác được.
+
+    KHÔNG đụng: signal nó GỬI (from_session lưu TÊN vai — agent đang sống trùng tên sẽ mất lịch
+    sử), SKILL của vai trong thư mục project (có thể đã commit, vai mới cùng tên dùng lại),
+    history.jsonl của claude (không chia theo phiên). Trả dict đã xoá gì, hoặc {'error': …}."""
+    _ensure_db()
+    conn = _conn()
+    r = _unregistered_db(conn).get(sid)
+    conn.close()
+    if not r:
+        return {"error": f"'{sid}' is not an unregistered agent"}
+    if r["running"]:
+        return {"error": "it still has a run in progress — wait for it to finish"}
+    used = sessions_using_transcript(sid)
+    if used:
+        return {"error": f"{', '.join(sorted(set(used)))} still resumes its session — "
+                         f"switch that card to another session first"}
+    # File trước DB: xoá file lỗi giữa chừng thì dòng vẫn còn trong bảng, bấm lại là dọn tiếp.
+    files = 0
+    for tid, cli, _ in _unregistered_files(r):
+        res = delete_cli_session(tid, cli)
+        if res.get("error"):
+            return res
+        files += 1
+    conn = _conn()
+    n = {"runs": conn.execute("SELECT COUNT(*) FROM runs WHERE session_id = ?", (sid,)).fetchone()[0],
+         "signals": r["signals"], "transcripts": files}
+    conn.execute("DELETE FROM run_events WHERE session_id = ?", (sid,))
+    conn.execute("DELETE FROM runs WHERE session_id = ?", (sid,))
+    conn.execute("DELETE FROM signals WHERE to_session = ?", (sid,))
+    conn.execute("DELETE FROM daily_allowance WHERE session_id = ?", (sid,))
+    conn.execute("DELETE FROM removed_sessions WHERE id = ?", (sid,))
+    conn.commit()
+    conn.close()
+    print(f"[orchestrator] 🗑 xoá hẳn agent đã unregister '{r['name'] or sid}': {n}")
+    return {"id": sid, **n}
+
+
+def vacuum_db():
+    """Thu nhỏ file DB sau khi xoá nhiều: SQLite chỉ đánh dấu trang trống, file không tự nhỏ đi.
+    Khoá cả DB vài trăm ms — chỉ gọi sau một lượt xoá người dùng bấm, chạy trong thread."""
+    conn = sqlite3.connect(_db_path(), timeout=10)
+    try:
+        conn.execute("VACUUM")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.Error as e:
+        print(f"[orchestrator] ⚠ VACUUM không chạy được: {e}")
+    finally:
+        conn.close()
 
 
 # ─── Compact context (đọc từ transcript ~/.claude/projects) ───────────────────
@@ -7825,6 +7973,34 @@ def build_app():
             return JSONResponse(res, status_code=400)
         return JSONResponse({"deleted": True, **res})
 
+    async def api_unregistered(request: Request):
+        """Tools › Unregistered agents. Quét transcript trên đĩa → chạy trong thread."""
+        return JSONResponse({"agents": await asyncio.to_thread(list_unregistered)})
+
+    async def api_unregistered_delete(request: Request):
+        """Xoá hẳn các agent đã unregister: {"ids": [...]}. Từng id được purge_unregistered tự
+        đối chiếu lại với DB — id gửi lên chỉ là lời đề nghị, không phải danh sách được tin."""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        ids = body.get("ids")
+        if not isinstance(ids, list) or not ids or not all(isinstance(x, str) for x in ids):
+            return JSONResponse({"error": "ids must be a non-empty list of session ids"}, status_code=400)
+
+        def work():
+            done, errors = [], {}
+            for sid in dict.fromkeys(ids):
+                res = purge_unregistered(sid)
+                if res.get("error"):
+                    errors[sid] = res["error"]
+                else:
+                    done.append(res)
+            if done:
+                vacuum_db()
+            return {"deleted": done, "errors": errors}
+        return JSONResponse(await asyncio.to_thread(work))
+
     async def api_set_model(request: Request):
         """Đổi model của 1 session ngay trên bảng Sessions (không cần re-register)."""
         sid = request.path_params["sid"]
@@ -8494,6 +8670,8 @@ def build_app():
         Route("/api/fs", api_fs_list),
         Route("/api/cli-sessions", api_cli_sessions),
         Route("/api/cli-sessions/delete", api_delete_cli_session, methods=["POST"]),
+        Route("/api/unregistered", api_unregistered),
+        Route("/api/unregistered/delete", api_unregistered_delete, methods=["POST"]),
         Route("/api/sessions/{sid}/resume-id", api_set_resume, methods=["POST"]),
         WebSocketRoute("/ws/terminal", ws_terminal),
         WebSocketRoute("/ws/editor", ws_editor),

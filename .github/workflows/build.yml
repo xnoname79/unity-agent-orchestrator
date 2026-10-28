@@ -79,6 +79,7 @@ jobs:
           python check_library.py
           python check_tts.py
           python check_perf.py
+          python check_unregistered.py
 
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean
