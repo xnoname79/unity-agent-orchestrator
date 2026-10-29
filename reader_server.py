@@ -22,7 +22,7 @@ Settings (environment):
     READER_HOST/PORT   address to listen on                   (127.0.0.1:8080)
     READER_HOSTS       domain(s) the site answers to, comma separated — anything else is refused
     READER_QUOTA_MB    storage per person                     (1024)
-    READER_PROXY       proxy IPs whose X-Forwarded-For is trusted for the login limit (127.0.0.1)
+    READER_PROXY       proxy IPs whose X-Forwarded-For/-Proto headers are trusted (127.0.0.1)
     READER_VOICE       folder holding the Kokoro voice        (READER_DATA/voice)
     ORCH_TTS_THREADS   CPU threads per speech                 (2)
     ORCH_ANTHROPIC_API_KEY  Claude API key for Explain
@@ -151,25 +151,6 @@ def session_user(token):
     return dict(row) if row else None
 
 
-# Đoán mật khẩu: tối đa 10 lần sai mỗi 15 phút, đếm riêng theo IP và theo tên.
-_FAIL_WINDOW, _FAIL_MAX = 900, 10
-_fails = {}
-
-
-def _limited(*keys):
-    now = time.time()
-    for k in keys:
-        _fails[k] = [t for t in _fails.get(k, []) if t > now - _FAIL_WINDOW]
-    return any(len(_fails[k]) >= _FAIL_MAX for k in keys)
-
-
-def _failed(*keys):
-    if len(_fails) > 10_000:      # ai đó đổi tên liên tục để phình bộ nhớ: bỏ sổ cũ
-        _fails.clear()
-    for k in keys:
-        _fails.setdefault(k, []).append(time.time())
-
-
 # ─── Thư mục của từng người ───────────────────────────────────────────────────
 
 def user_dir(user_id):
@@ -286,13 +267,9 @@ def build_app():
         b = await so._json_body(request)
         name = str(b.get("name") or "").strip().lower()[:64]
         pw = str(b.get("password") or "")[:1024]
-        ip = request.client.host if request.client else ""
-        if _limited("ip:" + ip, "name:" + name):
-            return JSONResponse({"error": "Too many tries — wait 15 minutes."}, status_code=429)
         row = _q("SELECT id, name, pw FROM users WHERE name = ?", (name,), one=True)
         ok = await asyncio.to_thread(check_pw, pw, row["pw"] if row else _DUMMY)
         if not (row and ok):
-            _failed("ip:" + ip, "name:" + name)
             return JSONResponse({"error": "Wrong name or password."}, status_code=401)
         r = JSONResponse({"name": row["name"]})
         r.set_cookie(COOKIE, new_session(row["id"]), max_age=SESSION_DAYS * 86400, path="/",

@@ -156,8 +156,7 @@ server {
 }
 ```
 
-Keep the `127.0.0.1:` prefix: published to the internet, port 8080 would let people skip HTTPS and
-fake the address that the failed-login limit counts.
+Keep the `127.0.0.1:` prefix: published to the internet, port 8080 would let people skip HTTPS.
 
 To serve on another port instead (say `https://reader.example.com:8443`) you need port 80 free for
 the certificate: in `Caddyfile.reader` write `{$READER_DOMAIN}:8443` and delete the `tls { … }`

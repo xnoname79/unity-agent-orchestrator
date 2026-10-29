@@ -7,7 +7,7 @@ It sits on the open internet, so the quiet ways it goes wrong are about who can 
     image generation or voice download — only documents, speech and Explain, and only when signed in;
   - one person must never see, change or delete another's documents or speech, whatever name
     they put in the URL;
-  - passwords are only ever stored as scrypt hashes, guessing is capped, a wrong name and a
+  - passwords are only ever stored as scrypt hashes, a wrong name and a
     wrong password look the same, and the session cookie cannot be read by page scripts;
   - another website must not be able to post as a signed-in person (CSRF), and a request for a
     domain the site does not serve is refused;
@@ -124,13 +124,11 @@ async def main():
         r = await anon.get("/", headers={"host": "evil.example"})
         check("a request for a domain this site does not serve is refused", r.status_code == 400, f"{r.status_code}")
 
-        rs._fails.clear()
         async with client() as c:
             codes = [(await sign_in(c, "alice", f"guess-{i}-xxxx")).status_code for i in range(11)]
             last = await sign_in(c, "alice", "alice-password")
-        check("ten wrong guesses lock the name for a while, even with the right password after",
-              codes[:10] == [401] * 10 and codes[10] == 429 and last.status_code == 429, str(codes + [last.status_code]))
-        rs._fails.clear()
+        check("wrong guesses never lock anyone out", codes == [401] * 11 and last.status_code == 200,
+              str(codes + [last.status_code]))
 
         # ── Tài liệu của ai người nấy ────────────────────────────────────────
         await sign_in(bob, "bob", "bob-password")
