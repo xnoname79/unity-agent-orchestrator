@@ -68,6 +68,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
 import wave
 from concurrent.futures import ThreadPoolExecutor
@@ -4253,6 +4254,32 @@ def _agy_summaries():
     return {r[0]: (" ".join((r[1] or r[2] or "").split())[:120], r[3] or "") for r in rows}
 
 
+def _uri_paths(uris):
+    """workspace_uris của agy (JSON list các 'file:///…') → đường dẫn thư mục. Windows: agy ghi
+    'file:///c%3A/Users/…' — bỏ '/' trước ổ đĩa và giải mã %3A. URI không phải file:// bị bỏ qua."""
+    try:
+        items = json.loads(uris) if str(uris).strip().startswith("[") else [uris]
+    except ValueError:
+        items = [uris]
+    out = []
+    for u in items:
+        p = urllib.parse.urlparse(str(u or ""))
+        if p.scheme != "file":
+            continue
+        path = urllib.parse.unquote(p.path)
+        if re.match(r"^/[A-Za-z]:", path):
+            path = path[1:]
+        out.append(path)
+    return out
+
+
+def _same_folder(a, b, pm=os.path):
+    """Cùng một thư mục? So sau normpath + normcase của ĐÚNG hệ điều hành (pm): trên Windows
+    '/x/a_b', '\\x\\a_b' và 'C:/Users' == 'c:\\users' đều khớp. Trước đây là `want in uris`
+    (chuỗi con): Windows không bao giờ khớp vì gạch chéo ngược, còn '/x/a' lại khớp nhầm '/x/a_b'."""
+    return bool(a and b) and pm.normcase(pm.normpath(a)) == pm.normcase(pm.normpath(b))
+
+
 def _agy_sessions(want, limit, scan_cap):
     """Hội thoại của agy: mỗi file <conversations>/<id>.db là MỘT phiên, id chính là tên file.
 
@@ -4268,9 +4295,10 @@ def _agy_sessions(want, limit, scan_cap):
     out = []
     for f in files:
         label, uris = meta.get(f.stem, ("", ""))
-        if want and uris and want not in uris:
+        paths = _uri_paths(uris) if uris else []
+        if want and paths and not any(_same_folder(want, p) for p in paths):
             continue                  # biết chắc phiên này thuộc thư mục khác
-        out.append({"id": f.stem, "cli": "agy", "cwd": want if uris else "", "preview": label,
+        out.append({"id": f.stem, "cli": "agy", "cwd": want if paths else "", "preview": label,
                     "ts": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")})
         if len(out) >= limit:
             break

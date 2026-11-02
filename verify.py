@@ -52,7 +52,8 @@ def main(argv):
         print(f"{'PASS' if ok else 'FAIL'}  {p.relative_to(ROOT)}  ({dt:.1f}s)", flush=True)
         if not ok:
             failed.append(p)
-            tail = (r.stdout + r.stderr).strip().splitlines()[-15:]
+            tail = (r.stdout.strip().splitlines()[-40:]
+                    + [f"[stderr] {ln}" for ln in r.stderr.strip().splitlines()[-15:]])
             print("      " + "\n      ".join(tail), flush=True)
     print(f"\n{len(checks) - len(failed)}/{len(checks)} checks passed")
     return 1 if failed else 0

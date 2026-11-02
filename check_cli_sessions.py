@@ -257,6 +257,18 @@ async def main():
         check("deletes a codex rollout too", r.status_code == 200 and not cxf.exists(), r.text[:200])
 
         # ── agy: id nằm ở tên file, cwd thì KHÔNG có trên đĩa ───────────────
+        # Khớp thư mục với workspace_uris theo luật của TỪNG hệ điều hành — CI Windows trước đây
+        # không chạy file này, và so chuỗi con thì Windows (gạch chéo ngược) không bao giờ khớp.
+        import ntpath
+        import posixpath
+        win = so._uri_paths('["file:///c%3A/Users/me/proj"]')[0]
+        check("a Windows workspace URI matches its folder, case and slashes aside",
+              so._same_folder("C:\\Users\\Me\\proj", win, ntpath), win)
+        check("a sibling folder with a longer name does not match",
+              not so._same_folder("/x/a", "/x/a_b", posixpath)
+              and not so._same_folder("C:\\x\\a", "C:/x/a_b", ntpath))
+        check("non-file URIs are ignored", so._uri_paths('["https://x/y", "file:///x/a_b"]') == ["/x/a_b"],
+              so._uri_paths('["https://x/y", "file:///x/a_b"]'))
         ag = so.list_cli_sessions(CWD, "agy")
         check("agy conversations list newest first, id from the file name",
               [x["id"][:2] for x in ag] == ["66", "77"], [x["id"][:8] for x in ag])
