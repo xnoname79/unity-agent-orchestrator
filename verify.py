@@ -9,12 +9,21 @@ by hand. A hand-kept list in CI is how check_cli_sessions, check_groups, check_m
 check_skill_sync were written, passed locally, and never ran in CI. Exit code is non-zero if any
 check fails, and the tail of each failure is printed so the reason is visible without a rerun.
 """
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+# The Windows console is cp1252: printing a failing check's output (Vietnamese log lines, ⚠) would
+# raise UnicodeEncodeError here and hide the very failure we are trying to show.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 
 def discover(only=()):
@@ -32,8 +41,12 @@ def main(argv):
     failed = []
     for p in checks:
         t0 = time.monotonic()
+        # Run directly in a Windows console, a check prints Unicode fine; through a pipe its stdout
+        # falls back to cp1252 and the first ⚠ kills it. PYTHONIOENCODING only touches stdio, so
+        # CI's PYTHONUTF8=0 still catches files opened without encoding="utf-8".
         r = subprocess.run([sys.executable, str(p)], cwd=ROOT, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace")
+                           encoding="utf-8", errors="replace",
+                           env={**os.environ, "PYTHONIOENCODING": "utf-8"})
         dt = time.monotonic() - t0
         ok = r.returncode == 0
         print(f"{'PASS' if ok else 'FAIL'}  {p.relative_to(ROOT)}  ({dt:.1f}s)", flush=True)
