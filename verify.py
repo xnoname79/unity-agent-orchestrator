@@ -2,7 +2,7 @@
 """Run every check in the repo, the same way on a laptop, in CI, and for a coding agent.
 
     python verify.py            # all checks
-    python verify.py boards mcp # only check_boards.py and check_mcp.py
+    python verify.py team mcp   # only check_team.py and check_mcp.py
 
 Checks are DISCOVERED (check_*.py at the root + static/orchestrator/check_ui.py), never listed
 by hand. A hand-kept list in CI is how check_cli_sessions, check_groups, check_model_switch and

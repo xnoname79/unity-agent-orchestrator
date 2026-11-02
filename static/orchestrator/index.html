@@ -526,94 +526,20 @@
   .crew-badge { font-size: 9.5px; font-weight: 700; padding: 2px 6px; border-radius: 5px; flex: none;
     background: var(--blue-soft); color: var(--blue); border: none; cursor: pointer; }
 
-  /* Board: bảng việc của NGƯỜI DÙNG (3 cột todo/doing/done), không phải hàng đợi của agent. */
-  #tab-boards { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 20px; }
-  #tab-boards[hidden] { display: none; }
-  .bd-wrap { width: 100%; max-width: 1180px; margin: 0 auto; display: grid; gap: 16px; }
-  /* Panel nằm trong #boards-view chứ không trực tiếp trong .bd-wrap → gap của .bd-wrap không tới
-     chúng. display:grid đè thuộc tính hidden nên phải trả lại display:none cho nó. */
-  #boards-view { display: grid; gap: 16px; }
-  #boards-view[hidden] { display: none; }
-  .bd-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px;
-    padding: 12px 15px; }
-  .bd-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-card);
-    padding: 12px 13px; display: grid; gap: 7px; cursor: pointer; text-align: left; }
-  .bd-card:hover { border-color: var(--accent); }
-  .bd-card .nm { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 7px; }
-  .bd-card .goal { font-size: 11.5px; color: var(--muted); line-height: 1.5;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .bd-meta { display: flex; gap: 9px; align-items: center; font-size: 11px; color: var(--faint);
-    flex-wrap: wrap; }
-  .bd-agents { display: grid; gap: 8px; padding: 12px 15px 15px; }
-  .bd-agent { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; text-align: left;
-    background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-card);
-    padding: 8px 12px; font-size: 12px; cursor: pointer; }
-  .bd-agent:hover { border-color: var(--accent); }
-  .bd-settings { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 15px 0; }
-  .bd-settings .hint { margin: 0; }
-  .bd-settings select { margin-left: 4px; }
-  .bd-head button.on { color: var(--accent); border-color: var(--accent); }
-  .tk-find { margin-top: 12px; }
-  .tk-find h4 { margin: 0 0 6px; font-size: 12px; display: flex; align-items: center; gap: 8px; }
-  .bd-agent .hint { margin: 0; }
-  .bd-bar { height: 4px; border-radius: 3px; background: var(--panel2); overflow: hidden; }
-  .bd-bar > i { display: block; height: 100%; background: var(--green); }
-  .bd-head { display: flex; align-items: center; gap: 10px; padding: 12px 15px; flex-wrap: wrap; }
-  .bd-head .nm { font-weight: 600; font-size: 14px; }
-  .bd-goal { padding: 0 15px 12px; font-size: 12px; color: var(--muted); line-height: 1.6;
-    white-space: pre-wrap; }
-  .bd-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 0 15px 15px;
-    align-items: stretch; }
-  @media (max-width: 760px) { .bd-cols { grid-template-columns: 1fr; } }
-  .bd-col { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-card);
-    padding: 9px; display: grid; gap: 8px; align-content: start; min-height: 90px; }
-  .bd-col.over { border-color: var(--accent); background: var(--accent-soft); }
-  .bd-col > h3 { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
-    color: var(--muted); margin: 0; display: flex; gap: 6px; align-items: center; }
-  .bd-task { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--gray);
-    border-radius: var(--r-ctl); padding: 8px 9px; display: grid; gap: 5px; cursor: grab; }
-  .bd-task.p-high { border-left-color: var(--red); }
-  .bd-task.p-normal { border-left-color: var(--blue); }
-  .bd-task.p-low { border-left-color: var(--gray); }
-  .bd-task.drag { opacity: .4; }
-  .bd-task .t { font-size: 12.5px; line-height: 1.4; }
-  .bd-task.done .t { text-decoration: line-through; color: var(--muted); }
-  /* Ghi chú trên card cắt 2 dòng: card là chỗ liếc qua cả cột, đọc đủ thì mở dialog. Không
-     cắt thì một việc ghi chú dài đẩy ba việc còn lại xuống dưới màn hình. */
-  .bd-task .d { font-size: 11px; color: var(--muted); line-height: 1.5;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .bd-task .row { display: flex; gap: 6px; align-items: center; font-size: 10.5px;
-    color: var(--faint); }
-  .bd-task .row .spacer { flex: 1; }
-
-  /* Dialog một việc: toàn bộ nội dung + mọi thao tác lên nó. */
-  .tk-head { display: flex; align-items: flex-start; gap: 10px; }
-  .tk-title { font-size: 15px; font-weight: 600; line-height: 1.4; flex: 1; min-width: 0;
-    overflow-wrap: anywhere; }
-  .tk-meta { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
-  .tk-when { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
-  .tk-detail { margin-top: 12px; padding: 11px 12px; background: var(--bg);
-    border: 1px solid var(--border); border-radius: var(--r-ctl); font-size: 12.5px;
-    line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .tk-detail.none { color: var(--faint); font-style: italic; }
-  .tk-move { display: flex; gap: 6px; margin-top: 14px; flex-wrap: wrap; }
-  .tk-move button.on { background: var(--accent); border-color: var(--accent);
-    color: var(--accent-fg); font-weight: 600; }
-  .bd-nudge { margin: 0 15px 12px; padding: 10px 12px; border-radius: var(--r-ctl);
-    background: var(--amber-soft); border: 1px solid var(--amber); font-size: 12.5px;
-    line-height: 1.55; display: flex; gap: 9px; align-items: flex-start; }
-  .bd-nudge .when { font-size: 10.5px; color: var(--muted); display: block; margin-top: 3px; }
-  .bd-form { display: grid; gap: 8px; padding: 12px 15px; }
-  .bd-form input, .bd-form textarea, .bd-form select { background: var(--bg);
+  /* Khung + form dùng chung của các tab dạng trang (Team). */
+  .page-wrap { width: 100%; max-width: 1180px; margin: 0 auto; display: grid; gap: 16px; }
+  .page-form { display: grid; gap: 8px; padding: 12px 15px; }
+  .page-form input, .page-form textarea, .page-form select { background: var(--bg);
     border: 1px solid var(--border); color: var(--text); border-radius: var(--r-ctl);
     padding: 7px 9px; font: inherit; font-size: 12.5px; width: 100%; }
-  .bd-form textarea { min-height: 62px; resize: vertical; }
-  .bd-form .two { display: flex; gap: 8px; flex-wrap: wrap; }
-  .bd-form .two > * { flex: 1; min-width: 130px; }
-  .bd-form .two > button, .bd-form .two > .hint { flex: 0 0 auto; min-width: 0; }
+  .page-form textarea { min-height: 62px; resize: vertical; }
+  .page-form .two { display: flex; gap: 8px; flex-wrap: wrap; }
+  .page-form .two > * { flex: 1; min-width: 130px; }
+  .page-form .two > button, .page-form .two > .hint { flex: 0 0 auto; min-width: 0; }
 
-  /* Lời nhắc tới lúc người dùng đang ở tab khác: toast góc dưới, tự tắt. Notification của
-     trình duyệt (nếu user cho phép) lo trường hợp tab bị ẩn hoàn toàn. */
+
+
+  /* Toast góc dưới, tự tắt. */
   #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: grid; gap: 8px;
     max-width: min(360px, calc(100vw - 32px)); }
   .toast { background: var(--panel); border: 1px solid var(--amber); border-left: 4px solid var(--amber);
@@ -965,7 +891,6 @@
   <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9.5" r="1.5"/><path d="m20 15.5-4.5-4.5L6 20"/></symbol>
   <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M15.5 3.5a5 5 0 0 0-6.2 6.2L3.9 15a2 2 0 0 0 0 2.8l2.3 2.3a2 2 0 0 0 2.8 0l5.3-5.4a5 5 0 0 0 6.2-6.2l-3 3-2.8-2.8z"/></symbol>
   <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></symbol>
-  <symbol id="i-board" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/></symbol>
 </defs></svg>
 
 <header>
@@ -1081,8 +1006,6 @@
       <div class="tabs">
         <button id="tab-btn-agents" class="tab active" onclick="switchTab('agents')">
           <svg class="ic sm"><use href="#i-map"/></svg> Agents</button>
-        <button id="tab-btn-boards" class="tab" onclick="switchTab('boards')">
-          <svg class="ic sm"><use href="#i-board"/></svg> Boards</button>
         <button id="tab-btn-team" class="tab" onclick="switchTab('team')"
           title="Sub-agents your directors delegated to, their verification, and the team's rules">
           <svg class="ic sm"><use href="#i-rocket"/></svg> Team<span id="team-live" class="tab-count" hidden></span></button>
@@ -1150,60 +1073,10 @@
       </aside>
     </div>
 
-    <!-- Board: mục tiêu của NGƯỜI DÙNG trong ngày, một agent trông một board. Hai màn trong
-         cùng một tab: danh sách board (#boards-view) và một board đang mở (#board-open). -->
-    <div id="tab-boards" hidden>
-      <div class="bd-wrap">
-        <div id="boards-view">
-          <section class="panel">
-            <h2>Boards <span id="bd-count" class="hint" style="margin:0"></span></h2>
-            <!-- Worker: tự chọn task, tìm hiểu, ghi kết quả lên card — CHỈ ĐỌC, không sửa file. -->
-            <div class="bd-settings">
-              <label class="hint" title="Research workers read the project and the web and write
-                findings on a task card. They never edit files.">Research workers run
-                <select id="bd-scope" class="mini" onchange="boardScope(this.value)">
-                  <option value="global">one at a time, across all boards</option>
-                  <option value="board">one per board</option>
-                </select></label>
-              <span id="bd-tools" class="hint"></span>
-            </div>
-            <div id="bd-list" class="bd-list"></div>
-            <div id="bd-empty" class="empty" hidden>No boards yet. Name one, pick the agent that
-              should look after it, and say what you want done.</div>
-          </section>
-          <!-- Thread riêng của từng board. Không ai chat với chúng nên không có terminal trên
-               canvas — gom về đây, chỉ cần biết đang chạy hay rảnh và đã đốt bao nhiêu lượt. -->
-          <section id="bd-agents" class="panel" hidden>
-            <h2 title="Each board runs its own session in the folder of the agent you picked, so a
-              nudge never lands in the chat you are having. It nudges you; you don't chat with it.">Board
-              agents <span class="hint" style="margin:0">one per board · not for chat</span></h2>
-            <div id="bd-agents-list" class="bd-agents"></div>
-          </section>
-          <section class="panel">
-            <h2>New board</h2>
-            <div class="bd-form">
-              <div class="two">
-                <input id="bd-name" placeholder="Board name (e.g. Launch day)">
-                <select id="bd-agent"></select>
-              </div>
-              <textarea id="bd-goal" placeholder="What do you want to have done? The agent reads this, researches if it needs to, and writes the task list for you."></textarea>
-              <textarea id="bd-ctx" placeholder="Anything it should know: hard deadlines, what is already done, links, constraints (optional)"></textarea>
-              <div class="two">
-                <button class="primary" onclick="boardNew()">Create board</button>
-                <span id="bd-msg" class="hint"></span>
-              </div>
-            </div>
-          </section>
-        </div>
-        <div id="board-open" hidden></div>
-      </div>
-    </div>
-
-
     <!-- Đội của director (pstack): sub-agent làm việc trong worktree riêng, verifier độc lập kiểm
          hợp đồng "Done means" trước khi việc được tính là xong. Toàn bộ do renderTeam() dựng. -->
     <div id="tab-team" hidden>
-      <div class="bd-wrap">
+      <div class="page-wrap">
         <div id="team-stats" class="team-stats"></div>
         <section class="panel">
           <h2>Sub-agents
@@ -1222,7 +1095,7 @@
         <div class="team-cols">
           <section class="panel">
             <h2>Delegate</h2>
-            <div class="bd-form">
+            <div class="page-form">
               <div class="two">
                 <select id="td-director" title="Who the result is reported to"></select>
                 <select id="td-playbook" title="How the sub-agent works">
@@ -1244,7 +1117,7 @@
 
           <section class="panel">
             <h2>Models <span class="hint" style="margin:0">per role, this workspace</span></h2>
-            <div id="team-models" class="bd-form"></div>
+            <div id="team-models" class="page-form"></div>
           </section>
         </div>
 
@@ -1265,7 +1138,7 @@
                 <option value="open">Open</option>
                 <option value="enforced">Enforced</option>
               </select></h2>
-            <div class="bd-form">
+            <div class="page-form">
               <div id="tg-edges" class="tg-edges"></div>
               <div class="two">
                 <select id="tg-from" title="Sender"></select>
@@ -1282,7 +1155,7 @@
 
           <section class="panel">
             <h2>Playbook improvements</h2>
-            <div class="bd-form">
+            <div class="page-form">
               <div class="hint">Reflect reads failed runs and verifier findings, then proposes a
                 change. Nothing is written until you approve it.</div>
               <div class="two">
@@ -1336,16 +1209,6 @@
     </div>
   </div><!-- /ws-detail-view -->
 </main>
-
-<!-- Một việc, mở hết: card trong cột chỉ đủ chỗ liếc qua, còn ghi chú của agent ("làm sao
-     biết là xong") thường dài hơn thế. Mọi thao tác lên việc cũng dồn về đây thay vì nhét
-     thêm nút vào card. -->
-<div id="task-modal" class="modal-overlay" onclick="if (event.target === this) taskClose()" hidden>
-  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="task-title">
-    <div id="task-title"></div>
-    <div id="task-body"></div>
-  </div>
-</div>
 
 <div id="toasts"></div>
 

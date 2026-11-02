@@ -5,8 +5,10 @@ Unregister only removes the card: runs, signals and the CLI transcript stay. The
 is left and deletes it, and that delete cannot be undone, so the ways it goes wrong are all about
 deleting the WRONG thing:
 
-  - a registered agent, or the private thread a board still runs on, must never be listed or
-    deleted. The browser sends ids, so the server must re-check each one itself;
+  - a registered agent must never be listed or deleted. The browser sends ids, so the server
+    must re-check each one itself;
+  - Boards were removed: the private thread an old board ran on is unregistered on startup (so
+    it can be deleted here), and the user's own agent the board belonged to is left alone;
   - a transcript that a live card resumes (its pin) must survive, or that card silently loses
     its whole conversation on its next run;
   - an agent with a run still in progress must be refused — its events would keep landing in rows
@@ -93,7 +95,7 @@ OLD = "22222222-2222-4222-8222-222222222222"      # gỡ trước khi có remove
 PINNED = "33333333-3333-4333-8333-333333333333"   # transcript mà card còn sống đang ghim
 BUSY = "44444444-4444-4444-8444-444444444444"     # còn run đang chạy
 LIVE = "55555555-5555-4555-8555-555555555555"     # card còn đăng ký
-BOARD = "66666666-6666-4666-8666-666666666666"    # thread riêng của board
+BOARD = "66666666-6666-4666-8666-666666666666"    # thread riêng của một board (DB cũ)
 OWN_PIN = "77777777-7777-4777-8777-777777777777"  # phiên GONE ghim — không ai khác dùng
 CX = "019a0000-0000-7000-8000-000000000001"       # đã unregister, card Codex cũ (không còn transcript nào để xoá)
 
@@ -103,8 +105,6 @@ so.register_session(BOARD, "board-thread", cwd=CWD)
 so.register_session(CX, "porter", cwd=CWD, model="gpt-5.5")
 conn = so._conn()
 conn.execute("UPDATE sessions SET resume_id = ? WHERE id = ?", (OWN_PIN, GONE))
-conn.execute("INSERT INTO boards (id, session_id, owner_id, name, created_at) VALUES ('brd_x', ?, ?, 'b', ?)",
-             (BOARD, LIVE, so._now()))
 conn.commit()
 conn.close()
 for sid, prompt in ((GONE, "write the intro"), (OLD, "[Role: painter]\n[Signal from: user]\npaint"),
@@ -126,8 +126,16 @@ so.unregister_session(GONE)
 so.unregister_session(CX)
 conn = so._conn()
 conn.execute("UPDATE sessions SET resume_id = ? WHERE id = ?", (PINNED, LIVE))   # LIVE ghim PINNED
+# DB từ trước khi Boards bị bỏ: board 'b' của agent LIVE chạy trên thread riêng BOARD.
+conn.execute("CREATE TABLE boards (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL DEFAULT 'default', "
+             "session_id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, "
+             "worker_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)")
+conn.execute("CREATE TABLE board_tasks (id INTEGER PRIMARY KEY, board_id TEXT NOT NULL, title TEXT NOT NULL)")
+conn.execute("INSERT INTO boards (id, session_id, owner_id, name, created_at) VALUES ('brd_x', ?, ?, 'b', ?)",
+             (BOARD, LIVE, so._now()))
 conn.commit()
 conn.close()
+so.init_db()   # khởi động lại = migrate
 
 
 async def main():
@@ -137,7 +145,12 @@ async def main():
         r = await c.get("/api/unregistered")
         rows = {x["id"]: x for x in r.json().get("agents", [])}
         check("lists every unregistered agent and nothing else",
-              set(rows) == {GONE, OLD, PINNED, BUSY, CX}, sorted(x[:2] for x in rows))
+              set(rows) == {GONE, OLD, PINNED, BUSY, CX, BOARD}, sorted(x[:2] for x in rows))
+        check("an old board's private thread is unregistered once Boards are gone",
+              not so.get_session(BOARD) and rows.get(BOARD, {}).get("name") == "board-thread", rows.get(BOARD))
+        check("the agent that owned the board stays registered", bool(so.get_session(LIVE)))
+        check("the board tables are dropped",
+              count("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('boards', 'board_tasks')") == 0)
         g = rows.get(GONE, {})
         check("Unregister keeps the name and folder", (g.get("name"), g.get("cwd")) == ("writer", CWD), g)
         check("counts its runs and signals", (g.get("runs"), g.get("signals")) == (1, 1), g)
@@ -156,15 +169,16 @@ async def main():
 
         r = await c.post("/api/unregistered/delete", json={"ids": "x"})
         check("rejects a body without a list of ids", r.status_code == 400, r.status_code)
-        r = (await rm(LIVE, BOARD, "../../etc", PINNED, BUSY)).json()
-        check("refuses registered, board, unknown, pinned and running ids",
-              r["deleted"] == [] and set(r["errors"]) == {LIVE, BOARD, "../../etc", PINNED, BUSY}, r)
+        r = (await rm(LIVE, "../../etc", PINNED, BUSY)).json()
+        check("refuses registered, unknown, pinned and running ids",
+              r["deleted"] == [] and set(r["errors"]) == {LIVE, "../../etc", PINNED, BUSY}, r)
         check("the refused ones keep their runs",
-              count("SELECT COUNT(*) FROM runs WHERE session_id IN (?, ?, ?, ?)", LIVE, BOARD, PINNED, BUSY) == 4)
+              count("SELECT COUNT(*) FROM runs WHERE session_id IN (?, ?, ?)", LIVE, PINNED, BUSY) == 3)
         check("a pinned transcript survives", (SLUG / f"{PINNED}.jsonl").exists())
 
-        r = (await rm(GONE, OLD, CX)).json()
-        check("deletes the unregistered ones", sorted(x["id"] for x in r["deleted"]) == sorted([GONE, OLD, CX])
+        r = (await rm(GONE, OLD, CX, BOARD)).json()
+        check("deletes the unregistered ones",
+              sorted(x["id"] for x in r["deleted"]) == sorted([GONE, OLD, CX, BOARD])
               and not r["errors"], r)
         for t, sql in (("its runs", "SELECT COUNT(*) FROM runs WHERE session_id = ?"),
                        ("its run steps", "SELECT COUNT(*) FROM run_events WHERE session_id = ?"),

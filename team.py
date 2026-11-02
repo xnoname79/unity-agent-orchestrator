@@ -21,7 +21,7 @@ Ba loại subtask cùng một máy trạng thái:
 
 Orchestrator là người đưa tin duy nhất của đội: sub-agent không send_signal, nó kết thúc lượt
 bằng một báo cáo; orchestrator đọc, chạy verifier, rồi báo director. Signal hệ thống mang
-from_session = TEAM_SENDER — miễn trần ping-pong như board (xem enqueue_signal).
+from_session = TEAM_SENDER — miễn trần ping-pong (xem enqueue_signal).
 
 Module này KHÔNG import session_orchestrator ở đầu file: file đó chạy dưới tên '__main__' và tự
 đăng ký bí danh; import vòng ở mức module là nạp nó lần hai (xem check_single_module).
@@ -1059,7 +1059,7 @@ def learn_edges(workspace_id, limit=500):
 
 def check_signal(from_name, to_session, workspace_id, message=""):
     """'' = cho đi; chuỗi = lý do từ chối (đã là câu chỉ dẫn hoàn chỉnh cho agent đọc).
-    Chỉ gọi cho người gửi là AGENT (người, board, team đã được enqueue_signal cho qua)."""
+    Chỉ gọi cho người gửi là AGENT (người và team đã được enqueue_signal cho qua)."""
     so = _so()
     if str(message or "").startswith("/compact"):
         return ""          # nén context là việc vận hành, kể cả sub-agent tự nén mình
@@ -1299,11 +1299,10 @@ def overview(workspace_id):
             "last": _last_event(sess_ids) if st["status"] in ACTIVE else None,
             "isolated": bool(st["worktree"]),
         })
-    threads = so.board_threads()
     directors = [{"id": s["id"], "name": s["name"], "status": s["status"], "model": s.get("model", ""),
                   "cwd": s.get("cwd", ""),
                   "active": sum(1 for i in items if i["director_id"] == s["id"] and i["status"] in ACTIVE)}
-                 for s in sessions.values() if not is_team_session(s) and s["id"] not in threads]
+                 for s in sessions.values() if not is_team_session(s)]
     decisions = _rows("SELECT d.*, s.name AS session_name FROM team_decisions d LEFT JOIN sessions s "
                       "ON s.id = d.session_id WHERE d.workspace_id = ? ORDER BY d.id DESC LIMIT 60",
                       (workspace_id,))
