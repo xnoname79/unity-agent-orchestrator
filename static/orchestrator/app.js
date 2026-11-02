@@ -46,16 +46,14 @@ const EV_ICON = { system: "⚙️", thinking: "🧠", text: "💬", tool_use: "�
                   tool_result: "📄", result: "✅", error: "⚠️" };
 
 // Effort: 1 thang chung, trần khác nhau theo engine/model. PHẢI khớp EFFORT_LADDER /
-// CLAUDE_MAX_EFFORT / CODEX_MAX_EFFORT bên service (check_ui_engine.py đối chiếu) — lệch thì
+// CLAUDE_MAX_EFFORT / AGY_MAX_EFFORT bên service — lệch thì
 // UI mời chọn mức mà service sẽ lặng lẽ hạ xuống.
 const EFFORT_LADDER = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const CLAUDE_MAX_EFFORT = "max";
-const CODEX_MAX_EFFORT = { "gpt-5.6-terra": "ultra", "gpt-5.6-luna": "max" };
-const CODEX_MAX_EFFORT_DEFAULT = "xhigh";
 // `agy --help`: effort chỉ có low|medium|high, một trần chung cho mọi model của nó.
 const AGY_MAX_EFFORT = "high";
 
-// Mức cao nhất model này nhận (claude theo CLI, codex theo TỪNG model).
+// Mức cao nhất model này nhận (claude theo CLI, agy theo đuôi tên model).
 function effortCeiling(model) {
   const eng = engineOfModel(model);
   if (eng === "claude") return CLAUDE_MAX_EFFORT;
@@ -65,8 +63,7 @@ function effortCeiling(model) {
     const slug = (model || "").split(":")[1] || "";
     return EFFORT_LADDER.find((e) => slug.endsWith("-" + e)) || AGY_MAX_EFFORT;
   }
-  const m = (model || "").trim().toLowerCase();
-  return CODEX_MAX_EFFORT[m.includes(":") ? m.split(":")[1].trim() : ""] || CODEX_MAX_EFFORT_DEFAULT;
+  return CLAUDE_MAX_EFFORT;     // card Codex cũ: engine đã bỏ, không chạy được — mức nào cũng vậy
 }
 
 // Các mức chọn được cho model này ("" = theo mặc định orchestrator).
@@ -177,7 +174,7 @@ async function viewCompact(id, name) {
 window.viewCompact = viewCompact;
 
 // Editor SKILL của role trong drawer: đọc SKILL hiện tại, sửa, upsert.
-// Upsert ghi MỘT nội dung vào root của CẢ BA CLI (.claude / .codex / .agents) — mỗi CLI chỉ đọc
+// Upsert ghi MỘT nội dung vào root của MỌI CLI (.claude / .agents) — mỗi CLI chỉ đọc
 // thư mục của mình. Liệt kê đủ ba và đánh dấu cái mà engine của card đang đọc: hiện mỗi đường
 // .claude thì card agy nhìn vào tưởng Upsert ghi sai chỗ.
 async function editSkill(id, name) {
@@ -1163,13 +1160,15 @@ let cvTerms = {};  // sid → {sid, host, started, term, fit, ws}
 let termLock = {};  // session name → true
 // CLI người dùng chọn cho terminal, theo NAME (bền qua xoay session id) — rỗng = theo engine của
 // session. Chọn CLI KHÁC engine thì backend mở phiên MỚI (id của claude không resume được bằng
-// codex và ngược lại), nên đổi lựa chọn = hủy PTY cũ rồi nối lại.
-let termCli = {};   // session name → 'claude' | 'codex' | 'agy'
+// agy và ngược lại), nên đổi lựa chọn = hủy PTY cũ rồi nối lại.
+let termCli = {};   // session name → 'claude' | 'agy'
 
-const CLI_ICON = { claude: "🅒", codex: "🅞", agy: "🅖" };
+const CLI_ICON = { claude: "🅒", agy: "🅖" };
 
 // Gương của engine_from_model bên service — model là nguồn sự thật duy nhất của engine.
 // Lệch với backend là UI hiện sai nút (vd mời xóa vĩnh viễn một session Claude rồi ăn 400).
+// 'codex' vẫn được nhận ra: card Codex cũ (engine đã bỏ) phải hiện đúng là codex để người dùng
+// biết đổi model, chứ không giả làm claude.
 function engineOfModel(model) {
   const m = (model || "").trim().toLowerCase();
   if (m === "codex" || m.startsWith("codex:")) return "codex";
@@ -1674,7 +1673,7 @@ function agentCard(s, needsYou) {
     const cli = termCli[s.name] || eng;
     const cliSel = `<select class="mini cli-sel" title="Which CLI runs in the terminal (session engine: ${eng}) — ✦ = a different engine, opens a NEW session in the same cwd"
       onchange="setTermCli('${esc(s.id)}','${esc(s.name)}', this.value)">
-      ${["claude", "codex", "agy"].map((c) => `<option value="${c}"${c === cli ? " selected" : ""}
+      ${["claude", "agy"].map((c) => `<option value="${c}"${c === cli ? " selected" : ""}
         >${CLI_ICON[c]} ${c}${c === eng ? "" : " ✦"}</option>`).join("")}
     </select>`;
     // Ghim PHIÊN để chat tiếp: mọi transcript của CLI này trong cwd của session, mới nhất trên
@@ -1925,7 +1924,9 @@ function renderInspector() {
   $("insp-body").innerHTML = `
     <div class="insp-sec">
       <div class="insp-row">
-        <span class="eng-chip eng-${esc(engine)}">${esc(engine)}</span>
+        ${engine === "codex"
+          ? `<span class="eng-chip" title="Codex support was removed. Pick a Claude or Gemini model below, or unregister this agent.">codex · removed</span>`
+          : `<span class="eng-chip eng-${esc(engine)}">${esc(engine)}</span>`}
         ${badge(s.status, { running: "b-blue", paused: "b-amber", stopped: "b-red" }[s.status] || "b-gray")}
       </div>
       <div class="insp-kv"><span>Session</span><span class="mono" title="${esc(s.id)}">${esc(s.id)}</span></div>
@@ -2632,13 +2633,12 @@ function cvInit() {
 // ── Spawn form: picker dạng card (workspace / template / model) + duyệt thư mục ──
 
 // Model chia theo engine — mỗi tab 1 engine.
-// Tiền tố 'codex:' = engine Codex CLI, chạy bằng tài khoản ChatGPT đã `codex login` (không tốn
-// API credits). BẮT BUỘC có tiền tố: 'gpt-5.6-terra' trơn cũng là tên model API hợp lệ, không
-// có tiền tố thì không phân biệt được ý người dùng.
+// Tiền tố 'agy:' = engine Antigravity CLI. BẮT BUỘC có tiền tố: slug của nó cũng là tên model API
+// hợp lệ, không có tiền tố thì không phân biệt được ý người dùng.
 const MODEL_TABS = [
   // KHÔNG có card "Auto" ở tab Claude: id của nó phải là "" (bỏ cờ --model), mà form đọc model
   // rỗng là CHƯA CHỌN → chọn Auto xong bấm Spawn ăn "Pick a model", không đường nào ra.
-  // Tab Codex vẫn có Auto vì id của nó là "codex" — một giá trị thật, không lẫn với rỗng.
+  // Tab Gemini vẫn có Auto vì id của nó là "agy" — một giá trị thật, không lẫn với rỗng.
   { engine: "claude", label: "Claude", note: "claude CLI · API credits Anthropic", models: [
     { id: "opus", name: "Opus · alias", desc: "Always points at the latest Opus" },
     { id: "sonnet", name: "Sonnet · alias", desc: "Balanced on quality, speed and price" },
@@ -2656,16 +2656,9 @@ const MODEL_TABS = [
     { id: "agy:gemini-3.8-flash-medium", name: "3.8 Flash · medium", desc: "Balanced Flash" },
     { id: "agy:gemini-3.8-flash-low", name: "3.8 Flash · low", desc: "Fastest and cheapest — simple, repetitive work" },
   ] },
-  { engine: "codex", label: "Codex", note: "codex CLI · runs on your ChatGPT plan, spends no API credits", models: [
-    { id: "codex", name: "Auto", desc: "Whatever the CLI picks from ~/.codex/config.toml" },
-    { id: "codex:gpt-5.6-terra", name: "Terra 5.6", desc: "Balanced for everyday coding (Codex default) · effort up to ultra" },
-    { id: "codex:gpt-5.6-luna", name: "Luna 5.6", desc: "Roomier limits than Terra — repetitive, long-running work · effort up to max" },
-    { id: "codex:gpt-5.5", name: "GPT-5.5", desc: "Previous generation, stable · effort up to xhigh" },
-    { id: "codex:gpt-5.4-mini", name: "5.4 mini", desc: "Light and fast — simple tasks, easy on your limits · effort up to xhigh" },
-  ] },
 ];
 const MODEL_CUSTOM = { id: "__custom", name: "Custom…",
-  desc: "Type another model id / alias (claude: opus-4-7, opus-4-6…; codex: 'codex:<slug>'; agy: 'agy:<slug>' — `agy models` also lists claude-* and gpt-oss-*)" };
+  desc: "Type another model id / alias (claude: opus-4-7, opus-4-6…; agy: 'agy:<slug>' — `agy models` also lists claude-* and gpt-oss-*)" };
 let SP_TEMPLATES = [];                          // cache /api/skills/templates
 let spSel = { group: "", ws: "", template: "", model: "" };  // lựa chọn hiện tại của form spawn
 let spTab = MODEL_TABS[0].engine;                 // tab engine đang mở ở picker Model
@@ -2690,7 +2683,7 @@ function pickCard(group, val, inner, title) {
 }
 
 // Datalist của ô model tự do (form spawn) dựng TỪ MODEL_TABS. Danh sách cứng trong HTML trước
-// đây chỉ có model Claude, nên gõ 'agy'/'codex' vào ô không gợi ý được gì.
+// đây chỉ có model Claude, nên gõ 'agy' vào ô không gợi ý được gì.
 {
   const dl = $("model-list");
   if (dl) dl.innerHTML = MODEL_TABS.flatMap((t) => t.models.map((m) =>
@@ -2754,7 +2747,7 @@ function renderSpawnEffort() {
 function spTabPick(engine) {
   spTab = engine;
   const tab = MODEL_TABS.find((t) => t.engine === engine);
-  // Model đang chọn không thuộc tab vừa mở → về card đầu của tab (đỡ cảnh tab Codex mà đang chọn Opus).
+  // Model đang chọn không thuộc tab vừa mở → về card đầu của tab (đỡ cảnh tab Gemini mà đang chọn Opus).
   if (spSel.model !== "__custom" && !tab.models.some((m) => m.id === spSel.model))
     spSel.model = tab.models[0].id;
   renderSpawnPickers();
@@ -3638,7 +3631,7 @@ function perfPaint(d, page) {
     tips.push(["red", `Memory is almost full (${fmtMB(sy.ram_used)} of ${fmtMB(sy.ram_total)}). Close agent terminals you are not using, or other apps.`]);
   if (sy.cpu > 85) tips.push(["red", `The computer is very busy (CPU ${Math.round(sy.cpu)}%).`]);
   if (terms.length >= 5)
-    tips.push(["amber", `${terms.length} agent terminals are open and use ${fmtMB(termRam)}. Each one is a whole Claude, Codex or agy app — close the ones you are not using.`]);
+    tips.push(["amber", `${terms.length} agent terminals are open and use ${fmtMB(termRam)}. Each one is a whole Claude or agy app — close the ones you are not using.`]);
   if (sv.lag_ms > 250)
     tips.push(["amber", `The orchestrator froze for ${sv.lag_ms} ms in the last minute — terminals and the canvas stutter while it does.`]);
   if (d.zombies)
@@ -4296,7 +4289,7 @@ async function spawnAgent() {
       model,
       effort,
       // allowed_tools KHÔNG gửi: backend mặc định [] → bỏ cờ --allowedTools → CLI cho phép mọi
-      // tool. Đó là mặc định cho cả claude lẫn codex. Muốn siết thì gọi thẳng API.
+      // tool. Đó là mặc định cho cả claude lẫn agy. Muốn siết thì gọi thẳng API.
       template: spSel.template,
     });
     showMsg("sp-msg", `Spawned '${r.name}' (${r.id})`, true);

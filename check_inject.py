@@ -20,8 +20,8 @@ So two mistakes have to stay impossible, and they pull in opposite directions:
     and `run /compact when done` are messages, not commands — an agent that silently loses its
     playbook for a turn is the harder failure to notice of the two.
 
-Only claude is let through. What codex and agy do with `/compact` has not been measured here, so
-they keep the old path exactly: trading a known bug for an unmeasured one is not a fix.
+Only claude is let through. What agy does with `/compact` has not been measured here, so it
+keeps the old path exactly: trading a known bug for an unmeasured one is not a fix.
 
     python3 check_inject.py
 """
@@ -65,7 +65,7 @@ CLAUDE = {"id": "s1", "name": ROLE, "cwd": str(tmp), "model": ""}
 CODEX = {"id": "s2", "name": ROLE, "cwd": str(tmp), "model": "codex:gpt-5.6-terra"}
 AGY = {"id": "s3", "name": ROLE, "cwd": str(tmp), "model": "agy:gemini-3.1-pro-high"}
 
-check("the three fixtures really are the engines this test thinks they are",
+check("the fixtures really are the engines this test thinks they are",
       (so.engine_name_of_session(CLAUDE), so.engine_name_of_session(CODEX),
        so.engine_name_of_session(AGY)) == ("claude", "codex", "agy"),
       str([so.engine_name_of_session(s) for s in (CLAUDE, CODEX, AGY)]))
@@ -113,8 +113,8 @@ for msg, why in (
           out.startswith(f"[Role: {ROLE}]") and SKILL_MARK in out, repr(out[:70]))
 
 
-# ── codex and agy are deliberately left on the old path ──────────────────────
-for sess, cli in ((CODEX, "codex"), (AGY, "agy")):
+# ── agy is deliberately left on the old path ─────────────────────────────────
+for sess, cli in ((AGY, "agy"),):
     out = so.inject_prompt(sess, "/compact", "orch")
     check(f"{cli} keeps the wrapper — its behaviour here was never measured",
           out.startswith(f"[Role: {ROLE}]"),
@@ -169,15 +169,26 @@ check("and wraps an ordinary message on that very same path",
       len(seen) > 1 and seen[1].startswith(f"[Role: {ROLE}]") and SKILL_MARK in seen[1],
       repr(seen[1:2])[:120])
 
-# ── Spawn của cả ba engine tới được init prompt ──────────────────────────────
+# ── Spawn của mọi engine tới được init prompt ────────────────────────────────
 # agy từng gọi _build_init_prompt với 4 tham số (chữ ký của master) → mọi lần spawn agy chết
 # TypeError, mà không check nào spawn agy nên không ai thấy. DRY_RUN vẫn đi qua đúng dòng đó.
-for eng in ("claude", "codex", "agy"):
+for eng in ("claude", "agy"):
     try:
         res = asyncio.run(so.ENGINES[eng].spawn(f"spawn-{eng}", cwd=str(tmp), init_prompt="hi"))
         check(f"spawning an agent on {eng} works", not (res or {}).get("error"), str(res)[:160])
     except Exception as e:     # noqa: BLE001 — chính lỗi kiểu TypeError là thứ cần bắt
         check(f"spawning an agent on {eng} works", False, f"{type(e).__name__}: {e}")
+
+# ── Codex đã bị bỏ: card cũ phải báo rõ, KHÔNG lặng lẽ chạy bằng claude ─────
+check("no codex engine is left to run", "codex" not in so.ENGINES, str(list(so.ENGINES)))
+gone = so.engine_for(CODEX)
+res = asyncio.run(gone.run(CODEX, "hello"))
+check("an old codex card's run fails with a message saying what to do",
+      not res["ok"] and "removed" in res["result"] and "Claude" in res["result"], str(res)[:160])
+res = asyncio.run(gone.spawn("x", cwd=str(tmp)))
+check("spawning on codex is refused with the same message", "removed" in (res or {}).get("error", ""),
+      str(res)[:160])
+check("the codex model is not quietly routed to claude", not isinstance(gone, so.ClaudeEngine))
 
 import shutil                         # noqa: E402
 db.unlink(missing_ok=True)

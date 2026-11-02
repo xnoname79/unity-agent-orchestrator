@@ -433,7 +433,7 @@ def playbook_text(name, repo=""):
 
 def installed_engines():
     so = _so()
-    bins = {"claude": so.CLAUDE_BIN, "codex": so.CODEX_BIN, "agy": so.AGY_BIN}
+    bins = {"claude": so.CLAUDE_BIN, "agy": so.AGY_BIN}
     return [e for e, b in bins.items() if shutil.which(b)]
 
 
@@ -463,7 +463,7 @@ def resolve_model(workspace_id, role, director, builder_model=""):
         builder = so.engine_from_model(builder_model or director.get("model", ""))
         for eng in installed_engines():
             if eng != builder:
-                return {"claude": "", "codex": "codex", "agy": "agy"}[eng]
+                return {"claude": "", "agy": "agy"}[eng]
         return builder_model or director.get("model", "")
     return want or director.get("model", "")
 

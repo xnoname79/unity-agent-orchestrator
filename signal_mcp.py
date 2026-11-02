@@ -282,7 +282,7 @@ async def spawn_subagent(from_role: str, playbook: str, brief: str, done_when: s
                expected output, a flow driven in the running app, a value read back. "The build
                passes" is not enough.
         title: a short label for the dashboard.
-        model: optional override (e.g. "opus", "codex", "agy:<slug>"); default follows the
+        model: optional override (e.g. "opus", "sonnet", "agy:<slug>"); default follows the
                workspace's model roles.
         workspace_id: your workspace, if your name exists in several.
     """

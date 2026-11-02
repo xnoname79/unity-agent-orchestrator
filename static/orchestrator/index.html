@@ -715,7 +715,6 @@
   .eng-chip { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
     padding: 2px 6px; border-radius: 5px; background: var(--gray-soft); color: var(--muted); flex: none; }
   .eng-claude { background: var(--amber-soft); color: var(--amber); }
-  .eng-codex { background: var(--green-soft); color: var(--green); }
   .eng-agy { background: var(--blue-soft); color: var(--blue); }
 
   /* Zone: khung bo quanh các agent chung cwd */
@@ -1042,7 +1041,7 @@
         <label>Playbook template</label>
         <div id="sp-template-cards" class="pick-grid"></div>
         <div class="hint">The template is written to <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/SKILL.md</code>
-          (plus a <code>.codex</code> copy). Its <code>&lt;UPPERCASE&gt;</code> blanks are filled in by
+          (plus an <code>.agents</code> copy for agy). Its <code>&lt;UPPERCASE&gt;</code> blanks are filled in by
           the agent itself on its first run, after it has surveyed the project — more accurate than
           typing them blind.</div>
         <label>Working dir (cwd) — the project this agent works in</label>
@@ -1399,7 +1398,7 @@
         <svg class="ic"><use href="#i-x"/></svg></button></h3>
     <div class="hint">Registered for <b>every</b> session on this machine, in every CLI installed
       here (<span id="mcp-clis">claude</span>) — the same user scope
-      <code>claude mcp add</code> / <code>codex mcp add</code> / <code>agy mcp add</code> write to,
+      <code>claude mcp add</code> / <code>agy mcp add</code> write to,
       but without putting your token on a command line.</div>
     <label>Built into the orchestrator</label>
     <div id="mcp-builtins" class="mcp-list"></div>

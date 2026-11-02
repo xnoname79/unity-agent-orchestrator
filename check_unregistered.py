@@ -49,16 +49,14 @@ db = so.DB_DIR / "check_unregistered.db"
 db.unlink(missing_ok=True)
 so._ensure_db()
 
-# Transcript giả trong thư mục tạm — check này KHÔNG được đọc/xoá ~/.claude, ~/.codex thật.
+# Transcript giả trong thư mục tạm — check này KHÔNG được đọc/xoá ~/.claude thật.
 fake = Path(tempfile.mkdtemp())
 so.CLAUDE_PROJECTS_DIR = fake / "claude" / "projects"
-so.CODEX_SESSIONS_DIR = fake / "codex" / "sessions"
 so.AGY_CONVERSATIONS_DIR = fake / "agy" / "conversations"
 so.AGY_SUMMARIES_DB = fake / "agy" / "conversation_summaries.db"
 CWD = str(fake / "proj")
 SLUG = so.CLAUDE_PROJECTS_DIR / "-proj"
 SLUG.mkdir(parents=True)
-(so.CODEX_SESSIONS_DIR / "2026" / "10" / "27").mkdir(parents=True)
 
 fails = []
 
@@ -72,13 +70,6 @@ def check(name, ok, detail=""):
 def claude_file(sid):
     f = SLUG / f"{sid}.jsonl"
     f.write_text(json.dumps({"type": "user", "cwd": CWD, "message": {"role": "user", "content": "hi"}}),
-                 encoding="utf-8")
-    return f
-
-
-def codex_file(sid):
-    f = so.CODEX_SESSIONS_DIR / "2026" / "10" / "27" / f"rollout-2026-10-27T10-00-00-{sid}.jsonl"
-    f.write_text(json.dumps({"type": "session_meta", "payload": {"session_id": sid, "cwd": CWD}}),
                  encoding="utf-8")
     return f
 
@@ -104,7 +95,7 @@ BUSY = "44444444-4444-4444-8444-444444444444"     # còn run đang chạy
 LIVE = "55555555-5555-4555-8555-555555555555"     # card còn đăng ký
 BOARD = "66666666-6666-4666-8666-666666666666"    # thread riêng của board
 OWN_PIN = "77777777-7777-4777-8777-777777777777"  # phiên GONE ghim — không ai khác dùng
-CX = "019a0000-0000-7000-8000-000000000001"       # đã unregister, transcript ở codex
+CX = "019a0000-0000-7000-8000-000000000001"       # đã unregister, card Codex cũ (không còn transcript nào để xoá)
 
 so.register_session(GONE, "writer", cwd=CWD)
 so.register_session(LIVE, "editor", cwd=CWD)
@@ -126,7 +117,6 @@ so.enqueue_signal(LIVE, "from writer", from_session="writer")   # signal GONE đ
 so.grant_daily_allowance(GONE)
 for sid in (GONE, OLD, PINNED, LIVE, OWN_PIN):
     claude_file(sid)
-cxf = codex_file(CX)
 env = so.CLAUDE_PROJECTS_DIR.parent / "session-env" / GONE
 env.mkdir(parents=True)
 skill = Path(CWD) / ".claude" / "skills" / "writer" / "SKILL.md"
@@ -185,7 +175,6 @@ async def main():
         check("its transcript, its pin and its session-env are gone",
               not (SLUG / f"{GONE}.jsonl").exists() and not (SLUG / f"{OWN_PIN}.jsonl").exists()
               and not env.exists())
-        check("a codex transcript is deleted too", not cxf.exists())
         check("signals it SENT stay (stored by role name)",
               count("SELECT COUNT(*) FROM signals WHERE from_session = 'writer'") == 1)
         check("the role SKILL file in the project folder stays", skill.exists())
