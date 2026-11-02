@@ -188,7 +188,7 @@ if "mcpClis = r.clis" not in JS:
 if "cli-tag" not in JS or ".cli-tag" not in style:
     gaps.add("the per-CLI tag that shows which CLIs actually have a server")
 check("the MCP modal speaks for every CLI", gaps,
-      "an agent on codex or agy reads a different file than claude")
+      "an agent on agy reads a different file than claude")
 
 # 12 · Nút "mở project" có HAI chế độ và mặc định KHÔNG phải nvim. Hỏng im lặng: DEV không còn
 # được nạp từ /health, nên nó mãi là false và người chạy `--dev` mất card nvim; hoặc nhánh DEV bị

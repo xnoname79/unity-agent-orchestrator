@@ -2,7 +2,7 @@
 
 # Agent Orchestrator
 
-Claude Code, Codex and Antigravity CLI on one canvas, working together. It drives the CLIs already
+Claude Code and Antigravity CLI on one canvas, working together. It drives the CLIs already
 installed on your machine, so each provider keeps its own login and subscription.
 
 ![The canvas](images/screenshot-canvas.png)
@@ -12,7 +12,7 @@ installed on your machine, so each provider keeps its own login and subscription
 ## Features
 
 **Agents**
-- Live terminal cards for Claude Code, Codex and Antigravity (Gemini) on one canvas, with the model
+- Live terminal cards for Claude Code and Antigravity (Gemini) on one canvas, with the model
   and reasoning effort picked per agent.
 - Agents hand work to each other with `send_signal`. Every run is queued, capped and logged in
   History.
@@ -73,7 +73,6 @@ At least one, installed and logged in:
 | CLI | Install |
 |---|---|
 | Claude Code | [code.claude.com/docs](https://code.claude.com/docs/en/quickstart#native-install-recommended) |
-| Codex CLI | [learn.chatgpt.com/docs/codex/cli](https://learn.chatgpt.com/docs/codex/cli#getting-started) |
 | Antigravity CLI | [antigravity.google/docs/cli](https://antigravity.google/docs/cli/reference) — the `agy` command |
 
 Images need the Antigravity CLI.
@@ -137,7 +136,6 @@ Or by hand, once per CLI (same pattern for `boards`, `library` and `voice`):
 
 ```bash
 claude mcp add --transport http --scope user signal http://127.0.0.1:8992/signal/mcp
-codex mcp add signal --url http://127.0.0.1:8992/signal/mcp
 agy mcp add signal http://127.0.0.1:8992/signal/mcp
 ```
 
@@ -174,7 +172,7 @@ Put these in a `.env` file next to `session_orchestrator.py` (or next to `agent-
 | Variable | Default | When to set it |
 |---|---|---|
 | `ORCH_PORT` | `8992` | Port 8992 is taken |
-| `CLAUDE_BIN` / `ORCH_CODEX_BIN` / `ORCH_AGY_BIN` | `claude` / `codex` / `agy` | The dashboard cannot find an installed CLI |
+| `CLAUDE_BIN` / `ORCH_AGY_BIN` | `claude` / `agy` | The dashboard cannot find an installed CLI |
 | `ORCH_HOST` | `127.0.0.1` | Only to reach it from another machine |
 | `ORCH_SUBAGENTS_MAX` | `4` | Active sub-agents per director |
 | `ORCH_SUBTASK_MAX_ATTEMPTS` | `3` | Failed verifications before a sub-agent's work is marked failed |

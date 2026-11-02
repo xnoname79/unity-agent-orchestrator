@@ -4,10 +4,12 @@
 The session id is the primary key: runs, signals and history all point at it, so switching
 engines must keep the id. Whether that is safe depends on the target CLI:
 
-  - claude can adopt a foreign id (`claude -p --session-id <uuid>`), so codex -> claude works,
+  - claude can adopt a foreign id (`claude -p --session-id <uuid>`), so agy -> claude works — and
+    so does an old Codex card moving to claude, which is the way off Codex now that it is gone —
     but only for an id that is a real UUID (a session registered under some other id is not);
-  - codex and agy have no flag to pick a thread/conversation id, so a session may only go back
-    to one of them if that CLI's file for the id is still on disk;
+  - agy has no flag to pick a conversation id, so a session may only go back to it if agy's file
+    for the id is still on disk;
+  - Codex support was removed: no card may switch TO a codex model, from anywhere;
   - a session already on the target engine must not be re-adopted (the CLI rejects a
     session id that is already in use);
   - a PINNED conversation counts as the card's route, so a claude card that pinned a real agy
@@ -49,13 +51,11 @@ db.unlink(missing_ok=True)
 so._ensure_db()
 
 # Transcript của hai CLI trỏ vào thư mục tạm: check này quyết định theo file có/không tồn tại,
-# không được đọc ~/.claude và ~/.codex thật của người dùng.
+# không được đọc ~/.claude và ~/.gemini thật của người dùng.
 fake = Path(tempfile.mkdtemp())
 so.CLAUDE_PROJECTS_DIR = fake / "claude"
-so.CODEX_SESSIONS_DIR = fake / "codex"
 so.AGY_CONVERSATIONS_DIR = fake / "agy" / "conversations"
 (so.CLAUDE_PROJECTS_DIR / "proj").mkdir(parents=True)
-(so.CODEX_SESSIONS_DIR / "2026" / "08" / "11").mkdir(parents=True)
 so.AGY_CONVERSATIONS_DIR.mkdir(parents=True)
 
 fails = []
@@ -65,10 +65,6 @@ def check(name, ok, detail=""):
     if not ok:
         fails.append(f"{name}: {detail}")
     print(("FAIL " if not ok else "ok   ") + name + (f" — {detail}" if not ok else ""))
-
-
-def codex_born(sid):
-    (so.CODEX_SESSIONS_DIR / "2026" / "08" / "11" / f"rollout-2026-08-11T21-36-40-{sid}.jsonl").touch()
 
 
 def claude_born(sid):
@@ -86,33 +82,30 @@ async def main():
         async def set_model(sid, model):
             return await c.post(f"/api/sessions/{sid}/model", json={"model": model})
 
-        # 1. codex -> claude: id là uuid, claude nhận nuôi được → cho đổi.
+        # 1. Card Codex cũ -> claude: id là uuid, claude nhận nuôi được → cho đổi. Đây là đường
+        #    ra khỏi Codex sau khi engine đó bị bỏ, nên nó PHẢI còn chạy.
         sid = str(uuid.uuid4())
         so.register_session(sid, "cx", model="codex:gpt-5.6-luna")
-        codex_born(sid)
         r = await set_model(sid, "claude-opus-5")
-        check("codex -> claude allowed", r.status_code == 200, r.text[:200])
+        check("an old codex card can move to claude", r.status_code == 200, r.text[:200])
         check("model persisted", so.get_session(sid)["model"] == "claude-opus-5",
               so.get_session(sid)["model"])
 
-        # 2. quay lại codex: rollout còn trên đĩa → cho về.
+        # 2. Codex đã bị bỏ: không card nào được đổi SANG codex, dù trước đó từng là codex.
         r = await set_model(sid, "codex")
-        check("claude -> codex allowed when rollout exists", r.status_code == 200, r.text[:200])
+        check("claude -> codex is refused: Codex was removed",
+              r.status_code == 400 and "removed" in r.text, r.text[:200])
+        check("the card stays on claude", so.get_session(sid)["model"] == "claude-opus-5",
+              so.get_session(sid)["model"])
 
-        # 3. session claude thuần → codex: codex chưa từng thấy id này, chặn.
         sid2 = str(uuid.uuid4())
         so.register_session(sid2, "cl", model="claude-opus-5")
         claude_born(sid2)
-        r = await set_model(sid2, "codex")
-        check("claude -> codex blocked without rollout", r.status_code == 400, r.text[:200])
-        check("session unchanged after block", so.get_session(sid2)["model"] == "claude-opus-5",
-              so.get_session(sid2)["model"])
 
         # 4. id KHÔNG phải uuid (session đăng ký sẵn với id riêng) → claude: `--session-id` từ
         #    chối, không nhận nuôi được, chặn kèm lý do.
         sid3 = "sess-" + uuid.uuid4().hex
         so.register_session(sid3, "odd", model="codex:gpt-5.6-luna")
-        codex_born(sid3)
         r = await set_model(sid3, "claude-opus-5")
         check("non-UUID id -> claude blocked (id not a UUID)",
               r.status_code == 400 and "not a UUID" in r.text, r.text[:200])
@@ -121,9 +114,10 @@ async def main():
         r = await set_model(sid2, "claude-haiku-4-5")
         check("claude -> claude allowed", r.status_code == 200, r.text[:200])
         r = await set_model(sid3, "codex:gpt-5.6-terra")
-        check("codex -> codex allowed", r.status_code == 200, r.text[:200])
+        check("an old codex card cannot pick another codex model either",
+              r.status_code == 400 and "removed" in r.text, r.text[:200])
 
-        # 6. agy: cùng luật với codex — không có cờ đặt conversation id.
+        # 6. agy: không có cờ đặt conversation id.
         sid4 = str(uuid.uuid4())
         so.register_session(sid4, "gem", model="agy:gemini-3.1-pro-high")
         agy_born(sid4)
@@ -143,7 +137,7 @@ async def main():
         check("adopt is a no-op for a session claude already knows",
               await so._adopt_session_for_claude(so.get_session(sid2)) == "")
 
-        # 8. Ghim làm CẦU. codex/agy tự sinh id lúc spawn, nên card claude không bao giờ có hội
+        # 8. Ghim làm CẦU. agy tự sinh id lúc spawn, nên card claude không bao giờ có hội
         #    thoại agy mang id của nó — nhưng nếu đã ghim một hội thoại agy CÓ THẬT thì chính nó là
         #    thứ cả terminal lẫn run nền mở, và đổi engine sang agy là an toàn. Đây là cách duy nhất
         #    để run nền vào cùng hội thoại với CLI người dùng chọn ở terminal.
