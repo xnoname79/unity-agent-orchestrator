@@ -8,7 +8,7 @@ belongs to. Two things can go wrong quietly:
     the cwd ('/x/a_b' and '/x/a-b' both become '-x-a-b'), so the real cwd recorded inside the file
     is the only trustworthy filter;
   - the picked id lands in argv. It must be an id the target CLI actually has on disk, or a
-    terminal turns into an arbitrary argument for `claude`/`codex`. A pin whose transcript is
+    terminal turns into an arbitrary argument for `claude`/`agy`. A pin whose transcript is
     later deleted has to fall back, not kill the card;
   - the card's OWN transcript is deleted under it. Claude Code clears transcripts on
     `cleanupPeriodDays` (30 by default) while the card lives in the DB forever, so an agent left
@@ -54,17 +54,15 @@ db = so.DB_DIR / "check_cli_sessions.db"
 db.unlink(missing_ok=True)
 so._ensure_db()
 
-# Transcript giả trong thư mục tạm — check này KHÔNG được đọc ~/.claude, ~/.codex thật.
+# Transcript giả trong thư mục tạm — check này KHÔNG được đọc ~/.claude, ~/.gemini thật.
 fake = Path(tempfile.mkdtemp())
 so.CLAUDE_PROJECTS_DIR = fake / "claude" / "projects"
-so.CODEX_SESSIONS_DIR = fake / "codex" / "sessions"
 so.AGY_CONVERSATIONS_DIR = fake / "agy" / "conversations"
 so.AGY_SUMMARIES_DB = fake / "agy" / "conversation_summaries.db"
 CWD = "/x/a_b"
 OTHER = "/x/a-b"          # slug trùng CWD ('_' và '-' cùng thành '-') nhưng là thư mục KHÁC
 SLUG = so.CLAUDE_PROJECTS_DIR / "-x-a-b"
 SLUG.mkdir(parents=True)
-(so.CODEX_SESSIONS_DIR / "2026" / "08" / "11").mkdir(parents=True)
 so.AGY_CONVERSATIONS_DIR.mkdir(parents=True)
 
 fails = []
@@ -80,15 +78,6 @@ def claude_file(sid, cwd, texts, mtime):
     f = SLUG / f"{sid}.jsonl"
     lines = [{"type": "queue-operation", "sessionId": sid}]
     lines += [{"type": "user", "cwd": cwd, "message": {"role": "user", "content": t}} for t in texts]
-    f.write_text("\n".join(json.dumps(o) for o in lines), encoding="utf-8")
-    os.utime(f, (mtime, mtime))
-    return f
-
-
-def codex_file(sid, cwd, texts, mtime):
-    f = so.CODEX_SESSIONS_DIR / "2026" / "08" / "11" / f"rollout-2026-08-11T21-36-40-{sid}.jsonl"
-    lines = [{"type": "session_meta", "payload": {"session_id": sid, "cwd": cwd}}]
-    lines += [{"type": "event_msg", "payload": {"type": "user_message", "message": t}} for t in texts]
     f.write_text("\n".join(json.dumps(o) for o in lines), encoding="utf-8")
     os.utime(f, (mtime, mtime))
     return f
@@ -117,7 +106,6 @@ claude_file("11111111-1111-4111-8111-111111111111", CWD, [SEED, "fix the login b
 claude_file("22222222-2222-4222-8222-222222222222", CWD, ["<command-name>/init</command-name>",
                                                           "write the readme"], 2000)
 claude_file("33333333-3333-4333-8333-333333333333", OTHER, ["not this folder"], 4000)
-codex_file("44444444-4444-4444-8444-444444444444", CWD, [SEED, "port the parser"], 1000)
 agy_file("66666666-6666-4666-8666-666666666666", 3000, "ship the picker", [f"file://{CWD}"])
 agy_file("77777777-7777-4777-8777-777777777777", 2000)          # phiên headless: không có nhãn
 agy_file("88888888-8888-4888-8888-888888888888", 4000, "other folder", [f"file://{OTHER}"])
@@ -136,10 +124,8 @@ async def main():
         check("preview skips system tags", len(rows) > 1 and rows[1]["preview"] == "write the readme",
               len(rows) > 1 and rows[1]["preview"])
 
-        cx = so.list_cli_sessions(CWD, "codex")
-        check("codex sessions read from session_meta",
-              [r["id"][:2] for r in cx] == ["44"] and cx[0]["preview"] == "port the parser",
-              [(r["id"][:8], r["preview"]) for r in cx])
+        check("a removed CLI (codex) lists nothing instead of crashing",
+              so.list_cli_sessions(CWD, "codex") == [])
         check("a folder with nothing recorded lists nothing",
               so.list_cli_sessions("/x/empty", "claude") == [])
 
@@ -161,7 +147,7 @@ async def main():
         check("an id the CLI does not have is refused", r.status_code == 400, r.text[:200])
         r = await c.post(f"/api/sessions/{sid}/resume-id",
                          json={"resume_id": "44444444-4444-4444-8444-444444444444"})
-        check("a codex transcript is refused for a claude session", r.status_code == 400,
+        check("an id claude has no transcript for is refused", r.status_code == 400,
               r.text[:200])
         check("a refused pin leaves the old one alone", so.get_session(sid)["resume_id"] == pick,
               so.get_session(sid)["resume_id"])
@@ -180,9 +166,9 @@ async def main():
         # từ chối thẳng ('already in use') → đảo hai cờ này là giết mọi card đang sống.
         check("a card whose transcript is still there resumes it",
               so._claude_open_flags(pick) == ["--resume", pick], so._claude_open_flags(pick))
-        # codex/agy không nhận id áp đặt → hội thoại mất thì chỉ mở được phiên MỚI.
-        check("codex opens a new session instead of resuming an id it lost",
-              so._cli_open_argv("codex", sid) == [so.CODEX_BIN], so._cli_open_argv("codex", sid))
+        # agy không nhận id áp đặt → hội thoại mất thì chỉ mở được phiên MỚI.
+        check("agy opens a new session instead of resuming an id it lost",
+              so._cli_open_argv("agy", sid) == [so.AGY_BIN], so._cli_open_argv("agy", sid))
 
         r = await c.post(f"/api/sessions/{sid}/resume-id", json={"resume_id": ""})
         check("unpinning goes back to the session's own transcript",
@@ -199,9 +185,9 @@ async def main():
         check("endpoint takes cwd + CLI from the session",
               r.status_code == 200 and r.json()["cwd"] == CWD
               and [x["id"][:2] for x in r.json()["sessions"]] == ["11", "22"], r.text[:200])
-        r = await c.get(f"/api/cli-sessions?session={sid}&cli=codex")
+        r = await c.get(f"/api/cli-sessions?session={sid}&cli=agy")
         check("endpoint honours ?cli=", r.status_code == 200
-              and [x["id"][:2] for x in r.json()["sessions"]] == ["44"], r.text[:200])
+              and [x["id"][:2] for x in r.json()["sessions"]] == ["66", "77"], r.text[:200])
         r = await c.get("/api/cli-sessions?session=nope")
         check("no session and no cwd is refused", r.status_code == 400, r.text[:200])
 
@@ -250,11 +236,6 @@ async def main():
         r = await rm(gone)
         check("deleting it twice is refused, not a crash", r.status_code == 400, r.text[:160])
 
-        # codex: cùng luật, khác bố cục file trên đĩa.
-        cxid = "44444444-4444-4444-8444-444444444444"
-        cxf = so.CODEX_SESSIONS_DIR / "2026" / "08" / "11" / f"rollout-2026-08-11T21-36-40-{cxid}.jsonl"
-        r = await rm(cxid, cli="codex")
-        check("deletes a codex rollout too", r.status_code == 200 and not cxf.exists(), r.text[:200])
 
         # ── agy: id nằm ở tên file, cwd thì KHÔNG có trên đĩa ───────────────
         # Khớp thư mục với workspace_uris theo luật của TỪNG hệ điều hành — CI Windows trước đây
@@ -306,10 +287,9 @@ async def main():
         check("no workspace flag when the session has no cwd",
               "--add-dir" not in so._agy_flags("agy", "bypassPermissions", "", ""),
               so._agy_flags("agy", "bypassPermissions", "", ""))
-        check("claude and codex terminals are untouched by that flag",
-              "--add-dir" not in so.terminal_argv(so.get_session(sid), "claude")
-              and "--add-dir" not in so.terminal_argv(so.get_session(sid), "codex"),
-              so.terminal_argv(so.get_session(sid), "codex"))
+        check("claude terminals are untouched by that flag",
+              "--add-dir" not in so.terminal_argv(so.get_session(sid), "claude"),
+              so.terminal_argv(so.get_session(sid), "claude"))
         r = await c.post(f"/api/sessions/{sid}/resume-id", json={"resume_id": agpick})
         check("an agy conversation is refused when the card's own engine would open it",
               r.status_code == 400, r.text[:200])

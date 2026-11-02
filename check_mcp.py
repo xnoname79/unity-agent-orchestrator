@@ -7,11 +7,11 @@ wrong quietly are all about that secret and that file:
   - a server that refuses the token must leave the config file BYTE-IDENTICAL. Writing first and
     verifying later is how someone ends up with a config that looks right and a tool call that
     fails on every turn;
-  - claude is not the only CLI here. An agent spawned on codex or agy reads a different file in a
+  - claude is not the only CLI here. An agent spawned on agy reads a different file in a
     different syntax, so a server written only to ~/.claude.json is a tool that silently does not
-    exist for two engines out of three;
-  - codex keeps its MCP servers in the same config.toml as the user's model, effort and per-project
-    trust levels. Adding one server must not disturb a byte of the rest;
+    exist for half the engines;
+  - Codex support was removed, but users still have ~/.codex/config.toml (their model, effort and
+    trust levels live there). Nothing here may write to it any more — not a byte;
   - nothing that leaves this process may carry the token. It belongs on the wire to the MCP
     server and nowhere else — not in a listing, not in an error string;
   - the file holds every other MCP server the user has, in every project. Rewriting it must not
@@ -51,7 +51,7 @@ OTHER = {"mcpServers": {"signal": {"type": "http", "url": "http://localhost:8992
                         "local-tool": {"command": "npx", "args": ["some-mcp"]}},
          "someOtherKey": {"keep": "me"}}
 CFG.write_text(json.dumps(OTHER, indent=2), encoding="utf-8")
-# codex: MCP nằm chung file với model/effort/trust-level. Mọi dòng dưới đây phải sống sót.
+# ~/.codex/config.toml còn nằm trên máy người dùng sau khi Codex bị bỏ: phải giữ nguyên từng byte.
 CODEX_BEFORE = """model = "gpt-5.6-luna"
 model_reasoning_effort = "medium"
 
@@ -68,16 +68,20 @@ os.environ["ORCH_DB"] = "check_mcp"
 os.environ["ORCH_WORKSPACES_ROOT"] = str(TMP / "ws")
 os.environ["ORCH_DRY_RUN"] = "1"
 os.environ["ORCH_CLAUDE_CONFIG"] = str(CFG)
-# BẮT BUỘC trỏ đi chỗ khác: máy chạy test có thể đã cài codex/agy thật, và endpoint ghi cho MỌI
+# BẮT BUỘC trỏ đi chỗ khác: máy chạy test có thể đã cài agy thật, và endpoint ghi cho MỌI
 # CLI đang cài — không override là test sửa thẳng cấu hình thật của người chạy nó.
-CODEX = TMP / "codex-config.toml"
+# HOME cũng vào thư mục tạm: một ~/.codex/config.toml giả nằm ĐÚNG chỗ thật của nó, để chứng minh
+# không đường nào còn ghi vào đó.
+os.environ["HOME"] = os.environ["USERPROFILE"] = str(TMP)
+CODEX = TMP / ".codex" / "config.toml"
+CODEX.parent.mkdir(parents=True, exist_ok=True)
 AGY = TMP / "agy-mcp.json"
 CODEX.write_text(CODEX_BEFORE, encoding="utf-8")
 AGY.write_text(json.dumps(AGY_BEFORE, indent=2), encoding="utf-8")
-os.environ["ORCH_CODEX_CONFIG"] = str(CODEX)
 os.environ["ORCH_AGY_MCP_CONFIG"] = str(AGY)
 os.environ["ORCH_MCP_TIMEOUT"] = "3"
-# Connect only writes for CLIs that are INSTALLED (shutil.which). Fake all three, so the checks
+# Connect only writes for CLIs that are INSTALLED (shutil.which). Fake them all (codex too: an old
+# install must not bring its config back into play), so the checks
 # below mean the same thing on a dev box with real CLIs and on a CI runner with none.
 _BIN = TMP / "bin"
 _BIN.mkdir(exist_ok=True)
@@ -157,7 +161,7 @@ def cfg_now():
 
 
 def all_cfgs():
-    """Ảnh chụp CẢ BA file — "không ghi gì khi chưa chứng minh được" phải đúng cho cả ba."""
+    """Ảnh chụp mọi file — "không ghi gì khi chưa chứng minh được" phải đúng cho tất cả."""
     return (cfg_now(), CODEX.read_text(encoding="utf-8"), AGY.read_text(encoding="utf-8"))
 
 
@@ -167,7 +171,7 @@ async def main():
                                  base_url="http://test") as c:
         top = (await c.get("/api/mcp")).json()
         check("the reply says which CLIs are installed here",
-              set(top["clis"]) <= {"claude", "codex", "agy"} and "claude" in top["clis"],
+              set(top["clis"]) == {"claude", "agy"},
               str(top.get("clis")))
         listed = top["servers"]
         names = {s["name"]: s for s in listed}
@@ -230,18 +234,8 @@ async def main():
         # ── cùng một server, hai CLI còn lại ─────────────────────────────────
         check("connect says where it wrote", set(body.get("clis") or []) == set(top["clis"]),
               str(body.get("clis")))
-        toml = CODEX.read_text(encoding="utf-8")
-        check("codex got the server in its own syntax",
-              f'[mcp_servers."{NAME}"]' in toml and f'url = "{URL}"' in toml, toml)
-        check("with the token as an http header, not a command-line flag",
-              f'http_headers = {{ Authorization = "Bearer {TOKEN}" }}' in toml, toml)
-        check("and codex's model, effort and trust levels are untouched",
-              all(line in toml for line in ('model = "gpt-5.6-luna"',
-                                            'model_reasoning_effort = "medium"',
-                                            '[projects."/home/someone/repo"]',
-                                            'trust_level = "trusted"')), toml)
-        check("the codex server that was already there survived",
-              "[mcp_servers.signal]" in toml, toml)
+        check("a leftover ~/.codex/config.toml is not written, even with codex installed",
+              CODEX.read_text(encoding="utf-8") == CODEX_BEFORE, CODEX.read_text(encoding="utf-8"))
         agy = json.loads(AGY.read_text(encoding="utf-8"))["mcpServers"]
         check("agy got it under ITS key name (serverUrl, not url)",
               agy[NAME] == {"disabled": False, "serverUrl": URL,
@@ -269,11 +263,7 @@ async def main():
         check("and Remove takes it out like any other server",
               r.json()["removed"] and "boards" not in json.loads(cfg_now())["mcpServers"], r.text)
 
-        # Ghi lại cùng tên = THAY, không phải khai hai lần. Codex đọc bảng trùng tên là lỗi parse.
         await c.post("/api/mcp/connect", json={"name": NAME, "url": URL, "token": TOKEN})
-        check("re-adding replaces the codex table instead of duplicating it",
-              CODEX.read_text(encoding="utf-8").count(f'[mcp_servers."{NAME}"]') == 1,
-              CODEX.read_text(encoding="utf-8"))
         row = {s["name"]: s for s in (await c.get("/api/mcp")).json()["servers"]}[NAME]
         check("the listing says which CLIs have it",
               set(row["clis"]) == set(top["clis"]), str(row.get("clis")))
@@ -303,15 +293,11 @@ async def main():
         check("the key is gone", NAME not in left, str(sorted(left)))
         check("the other servers are still there",
               set(left) == {"signal", "local-tool"}, str(sorted(left)))
-        check("and it is gone from every other CLI too",
-              NAME not in CODEX.read_text(encoding="utf-8")
-              and NAME not in json.loads(AGY.read_text(encoding="utf-8"))["mcpServers"],
-              CODEX.read_text(encoding="utf-8"))
-        check("removing one codex server leaves the rest of config.toml alone",
-              all(line in CODEX.read_text(encoding="utf-8")
-                  for line in ('model = "gpt-5.6-luna"', "[mcp_servers.signal]",
-                               '[projects."/home/someone/repo"]')),
-              CODEX.read_text(encoding="utf-8"))
+        check("and it is gone from agy too",
+              NAME not in json.loads(AGY.read_text(encoding="utf-8"))["mcpServers"],
+              AGY.read_text(encoding="utf-8"))
+        check("~/.codex/config.toml is byte-identical after connect, re-add and remove",
+              CODEX.read_text(encoding="utf-8") == CODEX_BEFORE, CODEX.read_text(encoding="utf-8"))
         r = (await c.post("/api/mcp/disconnect", json={"name": NAME})).json()
         check("disconnecting twice is harmless", r["removed"] is False, str(r))
 

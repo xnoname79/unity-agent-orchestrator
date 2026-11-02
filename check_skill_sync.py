@@ -2,7 +2,7 @@
 """Guard for resyncing a role's SKILL into CLI roots that were added later.
 
 _write_role_skill writes every root in CLI_SKILL_ROOTS, but only at spawn time and when the
-SKILL is saved. A card created before a root existed (.agents landed after .claude/.codex)
+SKILL is saved. A card created before a root existed (.agents landed after .claude)
 keeps missing that copy forever, and the CLI reading that root runs with no playbook and says
 nothing. The card shows a resync button driven by _skill_missing_roots; these checks cover the
 detection, the copy, and the fact that copying twice changes nothing.

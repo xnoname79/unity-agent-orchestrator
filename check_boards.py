@@ -327,9 +327,8 @@ async def test_board_reads_what_you_said_in_chat():
     Chỉ lời người dùng và lời agent; output công cụ, chữ hệ thống, subagent thì không. Mốc
     chat_seen chỉ tiến khi agent của board thật sự trả lời, nếu không đoạn chat đó mất luôn.
     """
-    keep = so.CLAUDE_PROJECTS_DIR, so.CODEX_SESSIONS_DIR, so.AGY_CONVERSATIONS_DIR
+    keep = so.CLAUDE_PROJECTS_DIR, so.AGY_CONVERSATIONS_DIR
     so.CLAUDE_PROJECTS_DIR = Path(tempfile.mkdtemp())
-    so.CODEX_SESSIONS_DIR = Path(tempfile.mkdtemp())
     so.AGY_CONVERSATIONS_DIR = Path(tempfile.mkdtemp())
     try:
         so.register_session("sess-chat", "chatbot", cwd="/tmp/p3", workspace_id="default")
@@ -375,25 +374,6 @@ async def test_board_reads_what_you_said_in_chat():
         check("only what came after", "stripe key" in chat and "login page" not in chat, chat)
         so.delete_board(bid)
 
-        so.register_session("sess-cx", "cxbot", workspace_id="default", model="codex")
-        roll = so.CODEX_SESSIONS_DIR / "2026/10/12" / "rollout-2026-10-12T09-00-00-sess-cx.jsonl"
-        roll.parent.mkdir(parents=True)
-        roll.write_text("\n".join(json.dumps(r) for r in (
-            {"type": "event_msg", "timestamp": "2026-10-12T02:00:00.000Z",
-             "payload": {"type": "user_message", "message": "draft the pricing email"}},
-            {"type": "response_item", "timestamp": "2026-10-12T02:00:00.000Z",
-             "payload": {"type": "message", "role": "user",
-                         "content": [{"type": "input_text", "text": "draft the pricing email"}]}},
-            {"type": "event_msg", "timestamp": "2026-10-12T02:00:09.000Z",
-             "payload": {"type": "agent_message", "message": "Drafted, 120 words."}})) + "\n",
-            encoding="utf-8")
-        cid = so.create_board("default", so.board_agent_for(so.get_session("sess-cx"), "x"),
-                              "x", owner_id="sess-cx")
-        chat, _ = so.board_chat_since(so.get_board(cid))
-        check("codex chats are read too, each turn once",
-              chat.count("pricing email") == 1 and "agent: Drafted" in chat, chat)
-        so.delete_board(cid)
-
         # agy: sqlite, mỗi bước một blob protobuf. Tự mã hoá đúng các field hàm đọc tìm tới.
         def var(n):
             out = b""
@@ -438,7 +418,7 @@ async def test_board_reads_what_you_said_in_chat():
               seen == "2026-10-12T02:00:09.250Z", seen)
         so.delete_board(gid)
     finally:
-        so.CLAUDE_PROJECTS_DIR, so.CODEX_SESSIONS_DIR, so.AGY_CONVERSATIONS_DIR = keep
+        so.CLAUDE_PROJECTS_DIR, so.AGY_CONVERSATIONS_DIR = keep
 
 
 # ── Worker: tự chọn task, tìm hiểu, ghi kết quả — chỉ đọc ─────────────────────
@@ -490,10 +470,6 @@ def test_worker_is_read_only():
     check("asking again reuses it", so.board_worker(so.get_board(bid)) == wid, "made a second one")
     check("it is hidden like the board's own session",
           so.board_threads().get(wid, {}).get("role") == "worker", str(so.board_threads()))
-    flags = so._codex_flags(permission_mode="plan")
-    check("on codex, read-only is the read-only sandbox",
-          'sandbox_mode="read-only"' in flags and "--dangerously-bypass-approvals-and-sandbox"
-          not in flags and 'sandbox_mode="workspace-write"' not in flags, str(flags))
     so.delete_board(bid)
     check("deleting the board takes the worker, never the agent you chat with",
           so.get_session(wid) is None and so.get_session("sess-wo") is not None, "")

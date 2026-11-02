@@ -35,14 +35,14 @@ for _s in (sys.stdout, sys.stderr):
 TMP = Path(tempfile.mkdtemp(prefix="check_team_"))
 BIN = TMP / "bin"
 BIN.mkdir()
-for name in ("claude", "codex"):          # agy deliberately absent: "@other" must pick codex
+for name in ("claude", "agy"):            # both installed: "@other" must pick agy for a claude builder
     f = BIN / (name + (".exe" if os.name == "nt" else ""))
     f.write_bytes(b"")
     f.chmod(0o755)
 os.environ.update({
     "ORCH_DB": "check_team", "ORCH_WORKSPACES_ROOT": str(TMP / "ws"), "ORCH_DRY_RUN": "1",
-    "CLAUDE_BIN": str(BIN / "claude"), "ORCH_CODEX_BIN": str(BIN / ("codex" + (".exe" if os.name == "nt" else ""))),
-    "ORCH_AGY_BIN": str(TMP / "no-agy-here"), "ORCH_SUBTASK_MAX_ATTEMPTS": "3",
+    "CLAUDE_BIN": str(BIN / "claude"), "ORCH_AGY_BIN": str(BIN / ("agy" + (".exe" if os.name == "nt" else ""))),
+    "ORCH_SUBTASK_MAX_ATTEMPTS": "3",
 })
 os.environ["CLAUDE_BIN"] = str(BIN / ("claude" + (".exe" if os.name == "nt" else "")))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -212,8 +212,8 @@ async def main():
                  and s["name"].startswith(f"sub-{st_id[3:]}")]
     check("each verification ran in a fresh verifier session", len(verifiers) == 2,
           str([v["name"] for v in verifiers]))
-    check("the verifier ran on a different CLI than the builder ('@other' → codex)",
-          all(so.engine_name_of_session(v) == "codex" for v in verifiers)
+    check("the verifier ran on a different CLI than the builder ('@other' → agy)",
+          all(so.engine_name_of_session(v) == "agy" for v in verifiers)
           and so.engine_name_of_session(session_of(st["session_id"])) == "claude",
           str([(v["name"], v["model"]) for v in verifiers]))
     fix = [p for n, p in SEEN if n == session_of(st["session_id"]).get("name") and "VERIFIER FINDINGS" in p]

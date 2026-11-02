@@ -184,12 +184,12 @@ jobs:
             Configure via environment variables, or a `.env` file placed **next to the
             executable** (on Windows, inside the unzipped folder, beside `agent-orch.exe`).
             Notable ones: `ORCH_PORT`, `ORCH_HOST`, `ORCH_CORS_ORIGINS`, `CLAUDE_BIN`,
-            `ORCH_CODEX_BIN`.
+            `ORCH_AGY_BIN`.
 
             ## Prerequisites
 
             This binary is the orchestrator only — no agent is bundled. To run real agents the
-            machine needs the `claude` CLI and/or the `codex` CLI, already logged in.
+            machine needs the `claude` CLI and/or the `agy` CLI, already logged in.
 
             ## Windows notes
 

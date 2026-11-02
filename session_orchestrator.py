@@ -32,7 +32,6 @@ Env:
   ORCH_DEFAULT_EFFORT  reasoning effort mặc định mọi session (default "high"; xem EFFORT_LADDER)
   ORCH_DEFAULT_PERMISSION_MODE  permission mode fallback khi session không set (default "bypassPermissions")
   CLAUDE_BIN           đường dẫn claude CLI (default "claude")
-  ORCH_CODEX_BIN       đường dẫn codex CLI (default "codex")
   ORCH_AGY_BIN         đường dẫn agy CLI (Antigravity, default "agy")
   ORCH_AGY_HOME        thư mục dữ liệu agy (default ~/.gemini/antigravity-cli)
   ORCH_AGY_PRINT_TIMEOUT  trần thời gian 1 lượt `agy -p` (default "60m"; agy mặc định 5m)
@@ -159,15 +158,12 @@ DEV_MODE = os.environ.get("ORCH_DEV_MODE", "0") == "1"
 POLL_INTERVAL = int(os.environ.get("ORCH_POLL_INTERVAL", "5"))
 MAX_CONCURRENT = int(os.environ.get("ORCH_MAX_CONCURRENT", "3"))
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
-CODEX_BIN = os.environ.get("ORCH_CODEX_BIN", "codex")
-# Nơi hai CLI cất transcript — dùng để hỏi "CLI này mở được id đó không" trước khi đổi engine
-# của một session (xem api_set_model). claude: <dir>/projects/<slug-cwd>/<sid>.jsonl.
-# codex: <dir>/sessions/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl.
+# Nơi claude cất transcript — dùng để hỏi "CLI này mở được id đó không" trước khi đổi engine
+# của một session (xem api_set_model): <dir>/projects/<slug-cwd>/<sid>.jsonl.
 CLAUDE_PROJECTS_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
-CODEX_SESSIONS_DIR = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "sessions"
 # agy = Antigravity CLI của Google (thay gemini-cli đã bị khai tử). Mỗi hội thoại là MỘT file
 # SQLite <home>/conversations/<conversation_id>.db — id nằm ngay ở TÊN FILE nên không phải quét
-# nội dung như hai CLI kia. ĐÃ ĐO trên agy 1.1.26.
+# nội dung như claude. ĐÃ ĐO trên agy 1.1.26.
 AGY_BIN = os.environ.get("ORCH_AGY_BIN", "agy")
 AGY_HOME = Path(os.environ.get("ORCH_AGY_HOME", str(Path.home() / ".gemini" / "antigravity-cli")))
 AGY_CONVERSATIONS_DIR = AGY_HOME / "conversations"
@@ -215,12 +211,6 @@ STREAM_LIMIT = int(os.environ.get("ORCH_STREAM_LIMIT", str(16 * 1024 * 1024)))
 EFFORT_LADDER = ("low", "medium", "high", "xhigh", "max", "ultra")
 # Trần ĐÃ ĐO: `claude --help` → "Effort level ... (low, medium, high, xhigh, max)".
 CLAUDE_MAX_EFFORT = "max"
-# Trần codex ĐO THEO TỪNG MODEL, không theo engine: `codex debug models` trả
-# supported_reasoning_levels. terra=ultra, luna=max, gpt-5.5 & gpt-5.4-mini CHỈ tới xhigh.
-# Model không có trong bảng (kể cả 'codex' auto — CLI tự chọn theo config.toml, không đoán được)
-# → lấy trần thấp nhất đã biết. Thà hạ nhầm 1 nấc còn hơn gửi mức model không có rồi hỏng run.
-CODEX_MAX_EFFORT = {"gpt-5.6-terra": "ultra", "gpt-5.6-luna": "max"}
-CODEX_MAX_EFFORT_DEFAULT = "xhigh"
 # `agy --help`: "--effort  Reasoning effort for the current CLI session (low|medium|high)".
 AGY_MAX_EFFORT = "high"
 DEFAULT_EFFORT = os.environ.get("ORCH_DEFAULT_EFFORT", "high")  # high mặc định
@@ -1600,19 +1590,18 @@ KILLED_SESSIONS = set()
 # Thay cho việc bắt người dùng gõ `claude mcp add` trong terminal. Scope user (toàn cục), tức là
 # mọi phiên sau đó đều thấy — không thuộc workspace nào, nên nó nằm ở topbar chứ không ở canvas.
 #
-# BA CLI, BA CHỖ CẤT. Agent spawn bằng engine nào thì đọc cấu hình của CLI đó, nên đăng ký một
-# server mà chỉ ghi cho claude là agent codex/agy gọi tool nào cũng "unknown tool". Ghi cho MỌI
+# HAI CLI, HAI CHỖ CẤT. Agent spawn bằng engine nào thì đọc cấu hình của CLI đó, nên đăng ký một
+# server mà chỉ ghi cho claude là agent agy gọi tool nào cũng "unknown tool". Ghi cho MỌI
 # CLI ĐANG CÀI — cái chưa cài thì không đẻ file cấu hình hộ nó.
 #
-# Vì sao GHI THẲNG file thay vì gọi `claude/codex/agy mcp add`: server có token thì token phải đi
-# trong header Authorization, mà cả ba CLI chỉ nhận header qua cờ (`--header`, `-H`) — tức là qua
+# Vì sao GHI THẲNG file thay vì gọi `claude/agy mcp add`: server có token thì token phải đi
+# trong header Authorization, mà cả hai CLI chỉ nhận header qua cờ (`--header`, `-H`) — tức là qua
 # ARGV. `ps` đọc được, shell lưu vào history. Ghi thẳng cũng tránh cái bẫy commander của
 # `claude mcp add`: `--header` là variadic nên nó NUỐT mọi tham số vị trí đứng sau nó — đặt sai
 # thứ tự thì lệnh sai mà không báo lỗi gì.
 #
 # Shape của từng CLI ĐÃ ĐO trên máy này: chạy chính CLI đó thêm một server rồi đọc lại file.
 #   claude  ~/.claude.json                 mcpServers.<n> = {type:http, url, headers:{Authorization}}
-#   codex   ~/.codex/config.toml           [mcp_servers.<n>] url = "…" / http_headers = { … }
 #   agy     ~/.gemini/config/mcp_config.json  mcpServers.<n> = {serverUrl, disabled, headers}
 MCP_TIMEOUT = float(os.environ.get("ORCH_MCP_TIMEOUT", "6"))
 # Phiên bản khai lúc initialize. Cứ khai bản cũ: server trả về phiên bản CỦA NÓ trong response,
@@ -1635,11 +1624,6 @@ def _builtin_url(path):
     return f"http://{host}:{ORCH_PORT}{path}"
 # ~/.claude.json, KHÔNG phải ~/.claude/ — CLAUDE_CONFIG_DIR không dời file này.
 CLAUDE_CONFIG_FILE = Path(os.environ.get("ORCH_CLAUDE_CONFIG", str(Path.home() / ".claude.json")))
-# codex: CÙNG file với model/effort/trust-level của người dùng. Chỉ được đụng đúng bảng
-# [mcp_servers.<name>], mọi thứ khác giữ nguyên từng byte.
-CODEX_CONFIG_FILE = Path(os.environ.get(
-    "ORCH_CODEX_CONFIG",
-    str(Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "config.toml")))
 # agy: file RIÊNG cho MCP, KHÔNG nằm trong settings.json của antigravity-cli (chỗ đó chỉ có
 # agentMode/toolPermission). Và nó ở ~/.gemini/config/, không phải ~/.gemini/antigravity-cli/.
 AGY_MCP_CONFIG = Path(os.environ.get(
@@ -1750,67 +1734,9 @@ def _mcp_remove_agy(name):
     return True
 
 
-# ── codex (TOML) ──
-# Python 3.10 không có tomllib và repo không kéo thêm dependency chỉ để sửa một bảng, nên
-# config.toml được cắt theo DÒNG TIÊU ĐỀ BẢNG rồi ghép lại. Đủ cho thứ `codex mcp add` sinh ra.
-# ponytail: không hiểu cấu hình viết bằng khoá chấm ở top level (mcp_servers.x.url = "…") — dạng
-# đó sẽ không bị nhận ra và ghi đè sẽ thành khai hai lần; đổi sang parser TOML thật nếu gặp.
-_CODEX_MCP_SEC = re.compile(r'^\[\s*mcp_servers\s*\.\s*(?:"([^"]*)"|([^\]\s"]+))\s*\]$')
-
-
-def _toml_str(v):
-    return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def _codex_split(text):
-    """[(tên server | None, nguyên văn khối)]. None = khối không phải bảng mcp_servers (kể cả
-    phần đầu file trước bảng đầu tiên) — những khối đó đi qua nguyên vẹn."""
-    blocks, cur, name = [], [], None
-    for line in text.splitlines(keepends=True):
-        if line.lstrip().startswith("["):
-            blocks.append((name, "".join(cur)))
-            m = _CODEX_MCP_SEC.match(line.strip())
-            cur, name = [], (m.group(1) or m.group(2)) if m else None
-        cur.append(line)
-    blocks.append((name, "".join(cur)))
-    return [b for b in blocks if b[1]]
-
-
-def _mcp_read_codex():
-    out = {}
-    for name, body in _codex_split(_read_text(CODEX_CONFIG_FILE)):
-        if not name:
-            continue
-        url = re.search(r'^\s*url\s*=\s*"([^"]*)"', body, re.M)
-        cmd = re.search(r'^\s*command\s*=\s*"([^"]*)"', body, re.M)
-        tok = re.search(r'Authorization\s*=\s*"Bearer ([^"]*)"', body)
-        out[name] = _mcp_row("http" if url else "stdio", url.group(1) if url else "",
-                             cmd.group(1) if cmd else "", tok.group(1) if tok else "")
-    return out
-
-
-def _mcp_write_codex(name, url, token):
-    kept = "".join(b for n, b in _codex_split(_read_text(CODEX_CONFIG_FILE)) if n != name)
-    if kept and not kept.endswith("\n\n"):
-        kept += "\n" if kept.endswith("\n") else "\n\n"
-    block = f"[mcp_servers.{_toml_str(name)}]\nurl = {_toml_str(url)}\n"
-    if token:
-        block += "http_headers = { Authorization = " + _toml_str("Bearer " + token) + " }\n"
-    _write_text(CODEX_CONFIG_FILE, kept + block)
-
-
-def _mcp_remove_codex(name):
-    blocks = _codex_split(_read_text(CODEX_CONFIG_FILE))
-    if not any(n == name for n, _ in blocks):
-        return False
-    _write_text(CODEX_CONFIG_FILE, "".join(b for n, b in blocks if n != name))
-    return True
-
-
 # cli → (binary để hỏi "đã cài chưa", đọc, ghi, gỡ)
 MCP_CLIS = {
     "claude": (CLAUDE_BIN, _mcp_read_claude, _mcp_write_claude, _mcp_remove_claude),
-    "codex": (CODEX_BIN, _mcp_read_codex, _mcp_write_codex, _mcp_remove_codex),
     "agy": (AGY_BIN, _mcp_read_agy, _mcp_write_agy, _mcp_remove_agy),
 }
 
@@ -2838,7 +2764,7 @@ async def _lag_sampler():
 
 def _perf_kind(cmd, pid, ids):
     """(kind, session_id) của một tiến trình con: terminal/editor theo sổ _PTYS, còn lại là run nếu
-    argv mang id của một session (claude --resume <id>, codex exec resume <id>…)."""
+    argv mang id của một session (claude --resume <id>, agy --conversation <id>…)."""
     if pid in _PTYS:
         return _PTYS[pid]["kind"], _PTYS[pid]["session"]
     sid = next((ids[a] for a in cmd if a in ids), "")
@@ -3299,12 +3225,12 @@ def _parse_final(returncode, stdout, stderr, session_id):
     }
 
 
-# Thư mục gốc mà CLI tự quét skill trong project. ĐÃ ĐO trên codex 0.147.0 (canary trong
-# <cwd>/.codex/skills hiện ra ở section '## Skills', canary trong .claude/skills thì không):
-# mỗi CLI CHỈ đọc thư mục của mình → phải ghi cả hai bản, không share được.
+# Thư mục gốc mà CLI tự quét skill trong project. Mỗi CLI CHỈ đọc thư mục của mình → phải ghi đủ
+# mọi bản, không share được. (Codex — từng có root .codex — đã bị bỏ; thư mục .codex/skills cũ
+# trong project người dùng để nguyên, không xoá hộ.)
 # '.claude' đứng ĐẦU = bản canon để đọc lại (_role_skill / _prepend_role / drawer Context).
 # .agents = convention chung mà agy quét (ĐÃ ĐO: `agy skills list` đọc <cwd>/.agents/skills).
-CLI_SKILL_ROOT = {"claude": ".claude", "codex": ".codex", "agy": ".agents"}
+CLI_SKILL_ROOT = {"claude": ".claude", "agy": ".agents"}
 # '.claude' đứng ĐẦU (dict giữ thứ tự chèn) = bản canon để đọc lại (_role_skill / drawer Context).
 CLI_SKILL_ROOTS = tuple(CLI_SKILL_ROOT.values())
 
@@ -3350,7 +3276,7 @@ def _skill_missing_roots(cwd, name):
     """Root nào trong CLI_SKILL_ROOTS chưa có bản SKILL của vai này.
 
     _write_role_skill ghi ĐỦ mọi root, nhưng chỉ tại lúc spawn / lúc bấm Save. Card ra đời
-    TRƯỚC khi một root được thêm (.agents ra sau .claude/.codex) thì thiếu bản của root đó
+    TRƯỚC khi một root được thêm (.agents ra sau .claude) thì thiếu bản của root đó
     vĩnh viễn — CLI mới chạy trong cwd đó không có playbook mà không báo gì. Hàm này là mắt
     của cái nút resync trên card.
 
@@ -3362,7 +3288,7 @@ def _skill_missing_roots(cwd, name):
 
 
 def _skill_frontmatter(name, content):
-    """CẢ claude lẫn codex chỉ nhận SKILL.md có frontmatter YAML (name + description) — thiếu thì
+    """CẢ claude lẫn agy chỉ nhận SKILL.md có frontmatter YAML (name + description) — thiếu thì
     file nằm đó mà CLI không đưa vào catalog, tức là im lặng vô hiệu. init_prompt gõ tay thường
     không có → tự chèn. Description phải nói RÕ 'kích hoạt với mọi tin nhắn', vì skill là
     progressive-disclosure: CLI chỉ đọc nội dung khi description khớp việc đang làm."""
@@ -3478,7 +3404,7 @@ def _is_slash_cmd(message):
 def inject_prompt(target, message, from_role="", expects_reply=1):
     """Prompt THỰC SỰ đi vào CLI cho một signal.
 
-    Chỉ claude được đi thẳng: codex/agy nhận `/compact` ra sao thì chưa đo, nên giữ NGUYÊN đường
+    Chỉ claude được đi thẳng: agy nhận `/compact` ra sao thì chưa đo, nên giữ NGUYÊN đường
     cũ cho chúng — đổi một lỗi đã biết lấy một lỗi chưa biết thì không phải là sửa.
     Mất khối role đúng một lượt là có chủ ý: lượt compact không làm việc của vai."""
     if _is_slash_cmd(message) and engine_name_of_session(target) == "claude":
@@ -3556,7 +3482,7 @@ Playbook vai '{name}' của bạn còn placeholder dạng <VIẾT_HOA> chưa đi
    sót thì lần spawn sau sẽ chạy lại lượt này.
 4. Ghi nội dung Y HỆT NHAU vào CẢ HAI file bằng công cụ ghi file (Write/Edit), MỖI FILE MỘT LẦN:
    {paths}
-   (Claude đọc .claude, Codex đọc .codex — lệch nhau là hai CLI chạy hai playbook khác nhau.)
+   (Claude đọc .claude, agy đọc .agents — lệch nhau là hai CLI chạy hai playbook khác nhau.)
    ĐỪNG copy bằng lệnh shell: `cp` không có trên Windows, agent ở đó sẽ ghi hụt file thứ hai
    mà không ai biết.
 
@@ -3568,7 +3494,7 @@ placeholder nào."""
 def _maybe_bootstrap_skill(session, eng_name):
     """Sau spawn: SKILL vừa ghi còn placeholder → xếp hàng signal nhờ agent tự điền từ cwd.
 
-    CHỈ engine chạy CLI có quyền đọc/ghi file (claude, codex). Engine chỉ-API (nội dung role do
+    CHỈ engine chạy CLI có quyền đọc/ghi file (claude, agy). Engine chỉ-API (nội dung role do
     client gửi qua init_prompt, agent không đọc được file cục bộ) phải bị loại — nó không tự điền
     được và signal sẽ đốt một run vô ích.
     One-time do chính placeholder bảo đảm (xem _PLACEHOLDER_RE) — không cần cờ riêng.
@@ -3607,12 +3533,10 @@ _SID_OK = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
 
 def _transcript_path(sid, cli):
     """Đường dẫn file transcript của phiên này, None nếu CLI đó không có. MỘT chỗ biết bố cục
-    đĩa của BA CLI: claude <projects>/<slug>/<sid>.jsonl, codex <sessions>/…/rollout-*-<sid>.jsonl,
+    đĩa của HAI CLI: claude <projects>/<slug>/<sid>.jsonl,
     agy <conversations>/<sid>.db."""
     if not sid or not _SID_OK.match(sid):
         return None
-    if cli == "codex":
-        return next(CODEX_SESSIONS_DIR.rglob(f"rollout-*-{sid}.jsonl"), None)
     if cli == "agy":
         p = AGY_CONVERSATIONS_DIR / f"{sid}.db"
         return p if p.exists() else None
@@ -3626,7 +3550,7 @@ def _claude_knows_session(sid):
 
 # CLI mở được terminal VÀ resume theo id. Tên engine trùng tên CLI nên hai bộ này dùng chung
 # một danh sách — engine nào không có CLI (nếu sau này thêm) rơi về claude, xem cli_of_engine.
-TERMINAL_CLIS = TERMINAL_ENGINES = ("claude", "codex", "agy")
+TERMINAL_CLIS = TERMINAL_ENGINES = ("claude", "agy")
 
 
 def cli_of_engine(eng):
@@ -3677,7 +3601,7 @@ def delete_cli_session(sid, cli):
 
     Chỉ đụng vào file transcript (+ thư mục session-env cùng id của claude). KHÔNG đụng
     history.jsonl của claude: file đó khoá theo project+timestamp, không có session id, nên không
-    lọc theo phiên được — nói thẳng ở UI thay vì xoá bừa. Của codex thì CÓ session_id nhưng đang
+    lọc theo phiên được — nói thẳng ở UI thay vì xoá bừa.
     được CLI ghi thêm liên tục, viết đè lên là tự chuốc hỏng file."""
     if not sid or not _SID_OK.match(sid):
         return {"error": f"'{sid}' is not a valid session id"}
@@ -3712,10 +3636,10 @@ def delete_cli_session(sid, cli):
 
 
 async def _adopt_session_for_claude(session):
-    """Cho claude CLI 'nhận nuôi' một session id do codex sinh.
+    """Cho claude CLI 'nhận nuôi' một session id do CLI khác sinh (card cũ của Codex đổi sang claude).
 
     ĐÃ ĐO trên claude 2.1.245: `claude -p --session-id <uuid>` mở hội thoại MỚI mang ĐÚNG id đó
-    (kể cả uuidv7 của codex), và mọi `--resume <uuid>` sau đó chạy bình thường. Nhờ vậy đổi model
+    (kể cả uuidv7 do Codex cũ sinh), và mọi `--resume <uuid>` sau đó chạy bình thường. Nhờ vậy đổi model
     xuyên engine KHÔNG phải đổi session id — id là khoá chính, runs/signals/history đều trỏ vào nó.
 
     Transcript đã có thì KHÔNG chạy lại: CLI trả 'Session ID <uuid> is already in use.'
@@ -4078,118 +4002,6 @@ class ClaudeEngine(AgentEngine):
         return _extract_compact(session_id)
 
 
-# ─── Codex CLI engine (chạy bằng TÀI KHOẢN ChatGPT, không tốn API credits) ────
-# `codex exec` = chế độ headless của Codex CLI: chạy 1 lượt tới hết, phát JSONL ra stdout
-# (--json), resume bằng `codex exec resume <thread_id>`. Auth do NGƯỜI DÙNG lo một lần
-# (`codex login` → ~/.codex/auth.json); orchestrator không đụng vào và không cầm token.
-#
-# KHÁC Claude ở 4 điểm phải nhớ:
-#  1. KHÔNG có --mcp-config per-session: MCP của codex khai trong ~/.codex/config.toml (toàn cục),
-#     bằng `codex mcp add signal --url http://127.0.0.1:<ORCH_PORT>/signal/mcp` — khai 1 lần, mọi
-#     session codex dùng chung. KÈM ĐIỀU KIỆN: xem _codex_mcp_ok — headless chỉ gọi được MCP khi
-#     bypass hết approval.
-#  2. `codex exec` đòi cwd là git repo → luôn truyền --skip-git-repo-check.
-#  3. Headless mà gặp approval prompt là FAIL NGAY → phải chốt sẵn chính sách sandbox/approval.
-#  4. Không ghi compact_boundary vào transcript → get_compact luôn found=False.
-#
-# CẢNH BÁO auth: ~/.codex/auth.json chứa access token tài khoản ChatGPT — coi như mật khẩu.
-# Không commit, không copy vào image Docker.
-
-# Model của codex là 'gpt-5.6-terra', 'gpt-5.5'… — TRÙNG không gian tên với model API của
-# OpenAI. Khai TƯỜNG MINH bằng tiền tố để không mơ hồ:
-#   'codex'                  → codex CLI, model do CLI tự chọn (không truyền --model)
-#   'codex:gpt-5.6-terra'    → codex CLI, model đó
-#   'gpt-5.6-terra'          → KHÔNG có engine chạy (nhánh này chỉ có claude + codex)
-CODEX_AUTO_MODEL = "codex"
-# Env phải GỠ khỏi tiến trình con. Đã đo bằng `codex doctor`: còn OPENAI_API_KEY thì codex chạy
-# "API-key mode" (tính tiền credits) dù đã `codex login`; gỡ đi thì "auth mode = chatgpt".
-CODEX_DROP_ENV = ("OPENAI_API_KEY", "OPENAI_BASE_URL")
-
-
-def _iter_codex_events(ev):
-    """Chuyển 1 event JSONL của `codex exec --json` thành list (kind, summary, payload).
-
-    Cùng bộ kind với _iter_display_events (system|thinking|text|tool_use|tool_result|result|
-    error) để timeline/SSE/run_events không cần biết engine nào đang chạy.
-    Tool 2 pha: item.started → tool_use, item.completed → tool_result (khớp cặp như Claude).
-    """
-    if not isinstance(ev, dict):
-        return [("text", _trunc(str(ev), 500), {"raw": _trunc(str(ev))})]
-    t = ev.get("type")
-    if t == "thread.started":
-        return [("system", f"session bắt đầu · thread={ev.get('thread_id', '?')}",
-                 {"subtype": "init", "thread_id": ev.get("thread_id")})]
-    if t == "turn.completed":
-        u = ev.get("usage") or {}
-        return [("result", f"xong · {u.get('output_tokens', '?')} output tokens",
-                 {"output_tokens": u.get("output_tokens"), "input_tokens": u.get("input_tokens"),
-                  "cached_input_tokens": u.get("cached_input_tokens")})]
-    if t == "turn.failed":
-        msg = (ev.get("error") or {}).get("message") or "turn failed"
-        return [("error", _trunc(msg, 500), {"error": msg})]
-    if t == "error":
-        msg = ev.get("message") or "unknown error"
-        return [("error", _trunc(msg, 500), {"error": msg})]
-    if t not in ("item.started", "item.completed"):
-        return []                      # turn.started, item.updated… = nhiễu
-    item = ev.get("item") or {}
-    it, done = item.get("type"), t == "item.completed"
-    if it == "command_execution":
-        if not done:
-            return [("tool_use", f"bash({_trunc(str(item.get('command') or ''), 300)})",
-                     {"name": "bash", "input": {"command": item.get("command")}})]
-        out = _trunc(str(item.get("aggregated_output") or ""), 400)
-        rc = item.get("exit_code")
-        is_err = rc not in (0, None)
-        return [("tool_result", ("⚠ " if is_err else "") + out,
-                 {"result": out, "exit_code": rc, "is_error": is_err})]
-    if it == "mcp_tool_call":
-        label = f"{item.get('server', '?')}.{item.get('tool', '?')}"
-        if not done:
-            args = _trunc(json.dumps(item.get("arguments") or {}, ensure_ascii=False), 300)
-            return [("tool_use", f"{label}({args})", {"name": label, "input": item.get("arguments")})]
-        err = item.get("error")
-        err = err.get("message") if isinstance(err, dict) else err
-        txt = _trunc(json.dumps(item.get("result") or {}, ensure_ascii=False), 400)
-        return [("tool_result", ("⚠ " + _trunc(str(err), 400)) if err else txt,
-                 {"result": txt, "is_error": bool(err)})]
-    if not done:
-        return []                      # các item còn lại chỉ có nội dung khi đã xong
-    if it == "agent_message":
-        tx = (item.get("text") or "").strip()
-        return [("text", _trunc(tx, 500), {"text": tx})] if tx else []
-    if it == "reasoning":
-        th = (item.get("text") or "").strip()
-        return [("thinking", _trunc(th, 500), {"thinking": _trunc(th)})] if th else []
-    if it == "file_change":
-        paths = [c.get("path") for c in (item.get("changes") or []) if isinstance(c, dict)]
-        return [("tool_use", f"edit({_trunc(', '.join(p for p in paths if p), 300)})",
-                 {"name": "edit", "input": {"changes": item.get("changes")}})]
-    if it == "web_search":
-        return [("tool_use", f"web_search({_trunc(str(item.get('query') or ''), 200)})",
-                 {"name": "web_search", "input": {"query": item.get("query")}})]
-    if it == "error":
-        msg = item.get("message") or "unknown error"
-        return [("error", _trunc(msg, 500), {"error": msg})]
-    return []
-
-
-def _codex_model(model):
-    """Model id thật để truyền --model. 'codex' → '' (để CLI tự chọn), 'codex:X' → 'X'."""
-    return (model or "").strip().split(":", 1)[1].strip() if ":" in (model or "") else ""
-
-
-def codex_effort_ceiling(model):
-    """Mức reasoning cao nhất model codex này nhận (xem CODEX_MAX_EFFORT)."""
-    return CODEX_MAX_EFFORT.get(_codex_model(model), CODEX_MAX_EFFORT_DEFAULT)
-
-
-def _codex_env():
-    """Env cho tiến trình con codex — GỠ key API để codex dùng tài khoản ChatGPT (xem
-    CODEX_DROP_ENV). Không đụng env của chính orchestrator."""
-    return {k: v for k, v in os.environ.items() if k not in CODEX_DROP_ENV}
-
-
 def _first_text(content):
     """message.content của claude: chuỗi, hoặc list block → lấy đoạn text đầu tiên."""
     if isinstance(content, str):
@@ -4214,7 +4026,7 @@ def _scan_transcript(path, cli, max_lines=200):
     KHÔNG đọc hết file: transcript dài hàng MB nhưng cwd và câu người dùng gõ đầu tiên luôn nằm
     ở đầu. Preview bỏ qua text mở bằng '<' (thẻ hệ thống <command-name>, <skills_instructions>…)
     và các dòng user thật ra là tool result — chúng không giúp nhận ra phiên nào là phiên nào."""
-    sid, cwd, preview = (path.stem if cli != "codex" else ""), "", ""
+    sid, cwd, preview = path.stem, "", ""
     try:
         with path.open(encoding="utf-8", errors="replace") as f:
             for i, line in enumerate(f):
@@ -4224,16 +4036,9 @@ def _scan_transcript(path, cli, max_lines=200):
                     o = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if cli == "codex":
-                    pay = o.get("payload") or {}
-                    if o.get("type") == "session_meta":
-                        sid, cwd = pay.get("session_id") or "", pay.get("cwd") or ""
-                    elif not preview and pay.get("type") == "user_message":
-                        preview = pay.get("message") or ""
-                else:
-                    cwd = cwd or (o.get("cwd") or "")
-                    if not preview and o.get("type") == "user" and not o.get("toolUseResult"):
-                        preview = _first_text((o.get("message") or {}).get("content"))
+                cwd = cwd or (o.get("cwd") or "")
+                if not preview and o.get("type") == "user" and not o.get("toolUseResult"):
+                    preview = _first_text((o.get("message") or {}).get("content"))
                 # Thẻ hệ thống (<command-name>, <skills_instructions>…) và seed của orchestrator
                 # đều không phải câu người dùng gõ → bỏ, đọc tiếp.
                 if preview and (preview.startswith("<") or _is_seed_text(preview)):
@@ -4318,16 +4123,14 @@ def list_cli_sessions(cwd, cli="claude", limit=20, scan_cap=200):
 
     claude: <projects>/<slug-cwd>/<sid>.jsonl. Slug là LOSSY ('_' và '-' cùng thành '-') nên vẫn
     phải đối chiếu cwd thật đọc trong file, không tin mỗi tên thư mục.
-    codex: <sessions>/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl, cwd nằm ở dòng session_meta.
     agy: <conversations>/<id>.db — xem _agy_sessions (không lọc được theo cwd).
     Sắp theo mtime giảm dần (phiên vừa dùng nằm trên), quét tối đa scan_cap file."""
     want = str(Path(cwd).expanduser()) if cwd else ""
     if cli == "agy":
         return _agy_sessions(want, limit, scan_cap)
-    if cli == "codex":
-        files = CODEX_SESSIONS_DIR.rglob("rollout-*.jsonl")
-    else:
-        files = (CLAUDE_PROJECTS_DIR / re.sub(r"[^A-Za-z0-9]", "-", want)).glob("*.jsonl")
+    if cli != "claude":
+        return []                      # CLI đã bỏ (codex) hoặc lạ: không có transcript nào để liệt kê
+    files = (CLAUDE_PROJECTS_DIR / re.sub(r"[^A-Za-z0-9]", "-", want)).glob("*.jsonl")
     try:
         files = sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)[:scan_cap]
     except OSError:
@@ -4370,27 +4173,27 @@ def resume_target(session, cli=""):
 def pin_is_lifeline(session):
     """True khi session CHỈ tới được hội thoại của mình qua ghim (resume_id).
 
-    Xảy ra khi engine là codex/agy mà CLI đó không có hội thoại nào mang chính id của session —
-    hai CLI này tự sinh id lúc spawn, không nhận id áp đặt, nên một card claude đổi sang agy chỉ
+    Xảy ra khi engine là agy mà CLI đó không có hội thoại nào mang chính id của session —
+    agy tự sinh id lúc spawn, không nhận id áp đặt, nên một card claude đổi sang agy chỉ
     đứng được nhờ hội thoại agy đã ghim. Lúc đó bỏ ghim / xoá transcript = mọi run nền gọi
     `agy --conversation <id agy chưa từng tạo>` rồi chết câm, không ai biết vì sao."""
     eng = engine_name_of_session(session)
-    return eng in ("codex", "agy") and not _cli_knows_session(session["id"], eng)
+    return eng == "agy" and not _cli_knows_session(session["id"], eng)
 
 
 def terminal_argv(session, cli=""):
     """Lệnh CLI interactive cho terminal của 1 session (nút 💻 trên dashboard).
 
     cli rỗng/lạ → theo engine của session (suy từ model). User chọn được CLI khác qua ?cli=.
-    CHỈ resume được transcript do CHÍNH CLI đó tạo — session id của claude không phải thread của
-    codex và ngược lại → CLI khác engine thì mở PHIÊN MỚI trong cùng cwd (bỏ --resume) thay vì
+    CHỈ resume được transcript do CHÍNH CLI đó tạo — session id của claude không phải hội thoại của
+    agy và ngược lại → CLI khác engine thì mở PHIÊN MỚI trong cùng cwd (bỏ --resume) thay vì
     cố resume rồi lỗi.
 
     Session có ghim phiên cũ (resume_id) thì mở ĐÚNG phiên đó — kể cả khi CLI đang chọn khác engine
     của session, vì resume_target đã kiểm CLI này thật sự có transcript đó (id đi thẳng vào argv).
 
     Transcript của chính session đã bị CLI dọn mất (claude: cleanupPeriodDays) → _cli_open_argv
-    mở lại thay vì để CLI chết; claude giữ nguyên id, codex/agy phải sang phiên mới.
+    mở lại thay vì để CLI chết; claude giữ nguyên id, agy phải sang phiên mới.
     """
     eng = engine_name_of_session(session)
     sid = session["id"]
@@ -4415,19 +4218,17 @@ def _cli_workspace_argv(cli, cwd):
     KHÔNG được nạp (/skills không liệt kê, hỏi nội dung thì agent không biết); thêm
     `--add-dir <root>` là nạp ngay. Tức workspace của agy KHÔNG suy từ cwd của process mà từ danh
     sách thư mục truyền vào — thiếu cờ này thì mọi phiên agy chạy không có playbook mà không báo
-    gì. claude/codex quét thẳng cwd nên không cần."""
+    gì. claude quét thẳng cwd nên không cần."""
     return ["--add-dir", cwd] if cli == "agy" and cwd.strip() else []
 
 
 def _cli_new_argv(cli):
     """Lệnh mở một phiên MỚI bằng CLI này."""
-    return {"codex": [CODEX_BIN], "agy": [AGY_BIN]}.get(cli, [CLAUDE_BIN])
+    return [AGY_BIN] if cli == "agy" else [CLAUDE_BIN]
 
 
 def _cli_resume_argv(cli, sid):
     """Lệnh mở LẠI đúng transcript/hội thoại `sid` bằng CLI này."""
-    if cli == "codex":
-        return [CODEX_BIN, "resume", sid]
     if cli == "agy":
         return [AGY_BIN, "--conversation", sid]
     return [CLAUDE_BIN, "--resume", sid]
@@ -4459,7 +4260,7 @@ def _claude_open_flags(sid):
 def _cli_open_argv(cli, sid):
     """Lệnh mở hội thoại `sid` bằng CLI này, chịu được việc transcript đã bị dọn.
 
-    codex/agy KHÔNG nhận id áp đặt (chúng tự sinh id lúc spawn, xem AgyEngine/CodexEngine) → mất
+    agy KHÔNG nhận id áp đặt (nó tự sinh id lúc spawn, xem AgyEngine) → mất
     hội thoại thì chỉ mở được phiên MỚI; ghim lại bằng ô chọn phiên trên header card."""
     if cli == "claude":
         return [CLAUDE_BIN, *_claude_open_flags(sid)]
@@ -4471,7 +4272,7 @@ def _cli_open_argv(cli, sid):
 
 
 # ─── PTY cho terminal nhúng (xterm.js ↔ CLI interactive) ──────────────────────
-# claude/codex là TUI toàn màn hình: không có PTY thì chúng không nhận phím tắt, không vẽ đúng,
+# claude/agy là TUI toàn màn hình: không có PTY thì chúng không nhận phím tắt, không vẽ đúng,
 # và nhiều CLI còn tự tắt chế độ tương tác khi thấy stdout không phải tty. Nên phải là PTY thật,
 # không thay bằng subprocess + pipe được.
 #   POSIX  → pty.fork() (stdlib).
@@ -4583,197 +4384,6 @@ def pty_backend():
     return _WinPty, ""
 
 
-def _codex_mcp_ok(permission_mode=""):
-    """Session này có gọi được MCP tool (send_signal…) không.
-
-    ĐÃ ĐO trên 0.147.0: trong `codex exec` headless, MCP tool call CHỈ chạy khi
-    --dangerously-bypass-approvals-and-sandbox. Thử hết các đường khác đều trả
-    'user cancelled MCP tool call': approval_policy never / on-failure / untrusted (kể cả khi
-    project đã trust_level="trusted"), sandbox read-only lẫn workspace-write, có lẫn không
-    sandbox_workspace_write.network_access. Không có cờ nào bật riêng phần duyệt MCP.
-    → Session sandbox = agent KHÔNG signal được. Phải báo ra timeline, không để nó im lặng
-    (agent thấy tool báo cancelled rồi tự nghĩ đã bàn giao xong).
-    """
-    return (permission_mode or DEFAULT_PERMISSION_MODE) == "bypassPermissions"
-
-
-def _codex_flags(model="", permission_mode="", effort=""):
-    """Cờ dùng chung cho mọi lệnh `codex exec` (spawn lẫn resume).
-
-    CHỈ dùng cờ có ở CẢ `codex exec` LẪN `codex exec resume` (đã đối chiếu --help của 0.147.0):
-    `--full-auto` không tồn tại, và `-s/--sandbox` chỉ có ở `exec` → chính sách sandbox phải đi
-    qua `-c` (có ở cả hai). Giá trị hợp lệ cũng đã đo bằng `codex debug models -c ...`.
-    """
-    # --skip-git-repo-check: cwd session không nhất thiết là git repo (vd thư mục workspace).
-    flags = ["--json", "--skip-git-repo-check"]
-    # Approval trong headless = fail ngay → chốt sẵn. Map thẳng permission_mode của orchestrator:
-    # bypassPermissions (mặc định) = toàn quyền, y như claude --permission-mode bypassPermissions.
-    if _codex_mcp_ok(permission_mode):
-        flags.append("--dangerously-bypass-approvals-and-sandbox")
-    elif permission_mode == "plan":
-        # Chỉ đọc, như claude --permission-mode plan: worker của board không được sửa file nào.
-        flags += ["-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"']
-    else:
-        # Ghi được trong workspace, chạy lệnh không hỏi, nhưng vẫn trong sandbox.
-        flags += ["-c", 'sandbox_mode="workspace-write"', "-c", 'approval_policy="never"']
-    real = _codex_model(model)
-    if real:
-        flags += ["--model", real]
-    eff = clamp_effort(effort or DEFAULT_EFFORT, codex_effort_ceiling(model))
-    if eff:
-        flags += ["-c", f'model_reasoning_effort="{eff}"']
-    return flags
-
-
-async def _codex_exec(cmd, cwd, session_id="", on_event=None):
-    """Chạy 1 lệnh codex exec, đọc JSONL stdout, trả dict kết quả theo contract AgentEngine.
-
-    Luôn --json nên không có nhánh "không stream" như Claude: on_event=None chỉ là không đẩy
-    event, phần parse vẫn chạy. session_id != "" thì đăng ký ACTIVE_PROCS cho nút 🛑 kill.
-    """
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=cwd or None, env=_codex_env(), stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            limit=STREAM_LIMIT)          # aggregated_output có thể làm 1 dòng JSONL rất lớn
-    except (FileNotFoundError, NotADirectoryError, PermissionError) as e:
-        err = (f"không chạy được codex CLI ('{CODEX_BIN}'): {e}. "
-               "Cài `npm i -g @openai/codex` rồi `codex login` bằng tài khoản ChatGPT.")
-        if on_event:
-            await on_event("error", _trunc(err, 500), {"error": str(e)})
-        return {"ok": False, "result": err, "session_id": session_id, "tokens": 0,
-                "raw": {"engine": "codex", "error": "codex_not_found"}}
-    if session_id:
-        ACTIVE_PROCS[session_id] = proc
-
-    thread_id, text, tokens, failed = "", "", 0, ""
-    stderr_chunks: list[bytes] = []
-
-    async def _drain_stderr():
-        while True:
-            try:
-                raw = await proc.stderr.readline()
-            except (asyncio.LimitOverrunError, ValueError):
-                continue
-            if not raw:
-                break
-            stderr_chunks.append(raw)
-
-    stderr_task = asyncio.create_task(_drain_stderr())
-    try:
-        while True:
-            try:
-                raw = await proc.stdout.readline()
-            except (asyncio.LimitOverrunError, ValueError):
-                continue                 # dòng vượt STREAM_LIMIT → bỏ mảnh, đọc tiếp
-            if not raw:
-                break
-            line = raw.decode("utf-8", "replace").strip()
-            if not line:
-                continue
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue                 # codex có thể in dòng người-đọc lẫn vào stdout
-            if not isinstance(ev, dict):
-                continue
-            t = ev.get("type")
-            if t == "thread.started":
-                thread_id = ev.get("thread_id") or thread_id
-            elif t == "turn.completed":
-                tokens = int((ev.get("usage") or {}).get("output_tokens", 0) or 0)
-            elif t == "turn.failed":
-                failed = (ev.get("error") or {}).get("message") or "turn failed"
-            elif t == "error":
-                failed = ev.get("message") or "unknown error"
-            elif t == "item.completed" and (ev.get("item") or {}).get("type") == "agent_message":
-                # Lượt có thể có nhiều agent_message; câu CUỐI là kết quả trả cho người gọi.
-                text = (ev["item"].get("text") or "").strip() or text
-            if on_event:
-                for kind, summary, payload in _iter_codex_events(ev):
-                    try:
-                        await on_event(kind, summary, payload)
-                    except Exception:  # noqa: BLE001 — lỗi UI không được giết run
-                        pass
-    finally:
-        await proc.wait()
-        await stderr_task
-        if session_id:
-            ACTIVE_PROCS.pop(session_id, None)
-
-    stderr_txt = b"".join(stderr_chunks).decode("utf-8", "replace").strip()[:2000]
-    ok = proc.returncode == 0 and not failed
-    if not ok and not text:
-        # codex chết trước khi phát event nào (vd chưa login, --model lạ): stderr là lý do thật.
-        text = failed or stderr_txt or f"codex exited với mã {proc.returncode}"
-        if on_event and not failed:      # failed đã được _iter_codex_events phát rồi
-            await on_event("error", _trunc(text, 500),
-                           {"stderr": stderr_txt, "returncode": proc.returncode})
-    return {"ok": ok, "result": text, "session_id": thread_id or session_id, "tokens": tokens,
-            "raw": {"engine": "codex", "returncode": proc.returncode, "thread_id": thread_id,
-                    "stderr": "" if ok else stderr_txt}}
-
-
-class CodexEngine(AgentEngine):
-    """Engine chạy qua `codex exec` (Codex CLI). session id = thread_id của codex."""
-
-    name = "codex"
-
-    async def spawn(self, name, project="", cwd="", allowed_tools=None, permission_mode="",
-                    init_prompt="", model="", effort="", workspace_id=DEFAULT_WORKSPACE, skill=""):
-        # Ghim cwd theo workspace y hệt Claude (cwd truyền vào được tôn trọng).
-        if bool(workspace_id) and workspace_id != DEFAULT_WORKSPACE:
-            root = workspace_root(workspace_id)
-            if not root:
-                return {"error": f"workspace '{workspace_id}' does not exist"}
-            if not cwd:
-                cwd = root
-        # Vật thể hoá role thành SKILL: ghi cả .codex/skills (codex tự quét, ĐÃ ĐO) lẫn
-        # .claude/skills — bản .claude còn là nguồn _prepend_role đọc để nhồi vào từng signal.
-        _write_role_skill(cwd, name, skill or init_prompt)
-        prompt = _build_init_prompt(name, init_prompt, workspace_id)
-        model = model or CODEX_AUTO_MODEL
-        if DRY_RUN:
-            sid = f"codex-dry-{name}-{datetime.now().strftime('%H%M%S%f')}"
-        else:
-            res = await _codex_exec(
-                [CODEX_BIN, "exec", *_codex_flags(model, permission_mode, effort), "--", prompt],
-                cwd)
-            sid = res["raw"].get("thread_id")
-            if not sid:
-                return {"error": res.get("result") or "codex returned no thread_id"}
-        register_session(sid, name, project, cwd, allowed_tools or [], permission_mode,
-                         model, effort, workspace_id, self.name)
-        return get_session(sid)
-
-    async def run(self, session, prompt, on_event=None, dry_run=False):
-        sid = session["id"]
-        if DRY_RUN or dry_run:
-            if on_event:
-                await on_event("text", f"[dry-run] would inject: {_trunc(prompt, 300)}", {"dry_run": True})
-            return {"ok": True, "result": f"[dry-run] would inject to {session['name']}: {prompt}",
-                    "session_id": sid, "tokens": 0, "raw": {"dry_run": True, "engine": "codex"}}
-        if on_event and not _codex_mcp_ok(session.get("permission_mode", "")):
-            await on_event("system",
-                           "⚠ session sandbox: codex sẽ HỦY mọi MCP tool call (kể cả send_signal). "
-                           "Cần signal thì spawn lại với permission_mode=bypassPermissions.",
-                           {"subtype": "codex_mcp_blocked"})
-        # Prompt là positional SAU '--' để prompt bắt đầu bằng '-' (vd frontmatter '---') không bị
-        # nuốt thành cờ — vai trò y như stdin bên _run_claude.
-        cmd = [CODEX_BIN, "exec", "resume", resume_target(session, "codex"),
-               *_codex_flags(session.get("model", ""), session.get("permission_mode", ""),
-                             session.get("effort", "")),
-               "--", prompt]
-        res = await _codex_exec(cmd, session.get("cwd") or "", sid, on_event)
-        res["session_id"] = sid   # resume giữ nguyên thread → không để id trôi khỏi DB
-        return res
-
-    def get_compact(self, session_id):
-        # Codex tự nén context bên trong, KHÔNG ghi compact_boundary ra transcript như Claude →
-        # không trích được. Trả found=False để UI hiện "chưa có", không giả vờ có dữ liệu.
-        return {"found": False, "reason": "engine codex không expose compact summary"}
-
-
 # ─── agy engine (Antigravity CLI — model Google, chạy bằng tài khoản đã `agy` login) ──
 # `agy -p` = chế độ headless: chạy 1 lượt tới hết, phát NDJSON ra stdout (--output-format
 # stream-json), resume bằng `agy --conversation <id>`. Auth do NGƯỜI DÙNG lo một lần;
@@ -4782,7 +4392,7 @@ class CodexEngine(AgentEngine):
 # KHÁC hai CLI kia ở 4 điểm phải nhớ (ĐÃ ĐO trên 1.1.26):
 #  1. KHÔNG có cờ đặt trước conversation id (claude có --session-id). Id chỉ ĐỌC ĐƯỢC từ event
 #     'init' sau khi phiên đã chạy → engine khác KHÔNG chuyển sang agy giữ nguyên id được,
-#     y hệt codex (xem api_set_model).
+#     (xem api_set_model).
 #  2. Tool bị TỰ CHỐI trong headless nếu thiếu --dangerously-skip-permissions: agy trả
 #     'a tool required the "command" permission that headless mode cannot prompt for, so it was
 #     auto-denied' và result kèm denied_actions — agent tưởng đã làm xong mà thật ra không chạy gì.
@@ -4800,7 +4410,7 @@ AGY_AUTO_MODEL = "agy"
 
 def _iter_agy_events(ev, acc=None):
     """Chuyển 1 event NDJSON của `agy -p --output-format stream-json` thành list
-    (kind, summary, payload) — cùng bộ kind với _iter_display_events/_iter_codex_events.
+    (kind, summary, payload) — cùng bộ kind với _iter_display_events.
 
     acc: chỗ gom text_delta theo step_index. ĐÃ ĐO: câu trả lời có thể tới NGUYÊN CỤC ở step DONE
     (lượt đầu) hoặc nhỏ giọt ACTIVE 'beta' → DONE '\n' (lượt resume). Không gom thì lượt resume
@@ -5012,7 +4622,7 @@ class AgyEngine(AgentEngine):
         # Vật thể hoá role thành SKILL cho cả ba CLI (agy quét <cwd>/.agents/skills — ĐÃ ĐO).
         _write_role_skill(cwd, name, skill or init_prompt)
         prompt = _build_init_prompt(name, init_prompt, workspace_id)
-        # agy không nhận MCP per-session, y như CodexEngine.
+        # agy không nhận MCP per-session: MCP khai toàn cục trong cấu hình của nó.
         model = model or AGY_AUTO_MODEL
         if DRY_RUN:
             sid = f"agy-dry-{name}-{datetime.now().strftime('%H%M%S%f')}"
@@ -5028,7 +4638,7 @@ class AgyEngine(AgentEngine):
 
     async def run(self, session, prompt, on_event=None, dry_run=False, skip_history=False,
                   run_id=None, emit_box=None, resume_step=""):
-        # skip_history/emit_box/resume_step bỏ qua như CodexEngine: agy tự giữ hội thoại trên đĩa.
+        # skip_history/emit_box/resume_step bỏ qua: agy tự giữ hội thoại trên đĩa.
         sid = session["id"]
         if DRY_RUN or dry_run:
             if on_event:
@@ -5244,21 +4854,44 @@ async def generate_images(prompt, ratio="1:1", refs=(), writer=""):
 # Registry engine + resolver. Thêm engine mới = thêm 1 dòng vào ENGINES.
 ENGINES = {
     "claude": ClaudeEngine(),
-    "codex": CodexEngine(),
     "agy": AgyEngine(),
 }
 DEFAULT_ENGINE = "claude"
 
 
-def engine_from_model(model):
-    """Suy tên engine ('claude'|'codex'|'agy') TỪ tên model. FE chỉ cần gửi 'model', không cần
-    gửi 'engine' — service tự chọn. 'codex'/'codex:<model>' → codex CLI (tài khoản ChatGPT);
-    'agy'/'agy:<model>' → Antigravity CLI (tài khoản Google); MỌI thứ còn lại (kể cả rỗng và model
-    lạ) → claude CLI, vì nhánh này không có engine nào khác.
+# Codex CLI đã bị BỎ (2026-11). Card cũ chạy model 'codex'/'codex:<slug>' vẫn còn trong DB: KHÔNG
+# được lặng lẽ chạy chúng bằng claude (claude không đọc được hội thoại codex — agent mất trí nhớ mà
+# không ai biết). Chúng nhận engine REMOVED: mọi run/spawn trả lỗi nói rõ phải làm gì.
+REMOVED_ENGINES = {"codex": "Codex support was removed from this orchestrator. Switch this agent's "
+                            "model to Claude or Gemini (agy), or unregister it."}
 
-    Tiền tố 'codex:'/'agy:' là BẮT BUỘC cho model cụ thể: slug của chúng ('gpt-5.6-terra',
-    'gemini-3.1-pro-high', 'claude-sonnet-4-6'…) cũng là tên model API hợp lệ — không có tiền tố
-    thì không phân biệt được ý người dùng muốn chạy bằng CLI nào."""
+
+class RemovedEngine(AgentEngine):
+    def __init__(self, name):
+        self.name = name
+
+    async def spawn(self, *a, **kw):
+        return {"error": REMOVED_ENGINES[self.name]}
+
+    async def run(self, session, prompt, on_event=None, dry_run=False):
+        msg = REMOVED_ENGINES[self.name]
+        if on_event:
+            await on_event("error", msg, {"error": msg})
+        return {"ok": False, "result": msg, "session_id": session["id"], "tokens": 0, "raw": {}}
+
+    def get_compact(self, session_id):
+        return {"found": False, "reason": REMOVED_ENGINES[self.name]}
+
+
+def engine_from_model(model):
+    """Suy tên engine ('claude'|'agy') TỪ tên model. FE chỉ cần gửi 'model', không cần gửi
+    'engine' — service tự chọn. 'agy'/'agy:<model>' → Antigravity CLI (tài khoản Google); MỌI thứ
+    còn lại (kể cả rỗng và model lạ) → claude CLI.
+
+    Tiền tố 'agy:' là BẮT BUỘC cho model cụ thể: slug của nó ('gemini-3.1-pro-high',
+    'claude-sonnet-4-6'…) cũng là tên model API hợp lệ — không có tiền tố thì không phân biệt được
+    ý người dùng muốn chạy bằng CLI nào. 'codex'/'codex:<slug>' vẫn được NHẬN RA (trả 'codex') để
+    card cũ báo lỗi rõ ràng thay vì lặng lẽ chạy bằng claude — xem REMOVED_ENGINES."""
     m = (model or "").strip().lower()
     if m == "codex" or m.startswith("codex:"):
         return "codex"
@@ -5290,6 +4923,8 @@ def engine_for(session_or_name):
     - str (tên engine): tra thẳng ENGINES; tên lạ/rỗng → engine mặc định (claude)."""
     name = engine_name_of_session(session_or_name) if isinstance(session_or_name, dict) \
         else (session_or_name or DEFAULT_ENGINE)
+    if name in REMOVED_ENGINES:
+        return RemovedEngine(name)
     return ENGINES.get(name, ENGINES[DEFAULT_ENGINE])
 
 
@@ -6075,17 +5710,12 @@ def _chat_turns(path, cli):
             o = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if cli == "codex":
-            p = o.get("payload") or {}
-            who = {"user_message": "user", "agent_message": "agent"}.get(p.get("type"))
-            text = p.get("message")
-        else:
-            # toolUseResult = output công cụ, isMeta/isCompactSummary = chữ hệ thống chèn vào,
-            # isSidechain = subagent — không cái nào là người dùng và agent nói với nhau.
-            skip = o.get("toolUseResult") or o.get("isMeta") or o.get("isCompactSummary") \
-                or o.get("isSidechain")
-            who = None if skip else {"user": "user", "assistant": "agent"}.get(o.get("type"))
-            text = _first_text((o.get("message") or {}).get("content"))
+        # toolUseResult = output công cụ, isMeta/isCompactSummary = chữ hệ thống chèn vào,
+        # isSidechain = subagent — không cái nào là người dùng và agent nói với nhau.
+        skip = o.get("toolUseResult") or o.get("isMeta") or o.get("isCompactSummary") \
+            or o.get("isSidechain")
+        who = None if skip else {"user": "user", "assistant": "agent"}.get(o.get("type"))
+        text = _first_text((o.get("message") or {}).get("content"))
         if who:
             yield o.get("timestamp") or "", who, str(text or "")
 
@@ -6676,7 +6306,7 @@ def _oa_spawn_body():
         "cwd": {"type": "string", "description": "project folder the agent works in"},
         "model": {"type": "string",
                   "description": "'' or opus/sonnet/haiku… → Claude CLI; "
-                                 "'codex' / 'codex:<slug>' → Codex CLI"},
+                                 "'agy' / 'agy:<slug>' → Antigravity CLI (Gemini)"},
         "effort": {"type": "string", "enum": list(EFFORT_LADDER),
                    "description": "a level above the engine/model ceiling is clamped down automatically"},
         "template": {"type": "string",
@@ -7298,8 +6928,10 @@ def build_app():
         fe_prompt = body.get("init_prompt", "")
         skill = fe_prompt or _template_skill(
             (body.get("template") or "").strip() or body["name"].strip())
-        # Engine suy TỪ MODEL (model 'codex'/'codex:<slug>' → Codex CLI, còn lại → Claude CLI).
+        # Engine suy TỪ MODEL (model 'agy'/'agy:<slug>' → Antigravity CLI, còn lại → Claude CLI).
         eng_name = resolve_engine_name(body)
+        if eng_name in REMOVED_ENGINES:
+            return JSONResponse({"error": REMOVED_ENGINES[eng_name]}, status_code=400)
         if eng_name not in ENGINES:
             return JSONResponse({"error": f"engine '{eng_name}' is not supported (available: {', '.join(ENGINES)})"},
                                 status_code=400)
@@ -7402,7 +7034,7 @@ def build_app():
         Client gửi JSON {t:'i', d:<keys>} (input) và {t:'r', c, r} (resize); server gửi bytes thô.
         Mỗi kết nối 1 PTY + 1 thread đọc (read blocking); đóng WS là giết child.
 
-        Dùng chung cho hai loại card — terminal của agent (claude/codex) và editor (nvim) — vì
+        Dùng chung cho hai loại card — terminal của agent (claude/agy) và editor (nvim) — vì
         chúng khác nhau ĐÚNG một chỗ: argv. Mọi thứ còn lại y hệt.
 
         PTY lấy từ pty_backend(): pty.fork() trên POSIX, ConPTY trên Windows. Thiếu backend thì
@@ -7421,11 +7053,6 @@ def build_app():
         cwd = (s.get("cwd") or "").strip() or str(Path.home())
         argv = argv_for(s)
         env = dict(os.environ, TERM="xterm-256color")
-        # codex mở từ terminal PHẢI gỡ key API y như đường headless (_codex_env), nếu không nó
-        # chạy "API-key mode" và đốt credits trong khi đường signal dùng gói ChatGPT.
-        if argv[0] == CODEX_BIN:
-            for k in CODEX_DROP_ENV:
-                env.pop(k, None)
         try:
             term = Pty(argv, cwd, env)
         except Exception as e:  # noqa: BLE001 — CLI thiếu / ConPTY từ chối / cwd sai
@@ -7889,7 +7516,7 @@ def build_app():
         return JSONResponse({"name": name, "removed": bool(removed), "clis": removed})
 
     async def ws_terminal(websocket):
-        """Terminal của agent: claude/codex/agy interactive trong PTY (xem terminal_argv)."""
+        """Terminal của agent: claude/agy interactive trong PTY (xem terminal_argv)."""
         return await _ws_pty(
             websocket, lambda s: terminal_argv(s, websocket.query_params.get("cli", "")), "terminal")
 
@@ -7986,18 +7613,21 @@ def build_app():
         # Engine suy TỪ model, mà session id là KHOÁ CHÍNH (runs/signals/history đều trỏ vào) nên
         # đổi engine KHÔNG được đổi id. Điều kiện đủ: CLI đích phải mở được ĐÚNG id đó.
         #   claude  → có transcript thì resume, chưa có thì nhận nuôi (_adopt_session_for_claude).
-        #   codex/agy → KHÔNG có cờ đặt thread/conversation id, chỉ quay về được nếu file của
+        #   agy     → KHÔNG có cờ đặt conversation id, chỉ quay về được nếu file của
         #             id còn trên đĩa (session sinh ra bởi chính CLI đó thì luôn còn) — không
         #             thì spawn session mới.
         old, new = engine_name_of_session(s), engine_from_model(model)
+        # Engine đã bị bỏ: không card nào được đổi SANG nó, kể cả card vốn đang ở đó.
+        if new in REMOVED_ENGINES:
+            return JSONResponse({"error": REMOVED_ENGINES[new]}, status_code=400)
         if new != old:
             # Hỏi CLI mới có mở được hội thoại card này THẬT SỰ sẽ mở hay không — tức cái đã ghim
-            # nếu có, chứ không phải id của card. codex/agy tự sinh id lúc spawn nên card claude
+            # nếu có, chứ không phải id của card. agy tự sinh id lúc spawn nên card claude
             # không bao giờ có hội thoại của chúng mang id của mình; ghim một hội thoại agy rồi thì
             # chính hội thoại đó là thứ CẢ terminal LẪN run nền mở, và nó có thật trên đĩa.
             # Không ghim gì → target == sid → đúng y điều kiện cũ, vẫn từ chối.
             target = (s.get("resume_id") or "").strip() or sid
-            if new in ("codex", "agy") and not _cli_knows_session(target, new):
+            if new == "agy" and not _cli_knows_session(target, new):
                 return JSONResponse(
                     {"error": f"cannot switch from '{old}' to {new} — {new} cannot adopt a session id "
                               f"it did not create. Pin one of its conversations first "
@@ -8063,7 +7693,7 @@ def build_app():
         """Chuyển 1 session sang workspace khác — để nó signal được với agent của nhóm bên đó.
 
         Routing signal resolve theo (role, workspace), nên đổi đúng một cột này là agent nhìn
-        thấy và gửi được cho nhóm mới. cwd KHÔNG đổi: với claude/codex, cwd vốn độc lập với
+        thấy và gửi được cho nhóm mới. cwd KHÔNG đổi: với claude/agy, cwd vốn độc lập với
         workspace (mỗi agent một project được), nên file của agent nằm nguyên chỗ cũ.
 
         Đổi tên vai kèm theo qua body 'name' — cần khi workspace đích đã có vai trùng tên.
