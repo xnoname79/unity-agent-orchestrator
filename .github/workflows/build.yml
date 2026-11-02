@@ -3,10 +3,10 @@ name: build binary
 # Package the orchestrator for Windows so users can download and run it directly, with no Python
 # install. It ships as a folder, zipped (see build.spec for why) — the .exe alone does not run.
 # Linux and macOS run from source instead; nothing is published for them. Runs on: push of a v*
-# tag (also cuts a release), push to master/gamedev, pull requests, or manual dispatch.
+# tag (also cuts a release), push to master, pull requests, or manual dispatch.
 on:
   push:
-    branches: [master, gamedev]
+    branches: [master]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -41,45 +41,20 @@ jobs:
       - name: Verify dependencies are usable
         run: python -c "from mcp.server.fastmcp import FastMCP; import uvicorn, starlette, httpx"
 
-      # The dashboard is vanilla JS wired together by string ids and inline onclick attributes,
-      # so a rename breaks it silently — the page still loads, the button just stops working.
-      # Runs before the binary is even built.
-      - name: Check the dashboard wiring
+      # Every check_*.py (plus the dashboard wiring check) is DISCOVERED by verify.py, not listed
+      # here. A hand-kept list let four checks pass locally and never run in CI. Each one guards a
+      # bug that is otherwise silent: a second copy of the module splitting in-memory state, the
+      # ping-pong cap refusing to lift, the editor card losing its tmux wrapper, a workspace move
+      # that lets two agents share one role name, an MCP registration that writes config before
+      # proving the token works, a Ctrl-C that parks forever on the SSE stream, a slash command
+      # wrapped in a role block, and a dashboard button whose id was renamed away.
+      - name: Check orchestrator invariants
         # PYTHONUTF8=0 leaves Python on the Windows default of cp1252, so a file opened without
-        # encoding="utf-8" fails here instead of on a user's machine — the UI sources carry
+        # encoding="utf-8" fails here instead of on a user's machine — the sources carry
         # non-ASCII comments.
         env:
           PYTHONUTF8: "0"
-        run: python static/orchestrator/check_ui.py
-
-      # All seven fail loudly for bugs that are otherwise silent: a second copy of the module
-      # splitting the in-memory state, the ping-pong cap refusing to lift, the editor card losing its
-      # tmux wrapper (which silently turns every tab close into lost unsaved work), a
-      # workspace move that lets two agents share one role name, an MCP server registration
-      # that writes the user's config before proving the token works — or hands the token back out,
-      # a Ctrl-C that parks forever because the dashboard's SSE stream never ends, and a slash
-      # command wrapped in a role block, which reaches the CLI as plain text while the run is
-      # still recorded ok.
-      - name: Check orchestrator invariants
-        env:
-          PYTHONUTF8: "0"
-        run: |
-          python check_single_module.py
-          python check_pair_cap.py
-          python check_editor.py
-          python check_workspace_move.py
-          python check_mcp.py
-          python check_shutdown.py
-          python check_inject.py
-          python check_images.py
-          python check_origin.py
-          python check_tools.py
-          python check_boards.py
-          python check_sounds.py
-          python check_library.py
-          python check_tts.py
-          python check_perf.py
-          python check_unregistered.py
+        run: python verify.py
 
       - name: Package
         run: pyinstaller build.spec --noconfirm --clean

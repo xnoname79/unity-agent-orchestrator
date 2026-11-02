@@ -77,6 +77,15 @@ AGY.write_text(json.dumps(AGY_BEFORE, indent=2), encoding="utf-8")
 os.environ["ORCH_CODEX_CONFIG"] = str(CODEX)
 os.environ["ORCH_AGY_MCP_CONFIG"] = str(AGY)
 os.environ["ORCH_MCP_TIMEOUT"] = "3"
+# Connect only writes for CLIs that are INSTALLED (shutil.which). Fake all three, so the checks
+# below mean the same thing on a dev box with real CLIs and on a CI runner with none.
+_BIN = TMP / "bin"
+_BIN.mkdir(exist_ok=True)
+for _env, _name in (("CLAUDE_BIN", "claude"), ("ORCH_CODEX_BIN", "codex"), ("ORCH_AGY_BIN", "agy")):
+    _f = _BIN / (_name + (".exe" if os.name == "nt" else ""))
+    _f.write_bytes(b"")
+    _f.chmod(0o755)
+    os.environ[_env] = str(_f)
 
 import httpx                          # noqa: E402
 import session_orchestrator as so     # noqa: E402

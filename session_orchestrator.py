@@ -3582,16 +3582,6 @@ def _claude_knows_session(sid):
     return _transcript_path(sid, "claude") is not None
 
 
-def _codex_knows_session(sid):
-    """Codex CLI đã có rollout mang id này chưa (`codex exec resume <sid>` cần nó)."""
-    return _transcript_path(sid, "codex") is not None
-
-
-def _agy_knows_session(sid):
-    """agy còn giữ hội thoại mang id này chưa (`agy --conversation <sid>` cần nó)."""
-    return _transcript_path(sid, "agy") is not None
-
-
 # CLI mở được terminal VÀ resume theo id. Tên engine trùng tên CLI nên hai bộ này dùng chung
 # một danh sách — engine nào không có CLI (nếu sau này thêm) rơi về claude, xem cli_of_engine.
 TERMINAL_CLIS = TERMINAL_ENGINES = ("claude", "codex", "agy")
@@ -4819,18 +4809,6 @@ def _agy_model(model):
 
 # Slug của agy ĐÃ mang sẵn mức nghĩ ở đuôi ('gemini-3.8-flash-low', 'gpt-oss-120b-medium').
 AGY_LEVEL_SUFFIX = ("-low", "-medium", "-high")
-
-
-def agy_effort_ceiling(model=""):
-    """Mức reasoning cao nhất agy nhận cho model này.
-
-    Model có đuôi mức thì CHÍNH nó là trần: ĐÃ ĐO, truyền kèm --effort khác đuôi là agy chết ngay
-    — 'invalid model selection (--model "gemini-3.8-flash-low" --effort "high"): conflicts'."""
-    real = _agy_model(model)
-    for suffix in AGY_LEVEL_SUFFIX:
-        if real.endswith(suffix):
-            return suffix[1:]
-    return AGY_MAX_EFFORT
 
 
 def _agy_tools_ok(permission_mode=""):
@@ -6876,6 +6854,7 @@ def build_app():
     from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
     from starlette.routing import Mount, Route, WebSocketRoute
     from starlette.formparsers import MultiPartException
+    from starlette.exceptions import HTTPException
     from starlette.staticfiles import StaticFiles
 
     import signal_mcp
@@ -7489,7 +7468,10 @@ def build_app():
                     # id=94: người dùng đang gõ thẳng cho vai này = đang cầm lái → mốc reset trần
                     # ping-pong. Vai điều phối nhận việc qua terminal chứ không qua signal, không
                     # đánh dấu ở đây thì bộ đếm của chúng không bao giờ về 0.
-                    note_human_touch(s.get("name"), s.get("workspace_id"))
+                    # Chỉ khi NGƯỜI bấm Enter (is_user_typing): byte xterm tự đáp truy vấn TUI
+                    # không được reset trần ping-pong.
+                    if is_user_typing(msg.get("d")):
+                        note_human_touch(s.get("name"), s.get("workspace_id"))
                     term.write(str(msg.get("d", "")).encode("utf-8"))
                 elif msg.get("t") == "r":
                     try:
@@ -8575,6 +8557,12 @@ def build_app():
         # đó phải là 500 cho smoke test ở CI thấy, không được giả làm "form sai".
         except (MultiPartException, ValueError) as e:
             return _oa_err(f"could not read the form: {e}")
+        # Starlette bọc MultiPartException thành HTTPException(400) khi chạy trong app (bản
+        # starlette/python-multipart mới) → trả text trần, không phải lỗi dạng OpenAI.
+        except HTTPException as e:
+            if e.status_code != 400:
+                raise
+            return _oa_err(f"could not read the form: {e.detail}")
         args, err = _oa_image_args(form)
         if err:
             return err
