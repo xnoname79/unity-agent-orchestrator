@@ -2717,7 +2717,7 @@ function renderSpawnPickers() {
     ? SP_TEMPLATES.map((t) => pickCard("template", t.name,
         `<b>${esc(t.name)}</b><div class="pd">${esc(t.description || "")}</div>`, t.description)).join("")
     // Init prompt gõ tay đã bỏ → hết template là hết đường spawn. Nói thẳng thay vì để form câm.
-    : `<div class="hint">No templates found in <code>.claude/skills/</code> next to the program —
+    : `<div class="hint">No templates found in <code>templates/roles/</code> next to the program —
        add a <code>&lt;name&gt;/SKILL.md</code> folder there and reload this page.</div>`;
   const tab = MODEL_TABS.find((t) => t.engine === spTab) || MODEL_TABS[0];
   $("sp-model-tabs").innerHTML = MODEL_TABS.map((t) =>

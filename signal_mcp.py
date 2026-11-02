@@ -79,7 +79,7 @@ def _check_from_role(orch, from_role: str):
 
 
 async def _enqueue(to_role: str, message: str, from_role: str = "", requires_approval: int = 0,
-                   workspace_id: str = "", expect_reply: bool = True):
+                   workspace_id: str = "", expect_reply: bool = True, done_when: str = ""):
     """Đẩy 1 signal vào orchestrator. In-process nếu chạy chung, ngược lại POST HTTP.
 
     Đa tenant: resolve `to_role` TRONG CÙNG workspace với người gửi — để hai workspace trùng
@@ -104,13 +104,23 @@ async def _enqueue(to_role: str, message: str, from_role: str = "", requires_app
             scope = f" trong workspace '{sender_ws}'" if sender_ws else ""
             return False, f"không tìm thấy session cho '{to_role}'{scope}"
         target_ws = orch.get_session(target).get("workspace_id") or orch.DEFAULT_WORKSPACE
+        import team
+        sender = None
+        if done_when.strip():
+            # Việc có hợp đồng: đích không tự báo cáo; verifier kiểm rồi orchestrator báo về đây.
+            sender = orch.get_session_by_name(orch.current_name(from_role, target_ws), target_ws)
+            if not sender:
+                return False, "⛔ done_when cần from_role là tên session thật của bạn."
+            message, expect_reply = team.handoff_message(message, done_when.strip()), False
         try:
             sid = orch.enqueue_signal(target, message, from_role, int(requires_approval), 0, target_ws,
                                       expects_reply=expect_reply)
-        except orch.SignalPairCapExceeded as e:
-            # id=94 trần ping-pong: trả NGUYÊN VĂN lời hướng dẫn cho agent (nó phải đọc được là
-            # cần báo cáo cho người dùng, không phải thử lại).
+        except orch.SignalRefused as e:
+            # Trần ping-pong id=94, đồ thị bàn giao, sub-agent tự signal: trả NGUYÊN VĂN lời hướng
+            # dẫn cho agent (nó phải đọc được là cần báo cáo cho người dùng, không phải thử lại).
             return False, str(e)
+        if sender:
+            team.create_handoff(sender["id"], target, sid, done_when.strip(), message)
         orch.publish({"type": "signal", "id": sid, "status": "pending",
                       "to_session": target, "workspace_id": target_ws})
         return True, {"id": sid, "to_session": target, "workspace_id": target_ws}
@@ -121,6 +131,7 @@ async def _enqueue(to_role: str, message: str, from_role: str = "", requires_app
         "from_role": from_role,
         "requires_approval": int(requires_approval),
         "expects_reply": bool(expect_reply),
+        "done_when": done_when,
     }
     if workspace_id:
         payload["workspace_id"] = workspace_id
@@ -136,7 +147,7 @@ async def _enqueue(to_role: str, message: str, from_role: str = "", requires_app
 
 @mcp.tool()
 async def send_signal(to_role: str, message: str, from_role: str = "", requires_approval: bool = False,
-                      workspace_id: str = "", expect_reply: bool = True):
+                      workspace_id: str = "", expect_reply: bool = True, done_when: str = ""):
     """Gửi signal tới một agent khác. Orchestrator sẽ inject message vào session đó.
 
     Dùng khi agent hiện tại cần bàn giao/thông báo cho agent khác (vd Artist Director
@@ -156,9 +167,12 @@ async def send_signal(to_role: str, message: str, from_role: str = "", requires_
         expect_reply: False = yêu cầu MỘT CHIỀU (cập nhật, thông báo): vai kia làm xong là dừng,
                  KHÔNG gửi báo cáo về. Để True khi bạn cần kết quả để làm tiếp. Báo cáo
                  [REPORT] cho việc người kia giao thì orchestrator tự đánh dấu, không cần đặt.
+        done_when: (tuỳ chọn) điều kiện QUAN SÁT ĐƯỢC để coi là xong (lệnh + kết quả mong đợi, luồng
+                 chạy trên app thật, giá trị đọc lại). Có nó thì một verifier độc lập kiểm sau khi
+                 vai kia làm xong; bạn nhận [HANDOFF VERIFIED]/[HANDOFF FAILED] thay vì [REPORT].
     """
     ok, data = await _enqueue(to_role, message, from_role, 1 if requires_approval else 0, workspace_id,
-                              expect_reply)
+                              expect_reply, done_when)
     if not ok:
         # Trần ping-pong (id=94) và from_role sai đều đã là câu chỉ dẫn hoàn chỉnh — trả nguyên
         # văn, đừng bọc thêm chữ "Lỗi" khiến agent tưởng là trục trặc kỹ thuật rồi thử lại.
@@ -212,8 +226,10 @@ async def list_agents(from_role: str = "", workspace_id: str = ""):
             return ("Cần biết bạn thuộc workspace nào mới liệt kê được. Gọi lại kèm from_role="
                     "<vai của bạn> (hoặc workspace_id nếu vai bị trùng tên giữa nhiều workspace).")
         threads = orch.board_threads()   # thread của board không phải đồng nghiệp để nhắn
+        # Phiên của đội sub-agent cũng không: director theo dõi chúng bằng list_subagents.
         sessions = [s for s in orch.list_sessions()
-                    if s.get("workspace_id") == sender_ws and s["id"] not in threads]
+                    if s.get("workspace_id") == sender_ws and s["id"] not in threads
+                    and not s.get("team_role")]
     else:
         if not workspace_id:
             return ("Chế độ HTTP cần workspace_id tường minh để lọc đúng workspace của bạn "
@@ -226,11 +242,125 @@ async def list_agents(from_role: str = "", workspace_id: str = ""):
             return f"Lỗi kết nối orchestrator tại {ORCH_URL}: {e}"
         if r.status_code >= 400:
             return f"Lỗi ({r.status_code}): {r.text}"
-        sessions = [s for s in r.json() if not s.get("board")]
+        sessions = [s for s in r.json() if not s.get("board") and not s.get("team")]
     agents = [{"role": s["name"], "status": s["status"], "project": s.get("project", "")} for s in sessions]
     if not agents:
         return f"Chưa có agent nào trong workspace '{sender_ws}'."
     return json.dumps(agents, ensure_ascii=False)
+
+
+# ─── Đội sub-agent (director) — xem team.py ─────────────────────────────────
+# Chỉ chạy in-process: cần đọc thẳng DB và dựng phiên. Bản signal_mcp chạy độc lập không có.
+
+def _caller(from_role: str, workspace_id: str = ""):
+    """(orch, session của agent đang gọi, lỗi). Gọi tool đội bằng tên giả là bị từ chối — tên đó
+    quyết định ai được giao việc, ai được chấm."""
+    if not _INPROC:
+        return None, None, "Team tools need the orchestrator's built-in signal server (/signal/mcp)."
+    import session_orchestrator as orch
+    ws = _sender_workspace(orch, from_role, workspace_id)
+    s = orch.get_session_by_name(orch.current_name(from_role, ws), ws) if ws else None
+    if not s:
+        return orch, None, ("⛔ from_role must be your exact session name (and workspace_id if the "
+                            "name exists in several workspaces).")
+    return orch, s, ""
+
+
+@mcp.tool()
+async def spawn_subagent(from_role: str, playbook: str, brief: str, done_when: str, title: str = "",
+                         model: str = "", workspace_id: str = ""):
+    """Delegate one unit of work to a new sub-agent (pstack style). Returns its subtask id at once;
+    the orchestrator messages you [SUB-AGENT PASSED] or [SUB-AGENT FAILED] when it is done.
+
+    Args:
+        from_role: your exact session name.
+        playbook: feature | bugfix | refactor (own git worktree + branch orch/<id>) or
+                  investigate (read-only, answers a question in your folder).
+        brief: the goal, the relevant files, constraints and what must not change. The sub-agent
+               cannot see your conversation — make it stand on its own.
+        done_when: the observable contract an independent verifier checks: a command and its
+               expected output, a flow driven in the running app, a value read back. "The build
+               passes" is not enough.
+        title: a short label for the dashboard.
+        model: optional override (e.g. "opus", "codex", "agy:<slug>"); default follows the
+               workspace's model roles.
+        workspace_id: your workspace, if your name exists in several.
+    """
+    orch, me, err = _caller(from_role, workspace_id)
+    if err:
+        return err
+    import team
+    res = team.spawn_subagent(me["id"], playbook, brief, done_when, title, model)
+    if res.get("error"):
+        return f"⛔ {res['error']}"
+    return (f"Sub-agent {res['id']} queued ({playbook}). End your turn when you have delegated "
+            f"everything; you will be messaged when it passes or fails verification.")
+
+
+@mcp.tool()
+async def list_subagents(from_role: str, workspace_id: str = ""):
+    """Status of the work you delegated: queued/running/verifying/fixing/passed/failed/cancelled,
+    verification attempts, and the branch to merge for passed ones."""
+    orch, me, err = _caller(from_role, workspace_id)
+    if err:
+        return err
+    import team
+    rows = team.list_for_director(me["id"])
+    return json.dumps(rows, ensure_ascii=False) if rows else "You have not delegated anything yet."
+
+
+@mcp.tool()
+async def cancel_subagent(from_role: str, subtask_id: str, workspace_id: str = ""):
+    """Stop a sub-agent you delegated (it is killed if running). Its worktree stays until discarded
+    on the dashboard."""
+    orch, me, err = _caller(from_role, workspace_id)
+    if err:
+        return err
+    import team
+    st = team.get_subtask(subtask_id)
+    if not st or st["director_id"] != me["id"]:
+        return "⛔ not one of your subtasks"
+    res = team.cancel(subtask_id)
+    return f"⛔ {res['error']}" if res.get("error") else f"Cancelled {subtask_id}."
+
+
+@mcp.tool()
+async def record_decision(from_role: str, decision: str, reason: str = "", evidence: str = "",
+                          workspace_id: str = ""):
+    """Log a decision that shapes the work (a design chosen, a unit cut, a cause ruled out, a
+    finding dismissed) with the reason and the evidence. The user reviews this trail on the Team
+    tab, so long work stays auditable."""
+    import team
+    if not _INPROC:
+        return "Team tools need the orchestrator's built-in signal server (/signal/mcp)."
+    return team.record_decision(from_role, decision, reason, evidence, workspace_id)
+
+
+@mcp.tool()
+async def submit_verdict(from_role: str, subtask_id: str, verdict: str, evidence: str = "",
+                         findings: str = "", workspace_id: str = ""):
+    """Verifiers only: record your verdict for the subtask you are checking, exactly once.
+
+    Args:
+        verdict: PASS only if you observed every clause of Done means yourself; otherwise FAIL.
+        evidence: the commands you ran and what they printed, per clause.
+        findings: on FAIL — what is wrong, where, and how to reproduce it, so the builder can act.
+    """
+    if not _INPROC:
+        return "Team tools need the orchestrator's built-in signal server (/signal/mcp)."
+    import team
+    return team.submit_verdict(from_role, subtask_id, verdict, evidence, findings, workspace_id)
+
+
+@mcp.tool()
+async def propose_skill_change(from_role: str, subtask_id: str, new_text: str, rationale: str = "",
+                               workspace_id: str = ""):
+    """Reflection agents only: propose the full new SKILL.md for the playbook you were asked to
+    improve. Nothing is written until a human approves it on the dashboard."""
+    if not _INPROC:
+        return "Team tools need the orchestrator's built-in signal server (/signal/mcp)."
+    import team
+    return team.propose_skill_change(from_role, subtask_id, new_text, rationale)
 
 
 if __name__ == "__main__":
