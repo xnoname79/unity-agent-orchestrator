@@ -109,7 +109,7 @@ async def fake_run(session, prompt, on_event=None, dry_run=False):
     name = session["name"]
     # A fake that writes must never touch anything outside this check's temp folder — not even
     # when the code under test hands it an empty cwd (that once committed into the real repo).
-    if TMP not in cwd.resolve().parents:
+    if TMP.resolve() not in cwd.resolve().parents:     # both resolved: Windows temp is 8.3-short
         return {"ok": False, "result": f"refusing to write outside the check's temp folder: {cwd}",
                 "session_id": session["id"], "tokens": 0, "raw": {}}
     if "[SUB-AGENT TASK " in prompt or "[VERIFIER FINDINGS " in prompt:
