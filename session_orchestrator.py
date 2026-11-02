@@ -1071,8 +1071,13 @@ def pair_counts(workspace_id):
         return c
 
     counts, closed, touched = {}, set(), set()
+    # Tin của đội (giao việc, phát hiện của verifier, báo kết quả) không tính vào trần — y như ở
+    # enqueue_signal — nên cũng không được hiện thành một cặp "hết lượt" trên panel của director.
+    team_is_system = not get_session_by_name(TEAM_SENDER, workspace_id)
     for r in rows:
         f, t = r["f"] or "", r["t"] or ""
+        if f == TEAM_SENDER and team_is_system:
+            continue
         if f in _HUMAN_SENDERS:
             # Người dùng giao việc cho t → mọi cặp chứa t bắt đầu chu kỳ mới TỪ ĐÂY; các dòng
             # cũ hơn (duyệt sau, vì đang đi từ mới về cũ) không tính nữa.
@@ -4465,6 +4470,62 @@ def _iter_agy_events(ev, acc=None):
     return [("text", _trunc(full, 500), {"text": full})]
 
 
+# Danh sách model của agy đổi theo bản CLI và theo tài khoản (gói cá nhân / công ty, vùng), nên
+# danh sách cứng trên dashboard sẽ luôn cũ đi. Hỏi THẲNG `agy models`: nó in đúng thứ tài khoản này
+# dùng được. Đáng làm vì agy KHÔNG báo lỗi khi --model lạ — nó lặng lẽ chạy model mặc định và thoát
+# 0 (google-antigravity/antigravity-cli#581), nên chọn một slug không có ở đây là chạy nhầm model
+# mà không ai biết. Cache: mỗi lần gọi là khởi động cả CLI (vài giây) và có thể chạm mạng.
+AGY_MODELS_TTL = 600.0
+_agy_models_cache = {"at": -1e9, "models": None, "error": ""}
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_AGY_SLUG_RE = re.compile(r"^[a-z][a-z0-9.]*(?:-[a-z0-9.]+)+$")
+
+
+def parse_agy_models(text):
+    """Slug trong output của `agy models`, theo thứ tự CLI in. Mỗi dòng lấy token đầu sau khi bỏ
+    mã màu và dấu đầu dòng; dòng tiêu đề / chú thích không khớp hình dạng slug thì bỏ."""
+    out = []
+    for line in _ANSI_RE.sub("", text or "").splitlines():
+        parts = line.strip().lstrip("-*•>").split()
+        tok = parts[0].strip("`,") if parts else ""
+        if _AGY_SLUG_RE.match(tok) and any(c.isdigit() for c in tok) and tok not in out:
+            out.append(tok)
+    return out
+
+
+async def agy_models(refresh=False):
+    """{models: [slug…] | None, error}. None = không đọc được (chưa cài, chưa đăng nhập, timeout) —
+    dashboard dùng danh sách dựng sẵn. Lỗi chỉ cache 60 s để cài xong / đăng nhập xong là thấy ngay."""
+    c = _agy_models_cache
+    ttl = AGY_MODELS_TTL if c["models"] is not None else 60.0
+    if not refresh and time.monotonic() - c["at"] < ttl:
+        return {"models": c["models"], "error": c["error"]}
+    models, error = None, ""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            AGY_BIN, "models", stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), 30)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError("`agy models` did not answer within 30 s")
+        text = out.decode("utf-8", "replace")
+        found = parse_agy_models(text)
+        if proc.returncode == 0 and found:
+            models = found
+        else:
+            error = _trunc((err.decode("utf-8", "replace") or text).strip()
+                           or f"`agy models` exited {proc.returncode} with no models", 300)
+    except (FileNotFoundError, NotADirectoryError, PermissionError):
+        error = f"agy CLI not found ('{AGY_BIN}')"
+    except (OSError, RuntimeError) as e:
+        error = str(e)
+    c.update(at=time.monotonic(), models=models, error=error)
+    return {"models": models, "error": error}
+
+
 def _agy_model(model):
     """Model id thật để truyền --model. 'agy' → '' (để CLI tự chọn), 'agy:X' → 'X'."""
     return (model or "").strip().split(":", 1)[1].strip() if ":" in (model or "") else ""
@@ -5774,6 +5835,7 @@ def build_app():
         pairs = pair_counts(wsf) if wsf else {}
         import team
         crew = team.team_sessions()
+        delegated = team.counts_by_director()
         sessions = [s for s in list_sessions() if not wsf or s.get("workspace_id") == wsf]
         daily = daily_stats_all(sessions)
         out = []
@@ -5791,7 +5853,9 @@ def build_app():
                         "skill_missing": _skill_missing_roots(s.get("cwd") or "", name),
                         # Phiên của đội (sub-agent / verifier / reflect): không lên canvas, không
                         # làm đích signal — gom vào tab Team.
-                        "team": crew.get(s["id"])})
+                        "team": crew.get(s["id"]),
+                        # Agent đã giao việc cho đội: panel của nó hiện mục Team.
+                        "subtasks": delegated.get(s["id"])})
         return JSONResponse(out)
 
     async def api_session_detail(request: Request):
@@ -6365,6 +6429,11 @@ def build_app():
         p.unlink()
         p.with_suffix(".json").unlink(missing_ok=True)
         return JSONResponse({"deleted": p.name})
+
+    async def api_models(request: Request):
+        """Model agy THẬT SỰ dùng được trên máy này (đọc từ `agy models`, cache 10 phút).
+        ?refresh=1 hỏi lại ngay — nút làm mới ở picker model."""
+        return JSONResponse({"agy": await agy_models(refresh=bool(request.query_params.get("refresh")))})
 
     async def api_tools(request: Request):
         """Tool media nào đã sẵn sàng. Không nhận tham số — luôn là máy chạy orchestrator."""
@@ -7236,6 +7305,7 @@ def build_app():
         WebSocketRoute("/ws/editor", ws_editor),
         Route("/api/skills/templates", api_skill_templates),
         Route("/api/tools", api_tools),
+        Route("/api/models", api_models),
         Route("/api/mcp", api_mcp),
         Route("/api/mcp/check", api_mcp_check, methods=["POST"]),
         Route("/api/mcp/connect", api_mcp_connect, methods=["POST"]),

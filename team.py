@@ -1273,11 +1273,8 @@ def _last_event(session_ids):
     return r
 
 
-def overview(workspace_id):
-    so = _so()
-    sessions = {s["id"]: s for s in so.list_sessions() if s.get("workspace_id") == workspace_id}
-    subs = _rows("SELECT * FROM subtasks WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 200",
-                 (workspace_id,))
+def _items(subs, sessions):
+    """Subtask dạng màn hình dùng: kèm tên phiên, tổng run/token, bước mới nhất nếu còn chạy."""
     verifiers = {}
     for s in sessions.values():
         if s.get("team_role") == "verifier":
@@ -1295,10 +1292,19 @@ def overview(workspace_id):
             "verdict": v, "session_name": (sessions.get(st["session_id"]) or {}).get("name", ""),
             "verifier_name": (sessions.get(st["verifier_id"]) or {}).get("name", ""),
             "director_name": (sessions.get(st["director_id"]) or {}).get("name", ""),
-            "max_attempts": MAX_ATTEMPTS, **_run_totals(sess_ids),
+            "max_attempts": _cap(st), **_run_totals(sess_ids),
             "last": _last_event(sess_ids) if st["status"] in ACTIVE else None,
             "isolated": bool(st["worktree"]),
         })
+    return items
+
+
+def overview(workspace_id):
+    so = _so()
+    sessions = {s["id"]: s for s in so.list_sessions() if s.get("workspace_id") == workspace_id}
+    subs = _rows("SELECT * FROM subtasks WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 200",
+                 (workspace_id,))
+    items = _items(subs, sessions)
     directors = [{"id": s["id"], "name": s["name"], "status": s["status"], "model": s.get("model", ""),
                   "cwd": s.get("cwd", ""),
                   "active": sum(1 for i in items if i["director_id"] == s["id"] and i["status"] in ACTIVE)}
@@ -1322,6 +1328,37 @@ def overview(workspace_id):
         # khác thì tự tính tuổi sẽ lệch đúng số giờ chênh — dashboard đo lệch theo mốc này.
         "now": so._now(),
     }
+
+
+def director_view(director_id, limit=12):
+    """Đội của MỘT director, cho panel của chính nó trên canvas: việc còn chạy (hết) + vài việc
+    xong gần nhất, và vài quyết định cuối. Nhẹ hơn overview — panel tự nạp lại mỗi lần refresh."""
+    so = _so()
+    d = so.get_session(director_id)
+    if not d:
+        return {"error": "not found"}
+    ws = d.get("workspace_id") or so.DEFAULT_WORKSPACE
+    q = ",".join("?" * len(ACTIVE))
+    subs = _rows(f"SELECT * FROM subtasks WHERE director_id = ? AND kind != 'reflect' AND "
+                 f"(status IN ({q}) OR id IN (SELECT id FROM subtasks WHERE director_id = ? AND "
+                 f"kind != 'reflect' AND status NOT IN ({q}) ORDER BY updated_at DESC LIMIT ?)) "
+                 f"ORDER BY created_at DESC", (director_id, *ACTIVE, director_id, *ACTIVE, limit))
+    sessions = {s["id"]: s for s in so.list_sessions() if s.get("workspace_id") == ws}
+    decisions = _rows("SELECT * FROM team_decisions WHERE session_id = ? ORDER BY id DESC LIMIT 5",
+                      (director_id,))
+    total = _row("SELECT COUNT(*) n FROM subtasks WHERE director_id = ? AND kind != 'reflect'",
+                 (director_id,))
+    return {"subtasks": _items(subs, sessions), "decisions": decisions,
+            "total": total["n"] if total else 0, "max_active": MAX_ACTIVE, "now": so._now()}
+
+
+def counts_by_director():
+    """{director_id: {active, total}} — /api/sessions đính vào từng card để dashboard biết agent
+    nào có đội (hiện mục Team trong panel) mà không phải hỏi từng agent một."""
+    q = ",".join("?" * len(ACTIVE))
+    return {r["director_id"]: {"active": r["active"] or 0, "total": r["total"]}
+            for r in _rows(f"SELECT director_id, COUNT(*) total, SUM(status IN ({q})) active "
+                           f"FROM subtasks WHERE kind != 'reflect' GROUP BY director_id", ACTIVE)}
 
 
 # ─── HTTP routes (build_app gắn vào) ─────────────────────────────────────────
@@ -1350,6 +1387,9 @@ def routes():
 
     async def api_team(request: Request):
         return JSONResponse(await asyncio.to_thread(overview, ws_of(request)))
+
+    async def api_director(request: Request):
+        return reply(await asyncio.to_thread(director_view, request.path_params["sid"]))
 
     async def api_spawn(request: Request):
         b = await body(request)
@@ -1400,6 +1440,7 @@ def routes():
 
     return [
         Route("/api/team", api_team),
+        Route("/api/team/director/{sid}", api_director),
         Route("/api/team/spawn", api_spawn, methods=["POST"]),
         Route("/api/team/subtasks/{st}/cancel", api_cancel, methods=["POST"]),
         Route("/api/team/subtasks/{st}/reverify", api_reverify, methods=["POST"]),

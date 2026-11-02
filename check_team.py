@@ -538,6 +538,28 @@ async def main():
         flags = {s["name"]: bool(s.get("team")) for s in r.json()}
         check("/api/sessions flags team sessions for the dashboard",
               not flags["lead"] and all(v for k, v in flags.items() if k.startswith("sub-")), str(flags))
+        # Panel của director trên canvas: đội của ĐÚNG agent đó, không phải cả workspace.
+        lead = next(x for x in r.json() if x["name"] == "lead")
+        mine = team._rows("SELECT id, status FROM subtasks WHERE director_id = 'dir-1' AND kind != 'reflect'")
+        check("/api/sessions tells the dashboard which agent has a team",
+              (lead.get("subtasks") or {}).get("total") == len(mine)
+              and not next(x for x in r.json() if x["name"] == "other").get("subtasks"), str(lead.get("subtasks")))
+        check("the team's own messages are not shown as a ping-pong pair",
+              not any("team" in pair for pair in so.pair_counts(WS)), str(so.pair_counts(WS)))
+        r = await c.get("/api/team/director/dir-1")
+        got = r.json() if r.status_code == 200 else {}
+        ids = {x["id"] for x in got.get("subtasks", [])}
+        check("a director's panel lists its own sub-agents, and only those",
+              r.status_code == 200 and ids and all(x["director_id"] == "dir-1" for x in got["subtasks"])
+              and ids <= {m["id"] for m in mine} and got["total"] == len(mine), r.text[:200])
+        active = {m["id"] for m in mine if m["status"] in team.ACTIVE}
+        check("…every live one is there, however many finished ones there are", active <= ids,
+              f"missing {active - ids}")
+        few = team.director_view("dir-1", limit=1)
+        check("…and only the most recent finished ones",
+              len([x for x in few["subtasks"] if x["status"] not in team.ACTIVE]) <= 1, str(len(few["subtasks"])))
+        check("an unknown director is a 404",
+              (await c.get("/api/team/director/nobody")).status_code == 404)
         r = await c.post("/api/sessions/spawn", json={"name": "sub-sneaky", "workspace_id": WS})
         check("agents cannot take a team name", r.status_code == 400, r.text)
         r = await c.post("/api/team/models", json={"workspace_id": WS, "roles": {"verify": "opus"}})

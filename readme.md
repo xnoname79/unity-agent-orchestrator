@@ -13,7 +13,9 @@ installed on your machine, so each provider keeps its own login and subscription
 
 **Agents**
 - Live terminal cards for Claude Code and Antigravity (Gemini) on one canvas, with the model
-  and reasoning effort picked per agent.
+  and reasoning effort picked per agent. Claude offers the `fable` / `opus` / `sonnet` / `haiku`
+  aliases (always the newest) and pinned ids (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5); the
+  Gemini list is read from `agy models` on your machine, so new models show up when agy adds them.
 - Agents hand work to each other with `send_signal`. Every run is queued, capped and logged in
   History.
 - Role playbooks that fill themselves in from the project. Rename an agent at any time.
@@ -35,7 +37,9 @@ installed on your machine, so each provider keeps its own login and subscription
   a verifier that edits files has its verdict thrown away. The director is messaged when each one
   passes (with the branch to merge) or fails.
 - `send_signal(..., done_when=...)` puts any hand-off between agents through the same check.
-- **Team** tab: every sub-agent live (stage, current step, verdict, diff, runs), cancel, verify
+- Select a director on the canvas (or click its **N sub-agents** badge) to watch its team in its
+  own panel: each sub-agent's stage, current step, verdict and diff, with cancel and verify again.
+- **Team** tab: every director's sub-agents at once (stage, current step, verdict, diff, runs), cancel, verify
   again, discard; the decision log (`record_decision`); per-role models; a handoff graph you can
   enforce; and **Reflect**, which turns failed runs into a proposed playbook change you approve.
 
