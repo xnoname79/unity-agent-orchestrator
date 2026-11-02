@@ -1921,7 +1921,7 @@ function renderInspector() {
           ? ` <button class="warn" onclick="allowMore('${id}','${esc(s.name)}')">Allow +${DAILY_STEP}</button>` : "")
     : `<span>no limit</span>`;
 
-  $("insp-body").innerHTML = `
+  keepOpen($("insp-body"), () => { $("insp-body").innerHTML = `
     <div class="insp-sec">
       <div class="insp-row">
         ${engine === "codex"
@@ -1935,6 +1935,7 @@ function renderInspector() {
       <div class="insp-kv"><span>Today</span>${limit}</div>
     </div>
 ${pairBudget(s)}
+${inspTeamSec(s)}
 
     <div class="insp-sec">
       <h4>Model</h4>
@@ -1970,7 +1971,7 @@ ${pairBudget(s)}
       <div class="hint">There is no permanent delete: the transcript belongs to the CLI that
         owns the session, so the orchestrator cannot wipe it. Unregister drops the session here
         and keeps its runs, signals and audit records.</div>
-    </div>`;
+    </div>`; });
 }
 
 // ── Zone (cwd) + orchestrator + chat ────────────────────────────────────────
@@ -2639,26 +2640,68 @@ const MODEL_TABS = [
   // KHÔNG có card "Auto" ở tab Claude: id của nó phải là "" (bỏ cờ --model), mà form đọc model
   // rỗng là CHƯA CHỌN → chọn Auto xong bấm Spawn ăn "Pick a model", không đường nào ra.
   // Tab Gemini vẫn có Auto vì id của nó là "agy" — một giá trị thật, không lẫn với rỗng.
+  // Alias đi theo bản mới nhất mà claude CLI biết (Anthropic API: fable → Fable 5.1, opus → Opus
+  // 5.5, sonnet → Sonnet 5.5, haiku → Haiku 5.5); id đầy đủ ghim đúng một bản. Cập nhật 2026-11.
   { engine: "claude", label: "Claude", note: "claude CLI · API credits Anthropic", models: [
-    { id: "opus", name: "Opus · alias", desc: "Always points at the latest Opus" },
-    { id: "sonnet", name: "Sonnet · alias", desc: "Balanced on quality, speed and price" },
-    { id: "haiku", name: "Haiku · alias", desc: "Fast and cheap — light, repetitive work" },
-    { id: "claude-fable-5", name: "Fable 5", desc: "Most capable (Claude 5) — deep reasoning and long agentic runs; pricier than Opus" },
-    { id: "claude-opus-4-8", name: "Opus 4.8", desc: "Latest Opus — long autonomous agentic work, the best default" },
-    { id: "claude-sonnet-5", name: "Sonnet 5", desc: "Close to Opus on code and agentic work, at Sonnet pricing" },
-    { id: "claude-haiku-4-5", name: "Haiku 4.5", desc: "Fastest and cheapest — simple tasks" },
+    { id: "fable", name: "Fable · alias", desc: "Always the latest Fable — the most capable model, for the hardest and longest runs" },
+    { id: "opus", name: "Opus · alias", desc: "Always the latest Opus — the best default for agentic coding" },
+    { id: "sonnet", name: "Sonnet · alias", desc: "Always the latest Sonnet — daily coding at a lower price" },
+    { id: "haiku", name: "Haiku · alias", desc: "Always the latest Haiku — fast and cheap" },
+    { id: "claude-fable-5-1", name: "Fable 5.1", desc: "Most capable — deep reasoning and long autonomous work; costs the most (claude CLI 2.1.257+)" },
+    { id: "claude-opus-5-5", name: "Opus 5.5", desc: "Latest Opus — complex reasoning and long agentic work (claude CLI 2.1.280+)" },
+    { id: "claude-sonnet-5-5", name: "Sonnet 5.5", desc: "Latest Sonnet — strong everyday coding, 1M context (claude CLI 2.1.284+)" },
+    { id: "claude-haiku-5-5", name: "Haiku 5.5", desc: "Latest Haiku — fastest and cheapest, 1M context (claude CLI 2.1.293+)" },
   ] },
+  // Dựng sẵn = những gì agy 1.4 cho chọn (2026-11). Có agy trên máy thì agyLiveApply() THAY danh sách
+  // này bằng đúng `agy models` của tài khoản đó — model mới (vd Gemini 4) tự hiện khi agy thêm vào.
   { engine: "agy", label: "Gemini", note: "agy CLI (Antigravity) · runs on your Google account", models: [
     { id: "agy", name: "Auto", desc: "Whatever the CLI is configured to use" },
     { id: "agy:gemini-3.1-pro-high", name: "3.1 Pro · high", desc: "Best Gemini for deep work — the model name already carries its thinking level" },
     { id: "agy:gemini-3.1-pro-low", name: "3.1 Pro · low", desc: "Same model, less thinking — cheaper and quicker" },
-    { id: "agy:gemini-3.8-flash-high", name: "3.8 Flash · high", desc: "Fast model, full thinking — everyday coding" },
+    { id: "agy:gemini-3.8-flash-high", name: "3.8 Flash · high", desc: "Newest Flash, full thinking — everyday coding" },
     { id: "agy:gemini-3.8-flash-medium", name: "3.8 Flash · medium", desc: "Balanced Flash" },
     { id: "agy:gemini-3.8-flash-low", name: "3.8 Flash · low", desc: "Fastest and cheapest — simple, repetitive work" },
   ] },
 ];
+const AGY_FALLBACK = MODEL_TABS[1].models.slice();
+let AGY_LIVE = { models: null, error: "" };   // /api/models — null = chưa đọc được `agy models`
+
+// "gemini-4-argon-high" → "Gemini 4 Argon · high", "claude-opus-4-6-thinking" → "Claude Opus 4.6 Thinking".
+function agyName(slug) {
+  const lvl = (slug.match(/-(low|medium|high)$/) || [])[1];
+  const words = (lvl ? slug.slice(0, -lvl.length - 1) : slug).split("-");
+  const out = [];
+  for (const w of words) {
+    if (/^\d+$/.test(w) && out.length && /^\d+(\.\d+)*$/.test(out[out.length - 1])) out[out.length - 1] += "." + w;
+    else out.push(/^(gpt|oss)$/.test(w) ? w.toUpperCase() : /^\d+b$/.test(w) ? w.toUpperCase()
+      : w.charAt(0).toUpperCase() + w.slice(1));
+  }
+  return out.join(" ").replace(/^Gemini /, "") + (lvl ? " · " + lvl : "");
+}
+
+// Thay tab Gemini bằng đúng danh sách agy của máy này. Giữ tên/mô tả của model đã biết; model lạ
+// lấy tên dựng từ slug. agy lặng lẽ chạy model mặc định khi --model lạ, nên KHÔNG giữ lại model
+// dựng sẵn mà agy không còn liệt kê — chọn nó là chạy nhầm model mà không ai báo.
+function agyLiveApply(live) {
+  AGY_LIVE = live || { models: null, error: "" };
+  const tab = MODEL_TABS.find((t) => t.engine === "agy");
+  if (!AGY_LIVE.models || !AGY_LIVE.models.length) { tab.models = AGY_FALLBACK.slice(); return; }
+  const known = Object.fromEntries(AGY_FALLBACK.map((m) => [m.id, m]));
+  tab.models = [AGY_FALLBACK[0], ...AGY_LIVE.models.map((slug) => known["agy:" + slug]
+    || { id: "agy:" + slug, name: agyName(slug),
+         desc: /^gemini/.test(slug) ? "Listed by your agy CLI" : "Runs through agy on your Google account" })];
+}
+
+async function agyLiveLoad(refresh) {
+  try { agyLiveApply((await api("/api/models" + (refresh ? "?refresh=1" : ""))).agy); }
+  catch (e) { console.error(e); return; }
+  fillModelList();
+  if ($("sp-model-cards")) renderSpawnPickers();
+  if (selSid) renderInspector();
+}
+window.agyLiveLoad = agyLiveLoad;
 const MODEL_CUSTOM = { id: "__custom", name: "Custom…",
-  desc: "Type another model id / alias (claude: opus-4-7, opus-4-6…; agy: 'agy:<slug>' — `agy models` also lists claude-* and gpt-oss-*)" };
+  desc: "Type another model id / alias (claude: a full id like claude-opus-5, or opus[1m]; agy: 'agy:<slug>' from `agy models`)" };
 let SP_TEMPLATES = [];                          // cache /api/skills/templates
 let spSel = { group: "", ws: "", template: "", model: "" };  // lựa chọn hiện tại của form spawn
 let spTab = MODEL_TABS[0].engine;                 // tab engine đang mở ở picker Model
@@ -2684,11 +2727,12 @@ function pickCard(group, val, inner, title) {
 
 // Datalist của ô model tự do (form spawn) dựng TỪ MODEL_TABS. Danh sách cứng trong HTML trước
 // đây chỉ có model Claude, nên gõ 'agy' vào ô không gợi ý được gì.
-{
+function fillModelList() {
   const dl = $("model-list");
   if (dl) dl.innerHTML = MODEL_TABS.flatMap((t) => t.models.map((m) =>
     `<option value="${esc(m.id)}" label="${esc(t.label + " — " + m.name)}">`)).join("");
 }
+fillModelList();
 
 function renderSpawnPickers() {
   const wsBox = $("sp-ws-cards");
@@ -2722,7 +2766,9 @@ function renderSpawnPickers() {
   $("sp-model-tabs").innerHTML = MODEL_TABS.map((t) =>
     `<button type="button" class="tab-btn${t.engine === tab.engine ? " sel" : ""}" ` +
     `title="${esc(t.note)}" onclick="spTabPick('${t.engine}')">${esc(t.label)}</button>`).join("");
-  $("sp-model-tabs-note").textContent = tab.note;
+  $("sp-model-tabs-note").innerHTML = esc(tab.note) + (tab.engine !== "agy" ? ""
+    : AGY_LIVE.models ? ` · <a href="#" onclick="agyLiveLoad(true); return false" title="Ask agy again">from <code>agy models</code></a>`
+    : ` · built-in list${AGY_LIVE.error ? ` (<span title="${esc(AGY_LIVE.error)}">could not read <code>agy models</code></span>)` : ""}`);
   $("sp-model-cards").innerHTML = tab.models.concat(MODEL_CUSTOM).map((m) => pickCard("model", m.id,
     `<b>${esc(m.name)}</b>` +
     (m.id && m.id !== "__custom" ? `<code>${esc(m.id)}</code>` : "") +
@@ -4223,9 +4269,69 @@ const secsSince = (iso) => iso
 
 function crewBadge(s) {
   const n = CREW[s.id];
-  return n ? `<button class="crew-badge" onclick="event.stopPropagation(); switchTab('team')"
-    title="Sub-agents this agent delegated to are working — open the Team tab">${n} sub-agent${n > 1 ? "s" : ""}</button>` : "";
+  return n ? `<button class="crew-badge" onclick="event.stopPropagation(); inspShowTeam('${esc(s.id)}')"
+    title="Sub-agents this agent delegated to are working — see them in its panel">${n} sub-agent${n > 1 ? "s" : ""}</button>` : "";
 }
+
+// ── Đội của director, ngay trong panel của nó ──────────────────────────────
+// Người dùng không phải mở tab Team để xem sub-agent: chọn director trên canvas (hoặc bấm badge
+// "N sub-agents" trên card) là thấy việc đang chạy + vài việc xong gần nhất. Tab Team vẫn giữ toàn
+// cảnh workspace và phần cài đặt (model theo vai, đồ thị bàn giao, reflect).
+let inspView = [];        // subtask đang hiện trong panel, theo thứ tự trên màn hình
+let INSP_TEAM = null;     // {sid, data, at} — /api/team/director/<sid> lần nạp gần nhất
+let inspTeamBusy = null;
+
+function inspTeamSec(s) {
+  if (!(s.subtasks && s.subtasks.total)) { inspView = []; return ""; }
+  if (!INSP_TEAM || INSP_TEAM.sid !== s.id || Date.now() - INSP_TEAM.at > 2000) inspTeamLoad(s.id);
+  const n = s.subtasks.active;
+  return `<div class="insp-sec" id="insp-team">
+      <h4>Team <span class="hint" style="margin:0;text-transform:none;letter-spacing:0;font-weight:500">
+        ${n ? `${n} active` : "nothing running"}</span></h4>
+      <div id="insp-team-list" class="insp-team">${inspTeamHtml(s.id)}</div>
+      <button class="secondary" onclick="switchTab('team')" title="Every director in this workspace, plus team settings">
+        ${ic("rocket", "sm")} Whole team & settings</button>
+    </div>`;
+}
+
+function inspTeamHtml(sid) {
+  if (!INSP_TEAM || INSP_TEAM.sid !== sid) { inspView = []; return `<div class="hint">Loading…</div>`; }
+  const d = INSP_TEAM.data;
+  inspView = d.subtasks;
+  const more = d.total > d.subtasks.length ? `<div class="hint">${d.total - d.subtasks.length} older in the Team tab.</div>` : "";
+  return (d.subtasks.map((st, i) => stCard(st, i, "i")).join("")
+    || `<div class="hint">Nothing delegated yet.</div>`) + more;
+}
+
+async function inspTeamLoad(sid, force) {
+  if (inspTeamBusy && !force) return inspTeamBusy;
+  inspTeamBusy = (async () => {
+    try {
+      const data = await api(`/api/team/director/${encodeURIComponent(sid)}`);
+      if (data.now) teamSkew = Date.now() - new Date(data.now).getTime();
+      INSP_TEAM = { sid, data, at: Date.now() };
+      const box = $("insp-team-list");
+      if (box && selSid === sid) keepOpen(box, () => { box.innerHTML = inspTeamHtml(sid); });
+    } catch (e) { console.error(e); }
+    finally { inspTeamBusy = null; }
+  })();
+  return inspTeamBusy;
+}
+
+// Panel dựng lại mỗi lần refresh; <details> người dùng đang mở (findings, báo cáo) phải mở lại đúng
+// chỗ, không thì cứ vài giây là gập mất thứ họ đang đọc.
+function keepOpen(box, rebuild) {
+  const key = (d) => { const c = d.closest("[data-st]"); return c ? c.dataset.st + "|" + [...c.querySelectorAll("details")].indexOf(d) : ""; };
+  const open = new Set([...box.querySelectorAll("details[open]")].map(key));
+  rebuild();
+  if (open.size) box.querySelectorAll("details").forEach((d) => { if (open.has(key(d))) d.open = true; });
+}
+
+function inspShowTeam(sid) {
+  selectNode(sid);
+  requestAnimationFrame(() => { const el = $("insp-team"); if (el) el.scrollIntoView({ block: "start", behavior: "smooth" }); });
+}
+window.inspShowTeam = inspShowTeam;
 
 async function teamLoad() {
   try { TEAM = await api("/api/team" + wsQuery()); }
@@ -4306,7 +4412,9 @@ function stStages(s) {
   return ST_STAGES.map((_, j) => j < at ? "done" : j === at ? "now" : "");
 }
 
-function stCard(s, i) {
+// sc = nơi card nằm: "t" tab Team (teamView), "i" panel của director (inspView). Nút gọi theo
+// (vị trí, nơi) để hai danh sách khác thứ tự không bấm nhầm việc của nhau.
+function stCard(s, i, sc = "t") {
   const v = s.verdict || {};
   const live = ST_ACTIVE.includes(s.status);
   const stages = stStages(s);
@@ -4314,13 +4422,13 @@ function stCard(s, i) {
   const lastLine = s.last ? `${EV_ICON[s.last.kind] || "·"} <span class="s" title="${esc(s.last.summary)}">${esc(s.last.summary)}</span>`
     : `<span class="s">${live ? "starting…" : esc(s.reason || (s.status === "passed" ? "verified" : s.status))}</span>`;
   const since = live ? s.created_at : "";
-  return `<div class="st-card s-${esc(s.status)}">
+  return `<div class="st-card s-${esc(s.status)}" data-st="${esc(s.id)}">
     <div class="st-top">${badge(esc(s.status), ST_BADGE[s.status])}
       <span class="eng-chip">${esc(s.kind === "handoff" ? "handoff" : s.playbook)}</span>
       <b title="${esc(s.title || s.brief)}">${esc(s.title || s.brief.split("\n")[0] || s.id)}</b>
       <span class="hint st-age" data-since="${esc(since)}">${since ? fmtAge(secsSince(since)) : ""}</span></div>
     <div class="st-pipe">${stages.map((c, j) => `<span class="${c}">${label(j)}</span>`).join("")}</div>
-    <div class="st-live" id="stl-${i}">${lastLine}</div>
+    <div class="st-live" id="${sc}stl-${i}">${lastLine}</div>
     <div class="st-meta">
       <span title="Builder session">${esc(s.session_name || "—")}${s.model ? " · " + esc(s.model) : ""}</span>
       ${s.verifier_name ? `<span title="Current verifier session">✓ ${esc(s.verifier_name)}</span>` : ""}
@@ -4337,14 +4445,14 @@ function stCard(s, i) {
           <pre>${esc([v.findings, v.evidence].filter(Boolean).join("\n\n— evidence —\n"))}</pre></details></div>` : ""}
     ${s.report ? `<details><summary>Builder's report</summary><pre>${esc(s.report)}</pre></details>` : ""}
     <div class="st-acts">
-      ${s.session_id ? `<button class="secondary" onclick="teamRun(${i}, 'b')" title="Open the builder's latest run">Builder run</button>` : ""}
-      ${s.verifier_id ? `<button class="secondary" onclick="teamRun(${i}, 'v')" title="Open the verifier's latest run">Verifier run</button>` : ""}
-      ${s.branch && !s.discarded ? `<button class="secondary" onclick="teamDiff(${i})">Diff</button>` : ""}
-      ${s.status === "passed" && s.branch && !s.discarded ? `<button onclick="teamCopyMerge(${i})" title="Copy the merge command">Copy merge</button>` : ""}
-      ${live ? `<button class="danger" onclick="teamCancel(${i})">Cancel</button>` : ""}
-      ${!live && s.kind !== "reflect" && s.status !== "cancelled" && !s.discarded ? `<button onclick="teamReverify(${i})"
+      ${s.session_id ? `<button class="secondary" onclick="teamRun(${i}, 'b', '${sc}')" title="Open the builder's latest run">Builder run</button>` : ""}
+      ${s.verifier_id ? `<button class="secondary" onclick="teamRun(${i}, 'v', '${sc}')" title="Open the verifier's latest run">Verifier run</button>` : ""}
+      ${s.branch && !s.discarded ? `<button class="secondary" onclick="teamDiff(${i}, '${sc}')">Diff</button>` : ""}
+      ${s.status === "passed" && s.branch && !s.discarded ? `<button onclick="teamCopyMerge(${i}, '${sc}')" title="Copy the merge command">Copy merge</button>` : ""}
+      ${live ? `<button class="danger" onclick="teamCancel(${i}, '${sc}')">Cancel</button>` : ""}
+      ${!live && s.kind !== "reflect" && s.status !== "cancelled" && !s.discarded ? `<button onclick="teamReverify(${i}, '${sc}')"
           title="Run one more independent check — e.g. after you fixed something by hand">Verify again</button>` : ""}
-      ${!live && s.worktree && !s.discarded ? `<button class="secondary" onclick="teamDiscard(${i})"
+      ${!live && s.worktree && !s.discarded ? `<button class="secondary" onclick="teamDiscard(${i}, '${sc}')"
           title="Remove the worktree and delete its branch">Discard</button>` : ""}
     </div></div>`;
 }
@@ -4396,23 +4504,28 @@ function teamForms() {
 
 // Live: dòng "đang làm gì" của card nhích theo từng bước run, không đợi refresh cả tab.
 function teamLive(ev) {
-  if (!TEAM || !teamVisible()) return;
-  teamView.forEach((s, i) => {
-    if (ev.session !== s.session_id && ev.session !== s.verifier_id) return;
-    const el = document.getElementById(`stl-${i}`);
-    if (el) el.innerHTML = `${EV_ICON[ev.kind] || "·"} <span class="s" title="${esc(ev.summary)}">${esc(ev.summary)}</span>`;
-  });
+  const line = `${EV_ICON[ev.kind] || "·"} <span class="s" title="${esc(ev.summary)}">${esc(ev.summary)}</span>`;
+  for (const [sc, list] of [["t", TEAM && teamVisible() ? teamView : []], ["i", inspView]]) {
+    list.forEach((s, i) => {
+      if (ev.session !== s.session_id && ev.session !== s.verifier_id) return;
+      const el = document.getElementById(`${sc}stl-${i}`);
+      if (el) el.innerHTML = line;
+    });
+  }
 }
 
 setInterval(() => {
-  if (!teamVisible()) return;
-  document.querySelectorAll("#tab-team .st-age[data-since]").forEach((el) => {
+  document.querySelectorAll("#tab-team:not([hidden]) .st-age[data-since], #insp-team .st-age[data-since]").forEach((el) => {
     if (el.dataset.since) el.textContent = fmtAge(secsSince(el.dataset.since));
   });
 }, 5000);
 
 async function teamDo(path, body, msgId) {
-  try { const r = await api(path, "POST", body || {}); await teamLoad(); return r; }
+  try {
+    const r = await api(path, "POST", body || {});
+    await Promise.all([teamVisible() ? teamLoad() : null, selSid ? inspTeamLoad(selSid, true) : null]);
+    return r;
+  }
   catch (e) {
     let m = String(e);
     try { m = JSON.parse(m).error || m; } catch { /* text */ }
@@ -4421,14 +4534,16 @@ async function teamDo(path, body, msgId) {
   }
 }
 
-function teamRun(i, which) {
-  const s = teamView[i];
+const stOf = (i, sc) => (sc === "i" ? inspView : teamView)[i];
+
+function teamRun(i, which, sc) {
+  const s = stOf(i, sc);
   if (s) openSessionRun(which === "v" ? s.verifier_id : s.session_id);
 }
 window.teamRun = teamRun;
 
-async function teamDiff(i) {
-  const s = teamView[i];
+async function teamDiff(i, sc) {
+  const s = stOf(i, sc);
   if (!s) return;
   openRunId = null;
   $("dr-title").textContent = `Diff · ${s.title || s.id} · ${s.branch}`;
@@ -4444,8 +4559,8 @@ async function teamDiff(i) {
 }
 window.teamDiff = teamDiff;
 
-async function teamCopyMerge(i) {
-  const s = teamView[i];
+async function teamCopyMerge(i, sc) {
+  const s = stOf(i, sc);
   if (!s) return;
   const cmd = `git merge --no-ff ${s.branch}`;
   try { await navigator.clipboard.writeText(cmd); toast("Copied", cmd); }
@@ -4453,21 +4568,21 @@ async function teamCopyMerge(i) {
 }
 window.teamCopyMerge = teamCopyMerge;
 
-function teamCancel(i) {
-  const s = teamView[i];
+function teamCancel(i, sc) {
+  const s = stOf(i, sc);
   if (s && confirm(`Cancel "${s.title || s.id}"? A running step is killed; the director is told.`))
     teamDo(`/api/team/subtasks/${encodeURIComponent(s.id)}/cancel`);
 }
 window.teamCancel = teamCancel;
 
-function teamReverify(i) {
-  const s = teamView[i];
+function teamReverify(i, sc) {
+  const s = stOf(i, sc);
   if (s) teamDo(`/api/team/subtasks/${encodeURIComponent(s.id)}/reverify`);
 }
 window.teamReverify = teamReverify;
 
-function teamDiscard(i) {
-  const s = teamView[i];
+function teamDiscard(i, sc) {
+  const s = stOf(i, sc);
   if (s && confirm(`Remove the worktree and delete branch ${s.branch}? Commits that were not merged are lost.`))
     teamDo(`/api/team/subtasks/${encodeURIComponent(s.id)}/discard`);
 }
@@ -4560,6 +4675,7 @@ function connectSSE() {
     let ev = null;
     try { ev = JSON.parse(m.data); } catch { /* keepalive */ }
     if (ev && ev.type === "run_event") { appendLiveEvent(ev); teamLive(ev); }  // live, không refetch
+    if (ev && ev.type === "team" && selSid && INSP_TEAM && INSP_TEAM.sid === selSid) inspTeamLoad(selSid, true);
     // run_event là từng bước của run, chỉ drawer cần (đã append ở trên). Refresh theo nó là 6
     // fetch + dựng lại canvas cho MỖI bước của mọi agent; đầu/cuối run đã có run_start/run.
     if (ev && ev.type !== "run_event") scheduleRefresh();
@@ -4596,6 +4712,7 @@ if (PANE) {
     else if (m.t === "theme") applyTheme(m.pref);
   });
   refreshAll();
+  agyLiveLoad();      // model agy thật của máy này cho select model ở panel
   // SSE CHỈ ở pane. HTTP/1.1 giới hạn 6 kết nối mỗi origin và EventSource giữ kết nối
   // vĩnh viễn — shell mở thêm một cái nữa là 2 pane + shell = 3, phần còn lại cho fetch
   // mỏng đi thấy rõ. Shell poll thay thế (nó chỉ cần đếm session ở màn Home).
@@ -4627,6 +4744,7 @@ if (PANE) {
   });
   refreshAll();
   loadTemplates();
+  agyLiveLoad();      // model agy thật của máy này cho form spawn
   toolsBadge();
   // Màn Home hiện số session mỗi workspace — poll nhẹ, không cần SSE (xem trên).
   setInterval(() => { if (ACTIVE < 0 && !document.hidden) refreshAll(); }, 5000);
