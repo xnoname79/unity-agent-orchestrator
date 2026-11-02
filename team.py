@@ -1157,6 +1157,9 @@ def overview(workspace_id):
         "edges": edges(workspace_id), "graph_mode": graph_mode(workspace_id),
         "models": model_roles(workspace_id), "engines": installed_engines(),
         "playbooks": list(PLAYBOOKS), "max_active": MAX_ACTIVE, "max_attempts": MAX_ATTEMPTS,
+        # Mốc giờ CỦA SERVER: mọi timestamp là giờ local không múi của server, trình duyệt ở múi
+        # khác thì tự tính tuổi sẽ lệch đúng số giờ chênh — dashboard đo lệch theo mốc này.
+        "now": so._now(),
     }
 
 

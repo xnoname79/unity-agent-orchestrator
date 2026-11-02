@@ -1132,8 +1132,13 @@ function cvZoom(f) {
 window.cvZoom = cvZoom;
 
 // Fit toàn bộ node vào khung nhìn (padding 40, không phóng quá 100%).
+// Canvas đang ẩn (trang mở thẳng vào tab Boards/Team) đo được 0×0: fit lúc đó ra zoom ÂM, rồi bị
+// lưu lại, và quay về tab Agents là một canvas trống ở "-138%". Hoãn tới lúc tab Agents hiện.
+let cvFitPending = false;
 function cvFit() {
   const cv = $("canvas");
+  if (!cv.clientWidth || !cv.clientHeight) { cvFitPending = true; return; }
+  cvFitPending = false;
   const nodes = cvGeomNodes();
   if (!nodes.length) { CV = { k: 1, tx: 40, ty: 40 }; applyView(); return; }
   let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
@@ -1142,7 +1147,7 @@ function cvFit() {
     x0 = Math.min(x0, x); y0 = Math.min(y0, y);
     x1 = Math.max(x1, x + el.offsetWidth); y1 = Math.max(y1, y + el.offsetHeight);
   }
-  const k = Math.min(1, (cv.clientWidth - 80) / (x1 - x0), (cv.clientHeight - 80) / (y1 - y0));
+  const k = Math.max(0.1, Math.min(1, (cv.clientWidth - 80) / (x1 - x0), (cv.clientHeight - 80) / (y1 - y0)));
   CV = { k, tx: 40 - x0 * k, ty: 40 - y0 * k };
   applyView(); cvSave({ view: CV });
 }
@@ -1700,6 +1705,7 @@ function agentCard(s, needsYou) {
       <span class="status-dot dot-${esc(s.status)}"></span>
       <b title="${esc(s.name)} — double-click to rename">${esc(s.name)}</b>
       ${needsYou ? `<span class="needs-badge">NEEDS YOU</span>` : ""}
+      ${crewBadge(s)}
       <span class="spacer"></span>
       ${adopt}
       ${sidSel}
@@ -2831,6 +2837,9 @@ async function loadTemplates() {
   try {
     SP_TEMPLATES = await api("/api/skills/templates");
   } catch (e) { SP_TEMPLATES = []; }
+  // Agent mở cho một repo mặc định là director (pstack): người dùng nói chuyện với nó, nó giao việc
+  // cho sub-agent. Server đã xếp "director" lên đầu; chỉ chọn sẵn khi người dùng chưa chọn gì.
+  if (!spSel.template && SP_TEMPLATES.some((t) => t.name === "director")) spSel.template = "director";
   renderSpawnPickers();
 }
 
@@ -4470,9 +4479,12 @@ function switchTab(name) {
   $("tab-agents").hidden = name !== "agents";
   $("tab-boards").hidden = name !== "boards";
   $("tab-history").hidden = name !== "history";
+  $("tab-team").hidden = name !== "team";
   $("tab-btn-agents").classList.toggle("active", name === "agents");
   $("tab-btn-boards").classList.toggle("active", name === "boards");
   $("tab-btn-history").classList.toggle("active", name === "history");
+  $("tab-btn-team").classList.toggle("active", name === "team");
+  if (name === "team") teamLoad().catch((e) => console.error(e));
   if (name === "boards") {
     boardsLoad().catch((e) => console.error(e));
     boardTools();
@@ -4482,7 +4494,10 @@ function switchTab(name) {
   try { localStorage.setItem("orch-tab." + currentWS, name); } catch { /* private mode */ }
   // Quay lại tab agents: xterm cần fit lại (lúc ẩn display:none đo được 0×0).
   renderWinBar();
-  if (name === "agents") requestAnimationFrame(() => Object.values(cvTerms).forEach(fitTerm));
+  if (name === "agents") requestAnimationFrame(() => {
+    if (cvFitPending) cvFit();
+    Object.values(cvTerms).forEach(fitTerm);
+  });
 }
 window.switchTab = switchTab;
 
@@ -4607,7 +4622,14 @@ async function refreshNow() {
     editorCards = Array.isArray(vsc) ? vsc : [];
     // Thread của board không phải agent để chat: không terminal trên canvas, không chip trên
     // thanh cửa sổ, không làm đích signal hay chủ của board khác — gom riêng vào tab Boards.
-    const work = sessions.filter((s) => !s.board);
+    // Phiên của đội (sub-agent, verifier, reflect) cũng vậy: không ai chat với chúng — tab Team.
+    const work = sessions.filter((s) => !s.board && !s.team);
+    CREW = {};
+    for (const s of sessions)
+      if (s.team && s.status === "running") CREW[s.team.director] = (CREW[s.team.director] || 0) + 1;
+    const crewN = Object.values(CREW).reduce((a, b) => a + b, 0);
+    $("team-live").hidden = !crewN;
+    $("team-live").textContent = crewN;
     renderCanvas(work, signals.items);
     fillSignalForm(work);
     fillBoardAgents(work);
@@ -4615,10 +4637,349 @@ async function refreshNow() {
     // Board chỉ refetch khi tab của nó đang mở: SSE bắn theo mỗi bước của mọi agent, gọi thêm
     // một request mỗi lần cho một tab đang ẩn là trả tiền cho thứ không ai nhìn.
     if (!$("tab-boards").hidden) boardsLoad().catch(() => {});
+    if (teamVisible()) teamLoad().catch(() => {});
     sigHasMore = signals.has_more; renderSignals(signals.items);
     runsHasMore = runs.has_more; renderRuns(runs.items);
   } catch (e) { console.error(e); if (!PANE) setConn(false); }
 }
+
+// ── Team: đội sub-agent của director (pstack) ────────────────────────────────
+// Director giao việc (spawn_subagent), mỗi sub-agent một worktree, verifier độc lập kiểm hợp đồng
+// "Done means" rồi mới tính là xong. Tab này chỉ NHÌN và điều khiển — luật nằm ở team.py.
+// Nút gọi theo VỊ TRÍ trong teamView (giống Unregistered): id lấy từ DB, esc() không chặn dấu '.
+let TEAM = null;          // /api/team của workspace này (chỉ nạp khi tab Team đang mở)
+let teamView = [];        // subtask đang hiện, theo thứ tự trên màn hình
+let CREW = {};            // director id → số phiên đội đang chạy (badge trên card, số trên tab)
+const ST_BADGE = { queued: "b-gray", running: "b-blue", verifying: "b-blue", fixing: "b-amber",
+                   passed: "b-green", failed: "b-red", cancelled: "b-gray" };
+const ST_ACTIVE = ["queued", "running", "verifying", "fixing"];
+const ST_STAGES = ["Start", "Build", "Verify", "Done"];
+const TEAM_ROLES = [["implement", "Builds (feature, bug fix, refactor)"],
+                    ["investigate", "Investigates and reflects (read-only)"],
+                    ["verify", "Verifies"]];
+
+const teamVisible = () => !$("tab-team").hidden;
+// Timestamp của server là giờ local KHÔNG múi; trình duyệt ở múi khác (mở qua tunnel) đọc lệch đúng
+// số giờ chênh. teamSkew = đồng hồ trình duyệt − đồng hồ server, đo mỗi lần nạp /api/team.
+let teamSkew = 0;
+const secsSince = (iso) => iso
+  ? Math.max(0, Math.round((Date.now() - teamSkew - new Date(iso).getTime()) / 1000)) : 0;
+
+function crewBadge(s) {
+  const n = CREW[s.id];
+  return n ? `<button class="crew-badge" onclick="event.stopPropagation(); switchTab('team')"
+    title="Sub-agents this agent delegated to are working — open the Team tab">${n} sub-agent${n > 1 ? "s" : ""}</button>` : "";
+}
+
+async function teamLoad() {
+  try { TEAM = await api("/api/team" + wsQuery()); }
+  catch (e) { console.error(e); return; }
+  if (TEAM.now) teamSkew = Date.now() - new Date(TEAM.now).getTime();
+  teamRender();
+}
+
+// Ô nào đang gõ / select nào đang mở thì KHÔNG dựng lại: SSE refresh liên tục, dựng lại là mất chữ.
+const teamEditing = () => {
+  const a = document.activeElement;
+  return a && $("tab-team").contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+};
+
+function teamRender() {
+  if (!TEAM) return;
+  const subs = TEAM.subtasks.filter((s) => s.kind !== "reflect");
+  const day = (s) => secsSince(s.ended_at || s.updated_at) < 86400;
+  const n = (f) => subs.filter(f).length;
+  $("team-stats").innerHTML = [
+    ["live", n((s) => ["queued", "running", "fixing"].includes(s.status)), "Working"],
+    ["live", n((s) => s.status === "verifying"), "Verifying"],
+    ["ok", n((s) => s.status === "passed" && day(s)), "Passed · 24 h"],
+    ["bad", n((s) => s.status === "failed" && day(s)), "Failed · 24 h"],
+    ["warn", n((s) => s.attempts > 0 && day(s)), "Sent back to fix · 24 h"],
+  ].map(([c, v, l]) => `<div class="team-stat ${v ? c : ""}"><b>${v}</b><span>${l}</span></div>`).join("");
+
+  const f = $("team-filter").value;
+  const show = subs.filter((s) => f === "all" ? true : f === "failed" ? s.status === "failed"
+    : ST_ACTIVE.includes(s.status) || secsSince(s.ended_at || s.updated_at) < 6 * 3600);
+  teamView = show;
+  const byDir = {};
+  show.forEach((s, i) => (byDir[s.director_id] = byDir[s.director_id] || []).push([s, i]));
+  const dirs = TEAM.directors.filter((d) => byDir[d.id]);
+  const orphan = Object.keys(byDir).filter((id) => !TEAM.directors.some((d) => d.id === id));
+  $("team-lanes").innerHTML = [...dirs.map((d) => teamLane(d, byDir[d.id])),
+    ...orphan.map((id) => teamLane({ id, name: "removed agent", status: "stopped", active: 0 }, byDir[id]))].join("")
+    || `<div class="empty">Nothing delegated ${f === "active" ? "recently" : "yet"}. Spawn an agent with the
+        <b>director</b> template and ask it for work — it splits the job and delegates here — or use
+        <b>Delegate</b> below.</div>`;
+
+  if (!teamEditing()) teamForms();
+  $("team-decisions").innerHTML = TEAM.decisions.map((d) => `<tr>
+      <td title="${esc(d.ts)}">${esc(shortDateTime(d.ts).slice(5, 16))}</td>
+      <td>${esc(d.session_name || "?")}${d.subtask_id ? ` <span class="hint">${esc(d.subtask_id)}</span>` : ""}</td>
+      <td>${esc(d.decision)}</td>
+      <td>${esc(d.reason)}${d.evidence ? `<details><summary>evidence</summary><pre class="tm-pre">${esc(d.evidence)}</pre></details>` : ""}</td>
+    </tr>`).join("") || `<tr><td colspan="4" class="hint">No decisions logged yet. Directors and sub-agents log them with record_decision.</td></tr>`;
+  $("tg-edges").innerHTML = TEAM.edges.map((e, i) => `<span class="tg-edge">${esc(e.from_role)} → ${esc(e.to_role)}
+      <button title="Remove this edge" onclick="teamEdgeDel(${i})">${ic("x", "sm")}</button></span>`).join("")
+    || `<span class="hint">No edges. ${TEAM.graph_mode === "enforced" ? "Enforced with no edges: agents cannot signal each other." : "Open: any agent may signal any other."}</span>`;
+  $("team-proposals").innerHTML = TEAM.proposals.map((p, i) => `<div class="tp">
+      <div class="st-top">${badge(p.status, { pending: "b-amber", approved: "b-green", rejected: "b-gray" }[p.status])}
+        <b title="${esc(p.path)}">${esc(p.target.replace(/^role:.*/, "role SKILL").replace("playbook:", "playbook · "))}</b>
+        <span class="hint">${esc(shortDateTime(p.created_at).slice(5, 16))}</span></div>
+      ${p.rationale ? `<div>${esc(p.rationale)}</div>` : ""}
+      <details${p.status === "pending" ? " open" : ""}><summary>Diff · ${esc(p.path)}</summary><pre>${diffHtml(p.diff)}</pre></details>
+      ${p.status === "pending" ? `<div class="st-acts"><button class="primary" onclick="teamDecide(${i}, true)">Approve and write</button>
+        <button class="secondary" onclick="teamDecide(${i}, false)">Reject</button></div>` : ""}
+    </div>`).join("") || `<span class="hint">No proposals yet.</span>`;
+}
+
+function teamLane(d, rows) {
+  return `<div><div class="team-lane-head">
+      <span class="status-dot dot-${esc(d.status)}"></span><b>${esc(d.name)}</b>
+      ${d.model ? `<span class="eng-chip">${esc(d.model)}</span>` : ""}
+      <span class="hint">${d.active} active · up to ${TEAM.max_active} at once${d.cwd ? " · " + esc(d.cwd) : ""}</span>
+    </div><div class="team-cards">${rows.map(([s, i]) => stCard(s, i)).join("")}</div></div>`;
+}
+
+function stStages(s) {
+  const at = { queued: 0, running: 1, fixing: 1, verifying: 2, passed: 4, failed: -1, cancelled: -2 }[s.status];
+  if (at === -2) return ST_STAGES.map(() => "");
+  if (at === -1) {     // hỏng ở đâu: có verifier rồi = hỏng ở khâu kiểm, chưa = hỏng lúc làm
+    const k = s.verifier_id ? 2 : 1;
+    return ST_STAGES.map((_, j) => j < k ? "done" : j === k ? "bad" : "");
+  }
+  return ST_STAGES.map((_, j) => j < at ? "done" : j === at ? "now" : "");
+}
+
+function stCard(s, i) {
+  const v = s.verdict || {};
+  const live = ST_ACTIVE.includes(s.status);
+  const stages = stStages(s);
+  const label = (j) => j === 1 && s.status === "fixing" ? `Fix ${s.attempts}/${s.max_attempts}` : ST_STAGES[j];
+  const lastLine = s.last ? `${EV_ICON[s.last.kind] || "·"} <span class="s" title="${esc(s.last.summary)}">${esc(s.last.summary)}</span>`
+    : `<span class="s">${live ? "starting…" : esc(s.reason || (s.status === "passed" ? "verified" : s.status))}</span>`;
+  const since = live ? s.created_at : "";
+  return `<div class="st-card s-${esc(s.status)}">
+    <div class="st-top">${badge(esc(s.status), ST_BADGE[s.status])}
+      <span class="eng-chip">${esc(s.kind === "handoff" ? "handoff" : s.playbook)}</span>
+      <b title="${esc(s.title || s.brief)}">${esc(s.title || s.brief.split("\n")[0] || s.id)}</b>
+      <span class="hint st-age" data-since="${esc(since)}">${since ? fmtAge(secsSince(since)) : ""}</span></div>
+    <div class="st-pipe">${stages.map((c, j) => `<span class="${c}">${label(j)}</span>`).join("")}</div>
+    <div class="st-live" id="stl-${i}">${lastLine}</div>
+    <div class="st-meta">
+      <span title="Builder session">${esc(s.session_name || "—")}${s.model ? " · " + esc(s.model) : ""}</span>
+      ${s.verifier_name ? `<span title="Current verifier session">✓ ${esc(s.verifier_name)}</span>` : ""}
+      ${s.branch ? `<span title="${esc(s.worktree)}"><code>${esc(s.branch)}</code>${s.discarded ? " (discarded)" : ""}</span>`
+        : s.kind === "subagent" && s.playbook !== "investigate" ? `<span title="The director's folder is not a git repo, so this sub-agent shared it">no worktree</span>` : ""}
+      <span>${s.runs} run${s.runs === 1 ? "" : "s"} · ${(s.tokens || 0).toLocaleString()} tokens</span>
+      ${s.attempts ? `<span>${s.attempts}/${s.max_attempts} checks failed</span>` : ""}
+    </div>
+    <details><summary>Brief and Done means</summary><pre>${esc(s.brief)}</pre>
+      ${s.done_when ? `<pre>Done means:\n${esc(s.done_when)}</pre>` : ""}</details>
+    ${v.verdict ? `<div class="st-verdict ${v.verdict === "PASS" ? "pass" : "fail"}">
+        <b>${v.verdict === "PASS" ? "Verified" : "Verifier: FAIL"}</b>${v.sha ? ` at <code>${esc(v.sha.slice(0, 10))}</code>` : ""}
+        <details><summary>${v.verdict === "PASS" ? "evidence" : "findings and evidence"}</summary>
+          <pre>${esc([v.findings, v.evidence].filter(Boolean).join("\n\n— evidence —\n"))}</pre></details></div>` : ""}
+    ${s.report ? `<details><summary>Builder's report</summary><pre>${esc(s.report)}</pre></details>` : ""}
+    <div class="st-acts">
+      ${s.session_id ? `<button class="secondary" onclick="teamRun(${i}, 'b')" title="Open the builder's latest run">Builder run</button>` : ""}
+      ${s.verifier_id ? `<button class="secondary" onclick="teamRun(${i}, 'v')" title="Open the verifier's latest run">Verifier run</button>` : ""}
+      ${s.branch && !s.discarded ? `<button class="secondary" onclick="teamDiff(${i})">Diff</button>` : ""}
+      ${s.status === "passed" && s.branch && !s.discarded ? `<button onclick="teamCopyMerge(${i})" title="Copy the merge command">Copy merge</button>` : ""}
+      ${live ? `<button class="danger" onclick="teamCancel(${i})">Cancel</button>` : ""}
+      ${!live && s.kind !== "reflect" && s.status !== "cancelled" && !s.discarded ? `<button onclick="teamReverify(${i})"
+          title="Run one more independent check — e.g. after you fixed something by hand">Verify again</button>` : ""}
+      ${!live && s.worktree && !s.discarded ? `<button class="secondary" onclick="teamDiscard(${i})"
+          title="Remove the worktree and delete its branch">Discard</button>` : ""}
+    </div></div>`;
+}
+
+function diffHtml(text) {
+  return String(text || "").split("\n").map((l) => {
+    const cls = l.startsWith("+++") || l.startsWith("---") ? "" : l.startsWith("+") ? "df-add"
+      : l.startsWith("-") ? "df-del" : l.startsWith("@@") ? "df-hunk" : "";
+    return cls ? `<span class="${cls}">${esc(l)}</span>` : esc(l);
+  }).join("\n");
+}
+
+// Select của Delegate / Graph / Reflect / Models: dựng lại từ dữ liệu mới nhưng GIỮ lựa chọn.
+function teamForms() {
+  const keep = (id) => $(id).value;
+  const dirOpts = TEAM.directors.map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
+  const was = keep("td-director");
+  $("td-director").innerHTML = dirOpts || `<option value="">No agents in this workspace</option>`;
+  if (was) $("td-director").value = was;
+  const names = TEAM.directors.map((d) => d.name);
+  for (const id of ["tg-from", "tg-to"]) {
+    const w = keep(id);
+    $(id).innerHTML = names.map((n) => `<option>${esc(n)}</option>`).join("");
+    if (w) $(id).value = w;
+    else if (id === "tg-to" && names.length > 1) $(id).selectedIndex = 1;   // không mời nối A → A
+  }
+  $("tg-mode").value = TEAM.graph_mode;
+  const tw = keep("tr-target");
+  $("tr-target").innerHTML = TEAM.directors.map((d, di) => `<optgroup label="${esc(d.name)}">
+      <option value="r:${di}">${esc(d.name)}'s role SKILL</option>
+      ${TEAM.playbooks.map((p) => `<option value="p:${di}:${esc(p)}">${esc(p)} playbook (this repo)</option>`).join("")}
+    </optgroup>`).join("");
+  if (tw) $("tr-target").value = tw;
+  const opts = MODEL_TABS.map((t) => `<optgroup label="${esc(t.label)}">${t.models.map((m) =>
+    `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("")}</optgroup>`).join("");
+  $("team-models").innerHTML = TEAM_ROLES.map(([r, label]) => {
+    const cur = TEAM.models[r] || "";
+    const known = cur === "" || cur === "@other" || MODEL_TABS.some((t) => t.models.some((m) => m.id === cur));
+    return `<label class="hint">${esc(label)}
+      <select onchange="teamModel('${r}', this.value)">
+        <option value="">Same as the director</option>
+        <option value="@other">A different CLI than the builder</option>
+        ${known ? "" : `<option value="${esc(cur)}">${esc(cur)}</option>`}${opts}
+      </select></label>`;
+  }).join("") + `<div class="hint">Installed here: ${TEAM.engines.map(esc).join(", ") || "none found"}.
+    A different CLI for verifying means the same blind spot does not grade itself.</div>`;
+  TEAM_ROLES.forEach(([r], k) => { $("team-models").querySelectorAll("select")[k].value = TEAM.models[r] || ""; });
+}
+
+// Live: dòng "đang làm gì" của card nhích theo từng bước run, không đợi refresh cả tab.
+function teamLive(ev) {
+  if (!TEAM || !teamVisible()) return;
+  teamView.forEach((s, i) => {
+    if (ev.session !== s.session_id && ev.session !== s.verifier_id) return;
+    const el = document.getElementById(`stl-${i}`);
+    if (el) el.innerHTML = `${EV_ICON[ev.kind] || "·"} <span class="s" title="${esc(ev.summary)}">${esc(ev.summary)}</span>`;
+  });
+}
+
+setInterval(() => {
+  if (!teamVisible()) return;
+  document.querySelectorAll("#tab-team .st-age[data-since]").forEach((el) => {
+    if (el.dataset.since) el.textContent = fmtAge(secsSince(el.dataset.since));
+  });
+}, 5000);
+
+async function teamDo(path, body, msgId) {
+  try { const r = await api(path, "POST", body || {}); await teamLoad(); return r; }
+  catch (e) {
+    let m = String(e);
+    try { m = JSON.parse(m).error || m; } catch { /* text */ }
+    if (msgId) showMsg(msgId, m, false); else alert(m);
+    return null;
+  }
+}
+
+function teamRun(i, which) {
+  const s = teamView[i];
+  if (s) openSessionRun(which === "v" ? s.verifier_id : s.session_id);
+}
+window.teamRun = teamRun;
+
+async function teamDiff(i) {
+  const s = teamView[i];
+  if (!s) return;
+  openRunId = null;
+  $("dr-title").textContent = `Diff · ${s.title || s.id} · ${s.branch}`;
+  $("dr-badge").innerHTML = badge(esc(s.status), ST_BADGE[s.status]);
+  $("dr-body").innerHTML = `<div class="empty">Reading the branch…</div>`;
+  $("drawer").classList.add("open");
+  $("drawer-overlay").classList.add("open");
+  try {
+    const d = await api(`/api/team/subtasks/${encodeURIComponent(s.id)}/diff`);
+    $("dr-body").innerHTML = `<pre class="tm-pre">${esc(d.stat || "")}</pre>
+      <pre class="tm-pre" style="max-height:none">${diffHtml(d.diff) || "No changes."}</pre>`;
+  } catch (e) { $("dr-body").innerHTML = `<div class="empty">${esc(e)}</div>`; }
+}
+window.teamDiff = teamDiff;
+
+async function teamCopyMerge(i) {
+  const s = teamView[i];
+  if (!s) return;
+  const cmd = `git merge --no-ff ${s.branch}`;
+  try { await navigator.clipboard.writeText(cmd); toast("Copied", cmd); }
+  catch { prompt("Copy the merge command:", cmd); }
+}
+window.teamCopyMerge = teamCopyMerge;
+
+function teamCancel(i) {
+  const s = teamView[i];
+  if (s && confirm(`Cancel "${s.title || s.id}"? A running step is killed; the director is told.`))
+    teamDo(`/api/team/subtasks/${encodeURIComponent(s.id)}/cancel`);
+}
+window.teamCancel = teamCancel;
+
+function teamReverify(i) {
+  const s = teamView[i];
+  if (s) teamDo(`/api/team/subtasks/${encodeURIComponent(s.id)}/reverify`);
+}
+window.teamReverify = teamReverify;
+
+function teamDiscard(i) {
+  const s = teamView[i];
+  if (s && confirm(`Remove the worktree and delete branch ${s.branch}? Commits that were not merged are lost.`))
+    teamDo(`/api/team/subtasks/${encodeURIComponent(s.id)}/discard`);
+}
+window.teamDiscard = teamDiscard;
+
+async function teamDelegate() {
+  const body = { director_id: $("td-director").value, playbook: $("td-playbook").value,
+                 title: $("td-title").value.trim(), brief: $("td-brief").value.trim(),
+                 done_when: $("td-done").value.trim() };
+  if (!body.director_id) return showMsg("td-msg", "Pick who the result goes to.", false);
+  if (!body.brief || !body.done_when) return showMsg("td-msg", "A brief and a Done means are both required.", false);
+  const r = await teamDo("/api/team/spawn", body, "td-msg");
+  if (r) {
+    ["td-title", "td-brief", "td-done"].forEach((id) => { $(id).value = ""; });
+    showMsg("td-msg", `Queued ${r.id}.`, true);
+  }
+}
+window.teamDelegate = teamDelegate;
+
+function teamModel(role, value) {
+  teamDo("/api/team/models", { workspace_id: currentWS, roles: { [role]: value } });
+}
+window.teamModel = teamModel;
+
+function teamGraphMode(mode) {
+  if (mode === "enforced" && !(TEAM.edges || []).length
+      && !confirm("Enforce a graph with no edges? Agents will not be able to signal each other at all "
+                  + "(people and sub-agent results still get through)."))
+    return void ($("tg-mode").value = "open");
+  teamDo("/api/team/edges", { workspace_id: currentWS, mode }, "tg-msg");
+}
+window.teamGraphMode = teamGraphMode;
+
+function teamEdgeAdd() {
+  teamDo("/api/team/edges", { workspace_id: currentWS, from_role: $("tg-from").value, to_role: $("tg-to").value }, "tg-msg");
+}
+window.teamEdgeAdd = teamEdgeAdd;
+
+function teamEdgeDel(i) {
+  const e = TEAM.edges[i];
+  if (e) teamDo("/api/team/edges", { workspace_id: currentWS, remove: true, ...e }, "tg-msg");
+}
+window.teamEdgeDel = teamEdgeDel;
+
+async function teamEdgeLearn() {
+  const r = await teamDo("/api/team/edges", { workspace_id: currentWS, learn: true }, "tg-msg");
+  if (r) showMsg("tg-msg", r.added ? `Added ${r.added} edge${r.added === 1 ? "" : "s"}.` : "No new pairs in recent signals.", true);
+}
+window.teamEdgeLearn = teamEdgeLearn;
+
+async function teamReflect() {
+  const [k, di, pb] = $("tr-target").value.split(":");
+  const d = TEAM.directors[+di];
+  if (!d) return;
+  const body = k === "r" ? { session_id: d.id } : { playbook: pb, director_id: d.id };
+  const r = await teamDo("/api/team/reflect", body, "tr-msg");
+  if (r) showMsg("tr-msg", `Reflecting (${r.id}) — the proposal appears here when it is ready.`, true);
+}
+window.teamReflect = teamReflect;
+
+function teamDecide(i, approve) {
+  const p = TEAM.proposals[i];
+  if (!p) return;
+  if (approve && !confirm(`Write the proposed version to\n${p.path}?`)) return;
+  teamDo(`/api/team/proposals/${p.id}`, { approve }, "tr-msg");
+}
+window.teamDecide = teamDecide;
+window.teamRender = teamRender;
 
 // ── Live updates (SSE) ───────────────────────────────────────────────────────
 
@@ -4642,7 +5003,7 @@ function connectSSE() {
   es.onmessage = (m) => {
     let ev = null;
     try { ev = JSON.parse(m.data); } catch { /* keepalive */ }
-    if (ev && ev.type === "run_event") appendLiveEvent(ev);  // live vào drawer, không cần refetch
+    if (ev && ev.type === "run_event") { appendLiveEvent(ev); teamLive(ev); }  // live, không refetch
     if (ev && ev.type === "board_ping") boardPing(ev);
     // run_event là từng bước của run, chỉ drawer cần (đã append ở trên). Refresh theo nó là 6
     // fetch + dựng lại canvas cho MỖI bước của mọi agent; đầu/cuối run đã có run_start/run.
