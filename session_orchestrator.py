@@ -475,7 +475,7 @@ def init_db():
         "INSERT OR IGNORE INTO workspaces (id, name, root_dir, status, created_at) VALUES (?, ?, ?, 'active', ?)",
         (DEFAULT_WORKSPACE, "Default", "", _now()),
     )
-    # Index (không UNIQUE) trên name để lookup-or-create theo tên nhanh. Không ép unique vì
+    # Index (không UNIQUE) trên name để tra workspace theo tên nhanh. Không ép unique vì
     # DB cũ có thể đã có tên trùng; lookup luôn lấy bản cũ nhất (ORDER BY created_at) cho ổn định.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_workspaces_name ON workspaces(name)")
     # Đội sub-agent của director (subtasks, decision log, đồ thị bàn giao, đề xuất SKILL).
@@ -1031,6 +1031,11 @@ RESERVED_NAMES = ("board", TEAM_SENDER)
 TEAM_NAME_PREFIX = "sub-"
 
 
+def is_reserved_name(name):
+    n = str(name or "").strip().lower()
+    return n in RESERVED_NAMES or n.startswith(TEAM_NAME_PREFIX)
+
+
 def _pair_key(a, b):
     """Khoá cặp KHÔNG thứ tự → A→B và B→A cùng một cặp."""
     return tuple(sorted((a or "", b or "")))
@@ -1133,7 +1138,10 @@ def enqueue_signal(to_session, message, from_session="", requires_approval=0, dr
     "báo cáo" cho báo cáo của B… qua lại tới trần id=94 thay vì dừng sau một vòng."""
     _ensure_db()
     from_session = current_name(from_session, workspace_id)
-    system = from_session in (BOARD_SENDER, TEAM_SENDER)
+    # Hệ thống CHỈ khi không có agent thật nào mang tên đó — không thì một agent tên 'team' (có sẵn
+    # từ trước khi tên bị giữ chỗ) được miễn trần ping-pong và đồ thị bàn giao.
+    system = from_session in (BOARD_SENDER, TEAM_SENDER) \
+        and not get_session_by_name(from_session, workspace_id)
     if expects_reply and from_session not in _HUMAN_SENDERS and not system \
             and _is_answer(from_session, to_session, workspace_id):
         expects_reply = 0
@@ -4327,7 +4335,10 @@ def list_cli_sessions(cwd, cli="claude", limit=20, scan_cap=200):
     out = []
     for f in files:
         sid, got, preview = _scan_transcript(f, cli)
-        if not sid or (want and got != want):
+        # So theo luật thư mục của hệ điều hành, không so chuỗi: trên Windows cwd ghi trong
+        # transcript ('C:\\Users\\…' hay '/x/a_b') và cwd của card ('c:/users/…') khác chuỗi mà
+        # vẫn là một thư mục — so chuỗi là ô chọn phiên rỗng và nút xoá bị từ chối.
+        if not sid or (want and not _same_folder(got, want)):
             continue
         out.append({"id": sid, "cli": cli, "cwd": got, "preview": preview,
                     "ts": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")})
@@ -7225,7 +7236,9 @@ def build_app():
     def _validate_name(name, wid, session_id=None):
         """Tên role phải unique trong workspace (routing theo tên — trùng là signal đi nhầm
         session). session_id: bỏ qua chính nó khi re-register."""
-        if name.lower() in RESERVED_NAMES or name.lower().startswith(TEAM_NAME_PREFIX):
+        same = get_session(session_id) if session_id else None
+        keeps = same and same.get("name") == name   # agent CŨ mang sẵn tên đó: không chặn đăng ký lại
+        if not keeps and is_reserved_name(name):
             return JSONResponse({"error": f"'{name}' is reserved for the orchestrator — "
                                           f"pick another name"}, status_code=400)
         dup = get_session_by_name(name, wid)
@@ -8116,6 +8129,11 @@ def build_app():
                                 status_code=400)
         if name == s["name"]:
             return JSONResponse(s)
+        if is_reserved_name(name) or s.get("team_role"):
+            return JSONResponse({"error": f"'{name}' is reserved for the orchestrator — pick another "
+                                          f"name" if is_reserved_name(name) else
+                                          "the orchestrator names its sub-agents; they cannot be renamed"},
+                                status_code=400)
         if s.get("status") == "running":
             # Đang chạy = CLI đang đọc playbook từ thư mục sắp bị dời.
             return JSONResponse({"error": "session is running — wait for the current turn to finish"},
@@ -8248,6 +8266,9 @@ def build_app():
         import team
         done_when = str(body.get("done_when") or "").strip()
         sender = body.get("from_session", "") or body.get("from_role", "")
+        if str(sender).strip().lower() in RESERVED_NAMES:
+            return JSONResponse({"error": f"from_role '{sender}' is reserved for the orchestrator"},
+                                status_code=400)
         message, expects = body["message"], bool(body.get("expects_reply", True))
         if done_when:
             sender_s = get_session_by_name(current_name(sender, target_ws), target_ws)
@@ -8280,6 +8301,9 @@ def build_app():
             return JSONResponse({"error": "not found"}, status_code=404)
         set_signal_status(sig_id, status)
         publish({"type": "signal", "id": sig_id, "status": status, "workspace_id": row["workspace_id"]})
+        if status == "denied":
+            import team
+            team.on_signal_dropped(sig_id, "denied")   # subtask chờ signal này không đứng mãi
         return JSONResponse({"id": sig_id, "status": status})
 
     async def api_approve(request: Request):
@@ -8581,6 +8605,9 @@ def build_app():
     @asynccontextmanager
     async def lifespan(app):
         init_db()  # idempotent — cũng migrate bảng/cột mới cho DB cũ (vd run_events)
+        import team
+        # Task nền + run dở của đội đã chết cùng tiến trình cũ: kết thúc hoặc kiểm lại (team.py).
+        team.reconcile()
         async with AsyncExitStack() as stack:
             # Khởi động session manager của từng MCP sub-app (bắt buộc cho /mcp).
             await stack.enter_async_context(signal_app.router.lifespan_context(app))
@@ -8634,7 +8661,6 @@ def build_app():
         Route("/api/groups/{gid}", api_delete_group, methods=["DELETE"]),
         Route("/api/workspaces", api_workspaces),
         Route("/api/workspaces", api_create_workspace, methods=["POST"]),
-        # lookup phải đứng TRƯỚC "/{wid}" để không bị nuốt thành wid="lookup".
         Route("/api/workspaces/{wid}", api_workspace_detail),
         Route("/api/workspaces/{wid}", api_delete_workspace, methods=["DELETE"]),
         Route("/api/workspaces/{wid}", api_rename_workspace, methods=["POST"]),
