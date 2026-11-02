@@ -337,11 +337,12 @@ async def record_decision(from_role: str, decision: str, reason: str = "", evide
 
 
 @mcp.tool()
-async def submit_verdict(from_role: str, subtask_id: str, verdict: str, evidence: str = "",
-                         findings: str = "", workspace_id: str = ""):
+async def submit_verdict(from_role: str, subtask_id: str, verdict: str, key: str = "",
+                         evidence: str = "", findings: str = "", workspace_id: str = ""):
     """Verifiers only: record your verdict for the subtask you are checking, exactly once.
 
     Args:
+        key: the key given in your [VERIFY] task message.
         verdict: PASS only if you observed every clause of Done means yourself; otherwise FAIL.
         evidence: the commands you ran and what they printed, per clause.
         findings: on FAIL — what is wrong, where, and how to reproduce it, so the builder can act.
@@ -349,18 +350,19 @@ async def submit_verdict(from_role: str, subtask_id: str, verdict: str, evidence
     if not _INPROC:
         return "Team tools need the orchestrator's built-in signal server (/signal/mcp)."
     import team
-    return team.submit_verdict(from_role, subtask_id, verdict, evidence, findings, workspace_id)
+    return team.submit_verdict(from_role, subtask_id, verdict, evidence, findings, workspace_id,
+                               key=key)
 
 
 @mcp.tool()
 async def propose_skill_change(from_role: str, subtask_id: str, new_text: str, rationale: str = "",
-                               workspace_id: str = ""):
+                               key: str = "", workspace_id: str = ""):
     """Reflection agents only: propose the full new SKILL.md for the playbook you were asked to
     improve. Nothing is written until a human approves it on the dashboard."""
     if not _INPROC:
         return "Team tools need the orchestrator's built-in signal server (/signal/mcp)."
     import team
-    return team.propose_skill_change(from_role, subtask_id, new_text, rationale)
+    return team.propose_skill_change(from_role, subtask_id, new_text, rationale, key=key)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,6 @@ proposal; nothing changes until they do.
 
 ## Finishing
 
-Call `propose_skill_change(from_role="<ROLE_NAME>", subtask_id=..., new_text=<the full new
-SKILL.md>, rationale=<pattern → change, one line each, citing the evidence>)` once, then end your
-turn. Do not call `send_signal`.
+Call `propose_skill_change(from_role="<ROLE_NAME>", subtask_id=..., key=<from your task
+message>, new_text=<the full new SKILL.md>, rationale=<pattern → change, one line each, citing
+the evidence>)` once, then end your turn. Do not call `send_signal`.

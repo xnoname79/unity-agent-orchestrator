@@ -63,10 +63,19 @@ def _so():
     return so
 
 
-def _spawn_bg(coro):
+def _spawn_bg(coro, st_id=""):
+    """Task nền của một subtask. Ném lỗi → subtask 'failed' kèm lý do, không nằm 'queued' mãi
+    (mỗi subtask kẹt là một suất trong ORCH_SUBAGENTS_MAX bị chiếm)."""
     t = asyncio.get_running_loop().create_task(coro)
     _bg.add(t)
-    t.add_done_callback(_bg.discard)
+
+    def done(task):
+        _bg.discard(task)
+        if st_id and not task.cancelled() and task.exception():
+            e = task.exception()
+            print(f"[team] {st_id} error: {e!r}", flush=True)
+            _fail(get_subtask(st_id), f"orchestrator error: {e}")
+    t.add_done_callback(done)
     return t
 
 
@@ -100,6 +109,9 @@ def migrate(conn):
             signal_id INTEGER,                        -- signal đang chạy cho subtask này
             target TEXT NOT NULL DEFAULT '',          -- reflect: role:<sid> | playbook:<tên>
             discarded INTEGER NOT NULL DEFAULT 0,     -- worktree + nhánh đã dọn
+            run_key TEXT NOT NULL DEFAULT '',         -- khoá của phiên đang được phép nộp phán quyết/đề xuất
+            guard TEXT NOT NULL DEFAULT '',           -- ảnh chụp git status trước một lượt CHỈ ĐỌC
+            max_attempts INTEGER NOT NULL DEFAULT 0,  -- 0 = MAX_ATTEMPTS; "kiểm lại" đặt = attempts+1
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             ended_at TEXT NOT NULL DEFAULT ''
@@ -139,6 +151,11 @@ def migrate(conn):
             decided_at TEXT NOT NULL DEFAULT ''
         );
     """)
+    tcols = [r[1] for r in conn.execute("PRAGMA table_info(subtasks)").fetchall()]
+    for col, ddl in (("run_key", "TEXT NOT NULL DEFAULT ''"), ("guard", "TEXT NOT NULL DEFAULT ''"),
+                     ("max_attempts", "INTEGER NOT NULL DEFAULT 0")):
+        if col not in tcols:
+            conn.execute(f"ALTER TABLE subtasks ADD COLUMN {col} {ddl}")
     scols = [r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
     # parent_id: director sở hữu phiên này. team_role: subagent | verifier | reflect — phiên của đội
     # không lên canvas, không hiện trong list_agents, và không được tự send_signal.
@@ -172,17 +189,35 @@ def _exec(sql, args=()):
     return cur.lastrowid
 
 
+def _exec_n(sql, args=()):
+    so = _so()
+    conn = so._conn()
+    cur = conn.execute(sql, args)
+    conn.commit()
+    conn.close()
+    return cur.rowcount
+
+
 def get_subtask(st_id):
     return _row("SELECT * FROM subtasks WHERE id = ?", (st_id,))
 
 
-def _update(st_id, **fields):
+def _update(st_id, _from=None, **fields):
+    """Ghi subtask. _from = các status được phép đi từ đó: lệnh huỷ chen vào giữa hai bước (lúc
+    đang chờ git hay đang dựng phiên) thì bước sau KHÔNG được ghi đè 'cancelled'. Trả None nếu
+    không ghi (status đã khác)."""
     so = _so()
     fields["updated_at"] = so._now()
     if fields.get("status") in ("passed", "failed", "cancelled"):
         fields.setdefault("ended_at", so._now())
     cols = ", ".join(f"{k} = ?" for k in fields)
-    _exec(f"UPDATE subtasks SET {cols} WHERE id = ?", (*fields.values(), st_id))
+    if _from:
+        n = _exec_n(f"UPDATE subtasks SET {cols} WHERE id = ? AND status IN "
+                    f"({','.join('?' * len(_from))})", (*fields.values(), st_id, *_from))
+        if not n:
+            return None
+    else:
+        _exec(f"UPDATE subtasks SET {cols} WHERE id = ?", (*fields.values(), st_id))
     st = get_subtask(st_id)
     if st:
         so.publish({"type": "team", "subtask": st_id, "status": st["status"],
@@ -237,6 +272,33 @@ def head_sha(cwd):
 def is_dirty(cwd):
     rc, out = _git(["status", "--porcelain"], cwd)
     return rc == 0 and bool(out.strip())
+
+
+def snapshot(cwd):
+    """Trạng thái git của một thư mục, để biết một lượt CHỈ ĐỌC có sửa gì không. '' = không đo
+    được (không phải git repo): khi đó không phát hiện được, và màn Team ghi rõ điều đó."""
+    if not cwd:
+        return ""
+    rc, out = _git(["status", "--porcelain", "--untracked-files=all"], cwd)
+    if rc != 0:
+        return ""
+    return json.dumps({"head": head_sha(cwd), "status": sorted(out.splitlines())})
+
+
+def changed_since(cwd, before):
+    """Những dòng git status MỚI so với ảnh chụp (kèm 'HEAD moved' nếu HEAD đổi). [] = không đổi.
+    Giới hạn đã biết: một file vốn đã sửa dở trước lượt đó, bị sửa tiếp, không đổi dòng status."""
+    if not before:
+        return []
+    try:
+        b = json.loads(before)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    a = json.loads(snapshot(cwd) or "{}") or {"head": "", "status": []}
+    out = sorted(set(a["status"]) - set(b["status"]))
+    if a["head"] != b["head"]:
+        out.insert(0, f"HEAD moved {b['head'][:10]} → {a['head'][:10]}")
+    return out
 
 
 def _worktrees_root():
@@ -408,6 +470,19 @@ def resolve_model(workspace_id, role, director, builder_model=""):
 
 # ─── Signal & thông điệp ─────────────────────────────────────────────────────
 
+def _attach(st_id, sig, _from=None, **fields):
+    """Gắn signal vừa xếp hàng vào subtask. Subtask bị huỷ trong lúc đó → signal bị từ chối luôn."""
+    st = _update(st_id, _from=_from or ACTIVE, signal_id=sig, **fields)
+    if st is None:
+        _exec("UPDATE signals SET status = 'denied', reason = 'subtask cancelled' "
+              "WHERE id = ? AND status IN ('pending', 'approved')", (sig,))
+    return st
+
+
+def _cap(st):
+    return st.get("max_attempts") or MAX_ATTEMPTS
+
+
 def _enqueue(session_id, message, workspace_id):
     so = _so()
     sid = so.enqueue_signal(session_id, message, TEAM_SENDER, 0, 0, workspace_id, expects_reply=0)
@@ -435,7 +510,7 @@ def _brief_msg(st, director_name):
 
 
 def _fix_msg(st, findings):
-    return (f"[VERIFIER FINDINGS {st['id']} — attempt {st['attempts']}/{MAX_ATTEMPTS} failed]\n"
+    return (f"[VERIFIER FINDINGS {st['id']} — attempt {st['attempts']}/{_cap(st)} failed]\n"
             f"An independent verifier checked your work against the contract and it did not pass.\n\n"
             f"## Findings\n{findings}\n\n"
             f"## Done means (unchanged)\n{st['done_when']}\n\n"
@@ -455,7 +530,9 @@ def _verify_msg(st):
             f"## The builder's report — a claim, not evidence\n{report}\n\n"
             f"Do not change any file or git state. When done call exactly once:\n"
             f"submit_verdict(from_role=\"<your session name>\", subtask_id=\"{st['id']}\", "
-            f"verdict=\"PASS\" or \"FAIL\", evidence=..., findings=...)\nThen end your turn.")
+            f"key=\"{st['run_key']}\", verdict=\"PASS\" or \"FAIL\", evidence=..., findings=...)\n"
+            f"The key proves the verdict comes from you; never write it anywhere else.\n"
+            f"Then end your turn.")
 
 
 def _notify(st, text):
@@ -536,7 +613,7 @@ def spawn_subagent(director_id, playbook, brief, done_when, title="", model=""):
            str(title or "")[:120], str(brief), str(done_when), str(model or ""), now, now))
     so.publish({"type": "team", "subtask": st_id, "status": "queued",
                 "workspace_id": director.get("workspace_id")})
-    _spawn_bg(_start_subagent(st_id))
+    _spawn_bg(_start_subagent(st_id), st_id)
     return {"id": st_id, "status": "queued"}
 
 
@@ -567,25 +644,33 @@ async def _start_subagent(st_id):
     fields = {"repo": repo}
     if write and repo:
         wt, branch, base = await asyncio.to_thread(make_worktree, repo, st_id)
-        if wt:
-            cwd = wt
-            fields.update(worktree=wt, branch=branch, base_sha=base, head_sha=base)
+        if not wt:
+            # KHÔNG lùi về làm thẳng trong checkout của người dùng: đó là đúng thứ worktree
+            # tồn tại để tránh. (Thư mục không phải git repo thì không có worktree nào để thử —
+            # trường hợp đó đi tiếp và màn Team ghi "no worktree".)
+            return _fail(st, "could not create a git worktree for it (see the orchestrator log); "
+                             "nothing was run in your checkout")
+        cwd = wt
+        fields.update(worktree=wt, branch=branch, base_sha=base, head_sha=base)
     elif repo:
         await asyncio.to_thread(_exclude_team_skills, repo)
+    if not write:
+        fields["guard"] = await asyncio.to_thread(snapshot, cwd)
     model = st["model"] or resolve_model(st["workspace_id"], PLAYBOOKS[st["playbook"]][0], director)
     fields["model"] = model
-    st = _update(st_id, **fields)
+    st = _update(st_id, _from=("queued",), **fields)
+    if st is None:
+        return
     name = f"sub-{st_id[3:]}-{st['playbook']}"
     sess, err = await _spawn_session(name, cwd, st["playbook"], model, director,
                                      st["workspace_id"], repo)
     if err:
         return _fail(get_subtask(st_id), f"could not start the sub-agent: {err}")
     _set_team(sess["id"], director["id"], "subagent")
-    st = get_subtask(st_id)
-    if st["status"] == "cancelled":
-        return
-    sig = _enqueue(sess["id"], _brief_msg(st, director["name"]), st["workspace_id"])
-    _update(st_id, session_id=sess["id"], status="running", signal_id=sig)
+    if _update(st_id, _from=("queued",), session_id=sess["id"], status="running") is None:
+        return                                   # huỷ trong lúc dựng phiên
+    sig = _enqueue(sess["id"], _brief_msg(get_subtask(st_id), director["name"]), st["workspace_id"])
+    _attach(st_id, sig)
 
 
 def create_handoff(sender_id, target_id, signal_id, done_when, message):
@@ -597,11 +682,11 @@ def create_handoff(sender_id, target_id, signal_id, done_when, message):
     st_id, now = _new_id(), so._now()
     text = so._coerce_message(message)
     _exec("INSERT INTO subtasks (id, workspace_id, director_id, session_id, kind, playbook, title, "
-          "brief, done_when, model, status, signal_id, repo, created_at, updated_at) "
-          "VALUES (?, ?, ?, ?, 'handoff', 'handoff', ?, ?, ?, ?, 'running', ?, ?, ?, ?)",
+          "brief, done_when, model, status, signal_id, created_at, updated_at) "
+          "VALUES (?, ?, ?, ?, 'handoff', 'handoff', ?, ?, ?, ?, 'running', ?, ?, ?)",
           (st_id, target.get("workspace_id") or so.DEFAULT_WORKSPACE, sender_id, target_id,
            text.splitlines()[0][:120] if text else "", text, str(done_when),
-           target.get("model", ""), signal_id, repo_root(target.get("cwd") or ""), now, now))
+           target.get("model", ""), signal_id, now, now))
     so.publish({"type": "team", "subtask": st_id, "status": "running",
                 "workspace_id": target.get("workspace_id")})
     return st_id
@@ -638,26 +723,42 @@ async def _after_work(st, result):
         why = result.get("reason") or result.get("result") or "the run failed"
         return _fail(st, f"the sub-agent's run failed: {str(why)[:300]}")
     report = str(result.get("result") or "")[:REPORT_MAX]
+    if st["guard"]:                       # investigate / reflect: phải là lượt CHỈ ĐỌC
+        so = _so()
+        cwd = (so.get_session(st["session_id"]) or {}).get("cwd") or ""
+        touched = await asyncio.to_thread(changed_since, cwd, st["guard"])
+        if touched:
+            return _fail(st, "a read-only sub-agent changed files in your folder (nothing was "
+                             "undone — check them): " + "; ".join(touched[:12]))
     if st["kind"] == "reflect":
         ok = _row("SELECT 1 FROM skill_proposals WHERE subtask_id = ?", (st["id"],))
-        _update(st["id"], report=report, status="passed" if ok else "failed",
-                reason="" if ok else "no change was proposed")
+        if _update(st["id"], _from=("running",), report=report, run_key="",
+                   status="passed" if ok else "failed",
+                   reason="" if ok else "no change was proposed") is None:
+            return
         return _finish(get_subtask(st["id"]))
     fields = {"report": report}
     if st["worktree"]:
         fields["head_sha"] = await asyncio.to_thread(
             commit_leftovers, st["worktree"], f"{st['id']}: uncommitted work at end of turn")
-    st = _update(st["id"], **fields)
-    await _start_verifier(st)
+    st = _update(st["id"], _from=("running", "fixing"), **fields)
+    if st is not None:
+        await _start_verifier(st, _from=("running", "fixing"))
 
 
-async def _start_verifier(st):
+async def _start_verifier(st, _from=("verifying",)):
     so = _so()
-    st = _update(st["id"], status="verifying", verdict="{}", verifier_id="")
     builder = so.get_session(st["session_id"]) or {}
     director = so.get_session(st["director_id"]) or builder
-    model = resolve_model(st["workspace_id"], "verify", director, builder.get("model", ""))
     cwd = st["worktree"] or builder.get("cwd") or director.get("cwd") or ""
+    # Không có worktree = verifier chạy trong thư mục thật của người dùng: chụp git status để biết
+    # nó có sửa gì không (worktree thì so HEAD + restore ở _after_verify).
+    guard = "" if st["worktree"] else await asyncio.to_thread(snapshot, cwd)
+    st = _update(st["id"], _from=_from, status="verifying", verdict="{}", verifier_id="",
+                 run_key=secrets.token_hex(8), guard=guard)
+    if st is None:
+        return
+    model = resolve_model(st["workspace_id"], "verify", director, builder.get("model", ""))
     n = _row("SELECT COUNT(*) n FROM sessions WHERE team_role = 'verifier' AND name LIKE ?",
              (f"sub-{st['id'][3:]}-verify%",))["n"] + 1
     name = f"sub-{st['id'][3:]}-verify{n}"
@@ -666,10 +767,10 @@ async def _start_verifier(st):
     if err:
         return _fail(get_subtask(st["id"]), f"could not start a verifier: {err}")
     _set_team(sess["id"], st["director_id"], "verifier")
-    if get_subtask(st["id"])["status"] != "verifying":     # bị huỷ lúc đang dựng
-        return
+    if _update(st["id"], _from=("verifying",), verifier_id=sess["id"]) is None:
+        return                                   # huỷ lúc đang dựng
     sig = _enqueue(sess["id"], _verify_msg(st), st["workspace_id"])
-    _update(st["id"], verifier_id=sess["id"], signal_id=sig)
+    _attach(st["id"], sig, _from=("verifying",))
 
 
 async def _after_verify(st, result):
@@ -683,33 +784,44 @@ async def _after_verify(st, result):
         if now != st["head_sha"] or dirty:
             tampered = "the verifier changed the worktree, so its verdict does not count"
             await asyncio.to_thread(restore, st["worktree"], st["head_sha"])
-    if not tampered and v.get("sha") and st["worktree"] and v["sha"] != st["head_sha"]:
-        tampered = "the verdict was for a different commit"
+    elif st["guard"]:
+        touched = await asyncio.to_thread(changed_since, verifier.get("cwd") or "", st["guard"])
+        if touched:
+            # Thư mục THẬT của người dùng: không tự hoàn tác (có thể chính người dùng đang sửa),
+            # chỉ huỷ phán quyết và nói rõ file nào.
+            tampered = ("files changed in the folder while the verifier ran, so its verdict does "
+                        "not count (nothing was undone — if you edited them yourself, use Verify "
+                        "again): " + "; ".join(touched[:12]))
     _drop_skill(verifier.get("cwd") if not st["worktree"] else "", verifier.get("name", ""))
     if v.get("verdict") == "PASS" and not tampered:
-        _update(st["id"], status="passed", reason="")
+        if _update(st["id"], _from=("verifying",), status="passed", reason="", run_key="") is None:
+            return
         return _finish(get_subtask(st["id"]))
     findings = tampered or v.get("findings") or (
         "the verifier ended its turn without calling submit_verdict" if not v else "no findings given")
     attempts = st["attempts"] + 1
-    if attempts >= MAX_ATTEMPTS:
-        _update(st["id"], attempts=attempts, status="failed",
-                reason=f"did not pass verification: {findings[:300]}")
+    if attempts >= _cap(st):
+        if _update(st["id"], _from=("verifying",), attempts=attempts, status="failed", run_key="",
+                   reason=f"did not pass verification: {findings[:300]}") is None:
+            return
         return _finish(get_subtask(st["id"]))
-    st = _update(st["id"], attempts=attempts, status="fixing")
+    st = _update(st["id"], _from=("verifying",), attempts=attempts, status="fixing", run_key="")
+    if st is None:
+        return
     if tampered or not v:
         # Lỗi của NGƯỜI KIỂM, không phải của người làm: kiểm lại bằng một verifier mới.
-        return await _start_verifier(st)
+        return await _start_verifier(st, _from=("fixing",))
     sig = _enqueue(st["session_id"], _fix_msg(st, findings), st["workspace_id"])
-    _update(st["id"], signal_id=sig)
+    _attach(st["id"], sig, _from=("fixing",))
 
 
 def _fail(st, reason, notify=True):
+    """Chỉ đánh 'failed' một subtask CÒN SỐNG: đã huỷ / đã xong thì giữ nguyên, không báo lần hai."""
     if not st:
         return
-    _update(st["id"], status="failed", reason=reason[:500])
-    if notify:
-        _finish(get_subtask(st["id"]))
+    done = _update(st["id"], _from=ACTIVE, status="failed", reason=reason[:500], run_key="")
+    if done is not None and notify:
+        _finish(done)
 
 
 def _finish(st):
@@ -725,7 +837,10 @@ def _finish(st):
 
 # ─── Công cụ của agent (signal MCP gọi vào) ──────────────────────────────────
 
-def submit_verdict(verifier_name, subtask_id, verdict, evidence="", findings="", workspace_id=""):
+def submit_verdict(verifier_name, subtask_id, verdict, evidence="", findings="", workspace_id="",
+                   key=""):
+    """Tên phiên đoán được (sub-<id>-verify<n>), nên tên KHÔNG đủ để chứng minh ai đang nộp: khoá
+    run_key chỉ nằm trong lời giao việc của đúng verifier này, đổi mỗi lần kiểm."""
     so = _so()
     st = get_subtask(subtask_id)
     if not st:
@@ -734,6 +849,8 @@ def submit_verdict(verifier_name, subtask_id, verdict, evidence="", findings="",
     if st["status"] != "verifying" or me.get("name") != verifier_name:
         return (f"⛔ only the current verifier of {subtask_id} can submit a verdict, while it is "
                 f"being verified")
+    if not st["run_key"] or not secrets.compare_digest(str(key or ""), st["run_key"]):
+        return "⛔ wrong or missing key — use the key from your [VERIFY] task message"
     verdict = str(verdict or "").strip().upper()
     if verdict not in ("PASS", "FAIL"):
         return "⛔ verdict must be PASS or FAIL"
@@ -743,7 +860,7 @@ def submit_verdict(verifier_name, subtask_id, verdict, evidence="", findings="",
     _update(subtask_id, verdict=json.dumps({
         "verdict": verdict, "evidence": str(evidence)[:REPORT_MAX],
         "findings": str(findings)[:REPORT_MAX], "sha": st["head_sha"], "by": verifier_name,
-        "at": so._now()}))
+        "at": so._now()}), _from=("verifying",))
     return f"Verdict {verdict} recorded for {subtask_id}. End your turn now."
 
 
@@ -807,7 +924,10 @@ def cancel(st_id, by_user=False):
     for sid in (st["session_id"], st["verifier_id"]):
         if sid:
             _kill(sid)
-    st = _update(st_id, status="cancelled", reason="cancelled by the user" if by_user else "cancelled")
+    st = _update(st_id, _from=ACTIVE, status="cancelled", run_key="",
+                 reason="cancelled by the user" if by_user else "cancelled")
+    if st is None:
+        return {"error": "it finished in the meantime"}
     if by_user and st["kind"] != "reflect":
         _notify(st, f"[SUB-AGENT CANCELLED] {st_id} · {st['title'] or st['playbook']} was cancelled "
                     f"by the user from the dashboard. Do not reply to this.")
@@ -824,12 +944,16 @@ async def reverify(st_id):
         return {"error": "only a finished subtask can be verified again"}
     if st["discarded"]:
         return {"error": "its worktree was discarded"}
+    # Một lần kiểm thêm: hạn mức = số lần đã trượt + 1, số lần trượt THẬT giữ nguyên trong thông báo.
+    # Chuyển trạng thái NGAY (có _from) để bấm hai lần không đẻ hai verifier.
+    if _update(st_id, _from=("failed", "passed"), status="fixing", ended_at="", reason="",
+               max_attempts=st["attempts"] + 1) is None:
+        return {"error": "it is already being handled"}
     if st["worktree"]:
         sha = await asyncio.to_thread(commit_leftovers, st["worktree"],
                                       f"{st_id}: changes made before re-verification")
-        st = _update(st_id, head_sha=sha)
-    _update(st_id, attempts=max(0, MAX_ATTEMPTS - 1), ended_at="")
-    _spawn_bg(_start_verifier(get_subtask(st_id)))
+        _update(st_id, head_sha=sha)
+    _spawn_bg(_start_verifier(get_subtask(st_id), _from=("fixing",)), st_id)
     return {"ok": True}
 
 
@@ -849,6 +973,37 @@ def on_session_removed(session_id):
     for st in _rows(f"SELECT id FROM subtasks WHERE director_id = ? "
                     f"AND status IN ({','.join('?' * len(ACTIVE))})", (session_id, *ACTIVE)):
         cancel(st["id"])
+
+
+def on_signal_dropped(signal_id, why):
+    """Signal của một subtask bị người từ chối / xoá: không run nào sẽ tới, nên subtask kết thúc
+    ngay thay vì nằm 'running' mãi và chiếm một suất của director."""
+    st = _row("SELECT * FROM subtasks WHERE signal_id = ?", (signal_id,))
+    if st and st["status"] in ACTIVE:
+        _fail(st, f"its task message was {why} before it ran")
+
+
+def reconcile():
+    """Lúc server khởi động: task nền và run đang chạy dở đã mất cùng tiến trình cũ. Subtask nào
+    không còn ai đẩy tiếp thì kết thúc (kèm lý do, báo director) — không bao giờ 'đứng' vô hạn.
+    Đang chờ kiểm mà chưa có verifier thì kiểm lại (chỉ đọc, an toàn để chạy lại)."""
+    redo = []
+    for st in _rows(f"SELECT * FROM subtasks WHERE status IN ({','.join('?' * len(ACTIVE))})", ACTIVE):
+        sig = _row("SELECT status FROM signals WHERE id = ?", (st["signal_id"],)) \
+            if st.get("signal_id") else None
+        live = sig and sig["status"] in ("pending", "approved")
+        if st["status"] == "queued":
+            _fail(st, "the orchestrator restarted before it started — delegate it again",
+                  notify=st["kind"] != "reflect")
+        elif st["status"] == "verifying" and not live:
+            redo.append(st["id"])
+        elif not live:
+            _fail(st, "the orchestrator restarted while it was running — use Verify again or "
+                      "delegate it again")
+    for st_id in redo:
+        _spawn_bg(_start_verifier(get_subtask(st_id)), st_id)
+    if redo:
+        print(f"[team] re-verifying after restart: {', '.join(redo)}", flush=True)
 
 
 # ─── Đồ thị bàn giao ─────────────────────────────────────────────────────────
@@ -999,7 +1154,7 @@ def start_reflect(target, director_id):
           "done_when, status, target, repo, created_at, updated_at) "
           "VALUES (?, ?, ?, 'reflect', 'reflect', ?, ?, '', 'queued', ?, ?, ?, ?)",
           (st_id, ws, director_id, f"Reflect on {t['label']}", brief, target, repo, now, now))
-    _spawn_bg(_start_reflect(st_id, t["cwd"]))
+    _spawn_bg(_start_reflect(st_id, t["cwd"]), st_id)
     return {"id": st_id, "status": "queued"}
 
 
@@ -1011,19 +1166,24 @@ async def _start_reflect(st_id, cwd):
         return _fail(st, "agent was removed", notify=False)
     model = resolve_model(st["workspace_id"], "investigate", director)
     name = f"sub-{st_id[3:]}-reflect"
+    guard = await asyncio.to_thread(snapshot, cwd)
     sess, err = await _spawn_session(name, cwd, "reflect", model, director, st["workspace_id"],
                                      st["repo"])
     if err:
         return _fail(get_subtask(st_id), f"could not start reflection: {err}", notify=False)
     _set_team(sess["id"], director["id"], "reflect")
+    key = secrets.token_hex(8)
+    if _update(st_id, _from=("queued",), session_id=sess["id"], status="running", model=model,
+               run_key=key, guard=guard) is None:
+        return
     msg = (f"[REFLECT {st_id}]\n{st['brief']}\n\nWhen done call propose_skill_change("
-           f"from_role=\"{name}\", subtask_id=\"{st_id}\", new_text=<full SKILL.md>, "
-           f"rationale=...) once, then end your turn.")
+           f"from_role=\"{name}\", subtask_id=\"{st_id}\", key=\"{key}\", "
+           f"new_text=<full SKILL.md>, rationale=...) once, then end your turn.")
     sig = _enqueue(sess["id"], msg, st["workspace_id"])
-    _update(st_id, session_id=sess["id"], status="running", signal_id=sig, model=model)
+    _attach(st_id, sig, _from=("running",))
 
 
-def propose_skill_change(reflector_name, subtask_id, new_text, rationale=""):
+def propose_skill_change(reflector_name, subtask_id, new_text, rationale="", key=""):
     so = _so()
     st = get_subtask(subtask_id)
     if not st or st["kind"] != "reflect":
@@ -1031,6 +1191,8 @@ def propose_skill_change(reflector_name, subtask_id, new_text, rationale=""):
     me = so.get_session(st["session_id"]) or {}
     if st["status"] != "running" or me.get("name") != reflector_name:
         return "⛔ only the reflection agent of this subtask can propose, while it runs"
+    if not st["run_key"] or not secrets.compare_digest(str(key or ""), st["run_key"]):
+        return "⛔ wrong or missing key — use the key from your [REFLECT] task message"
     if _row("SELECT 1 FROM skill_proposals WHERE subtask_id = ?", (subtask_id,)):
         return "⛔ already proposed — one proposal per reflection"
     if not str(new_text or "").strip():

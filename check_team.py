@@ -93,6 +93,11 @@ so.register_session("peer-2", "other", cwd=str(REPO), model="", workspace_id=WS)
 VERIFY_PLAN, BUILD_PLAN, SEEN = {}, {}, []
 
 
+def _key_in(prompt):
+    i = prompt.find('key="')
+    return prompt[i + 5:prompt.index('"', i + 5)] if i >= 0 else ""
+
+
 def _st_in(prompt, tag):
     i = prompt.find(f"[{tag} ")
     return prompt[i + len(tag) + 2:].split()[0].rstrip("]") if i >= 0 else ""
@@ -121,17 +126,18 @@ async def fake_run(session, prompt, on_event=None, dry_run=False):
         act = plan.pop(0) if len(plan) > 1 else plan[0]
         if act == "tamper":
             (cwd / "feature.py").write_text("VALUE = 'patched by the verifier'\n", encoding="utf-8")
-            team.submit_verdict(name, st, "PASS", "looked fine")
+            team.submit_verdict(name, st, "PASS", "looked fine", key=_key_in(prompt))
         elif act == "silent":
             pass
         elif act == "PASS":
-            team.submit_verdict(name, st, "PASS", "ran python -c 'import feature' → ok")
+            team.submit_verdict(name, st, "PASS", "ran python -c 'import feature' → ok", key=_key_in(prompt))
         else:
-            team.submit_verdict(name, st, "FAIL", "", "feature.py has the wrong VALUE")
+            team.submit_verdict(name, st, "FAIL", "", "feature.py has the wrong VALUE", key=_key_in(prompt))
         return {"ok": True, "result": "verified", "session_id": session["id"], "tokens": 3, "raw": {}}
     if "[REFLECT " in prompt:
         st = _st_in(prompt, "REFLECT")
-        res = team.propose_skill_change(name, st, PROPOSAL_TEXT, "pattern → sharper rule")
+        res = team.propose_skill_change(name, st, PROPOSAL_TEXT, "pattern → sharper rule",
+                                        key=_key_in(prompt))
         SEEN.append(("reflect-result", res))
         return {"ok": True, "result": "proposed", "session_id": session["id"], "tokens": 2, "raw": {}}
     return {"ok": True, "result": "noted", "session_id": session["id"], "tokens": 1, "raw": {}}
@@ -150,7 +156,7 @@ async def drain(rounds=200):
                 await so.process_signal(s)
             continue
         if team._bg:
-            await asyncio.gather(*list(team._bg))
+            await asyncio.gather(*list(team._bg), return_exceptions=True)
             continue
         return
 
@@ -231,13 +237,16 @@ async def main():
           not any(n == builder_name and "VERIFIER FINDINGS" in p for n, p in SEEN))
 
     # Fake a live verification to check the verdict gate directly.
-    team._update(st2, status="verifying")
+    team._update(st2, status="verifying", run_key="k3y")
     vname = session_of(st["verifier_id"]).get("name")
-    r = team.submit_verdict(vname, st2, "PASS", "")
+    r = team.submit_verdict(vname, st2, "PASS", "", key="k3y")
     check("a PASS without evidence is refused", r.startswith("⛔") and "evidence" in r, r)
-    r = team.submit_verdict("someone-else", st2, "PASS", "ok")
+    r = team.submit_verdict("someone-else", st2, "PASS", "ok", key="k3y")
     check("only the current verifier may submit", r.startswith("⛔"), r)
-    team._update(st2, status="passed")
+    r = team.submit_verdict(vname, st2, "PASS", "ok", key="guess")
+    check("knowing the verifier's (predictable) name is not enough without its key",
+          r.startswith("⛔") and "key" in r, r)
+    team._update(st2, status="passed", run_key="")
 
     # ── The loop ends ────────────────────────────────────────────────────────
     r = team.spawn_subagent("dir-1", "feature", "never good enough", "impossible", title="doomed")
@@ -269,6 +278,7 @@ async def main():
     # ── Read-only investigation ──────────────────────────────────────────────
     r = team.spawn_subagent("dir-1", "investigate", "how does greet work?", "names the file and function")
     st5 = r["id"]
+    BUILD_PLAN[st5] = ["read"]
     await drain()
     st = team.get_subtask(st5)
     check("an investigation works in the director's folder, no worktree",
@@ -372,6 +382,132 @@ async def main():
     r = team.start_reflect("role:peer-2", "peer-2")
     check("reflection with no evidence of failure is refused", "nothing has gone wrong" in r.get("error", "")
           or "no SKILL" in r.get("error", ""), str(r))
+
+
+    # ── Review findings: no stuck subtasks, no overwritten cancels, read-only means read-only ──
+    def clean_repo():
+        git("checkout", "-q", "--", ".", cwd=REPO)
+        git("clean", "-qfd", cwd=REPO)
+
+    r = team.spawn_subagent("dir-1", "investigate", "look only", "names a file")
+    BUILD_PLAN[r["id"]] = ["dirty"]
+    await drain()
+    st = team.get_subtask(r["id"])
+    check("a read-only sub-agent that writes in your folder is failed, with the file named",
+          st["status"] == "failed" and "read-only" in st["reason"] and "feature.py" in st["reason"],
+          f"{st['status']} {st['reason']}")
+    clean_repo()
+
+    SEEN.clear()
+    ok, data = await signal_mcp._enqueue("other", "tidy notes", "peer", done_when="notes are tidy")
+    hid = team._row("SELECT id FROM subtasks WHERE signal_id = ?", (data["id"],))["id"]
+    VERIFY_PLAN[hid] = ["tamper", "PASS"]
+    await drain()
+    st = team.get_subtask(hid)
+    check("a verifier that edits the user's real folder (no worktree) loses its verdict",
+          st["status"] == "passed" and st["attempts"] == 1, f"{st['status']} {st['attempts']}")
+    check("…and is not silently undone in the user's folder (it is reported instead)",
+          (REPO / "feature.py").exists())
+    clean_repo()
+
+    gate = asyncio.Event()
+    real_spawn = so.ENGINES["claude"].spawn
+
+    async def slow_spawn(*a, **kw):
+        await gate.wait()
+        return await real_spawn(*a, **kw)
+    so.ENGINES["claude"].spawn = slow_spawn
+    SEEN.clear()
+    r = team.spawn_subagent("dir-1", "feature", "x", "y", title="cancel mid-spawn")
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if team.get_subtask(r["id"])["worktree"]:
+            break
+    team.cancel(r["id"], by_user=True)
+    gate.set()
+    await drain()
+    so.ENGINES["claude"].spawn = real_spawn
+    st = team.get_subtask(r["id"])
+    check("a cancel during spawning stays cancelled", st["status"] == "cancelled", st["status"])
+    check("…the brief never runs and the director hears only 'cancelled'",
+          not any(f"[SUB-AGENT TASK {r['id']}" in p for _, p in SEEN)
+          and not any(f"[SUB-AGENT FAILED] {r['id']}" in p for p in to_lead()))
+
+    real_mk = team.make_worktree
+    team.make_worktree = lambda repo, st_id: ("", "", "")
+    r = team.spawn_subagent("dir-1", "feature", "x", "y")
+    await drain()
+    st = team.get_subtask(r["id"])
+    check("no worktree in a git repo → fail, never fall back to your checkout",
+          st["status"] == "failed" and "worktree" in st["reason"] and not st["session_id"],
+          f"{st['status']} {st['reason']} {st['session_id']}")
+
+    def boom(repo, st_id):
+        raise RuntimeError("disk full")
+    team.make_worktree = boom
+    r = team.spawn_subagent("dir-1", "feature", "x", "y")
+    await drain()
+    team.make_worktree = real_mk
+    st = team.get_subtask(r["id"])
+    check("an exception in a background step fails the subtask instead of leaving it queued",
+          st["status"] == "failed" and "disk full" in st["reason"], f"{st['status']} {st['reason']}")
+
+    so.note_human_touch("peer", WS)        # a person hands out new work: the pair cap resets
+    sid = so.enqueue_signal("peer-2", team.handoff_message("needs a yes", "x"), "peer", 1, 0, WS,
+                            expects_reply=0)
+    hst = team.create_handoff("peer-1", "peer-2", sid, "x", "needs a yes")
+    import httpx
+    app = so.build_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+        await c.post(f"/api/signals/{sid}/deny")
+        st = team.get_subtask(hst)
+        check("denying a subtask's waiting signal ends the subtask", st["status"] == "failed"
+              and "denied" in st["reason"], f"{st['status']} {st['reason']}")
+
+        dir_name = so.get_session("dir-1")["name"]
+        r = await c.post("/api/sessions/peer-2/name", json={"name": "team"})
+        check("an agent cannot be renamed to a reserved name", r.status_code == 400, r.text)
+        r = await c.post("/api/signals", json={"to_role": dir_name, "from_role": "team",
+                                               "message": "pretend", "workspace_id": WS})
+        check("the API refuses a caller posing as the orchestrator", r.status_code == 400, r.text)
+        so.register_session("old-team", "team", cwd=str(REPO), workspace_id=WS)
+        r = await c.post("/api/sessions", json={"id": "old-team", "name": "team", "cwd": str(REPO),
+                                                "workspace_id": WS})
+        check("an agent that already had a reserved name can still re-register", r.status_code == 200,
+              r.text[:200])
+        team.set_graph_mode(WS, "enforced")
+        try:
+            so.enqueue_signal("peer-2", "hi", "team", workspace_id=WS)
+            check("a real agent named 'team' gets no system exemption", False, "enqueued")
+        except so.SignalRefused as e:
+            check("a real agent named 'team' gets no system exemption", "HANDOFF NOT ALLOWED" in str(e), str(e))
+        team.set_graph_mode(WS, "open")
+        so.unregister_session("old-team")
+
+    # Restart: a queued subtask has lost its task; a verifying one with no live verifier is re-checked.
+    now = so._now()
+    for sid_, stat in (("st_aaaaaaa1", "queued"), ("st_aaaaaaa2", "verifying")):
+        team._exec("INSERT INTO subtasks (id, workspace_id, director_id, session_id, kind, playbook, "
+                   "brief, done_when, status, created_at, updated_at) VALUES (?, ?, 'dir-1', 'peer-2', "
+                   "'handoff', 'handoff', 'x', 'y', ?, ?, ?)", (sid_, WS, stat, now, now))
+    VERIFY_PLAN["st_aaaaaaa2"] = ["PASS"]
+    team.reconcile()
+    await drain()
+    check("after a restart a queued subtask is ended, not left hanging",
+          team.get_subtask("st_aaaaaaa1")["status"] == "failed")
+    check("after a restart an unfinished verification is run again",
+          team.get_subtask("st_aaaaaaa2")["status"] == "passed",
+          team.get_subtask("st_aaaaaaa2")["status"])
+
+    before = team.get_subtask(st3)["attempts"]
+    VERIFY_PLAN[st3] = ["PASS"]
+    r1 = await team.reverify(st3)
+    r2 = await team.reverify(st3)
+    await drain()
+    st = team.get_subtask(st3)
+    check("Verify again runs one extra check and keeps the real failure count",
+          r1.get("ok") and st["status"] == "passed" and st["attempts"] == before, f"{st['status']} {st['attempts']}")
+    check("clicking Verify again twice does not start two verifiers", "error" in r2, str(r2))
 
     # ── Decisions, overview, API ─────────────────────────────────────────────
     res = await signal_mcp.record_decision(from_role="lead", decision="split into two units",
