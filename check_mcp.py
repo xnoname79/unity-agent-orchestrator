@@ -184,10 +184,10 @@ async def main():
               str(names["signal"]))
         built = {b["name"]: b for b in top["builtins"]}
         check("every server the orchestrator mounts is offered, connected or not",
-              set(built) == {"signal", "boards", "library", "voice"}, str(sorted(built)))
+              set(built) == {"signal", "library", "voice"}, str(sorted(built)))
         check("with a URL the CLIs on this machine can reach, not the browser's address",
-              built["boards"]["url"] == f"http://127.0.0.1:{so.ORCH_PORT}/boards/mcp",
-              built["boards"]["url"])
+              built["library"]["url"] == f"http://127.0.0.1:{so.ORCH_PORT}/library/mcp",
+              built["library"]["url"])
         check("a stdio server is listed but not checkable",
               names["local-tool"]["checkable"] is False
               and names["local-tool"]["type"] == "stdio", str(names.get("local-tool")))
@@ -249,19 +249,19 @@ async def main():
             return "connected", 4, ""
         so._mcp_probe = fake_probe
         try:
-            r = await c.post("/api/mcp/connect", json={"builtin": "boards",
+            r = await c.post("/api/mcp/connect", json={"builtin": "library",
                                                        "url": "http://evil.example/mcp"})
             bad = await c.post("/api/mcp/connect", json={"builtin": "nope"})
         finally:
             so._mcp_probe = real_probe
-        want = f"http://127.0.0.1:{so.ORCH_PORT}/boards/mcp"
+        want = f"http://127.0.0.1:{so.ORCH_PORT}/library/mcp"
         check("Connect on a built-in writes the server's own URL, whatever the request says",
               r.status_code == 200 and probed == [want]
-              and json.loads(cfg_now())["mcpServers"]["boards"]["url"] == want, r.text[:160])
+              and json.loads(cfg_now())["mcpServers"]["library"]["url"] == want, r.text[:160])
         check("an unknown built-in is refused", bad.status_code == 400, bad.text[:90])
-        r = await c.post("/api/mcp/disconnect", json={"name": "boards"})
+        r = await c.post("/api/mcp/disconnect", json={"name": "library"})
         check("and Remove takes it out like any other server",
-              r.json()["removed"] and "boards" not in json.loads(cfg_now())["mcpServers"], r.text)
+              r.json()["removed"] and "library" not in json.loads(cfg_now())["mcpServers"], r.text)
 
         await c.post("/api/mcp/connect", json={"name": NAME, "url": URL, "token": TOKEN})
         row = {s["name"]: s for s in (await c.get("/api/mcp")).json()["servers"]}[NAME]

@@ -135,7 +135,7 @@ async def main():
         init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
                 "params": {"protocolVersion": "2025-06-18", "capabilities": {},
                            "clientInfo": {"name": "check", "version": "1"}}}
-        for name in ("signal", "library", "boards", "voice"):
+        for name in ("signal", "library", "voice"):
             r1 = await cl.post(f"/{name}/mcp", json=init, headers=hdr, follow_redirects=True)
             r2 = await cl.post(f"/{name}/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
                                headers=hdr, follow_redirects=True)

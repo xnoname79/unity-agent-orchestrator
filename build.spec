@@ -14,7 +14,7 @@ datas = [
 ]
 binaries, hiddenimports = [], [
     # 3 module MCP được import BÊN TRONG build_app() — PyInstaller vẫn thấy, khai thêm cho chắc.
-    "signal_mcp", "library_mcp", "board_mcp", "voice_mcp",
+    "signal_mcp", "library_mcp", "voice_mcp",
 ]
 # Bỏ qua khi quét submodule. `mcp.cli` import `typer` — dep TUỲ CHỌN (chỉ có nếu cài `mcp[cli]`).
 # Thiếu typer thì module đó gọi sys.exit(1), mà SystemExit KHÔNG phải Exception nên tham số
