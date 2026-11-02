@@ -107,6 +107,11 @@ async def fake_run(session, prompt, on_event=None, dry_run=False):
     SEEN.append((session["name"], prompt))
     cwd = Path(session.get("cwd") or ".")
     name = session["name"]
+    # A fake that writes must never touch anything outside this check's temp folder — not even
+    # when the code under test hands it an empty cwd (that once committed into the real repo).
+    if TMP not in cwd.resolve().parents:
+        return {"ok": False, "result": f"refusing to write outside the check's temp folder: {cwd}",
+                "session_id": session["id"], "tokens": 0, "raw": {}}
     if "[SUB-AGENT TASK " in prompt or "[VERIFIER FINDINGS " in prompt:
         st = _st_in(prompt, "SUB-AGENT TASK") or _st_in(prompt, "VERIFIER FINDINGS")
         step = BUILD_PLAN.get(st, ["commit"])
