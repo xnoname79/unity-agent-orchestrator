@@ -39,12 +39,6 @@ installed on your machine, so each provider keeps its own login and subscription
   again, discard; the decision log (`record_decision`); per-role models; a handoff graph you can
   enforce; and **Reflect**, which turns failed runs into a proposed playbook change you approve.
 
-**Boards**
-- A goal becomes a task list. A read-only board agent nudges you at the right moments and reads
-  your chat with your agent to stay current.
-- An optional research worker picks open tasks by itself and writes findings on the card. It never
-  edits files.
-
 **Media**
 - **Images** — generate and edit pictures, with up to three reference images.
 - **Sounds** — search YouTube (AI-generated, filtered by length), pull out the audio, crop it in a
@@ -58,7 +52,7 @@ installed on your machine, so each provider keeps its own login and subscription
 
 **For agents and other apps**
 - Built-in MCP servers, connected to every CLI with one click: `signal` (message other agents),
-  `boards` (read and update boards), `library` (search media, measure sounds), `voice` (speak).
+  `library` (search media, measure sounds), `voice` (speak).
 - An MCP manager that adds any HTTP MCP server to all installed CLIs at once. Tokens never touch a
   command line.
 - An OpenAI-compatible API: chat with an agent at `/v1/chat/completions`, make images at
@@ -128,11 +122,11 @@ Then open <http://localhost:8992>.
 ### 3. Connect the agents' tools
 
 In the dashboard, press 🔌 and, under **Built into the orchestrator**, press **Connect** next to
-`signal` — and next to `boards`, `library` and `voice` if you want them. `signal` also carries
+`signal` — and next to `library` and `voice` if you want them. `signal` also carries
 the director's team tools (`spawn_subagent`, `submit_verdict`, `record_decision`…). Agents already running
 pick the tools up after a restart.
 
-Or by hand, once per CLI (same pattern for `boards`, `library` and `voice`):
+Or by hand, once per CLI (same pattern for `library` and `voice`):
 
 ```bash
 claude mcp add --transport http --scope user signal http://127.0.0.1:8992/signal/mcp
