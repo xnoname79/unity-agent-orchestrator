@@ -60,7 +60,6 @@ import re
 import secrets
 import shlex
 import shutil
-import socket
 import sqlite3
 import struct
 import subprocess
@@ -69,6 +68,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
 import wave
 from concurrent.futures import ThreadPoolExecutor
@@ -475,9 +475,12 @@ def init_db():
         "INSERT OR IGNORE INTO workspaces (id, name, root_dir, status, created_at) VALUES (?, ?, ?, 'active', ?)",
         (DEFAULT_WORKSPACE, "Default", "", _now()),
     )
-    # Index (không UNIQUE) trên name để lookup-or-create theo tên nhanh. Không ép unique vì
+    # Index (không UNIQUE) trên name để tra workspace theo tên nhanh. Không ép unique vì
     # DB cũ có thể đã có tên trùng; lookup luôn lấy bản cũ nhất (ORDER BY created_at) cho ổn định.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_workspaces_name ON workspaces(name)")
+    # Đội sub-agent của director (subtasks, decision log, đồ thị bàn giao, đề xuất SKILL).
+    import team
+    team.migrate(conn)
     conn.commit()
     conn.close()
 
@@ -673,16 +676,6 @@ def rename_workspace(workspace_id, name):
     conn.commit()
     conn.close()
     return get_workspace(workspace_id)
-
-
-def lookup_or_create_workspace(name, max_runs_per_day=None):
-    """Idempotent theo NAME: đã có tên đó thì trả workspace cũ, chưa có thì tạo mới. FE chỉ cần
-    gửi tên (vd user id/email) là nhận lại 1 workspace ổn định — gọi bao nhiêu lần cũng 1 kết quả.
-    Trả (workspace_dict, created_bool). Name rỗng thì bắt buộc tạo mới (không gộp các bản vô danh)."""
-    existing = get_workspace_by_name(name) if name else None
-    if existing:
-        return existing, False
-    return create_workspace(name, max_runs_per_day), True
 
 
 def list_workspaces():
@@ -905,7 +898,7 @@ def current_name(name, workspace_id=None):
 
     Agent đã đổi tên vẫn ký from_role bằng tên cũ (transcript nhớ tên cũ). Ghi signal bằng tên
     hiện tại thì trần ping-pong đếm đúng MỘT vai và canvas nối được mũi tên."""
-    if not name or name in _HUMAN_SENDERS or name == BOARD_SENDER \
+    if not name or name in _HUMAN_SENDERS or name in (BOARD_SENDER, TEAM_SENDER) \
             or get_session_by_name(name, workspace_id):
         return name
     old = alias_sessions(name, workspace_id)
@@ -1020,8 +1013,27 @@ def _session_name(session_id):
     return (row["name"] if row else "") or ""
 
 
-class SignalPairCapExceeded(Exception):
+class SignalRefused(Exception):
+    """enqueue_signal từ chối. Thông điệp là câu chỉ dẫn hoàn chỉnh cho agent đọc, không phải
+    mã lỗi — caller trả nguyên văn."""
+
+
+class SignalPairCapExceeded(SignalRefused):
     """enqueue_signal từ chối: cặp agent đã hết lượt trao đổi trong chu kỳ này."""
+
+
+# from_session của signal do đội sub-agent sinh (giao việc, phát hiện của verifier, báo kết quả cho
+# director). Như BOARD_SENDER: việc vận hành, miễn trần ping-pong, không mở vòng việc mới.
+# team.TEAM_SENDER phải bằng giá trị này (check_team kiểm).
+TEAM_SENDER = "team"
+# Tên hệ thống dùng làm from_session, và tiền tố tên phiên của đội: không agent nào được mang.
+RESERVED_NAMES = ("board", TEAM_SENDER)
+TEAM_NAME_PREFIX = "sub-"
+
+
+def is_reserved_name(name):
+    n = str(name or "").strip().lower()
+    return n in RESERVED_NAMES or n.startswith(TEAM_NAME_PREFIX)
 
 
 def _pair_key(a, b):
@@ -1126,17 +1138,28 @@ def enqueue_signal(to_session, message, from_session="", requires_approval=0, dr
     "báo cáo" cho báo cáo của B… qua lại tới trần id=94 thay vì dừng sau một vòng."""
     _ensure_db()
     from_session = current_name(from_session, workspace_id)
-    if expects_reply and from_session not in _HUMAN_SENDERS and from_session != BOARD_SENDER \
+    # Hệ thống CHỈ khi không có agent thật nào mang tên đó — không thì một agent tên 'team' (có sẵn
+    # từ trước khi tên bị giữ chỗ) được miễn trần ping-pong và đồ thị bàn giao.
+    system = from_session in (BOARD_SENDER, TEAM_SENDER) \
+        and not get_session_by_name(from_session, workspace_id)
+    if expects_reply and from_session not in _HUMAN_SENDERS and not system \
             and _is_answer(from_session, to_session, workspace_id):
         expects_reply = 0
+    if from_session not in _HUMAN_SENDERS and not system:
+        # Đồ thị bàn giao + luật "sub-agent không tự signal". Ở HÀM GHI, cùng lý do với trần id=94.
+        import team
+        why = team.check_signal(from_session, to_session, workspace_id, message)
+        if why:
+            raise SignalRefused(why)
     # id=94: chặn NGAY Ở HÀM GHI (mọi đường vào signal đều qua đây: MCP send_signal, POST
     # /api/signals, và bất kỳ caller mới nào) thay vì rào ở từng caller — rào lẻ thì thêm đường
     # mới là thủng. Người gửi là NGƯỜI thì không chặn; '/compact' là lệnh vận hành, cũng không.
     if from_session in _HUMAN_SENDERS:
         # Người / hệ thống giao việc (chat dashboard) → mở vòng việc mới ở vai nhận.
         note_human_touch(_session_name(to_session), workspace_id)
-    elif from_session == BOARD_SENDER:
-        # Lời nhắc của board là việc vận hành theo giờ, KHÔNG phải hai agent nhắn qua lại: nó
+    elif system:
+        # Lời nhắc của board (và tin của đội sub-agent — team.py) là việc vận hành, KHÔNG phải hai
+        # agent nhắn qua lại: nó
         # không tính vào trần id=94 và cũng KHÔNG mở vòng việc mới (coi là người dùng chạm thì
         # mỗi tick cron lại cấp thêm ngân sách cho một vòng ping-pong đang chạy mà không ai
         # trông). Trần run/ngày của session vẫn cắn như mọi run khác.
@@ -3399,6 +3422,12 @@ def _reply_rule(name, from_role, expects_reply=1):
     if not from_role or from_role.strip().lower() in _HUMAN_SENDERS:
         return ("[Báo cáo] Signal này do NGƯỜI DÙNG gửi, không phải agent. Trả lời bằng text ngay "
                 "trong lượt này — KHÔNG gọi send_signal để 'báo cáo' (không có agent nào để nhận).")
+    if from_role == TEAM_SENDER:
+        return ("[Báo cáo] Signal này do ORCHESTRATOR gửi (đội sub-agent): hoặc là việc giao cho bạn, "
+                "hoặc là tin về việc bạn đã giao. Việc giao → làm xong rồi KẾT THÚC LƯỢT bằng báo "
+                "cáo (đã đổi gì / bằng chứng / còn hở gì); orchestrator đọc báo cáo, cho verifier "
+                "kiểm rồi báo người giao. Tin trạng thái → quyết bước kế. Cả hai: KHÔNG send_signal "
+                "về 'team'.")
     if not expects_reply:
         return (f'[Báo cáo] Signal này do vai "{from_role}" gửi và KHÔNG cần trả lời: hoặc là báo cáo '
                 f'cho việc bạn đã giao, hoặc là yêu cầu một chiều. Làm phần việc của bạn (nếu có) rồi '
@@ -3459,10 +3488,16 @@ def inject_prompt(target, message, from_role="", expects_reply=1):
 
 # ─── Skill templates (liệt kê vai/role cho dropdown spawn) ────────────────────
 
-# Template vai: ưu tiên thư mục CẠNH CHƯƠNG TRÌNH (người dùng bản đóng gói thêm vai của mình vào
-# đó được), không có thì dùng bộ đi kèm. Chạy từ source thì hai đường là một.
-TEMPLATES_DIR = (_app_dir() / ".claude" / "skills") if (_app_dir() / ".claude" / "skills").is_dir() \
-    else (_bundle_dir() / ".claude" / "skills")
+# Template vai nằm ở templates/roles, KHÔNG ở .claude/skills: thư mục đó là chỗ Claude Code nạp
+# skill cho CHÍNH repo này — template để ở đó thì ai mở repo bằng Claude Code cũng dính một skill
+# tên "<ROLE_NAME>" đòi kích hoạt với mọi tin nhắn.
+# Thứ tự tra (cái đầu có tên đó thắng): thư mục CẠNH CHƯƠNG TRÌNH (người dùng bản đóng gói tự thêm
+# vai), rồi .claude/skills cạnh chương trình (chỗ cũ — vai tự thêm trước đây vẫn hiện), rồi bộ đi
+# kèm. Chạy từ source thì đường đầu và cuối là một.
+TEMPLATES_DIRS = tuple(dict.fromkeys(
+    d for d in (_app_dir() / "templates" / "roles", _app_dir() / ".claude" / "skills",
+                _bundle_dir() / "templates" / "roles") if d.is_dir()))
+TEMPLATES_DIR = TEMPLATES_DIRS[0] if TEMPLATES_DIRS else _bundle_dir() / "templates" / "roles"
 
 
 def _safe_template_name(name):
@@ -3476,26 +3511,33 @@ def _template_skill(name):
     Tên vai KHÔNG hợp lệ làm path segment → '' (chặn traversal, xem _safe_template_name)."""
     if not _safe_template_name(name):
         return ""
-    try:
-        return (TEMPLATES_DIR / name / "SKILL.md").read_text(encoding="utf-8")
-    except OSError:
-        return ""
+    for base in TEMPLATES_DIRS:
+        try:
+            return (base / name / "SKILL.md").read_text(encoding="utf-8")
+        except OSError:
+            continue
+    return ""
 
 
 def _list_skill_templates():
     """Template hợp lệ = SKILL.md có placeholder <X>. Trả [{name, description}].
     Stub rỗng (0 placeholder) bị bỏ — không phải template điền được."""
-    out = []
-    for d in sorted(TEMPLATES_DIR.glob("*/")):
-        f = d / "SKILL.md"
-        try:
-            text = f.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if not _PLACEHOLDER_RE.search(text):
-            continue
-        m = re.search(r"description:\s*>?\s*\n?\s*(.+)", text)
-        out.append({"name": d.name.rstrip("/"), "description": (m.group(1).strip()[:200] if m else "")})
+    out, seen = [], set()
+    for base in TEMPLATES_DIRS:
+        for d in sorted(base.glob("*/")):
+            name = d.name.rstrip("/")
+            f = d / "SKILL.md"
+            try:
+                text = f.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if name in seen or not _PLACEHOLDER_RE.search(text):
+                continue
+            seen.add(name)
+            m = re.search(r"description:\s*>?\s*\n?\s*(.+)", text)
+            out.append({"name": name, "description": (m.group(1).strip()[:200] if m else "")})
+    # Director đứng đầu: đó là cách pstack muốn bắt đầu một repo (form spawn chọn sẵn cái đầu).
+    out.sort(key=lambda t: (t["name"] != "director", t["name"]))
     return out
 
 
@@ -3580,16 +3622,6 @@ def _transcript_path(sid, cli):
 def _claude_knows_session(sid):
     """Claude CLI đã có transcript mang id này chưa (bất kể cwd nào)."""
     return _transcript_path(sid, "claude") is not None
-
-
-def _codex_knows_session(sid):
-    """Codex CLI đã có rollout mang id này chưa (`codex exec resume <sid>` cần nó)."""
-    return _transcript_path(sid, "codex") is not None
-
-
-def _agy_knows_session(sid):
-    """agy còn giữ hội thoại mang id này chưa (`agy --conversation <sid>` cần nó)."""
-    return _transcript_path(sid, "agy") is not None
 
 
 # CLI mở được terminal VÀ resume theo id. Tên engine trùng tên CLI nên hai bộ này dùng chung
@@ -4230,6 +4262,32 @@ def _agy_summaries():
     return {r[0]: (" ".join((r[1] or r[2] or "").split())[:120], r[3] or "") for r in rows}
 
 
+def _uri_paths(uris):
+    """workspace_uris của agy (JSON list các 'file:///…') → đường dẫn thư mục. Windows: agy ghi
+    'file:///c%3A/Users/…' — bỏ '/' trước ổ đĩa và giải mã %3A. URI không phải file:// bị bỏ qua."""
+    try:
+        items = json.loads(uris) if str(uris).strip().startswith("[") else [uris]
+    except ValueError:
+        items = [uris]
+    out = []
+    for u in items:
+        p = urllib.parse.urlparse(str(u or ""))
+        if p.scheme != "file":
+            continue
+        path = urllib.parse.unquote(p.path)
+        if re.match(r"^/[A-Za-z]:", path):
+            path = path[1:]
+        out.append(path)
+    return out
+
+
+def _same_folder(a, b, pm=os.path):
+    """Cùng một thư mục? So sau normpath + normcase của ĐÚNG hệ điều hành (pm): trên Windows
+    '/x/a_b', '\\x\\a_b' và 'C:/Users' == 'c:\\users' đều khớp. Trước đây là `want in uris`
+    (chuỗi con): Windows không bao giờ khớp vì gạch chéo ngược, còn '/x/a' lại khớp nhầm '/x/a_b'."""
+    return bool(a and b) and pm.normcase(pm.normpath(a)) == pm.normcase(pm.normpath(b))
+
+
 def _agy_sessions(want, limit, scan_cap):
     """Hội thoại của agy: mỗi file <conversations>/<id>.db là MỘT phiên, id chính là tên file.
 
@@ -4245,9 +4303,10 @@ def _agy_sessions(want, limit, scan_cap):
     out = []
     for f in files:
         label, uris = meta.get(f.stem, ("", ""))
-        if want and uris and want not in uris:
+        paths = _uri_paths(uris) if uris else []
+        if want and paths and not any(_same_folder(want, p) for p in paths):
             continue                  # biết chắc phiên này thuộc thư mục khác
-        out.append({"id": f.stem, "cli": "agy", "cwd": want if uris else "", "preview": label,
+        out.append({"id": f.stem, "cli": "agy", "cwd": want if paths else "", "preview": label,
                     "ts": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")})
         if len(out) >= limit:
             break
@@ -4276,7 +4335,10 @@ def list_cli_sessions(cwd, cli="claude", limit=20, scan_cap=200):
     out = []
     for f in files:
         sid, got, preview = _scan_transcript(f, cli)
-        if not sid or (want and got != want):
+        # So theo luật thư mục của hệ điều hành, không so chuỗi: trên Windows cwd ghi trong
+        # transcript ('C:\\Users\\…' hay '/x/a_b') và cwd của card ('c:/users/…') khác chuỗi mà
+        # vẫn là một thư mục — so chuỗi là ô chọn phiên rỗng và nút xoá bị từ chối.
+        if not sid or (want and not _same_folder(got, want)):
             continue
         out.append({"id": sid, "cli": cli, "cwd": got, "preview": preview,
                     "ts": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")})
@@ -4821,18 +4883,6 @@ def _agy_model(model):
 AGY_LEVEL_SUFFIX = ("-low", "-medium", "-high")
 
 
-def agy_effort_ceiling(model=""):
-    """Mức reasoning cao nhất agy nhận cho model này.
-
-    Model có đuôi mức thì CHÍNH nó là trần: ĐÃ ĐO, truyền kèm --effort khác đuôi là agy chết ngay
-    — 'invalid model selection (--model "gemini-3.8-flash-low" --effort "high"): conflicts'."""
-    real = _agy_model(model)
-    for suffix in AGY_LEVEL_SUFFIX:
-        if real.endswith(suffix):
-            return suffix[1:]
-    return AGY_MAX_EFFORT
-
-
 def _agy_tools_ok(permission_mode=""):
     """Session này có chạy được tool (kể cả call_mcp_tool → send_signal) không.
 
@@ -5280,78 +5330,6 @@ def _search_dirs(root, q, depth=4, cap=60, max_visit=8000):
     return out
 
 
-# ─── Tool discovery (built-in + MCP servers của project) ──────────────────────
-
-BUILTIN_TOOLS = ["Task", "Bash", "Glob", "Grep", "LS", "Read", "Edit", "MultiEdit",
-                 "Write", "NotebookEdit", "WebFetch", "WebSearch", "TodoWrite"]
-
-
-def _read_mcp_servers(cwd):
-    """Đọc MCP servers cấu hình cho project: user scope (~/.claude.json mcpServers),
-    local scope (projects[cwd].mcpServers), project scope (<cwd>/.mcp.json)."""
-    servers = {}
-    try:
-        # encoding="utf-8": hai file JSON này do CLI ghi ra bằng UTF-8 và chứa đường dẫn project.
-        # Thiếu nó thì trên Windows read_text ném UnicodeDecodeError, bị `except` bên dưới nuốt,
-        # và tool picker lặng lẽ báo không có MCP server nào — không một dòng lỗi.
-        data = json.loads((Path.home() / ".claude.json").read_text(encoding="utf-8"))
-        servers.update(data.get("mcpServers") or {})
-        if cwd:
-            proj = (data.get("projects") or {}).get(cwd, {})
-            servers.update(proj.get("mcpServers") or {})
-    except Exception:  # noqa: BLE001
-        pass
-    if cwd:
-        try:
-            data = json.loads((Path(cwd) / ".mcp.json").read_text(encoding="utf-8"))
-            servers.update(data.get("mcpServers") or {})
-        except Exception:  # noqa: BLE001
-            pass
-    return servers
-
-
-async def _list_http_mcp_tools(url, timeout=6):
-    """MCP handshake qua streamable-http → trả danh sách tên tool."""
-    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
-
-    def parse(text):
-        for line in text.strip().split("\n"):
-            if line.startswith("data: "):
-                return json.loads(line[6:])
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return None
-
-    async with httpx.AsyncClient(timeout=timeout) as c:
-        r = await c.post(url, json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                                    "params": {"protocolVersion": "2025-03-26", "capabilities": {},
-                                               "clientInfo": {"name": "orchestrator", "version": "1"}}}, headers=headers)
-        sid = r.headers.get("mcp-session-id")
-        h2 = {**headers, **({"mcp-session-id": sid} if sid else {})}
-        await c.post(url, json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=h2)
-        r = await c.post(url, json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}, headers=h2)
-        data = parse(r.text) or {}
-        return [t["name"] for t in data.get("result", {}).get("tools", [])]
-
-
-async def discover_tools(cwd):
-    """Trả tools khả dụng cho project: built-in + tools từ mỗi MCP server (đặt tên
-    mcp__<server>__<tool>). Server không kết nối được → chỉ có wildcard mcp__<server>__*."""
-    out = {"builtin": list(BUILTIN_TOOLS), "mcp": {}}
-    for name, cfg in _read_mcp_servers(cwd).items():
-        url = cfg.get("url")
-        tools = []
-        if url:
-            try:
-                raw = await _list_http_mcp_tools(url)
-                tools = [f"mcp__{name}__{t}" for t in raw]
-            except Exception:  # noqa: BLE001
-                tools = []
-        out["mcp"][name] = {"wildcard": f"mcp__{name}__*", "tools": tools}
-    return out
-
-
 # ─── Core (poller + lock/queue) ───────────────────────────────────────────────
 
 _locks: dict[str, asyncio.Lock] = {}
@@ -5411,7 +5389,19 @@ def _lock_for(session_id: str) -> asyncio.Lock:
 
 
 async def process_signal(signal):
-    """Xử lý 1 signal: khóa session, inject, ghi audit, cập nhật trạng thái."""
+    """Xử lý 1 signal: khóa session, inject, ghi audit, cập nhật trạng thái.
+
+    Sau run (khoá session ĐÃ nhả): signal thuộc một subtask của đội thì đội đi bước kế (kiểm,
+    trả phát hiện, báo director). Đặt ở đây chứ không ở run_loop: process_pending / `once` cũng
+    phải đi cùng một đường. 'skipped' = signal còn chờ, chưa có gì để đội làm."""
+    r = await _process_signal_locked(signal)
+    if r and r.get("status") != "skipped":
+        import team
+        await team.after_run(signal, r)
+    return r
+
+
+async def _process_signal_locked(signal):
     global _semaphore
     if _semaphore is None:
         _semaphore = asyncio.Semaphore(MAX_CONCURRENT)
@@ -6876,6 +6866,7 @@ def build_app():
     from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
     from starlette.routing import Mount, Route, WebSocketRoute
     from starlette.formparsers import MultiPartException
+    from starlette.exceptions import HTTPException
     from starlette.staticfiles import StaticFiles
 
     import signal_mcp
@@ -6918,20 +6909,6 @@ def build_app():
                                         "session_token_budget": SESSION_TOKEN_BUDGET,
                                         "max_retries": MAX_RETRIES}})
 
-    async def api_stats(request: Request):
-        per = []
-        for s in list_sessions():
-            st = session_stats(s["id"])
-            exceeded, reason = cap_exceeded(s["id"])
-            per.append({"id": s["id"], "name": s["name"], **st, "blocked": exceeded, "reason": reason})
-        return JSONResponse({
-            "total_runs": sum(p["runs"] for p in per),
-            "total_tokens": sum(p["tokens"] for p in per),
-            "limits": {"max_runs_per_session": MAX_RUNS_PER_SESSION,
-                       "session_token_budget": SESSION_TOKEN_BUDGET, "max_retries": MAX_RETRIES},
-            "sessions": per,
-        })
-
     # Workspaces (multi-tenant)
     async def api_workspaces(request: Request):
         """GET: list workspace cho dashboard (kèm số session).
@@ -6969,23 +6946,6 @@ def build_app():
                               body.get("group_id") or DEFAULT_GROUP)
         publish({"type": "workspace", "id": ws["id"], "status": "active", "workspace_id": ws["id"]})
         return JSONResponse(ws)
-
-    async def api_lookup_workspace(request: Request):
-        """POST {name}: lookup-or-create theo TÊN (idempotent). FE gửi tên tenant (vd user id/email),
-        nhận lại 1 workspace ổn định — gọi lại cùng tên không tạo bản mới. Trả workspace + {created}.
-        Đây là cửa để FE ánh xạ user → workspace mà không cần tự lưu ws_id nếu không muốn."""
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
-            body = {}
-        name = (body.get("name") or "").strip()
-        if not name:
-            return JSONResponse({"error": "name is required"}, status_code=400)
-        mrpd = body.get("max_runs_per_day")
-        ws, created = lookup_or_create_workspace(name, int(mrpd) if mrpd is not None else None)
-        if created:
-            publish({"type": "workspace", "id": ws["id"], "status": "active", "workspace_id": ws["id"]})
-        return JSONResponse({**ws, "created": created})
 
     async def api_workspace_detail(request: Request):
         ws = get_workspace(request.path_params["wid"])
@@ -7093,6 +7053,8 @@ def build_app():
         # tenant thì con số không có nghĩa.
         pairs = pair_counts(wsf) if wsf else {}
         threads = board_threads()
+        import team
+        crew = team.team_sessions()
         sessions = [s for s in list_sessions() if not wsf or s.get("workspace_id") == wsf]
         daily = daily_stats_all(sessions)
         out = []
@@ -7108,7 +7070,10 @@ def build_app():
             # N request nữa mỗi vòng là tự bóp mình. Giá ở đây = 3 stat() / session / vòng.
             out.append({**s, **daily[s["id"]], "pairs": peers,
                         "skill_missing": _skill_missing_roots(s.get("cwd") or "", name),
-                        "board": threads.get(s["id"])})
+                        "board": threads.get(s["id"]),
+                        # Phiên của đội (sub-agent / verifier / reflect): không lên canvas, không
+                        # làm đích signal — gom vào tab Team.
+                        "team": crew.get(s["id"])})
         return JSONResponse(out)
 
     async def api_session_detail(request: Request):
@@ -7271,6 +7236,11 @@ def build_app():
     def _validate_name(name, wid, session_id=None):
         """Tên role phải unique trong workspace (routing theo tên — trùng là signal đi nhầm
         session). session_id: bỏ qua chính nó khi re-register."""
+        same = get_session(session_id) if session_id else None
+        keeps = same and same.get("name") == name   # agent CŨ mang sẵn tên đó: không chặn đăng ký lại
+        if not keeps and is_reserved_name(name):
+            return JSONResponse({"error": f"'{name}' is reserved for the orchestrator — "
+                                          f"pick another name"}, status_code=400)
         dup = get_session_by_name(name, wid)
         if dup and dup["id"] != session_id:
             return JSONResponse({"error": f"role '{name}' already exists in this workspace"}, status_code=409)
@@ -7352,14 +7322,12 @@ def build_app():
         s = get_session(sid)
         if not s:
             return JSONResponse({"error": "not found"}, status_code=404)
+        import team
+        team.on_session_removed(sid)
         unregister_session(sid)
         await editor_stop(sid)   # nvim (+ pyright/gopls) sống tiếp trong tmux mà UI không còn card để đóng
         publish({"type": "session", "id": sid, "status": "removed", "workspace_id": s.get("workspace_id")})
         return JSONResponse({"id": sid, "removed": True})
-
-    async def api_available_tools(request: Request):
-        cwd = request.query_params.get("cwd", "")
-        return JSONResponse(await discover_tools(cwd))
 
     async def api_fs_list(request: Request):
         """Duyệt thư mục server-side cho picker Working dir (form spawn).
@@ -7489,7 +7457,10 @@ def build_app():
                     # id=94: người dùng đang gõ thẳng cho vai này = đang cầm lái → mốc reset trần
                     # ping-pong. Vai điều phối nhận việc qua terminal chứ không qua signal, không
                     # đánh dấu ở đây thì bộ đếm của chúng không bao giờ về 0.
-                    note_human_touch(s.get("name"), s.get("workspace_id"))
+                    # Chỉ khi NGƯỜI bấm Enter (is_user_typing): byte xterm tự đáp truy vấn TUI
+                    # không được reset trần ping-pong.
+                    if is_user_typing(msg.get("d")):
+                        note_human_touch(s.get("name"), s.get("workspace_id"))
                     term.write(str(msg.get("d", "")).encode("utf-8"))
                 elif msg.get("t") == "r":
                     try:
@@ -8158,6 +8129,11 @@ def build_app():
                                 status_code=400)
         if name == s["name"]:
             return JSONResponse(s)
+        if is_reserved_name(name) or s.get("team_role"):
+            return JSONResponse({"error": f"'{name}' is reserved for the orchestrator — pick another "
+                                          f"name" if is_reserved_name(name) else
+                                          "the orchestrator names its sub-agents; they cannot be renamed"},
+                                status_code=400)
         if s.get("status") == "running":
             # Đang chạy = CLI đang đọc playbook từ thư mục sắp bị dời.
             return JSONResponse({"error": "session is running — wait for the current turn to finish"},
@@ -8285,16 +8261,34 @@ def build_app():
             for cid in close_ask_user_choice_by_ticket(_ticket, target_ws):
                 publish({"type": "signal", "id": cid, "status": "done",
                          "to_session": target, "workspace_id": target_ws})
+        # done_when: việc chỉ tính là xong khi một verifier độc lập quan sát được (team.py) — đích
+        # KHÔNG tự báo cáo; orchestrator kiểm rồi báo người gửi.
+        import team
+        done_when = str(body.get("done_when") or "").strip()
+        sender = body.get("from_session", "") or body.get("from_role", "")
+        if str(sender).strip().lower() in RESERVED_NAMES:
+            return JSONResponse({"error": f"from_role '{sender}' is reserved for the orchestrator"},
+                                status_code=400)
+        message, expects = body["message"], bool(body.get("expects_reply", True))
+        if done_when:
+            sender_s = get_session_by_name(current_name(sender, target_ws), target_ws)
+            if not sender_s:
+                return JSONResponse({"error": "done_when needs from_role: the agent the verified "
+                                              "result is reported back to"}, status_code=400)
+            message, expects = team.handoff_message(message, done_when), False
         try:
-            sid = enqueue_signal(target, body["message"],
-                                 body.get("from_session", "") or body.get("from_role", ""),
+            sid = enqueue_signal(target, message, sender,
                                  int(body.get("requires_approval", 0)), int(body.get("dry_run", 0)), target_ws,
-                                 expects_reply=bool(body.get("expects_reply", True)))
+                                 expects_reply=expects)
         except SignalPairCapExceeded as e:
             # id=94: 429 = "đúng đường nhưng hết lượt". Body mang nguyên lời hướng dẫn để caller
             # đọc được phải làm gì thay vì chỉ thấy mã lỗi.
             return JSONResponse({"error": str(e), "code": "pair_signal_cap",
                                  "cap": PAIR_SIGNAL_CAP}, status_code=429)
+        except SignalRefused as e:
+            return JSONResponse({"error": str(e), "code": "signal_refused"}, status_code=403)
+        if done_when:
+            team.create_handoff(sender_s["id"], target, sid, done_when, body["message"])
         publish({"type": "signal", "id": sid, "status": "pending", "to_session": target, "workspace_id": target_ws})
         return JSONResponse({"id": sid, "status": "pending", "to_session": target, "workspace_id": target_ws})
 
@@ -8307,6 +8301,9 @@ def build_app():
             return JSONResponse({"error": "not found"}, status_code=404)
         set_signal_status(sig_id, status)
         publish({"type": "signal", "id": sig_id, "status": status, "workspace_id": row["workspace_id"]})
+        if status == "denied":
+            import team
+            team.on_signal_dropped(sig_id, "denied")   # subtask chờ signal này không đứng mãi
         return JSONResponse({"id": sig_id, "status": status})
 
     async def api_approve(request: Request):
@@ -8575,6 +8572,12 @@ def build_app():
         # đó phải là 500 cho smoke test ở CI thấy, không được giả làm "form sai".
         except (MultiPartException, ValueError) as e:
             return _oa_err(f"could not read the form: {e}")
+        # Starlette bọc MultiPartException thành HTTPException(400) khi chạy trong app (bản
+        # starlette/python-multipart mới) → trả text trần, không phải lỗi dạng OpenAI.
+        except HTTPException as e:
+            if e.status_code != 400:
+                raise
+            return _oa_err(f"could not read the form: {e.detail}")
         args, err = _oa_image_args(form)
         if err:
             return err
@@ -8602,6 +8605,9 @@ def build_app():
     @asynccontextmanager
     async def lifespan(app):
         init_db()  # idempotent — cũng migrate bảng/cột mới cho DB cũ (vd run_events)
+        import team
+        # Task nền + run dở của đội đã chết cùng tiến trình cũ: kết thúc hoặc kiểm lại (team.py).
+        team.reconcile()
         async with AsyncExitStack() as stack:
             # Khởi động session manager của từng MCP sub-app (bắt buộc cho /mcp).
             await stack.enter_async_context(signal_app.router.lifespan_context(app))
@@ -8655,8 +8661,6 @@ def build_app():
         Route("/api/groups/{gid}", api_delete_group, methods=["DELETE"]),
         Route("/api/workspaces", api_workspaces),
         Route("/api/workspaces", api_create_workspace, methods=["POST"]),
-        # lookup phải đứng TRƯỚC "/{wid}" để không bị nuốt thành wid="lookup".
-        Route("/api/workspaces/lookup", api_lookup_workspace, methods=["POST"]),
         Route("/api/workspaces/{wid}", api_workspace_detail),
         Route("/api/workspaces/{wid}", api_delete_workspace, methods=["DELETE"]),
         Route("/api/workspaces/{wid}", api_rename_workspace, methods=["POST"]),
@@ -8666,7 +8670,6 @@ def build_app():
         Route("/api/sessions", api_sessions),
         Route("/api/sessions", api_register, methods=["POST"]),
         Route("/api/sessions/spawn", api_spawn, methods=["POST"]),
-        Route("/api/available-tools", api_available_tools),
         Route("/api/fs", api_fs_list),
         Route("/api/cli-sessions", api_cli_sessions),
         Route("/api/cli-sessions/delete", api_delete_cli_session, methods=["POST"]),
@@ -8744,7 +8747,6 @@ def build_app():
         Route("/api/signals/{sig_id}", api_delete_signal, methods=["DELETE"]),
         Route("/api/runs", api_runs),
         Route("/api/runs/{rid}/events", api_run_events),
-        Route("/api/stats", api_stats),
         Route("/api/events", api_events),
         # Chat tương thích OpenAI cho app ngoài (base_url = http://<host>:<port>/v1)
         Route("/v1/chat/completions", api_chat_completions, methods=["POST"]),
@@ -8761,6 +8763,9 @@ def build_app():
         Mount("/boards", app=board_app),
         Mount("/voice", app=voice_app),
     ]
+    # Đội sub-agent của director: tab Team (xem team.py). Đặt trước static "/".
+    import team
+    routes[-4:-4] = team.routes()
 
     # Dashboard (Phase C): serve static UI at "/" (must be last — catches the rest).
     static_dir = _bundle_dir() / "static" / "orchestrator"

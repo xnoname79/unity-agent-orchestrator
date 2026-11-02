@@ -116,6 +116,15 @@ check("Enter mở vòng việc", so.is_user_typing("\r"))
 check("gõ xong bấm Enter mở vòng việc", so.is_user_typing("sửa giúp tôi chỗ này\r"))
 check("gõ dở chưa Enter thì chưa mở", not so.is_user_typing("sửa giúp tôi chỗ này"))
 
+# Hàm lọc đúng mà terminal không gọi thì vô ích: trước đây ws_terminal gọi note_human_touch với
+# MỌI byte, nên lỗi xterm-tự-đáp vẫn sống dù mấy dòng trên đều xanh. Soi thẳng chỗ gọi.
+import inspect, re as _re  # noqa: E401
+_src = inspect.getsource(so.build_app)
+_touch = [m.start() for m in _re.finditer(r"note_human_touch\(s\.get\(\"name\"\)", _src)]
+check("terminal chỉ reset mốc khi is_user_typing",
+      bool(_touch) and all("is_user_typing(" in _src[max(0, i - 200):i] for i in _touch),
+      f"{len(_touch)} chỗ gọi note_human_touch trong build_app")
+
 # ── Một chiều: báo cáo kết thúc cuộc trao đổi ──────────────────────────────
 # Lỗi gốc: luật "xong việc thì báo cáo về người gửi" không phân biệt báo cáo với việc mới, nên
 # A nhận báo cáo của B lại "báo cáo" ngược cho B… qua lại tới trần. Báo cáo phải tự thành một chiều.

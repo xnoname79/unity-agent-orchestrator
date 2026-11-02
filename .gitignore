@@ -1,6 +1,6 @@
 __pycache__
 
-# DB files (per game project)
+# SQLite files (orchestrator store)
 *.db
 *.db-wal
 *.db-shm

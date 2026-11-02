@@ -23,6 +23,22 @@ installed on your machine, so each provider keeps its own login and subscription
 - Guard rails: approval gate, ping-pong and daily caps, kill switch, one prompt at a time per
   agent, reachable from your own machine only by default.
 
+**Director and sub-agents**
+- Spawn an agent for a repo with the **director** template: it is the one agent you talk to. It
+  goes deep first, splits the work, and delegates each unit to a sub-agent with
+  `spawn_subagent(playbook, brief, done_when)`.
+- Each sub-agent that writes code gets its own git worktree and branch `orch/<id>`; your checkout
+  is never touched. Playbooks: `feature`, `bugfix` (reproduce first), `refactor` (record behaviour
+  first), `investigate` (read-only).
+- Nothing counts as done until a fresh verifier session — by default on a different CLI — observes
+  the `done_when` contract and records a verdict. A FAIL goes back to the builder with findings;
+  a verifier that edits files has its verdict thrown away. The director is messaged when each one
+  passes (with the branch to merge) or fails.
+- `send_signal(..., done_when=...)` puts any hand-off between agents through the same check.
+- **Team** tab: every sub-agent live (stage, current step, verdict, diff, runs), cancel, verify
+  again, discard; the decision log (`record_decision`); per-role models; a handoff graph you can
+  enforce; and **Reflect**, which turns failed runs into a proposed playbook change you approve.
+
 **Boards**
 - A goal becomes a task list. A read-only board agent nudges you at the right moments and reads
   your chat with your agent to stay current.
@@ -113,7 +129,8 @@ Then open <http://localhost:8992>.
 ### 3. Connect the agents' tools
 
 In the dashboard, press 🔌 and, under **Built into the orchestrator**, press **Connect** next to
-`signal` — and next to `boards`, `library` and `voice` if you want them. Agents already running
+`signal` — and next to `boards`, `library` and `voice` if you want them. `signal` also carries
+the director's team tools (`spawn_subagent`, `submit_verdict`, `record_decision`…). Agents already running
 pick the tools up after a restart.
 
 Or by hand, once per CLI (same pattern for `boards`, `library` and `voice`):
@@ -159,6 +176,8 @@ Put these in a `.env` file next to `session_orchestrator.py` (or next to `agent-
 | `ORCH_PORT` | `8992` | Port 8992 is taken |
 | `CLAUDE_BIN` / `ORCH_CODEX_BIN` / `ORCH_AGY_BIN` | `claude` / `codex` / `agy` | The dashboard cannot find an installed CLI |
 | `ORCH_HOST` | `127.0.0.1` | Only to reach it from another machine |
+| `ORCH_SUBAGENTS_MAX` | `4` | Active sub-agents per director |
+| `ORCH_SUBTASK_MAX_ATTEMPTS` | `3` | Failed verifications before a sub-agent's work is marked failed |
 
 > [!WARNING]
 > Agents run shell commands with permissions bypassed, and there is no API key.
@@ -247,6 +266,11 @@ Logs: `journalctl --user -u orchestrator -f`.
 
 From source: `git pull`, then `pip install -r requirements.txt`, then restart. Prebuilt: download
 the new zip and replace the folder, keeping your `.env`.
+
+## Development
+
+`python verify.py` runs every `check_*.py` (CI runs the same command). Each check guards a bug
+that would otherwise fail silently — add one with any change that could.
 
 ## License
 

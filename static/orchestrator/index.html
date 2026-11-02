@@ -469,6 +469,63 @@
     display: grid; gap: 16px; align-content: start; }
   #tab-history[hidden] { display: none; }
 
+
+  /* ── Team: đội sub-agent của director ─────────────────────────────────── */
+  #tab-team { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 20px; }
+  #tab-team[hidden] { display: none; }
+  .tab-count { margin-left: 6px; font-size: 10px; font-weight: 700; padding: 1px 6px;
+    border-radius: 999px; background: var(--blue-soft); color: var(--blue); }
+  .team-lead { padding: 10px 15px 0; line-height: 1.5; }
+  .team-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .team-stat { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-card);
+    padding: 11px 14px; box-shadow: var(--sh-1); }
+  .team-stat b { display: block; font-size: 22px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .team-stat span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .team-stat.live b { color: var(--blue); } .team-stat.ok b { color: var(--green); }
+  .team-stat.bad b { color: var(--red); } .team-stat.warn b { color: var(--amber); }
+  .team-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; }
+  .team-lanes { display: grid; gap: 14px; padding: 12px 15px 15px; }
+  .team-lane-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin-bottom: 8px; }
+  .team-lane-head .hint { margin: 0; }
+  .team-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px;
+    align-items: start; }
+  .st-card { border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--panel2);
+    padding: 10px 12px; display: grid; gap: 7px; font-size: 12px; min-width: 0; }
+  .st-card.s-running, .st-card.s-verifying, .st-card.s-fixing { border-color: var(--blue); }
+  .st-card.s-passed { border-color: var(--green); } .st-card.s-failed { border-color: var(--red); }
+  .st-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .st-top b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .st-pipe { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+  .st-pipe span { font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint);
+    border-top: 3px solid var(--border); padding-top: 3px; }
+  .st-pipe span.done { color: var(--muted); border-top-color: var(--green); }
+  .st-pipe span.now { color: var(--blue); border-top-color: var(--blue); font-weight: 700; }
+  .st-pipe span.bad { color: var(--red); border-top-color: var(--red); font-weight: 700; }
+  .st-live { display: flex; gap: 6px; align-items: baseline; color: var(--muted); min-width: 0; }
+  .st-live .s { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .st-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--faint); font-size: 11px; }
+  .st-meta code { font-size: 10.5px; }
+  .st-card details summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+  .st-card details pre, .team-props pre, .tm-pre { margin: 6px 0 0; white-space: pre-wrap; font-size: 11px;
+    line-height: 1.5; max-height: 220px; overflow: auto; background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--r-ctl); padding: 7px 9px; }
+  .st-verdict { border-radius: var(--r-ctl); padding: 6px 8px; font-size: 11.5px; }
+  .st-verdict.pass { background: var(--green-soft); color: var(--green); }
+  .st-verdict.fail { background: var(--red-soft); color: var(--red); }
+  .st-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .st-acts button { font-size: 11px; padding: 3px 9px; }
+  .tg-edges { display: flex; flex-wrap: wrap; gap: 6px; min-height: 24px; }
+  .tg-edge { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; padding: 2px 4px 2px 9px;
+    border: 1px solid var(--border); border-radius: 999px; background: var(--panel2); }
+  .tg-edge button { padding: 0 4px; border: none; background: none; color: var(--muted); }
+  .team-props { display: grid; gap: 10px; }
+  .tp { border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 8px 10px; display: grid; gap: 6px; }
+  .df-add { color: var(--green); background: var(--green-soft); display: block; }
+  .df-del { color: var(--red); background: var(--red-soft); display: block; }
+  .df-hunk { color: var(--blue); display: block; }
+  .crew-badge { font-size: 9.5px; font-weight: 700; padding: 2px 6px; border-radius: 5px; flex: none;
+    background: var(--blue-soft); color: var(--blue); border: none; cursor: pointer; }
+
   /* Board: bảng việc của NGƯỜI DÙNG (3 cột todo/doing/done), không phải hàng đợi của agent. */
   #tab-boards { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 20px; }
   #tab-boards[hidden] { display: none; }
@@ -1027,6 +1084,9 @@
           <svg class="ic sm"><use href="#i-map"/></svg> Agents</button>
         <button id="tab-btn-boards" class="tab" onclick="switchTab('boards')">
           <svg class="ic sm"><use href="#i-board"/></svg> Boards</button>
+        <button id="tab-btn-team" class="tab" onclick="switchTab('team')"
+          title="Sub-agents your directors delegated to, their verification, and the team's rules">
+          <svg class="ic sm"><use href="#i-rocket"/></svg> Team<span id="team-live" class="tab-count" hidden></span></button>
         <button id="tab-btn-history" class="tab" onclick="switchTab('history')">
           <svg class="ic sm"><use href="#i-clock"/></svg> History</button>
       </div>
@@ -1137,6 +1197,104 @@
           </section>
         </div>
         <div id="board-open" hidden></div>
+      </div>
+    </div>
+
+
+    <!-- Đội của director (pstack): sub-agent làm việc trong worktree riêng, verifier độc lập kiểm
+         hợp đồng "Done means" trước khi việc được tính là xong. Toàn bộ do renderTeam() dựng. -->
+    <div id="tab-team" hidden>
+      <div class="bd-wrap">
+        <div id="team-stats" class="team-stats"></div>
+        <section class="panel">
+          <h2>Sub-agents
+            <span class="spacer"></span>
+            <select id="team-filter" class="mini" onchange="teamRender()" title="Which subtasks to show">
+              <option value="active">Active and recent</option>
+              <option value="all">All</option>
+              <option value="failed">Failed</option>
+            </select></h2>
+          <div class="hint team-lead">Each sub-agent works in its own git worktree. Nothing counts as
+            done until a fresh verifier — a different session, by default on a different CLI —
+            observes the <b>Done means</b> contract. The director is messaged when it passes or fails.</div>
+          <div id="team-lanes" class="team-lanes"></div>
+        </section>
+
+        <div class="team-cols">
+          <section class="panel">
+            <h2>Delegate</h2>
+            <div class="bd-form">
+              <div class="two">
+                <select id="td-director" title="Who the result is reported to"></select>
+                <select id="td-playbook" title="How the sub-agent works">
+                  <option value="feature">feature · own worktree</option>
+                  <option value="bugfix">bug fix · reproduce first</option>
+                  <option value="refactor">refactor · behaviour kept</option>
+                  <option value="investigate">investigate · read-only</option>
+                </select>
+              </div>
+              <input id="td-title" placeholder="Short title (shown on the card)">
+              <textarea id="td-brief" placeholder="Brief: the goal, the relevant files, constraints, what must not change. The sub-agent cannot see your chat."></textarea>
+              <textarea id="td-done" placeholder="Done means: what a verifier can observe — a command and its expected output, a flow in the running app, a value read back."></textarea>
+              <div class="two">
+                <button class="primary" onclick="teamDelegate()">Delegate</button>
+                <span id="td-msg" class="hint"></span>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Models <span class="hint" style="margin:0">per role, this workspace</span></h2>
+            <div id="team-models" class="bd-form"></div>
+          </section>
+        </div>
+
+        <section class="panel">
+          <h2>Decision log <span class="hint" style="margin:0">record_decision · newest first</span></h2>
+          <div class="table-scroll"><table>
+            <thead><tr><th>When</th><th>Who</th><th>Decision</th><th>Why</th></tr></thead>
+            <tbody id="team-decisions"></tbody>
+          </table></div>
+        </section>
+
+        <div class="team-cols">
+          <section class="panel">
+            <h2>Handoff graph
+              <span class="spacer"></span>
+              <select id="tg-mode" class="mini" onchange="teamGraphMode(this.value)"
+                title="Open: edges are documentation. Enforced: an agent may only signal agents it has an edge to.">
+                <option value="open">Open</option>
+                <option value="enforced">Enforced</option>
+              </select></h2>
+            <div class="bd-form">
+              <div id="tg-edges" class="tg-edges"></div>
+              <div class="two">
+                <select id="tg-from" title="Sender"></select>
+                <select id="tg-to" title="Receiver"></select>
+                <button onclick="teamEdgeAdd()">Add edge</button>
+              </div>
+              <div class="two">
+                <button class="secondary" onclick="teamEdgeLearn()"
+                  title="Add an edge for every agent pair that actually signalled each other recently">Learn from recent signals</button>
+                <span id="tg-msg" class="hint"></span>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Playbook improvements</h2>
+            <div class="bd-form">
+              <div class="hint">Reflect reads failed runs and verifier findings, then proposes a
+                change. Nothing is written until you approve it.</div>
+              <div class="two">
+                <select id="tr-target" title="What to improve"></select>
+                <button onclick="teamReflect()">Reflect</button>
+              </div>
+              <span id="tr-msg" class="hint"></span>
+              <div id="team-proposals" class="team-props"></div>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
 

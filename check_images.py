@@ -25,6 +25,7 @@ agy 1.2.14 does.
     python3 check_images.py
 """
 import asyncio
+import json
 import base64
 import logging
 import os
@@ -158,8 +159,11 @@ async def main():
         got = r.json()[0] if r.status_code == 200 else {}
         said = agy["cmd"][-1]
         check("the shape reaches the tool", '"16:9"' in said, said[:160])
+        # Đường dẫn đi vào lời dặn dưới dạng JSON (image_instruction): trên Windows dấu '\\' bị
+        # nhân đôi, nên tìm đúng dạng đã mã hoá chứ không tìm chuỗi thô.
+        jpath = lambda p: json.dumps(str(p))[1:-1]  # noqa: E731
         check("a reference reaches the tool as an absolute path",
-              str(ref.resolve()) in said or str(ref) in said, said[:200])
+              jpath(ref.resolve()) in said or jpath(ref) in said, said[:200])
         check("a chosen model rewrites, with --model and still no bypass",
               agy["cmd"][agy["cmd"].index("--model") + 1] == "gemini-3.8-flash-low"
               and "--dangerously-skip-permissions" not in agy["cmd"] and "Rewrite" in said,
@@ -225,7 +229,8 @@ async def main():
                    and '"uploaded": "' in (so.IMAGES_DIR / n).with_suffix(".json").read_text()]
         check("edits takes image[] files as references",
               r.status_code == 200 and len(uploads) == 2
-              and all(str(u) in agy["cmd"][-1] for u in uploads),
+              and all(jpath(u) in agy["cmd"][-1] or jpath(u.resolve()) in agy["cmd"][-1]
+                      for u in uploads),
               f"{r.status_code} {r.text[:100]} uploads={len(uploads)}")
         r = await c.post("/v1/images/edits", data={"prompt": "x"},
                          files=[("image", ("one.png", PNG, "image/png"))])

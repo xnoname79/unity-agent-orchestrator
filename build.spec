@@ -9,7 +9,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [
     ("static", "static"),                    # dashboard (index.html, app.js, vendor xterm)
-    (".claude/skills", ".claude/skills"),    # template vai cho dropdown spawn
+    ("templates", "templates"),    # template vai (dropdown spawn) + playbook của sub-agent
     ("LICENSE", "."),                        # MIT: bản build cũng phải kèm notice
 ]
 binaries, hiddenimports = [], [

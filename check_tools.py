@@ -18,6 +18,7 @@ is there, so that is enough to drive every branch without installing anything.
 import asyncio
 import logging
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -145,10 +146,17 @@ def as_os(platform, *names):
         os.environ["PATHEXT"] = ".EXE"
     real = so.sys.platform
     so.sys.platform = platform
+    # Python 3.12+ shutil.which on "win32" asks _winapi whether to search the current directory;
+    # off Windows _winapi is None and the faked platform crashes the lookup. Answer for it.
+    real_curdir = getattr(shutil, "_win_path_needs_curdir", None)
+    if platform == "win32" and real_curdir and os.name != "nt":
+        shutil._win_path_needs_curdir = lambda cmd, mode: False
     try:
         return {r["name"]: r for r in so.media_tools()["tools"]}
     finally:
         so.sys.platform = real
+        if real_curdir:
+            shutil._win_path_needs_curdir = real_curdir
         os.environ["PATH"] = REAL_PATH
         if real_ext is None:
             os.environ.pop("PATHEXT", None)
