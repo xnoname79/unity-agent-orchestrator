@@ -281,13 +281,17 @@ async def spawn_subagent(from_role: str, playbook: str, brief: str, done_when: s
                expected output, a flow driven in the running app, a value read back. "The build
                passes" is not enough.
         title: a short label for the dashboard.
-        model: optional override (e.g. "opus", "sonnet", "agy:<slug>"); default follows the
-               workspace's model roles.
+        model: optional Claude model (e.g. "opus", "sonnet"); default follows the workspace's
+               model roles. Sub-agents run on Claude — only the user picks Gemini (agy).
         workspace_id: your workspace, if your name exists in several.
     """
     orch, me, err = _caller(from_role, workspace_id)
     if err:
         return err
+    # agy chỉ khi người dùng chọn (tab Team), không phải director tự chọn.
+    if model and orch.engine_from_model(model) != "claude":
+        return ("⛔ Sub-agents run on Claude. Leave model empty or name a Claude model (opus, "
+                "sonnet…) — only the user can pick Gemini, per role in the Team tab.")
     import team
     res = team.spawn_subagent(me["id"], playbook, brief, done_when, title, model)
     if res.get("error"):

@@ -4490,15 +4490,14 @@ function teamForms() {
     `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("")}</optgroup>`).join("");
   $("team-models").innerHTML = TEAM_ROLES.map(([r, label]) => {
     const cur = TEAM.models[r] || "";
-    const known = cur === "" || cur === "@other" || MODEL_TABS.some((t) => t.models.some((m) => m.id === cur));
+    const known = cur === "" || MODEL_TABS.some((t) => t.models.some((m) => m.id === cur));
     return `<label class="hint">${esc(label)}
       <select onchange="teamModel('${r}', this.value)">
-        <option value="">Same as the director</option>
-        <option value="@other">A different CLI than the builder</option>
+        <option value="">Claude (the director's model if it runs Claude)</option>
         ${known ? "" : `<option value="${esc(cur)}">${esc(cur)}</option>`}${opts}
       </select></label>`;
   }).join("") + `<div class="hint">Installed here: ${TEAM.engines.map(esc).join(", ") || "none found"}.
-    A different CLI for verifying means the same blind spot does not grade itself.</div>`;
+    Sub-agents run on Claude unless you pick a Gemini model for a role here.</div>`;
   TEAM_ROLES.forEach(([r], k) => { $("team-models").querySelectorAll("select")[k].value = TEAM.models[r] || ""; });
 }
 

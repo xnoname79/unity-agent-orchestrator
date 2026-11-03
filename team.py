@@ -45,10 +45,8 @@ PLAYBOOKS = {
     "investigate": ("investigate", False),
 }
 SYSTEM_PLAYBOOKS = ("verify", "reflect")
+# Vai rỗng = Claude (xem resolve_model). agy chỉ chạy khi NGƯỜI DÙNG chọn model Gemini cho vai đó.
 MODEL_ROLES = ("implement", "investigate", "verify")
-# "@other" = verifier chạy bằng CLI KHÁC người làm nếu máy có — pstack trộn model ở khâu duyệt
-# để cái mù của model này không phải cái mù của người chấm.
-DEFAULT_MODELS = {"implement": "", "investigate": "", "verify": "@other"}
 MAX_ATTEMPTS = max(1, int(os.environ.get("ORCH_SUBTASK_MAX_ATTEMPTS", "3")))
 MAX_ACTIVE = max(1, int(os.environ.get("ORCH_SUBAGENTS_MAX", "4")))
 ACTIVE = ("queued", "running", "verifying", "fixing")
@@ -443,7 +441,8 @@ def model_roles(workspace_id):
         saved = json.loads(so.get_setting(f"team_models:{workspace_id}", "{}") or "{}")
     except (json.JSONDecodeError, ValueError):
         saved = {}
-    return {r: str(saved.get(r, DEFAULT_MODELS[r])) for r in MODEL_ROLES}
+    # "@other" (verifier sang CLI khác = agy) đã bỏ: giá trị cũ còn lưu → về Claude.
+    return {r: v if (v := str(saved.get(r, ""))) != "@other" else "" for r in MODEL_ROLES}
 
 
 def set_model_roles(workspace_id, roles):
@@ -455,17 +454,14 @@ def set_model_roles(workspace_id, roles):
     return cur
 
 
-def resolve_model(workspace_id, role, director, builder_model=""):
-    """Model cho một vai. '' = như director. '@other' = CLI khác người làm (nếu máy có)."""
-    so = _so()
+def resolve_model(workspace_id, role, director):
+    """Model cho một vai: cái người dùng chọn ở tab Team, không thì Claude — model của director
+    nếu director chạy Claude, director chạy agy thì Claude mặc định ('')."""
     want = model_roles(workspace_id).get(role, "")
-    if want == "@other":
-        builder = so.engine_from_model(builder_model or director.get("model", ""))
-        for eng in installed_engines():
-            if eng != builder:
-                return {"claude": "", "agy": "agy"}[eng]
-        return builder_model or director.get("model", "")
-    return want or director.get("model", "")
+    if want:
+        return want
+    dm = director.get("model", "")
+    return dm if _so().engine_from_model(dm) == "claude" else ""
 
 
 # ─── Signal & thông điệp ─────────────────────────────────────────────────────
@@ -758,7 +754,7 @@ async def _start_verifier(st, _from=("verifying",)):
                  run_key=secrets.token_hex(8), guard=guard)
     if st is None:
         return
-    model = resolve_model(st["workspace_id"], "verify", director, builder.get("model", ""))
+    model = resolve_model(st["workspace_id"], "verify", director)
     n = _row("SELECT COUNT(*) n FROM sessions WHERE team_role = 'verifier' AND name LIKE ?",
              (f"sub-{st['id'][3:]}-verify%",))["n"] + 1
     name = f"sub-{st['id'][3:]}-verify{n}"

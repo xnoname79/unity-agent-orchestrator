@@ -32,10 +32,12 @@ installed on your machine, so each provider keeps its own login and subscription
 - Each sub-agent that writes code gets its own git worktree and branch `orch/<id>`; your checkout
   is never touched. Playbooks: `feature`, `bugfix` (reproduce first), `refactor` (record behaviour
   first), `investigate` (read-only).
-- Nothing counts as done until a fresh verifier session — by default on a different CLI — observes
-  the `done_when` contract and records a verdict. A FAIL goes back to the builder with findings;
-  a verifier that edits files has its verdict thrown away. The director is messaged when each one
-  passes (with the branch to merge) or fails.
+- Nothing counts as done until a fresh verifier session observes the `done_when` contract and
+  records a verdict. A FAIL goes back to the builder with findings; a verifier that edits files
+  has its verdict thrown away. The director is messaged when each one passes (with the branch to
+  merge) or fails.
+- Sub-agents and verifiers run on Claude (the director's model when it runs Claude). Gemini (agy)
+  only when you pick it for a role in the **Team** tab; a director cannot pick it itself.
 - `send_signal(..., done_when=...)` puts any hand-off between agents through the same check.
 - Select a director on the canvas (or click its **N sub-agents** badge) to watch its team in its
   own panel: each sub-agent's stage, current step, verdict and diff, with cancel and verify again.

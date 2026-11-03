@@ -35,7 +35,7 @@ for _s in (sys.stdout, sys.stderr):
 TMP = Path(tempfile.mkdtemp(prefix="check_team_"))
 BIN = TMP / "bin"
 BIN.mkdir()
-for name in ("claude", "agy"):            # both installed: "@other" must pick agy for a claude builder
+for name in ("claude", "agy"):            # both installed: the team must still pick Claude on its own
     f = BIN / (name + (".exe" if os.name == "nt" else ""))
     f.write_bytes(b"")
     f.chmod(0o755)
@@ -212,8 +212,8 @@ async def main():
                  and s["name"].startswith(f"sub-{st_id[3:]}")]
     check("each verification ran in a fresh verifier session", len(verifiers) == 2,
           str([v["name"] for v in verifiers]))
-    check("the verifier ran on a different CLI than the builder ('@other' → agy)",
-          all(so.engine_name_of_session(v) == "agy" for v in verifiers)
+    check("builder and verifiers run on Claude even with agy installed",
+          all(so.engine_name_of_session(v) == "claude" for v in verifiers)
           and so.engine_name_of_session(session_of(st["session_id"])) == "claude",
           str([(v["name"], v["model"]) for v in verifiers]))
     fix = [p for n, p in SEEN if n == session_of(st["session_id"]).get("name") and "VERIFIER FINDINGS" in p]
@@ -564,6 +564,21 @@ async def main():
         check("agents cannot take a team name", r.status_code == 400, r.text)
         r = await c.post("/api/team/models", json={"workspace_id": WS, "roles": {"verify": "opus"}})
         check("model roles can be changed", r.json().get("verify") == "opus", r.text)
+        # Claude trừ khi NGƯỜI DÙNG chọn Gemini cho vai đó; director chạy agy không kéo đội theo.
+        gem = {"model": "agy:gemini-3.1-pro-high"}
+        check("a director on Gemini still gets Claude sub-agents",
+              team.resolve_model(WS, "implement", gem) == "", team.resolve_model(WS, "implement", gem))
+        check("a director on Claude passes its model down",
+              team.resolve_model(WS, "implement", {"model": "sonnet"}) == "sonnet")
+        team.set_model_roles(WS, {"investigate": "agy"})
+        check("Gemini runs when the user picks it for a role",
+              team.resolve_model(WS, "investigate", {"model": "opus"}) == "agy")
+        so.set_setting(f"team_models:{WS}", json.dumps({"verify": "@other"}))
+        check("an old '@other' setting falls back to Claude", team.model_roles(WS)["verify"] == "", team.model_roles(WS))
+        so.set_setting(f"team_models:{WS}", "{}")
+        res = await signal_mcp.spawn_subagent(from_role="lead", playbook="investigate", brief="b",
+                                              done_when="d", model="agy:gemini-3.1-pro-high")
+        check("a director cannot pick Gemini for a sub-agent", res.startswith("⛔") and "Claude" in res, res)
         r = await c.post("/api/signals", json={"to_role": "other", "from_role": "lead",
                                                "message": "x", "done_when": "y", "workspace_id": WS})
         check("POST /api/signals accepts done_when", r.status_code == 200, r.text)
