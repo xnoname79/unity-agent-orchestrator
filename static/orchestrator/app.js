@@ -538,21 +538,14 @@ function shellSave() {
   history.replaceState(null, "", location.pathname + (parts.length ? "?" + parts.join("&") : ""));
 }
 
-// Thanh tab liệt kê MỌI workspace, không chỉ cái đang mở: mở một workspace khác mà phải quay
-// về màn Home rồi bấm card thì mất luôn chỗ đang đứng. Tab ≠ pane — pane vẫn tối đa MAX_PANES
-// vì mỗi pane là một iframe với terminal sống bên trong, không phải thứ dựng sẵn cho cả chục cái.
+// Sidebar liệt kê MỌI workspace của MỌI group, không chỉ cái đang mở: mở một workspace khác mà
+// phải quay về màn Home rồi bấm card thì mất luôn chỗ đang đứng. Dòng ≠ pane — pane vẫn tối đa
+// MAX_PANES vì mỗi pane là một iframe với terminal sống bên trong.
 function renderShellTabs() {
   const nav = $("ws-tabs");
   if (!nav) return;
   const split = SPLIT && OPEN.length === MAX_PANES;
-  // Workspace đang mở mà không còn trong danh sách (vừa bị xoá) vẫn phải có tab, không thì pane
-  // của nó nằm đó mà không còn chỗ nào bấm đóng.
-  // Tab liệt kê workspace của GROUP đang đứng. Cái đang mở mà không thuộc group đó (vừa bị
-  // chuyển, vừa bị xoá) vẫn phải có tab, không thì pane của nó nằm đó mà không còn chỗ bấm đóng.
-  const rows = wsOfGroup(CURGROUP).map((w) => ({ id: w.id, name: w.name || w.id }))
-    .concat(OPEN.filter((id) => !wsOfGroup(CURGROUP).some((w) => w.id === id))
-      .map((id) => ({ id, name: (WORKSPACES.find((w) => w.id === id) || {}).name || id })));
-  nav.innerHTML = rows.map(({ id, name }) => {
+  const row = (id, name) => {
     const i = OPEN.indexOf(id);
     const open = i >= 0;
     const cls = "ws-tab" + (open ? " open" : "")
@@ -560,12 +553,22 @@ function renderShellTabs() {
     const tip = open ? `${name} — open${split ? ` in the ${i ? "right" : "left"} pane` : ""}`
                      : `${name} — click to open`;
     return `<button class="${cls}" onclick="selectWorkspace('${esc(id)}')" title="${esc(tip)}">
+       <span class="dot"></span><span class="lbl">${esc(name)}</span>
        ${open && split ? `<span class="pane-tag">${i ? "R" : "L"}</span>` : ""}
-       <span class="lbl">${esc(name)}</span>
        ${open ? `<span class="x" title="Close"
          onclick="event.stopPropagation();closeWs('${esc(id)}')">${ic("x", "sm")}</span>` : ""}
      </button>`;
-  }).join("");
+  };
+  // Workspace đang mở mà không còn thuộc group nào (vừa bị xoá) vẫn phải có dòng, không thì pane
+  // của nó nằm đó mà không còn chỗ nào bấm đóng.
+  const listed = new Set(GROUPS.flatMap((g) => wsOfGroup(g.id).map((w) => w.id)));
+  const orphans = OPEN.filter((id) => !listed.has(id));
+  nav.innerHTML = GROUPS.map((g) =>
+    `<button class="sb-grp" onclick="openGroup('${esc(g.id)}')" title="Show this group on Home"
+       >${esc(g.name)}</button>`
+    + wsOfGroup(g.id).map((w) => row(w.id, w.name || w.id)).join("")).join("")
+    + (orphans.length ? `<div class="sb-grp">Open</div>` : "")
+    + orphans.map((id) => row(id, (WORKSPACES.find((w) => w.id === id) || {}).name || id)).join("");
 
   // Split: chọn thẳng workspace nào nằm pane nào. Trước đây muốn đổi một bên thì phải đóng nó
   // rồi mở cái mới, mà đóng xong split tự tắt — mất luôn cả pane bên kia đang xem dở.
@@ -692,6 +695,13 @@ function goHome() {
   refreshAll();
 }
 window.goHome = goHome;
+
+function newAgent() {
+  goHome();
+  $("sp-role").scrollIntoView({ block: "center" });
+  $("sp-role").focus();
+}
+window.newAgent = newAgent;
 
 function toggleSplit() {
   if (OPEN.length < MAX_PANES) return;
@@ -2918,9 +2928,10 @@ function toolRows(list) {
 
 function toolsMark(missing) {
   const b = $("tools-btn");
-  if (!b) return;                     // pane không có topbar
-  b.classList.toggle("warn", missing > 0);
-  b.title = missing ? `Media tools — ${missing} missing` : "Media tools";
+  if (!b) return;                     // pane không có sidebar
+  b.classList.toggle("has-dot", missing > 0);
+  b.title = missing ? `Settings — ${missing} media tool${missing > 1 ? "s" : ""} missing` : "Settings";
+  $("tools-item").innerHTML = `${ic("wrench")} Media tools${missing ? ` (${missing} missing)` : ""}`;
 }
 
 async function toolsLoad() {
@@ -3188,16 +3199,19 @@ function imgOpen() {
 }
 window.imgOpen = imgOpen;
 
-// Menu Tools nằm ở top layer: đặt nó ngay dưới nút mỗi lần mở, canh mép phải nếu sát lề.
-$("tools-menu").addEventListener("beforetoggle", (e) => {
-  if (e.newState !== "open") return;
-  const r = $("tools-menu-btn").getBoundingClientRect(), m = $("tools-menu");
-  m.style.top = r.bottom + 4 + "px";
-  m.style.left = Math.max(8, Math.min(r.left, innerWidth - 178)) + "px";
-});
+// Menu ở top layer: đặt nó cạnh phải nút sidebar mỗi lần mở.
+for (const m of document.querySelectorAll(".menu[popover]"))
+  m.addEventListener("beforetoggle", (e) => {
+    if (e.newState !== "open") return;
+    const r = document.querySelector(`.sb-item[popovertarget="${m.id}"]`).getBoundingClientRect();
+    m.style.top = Math.max(8, Math.min(r.top, innerHeight - 200)) + "px";
+    m.style.left = r.right + 6 + "px";
+  });
 // Bấm vào workspace (iframe) không tới được trang này nên trình duyệt không tự đóng menu; trang
 // mất focus thì đóng theo.
-addEventListener("blur", () => { if ($("tools-menu").matches(":popover-open")) $("tools-menu").hidePopover(); });
+addEventListener("blur", () => {
+  for (const m of document.querySelectorAll(".menu:popover-open")) m.hidePopover();
+});
 
 // ── Performance (Tools) ──────────────────────────────────────────────────────
 // Hỏi /api/perf mỗi 2 s khi bảng đang mở (CPU là độ chênh giữa hai lần hỏi). Lời khuyên viết
@@ -4164,7 +4178,7 @@ function setConn(ok) {
   const el = $("conn");
   if (!el) return;
   el.className = "pill " + (ok ? "live" : "dead");
-  el.textContent = ok ? "live" : "offline";
+  el.textContent = ok ? "Live" : "offline";
 }
 
 // Một lượt refresh một lúc: lượt chậm mà lượt mới vẫn chen vào là chồng fetch + dựng canvas lên
