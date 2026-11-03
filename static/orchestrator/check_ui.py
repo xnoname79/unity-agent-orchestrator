@@ -161,15 +161,15 @@ check("shift+wheel zooms even over a terminal", gaps,
       "a card covering the canvas leaves no background to scroll on")
 
 # 10 · Màn Home dùng MỘT grid cho hai tầng (group / workspace của group). Hỏng im lặng ở đây là
-# lọc bị bỏ đi: thanh tab hoặc grid lại liệt kê MỌI workspace, trông vẫn chạy, nhưng group thành
+# lọc bị bỏ đi: grid lại liệt kê MỌI workspace (hoặc sidebar thành một danh sách phẳng), trông vẫn chạy, nhưng group thành
 # vô nghĩa — và ở máy nhiều workspace thì đó đúng là cái nó sinh ra để chữa.
 gaps = set()
 if "function renderHome()" not in JS:
     gaps.add("renderHome() — the one renderer both Home layers go through")
 if "wsOfGroup = (gid)" not in JS:
     gaps.add("wsOfGroup() — the filter that makes a group mean anything")
-if "wsOfGroup(CURGROUP).map" not in JS:
-    gaps.add("renderShellTabs must list the OPEN GROUP's workspaces, not all of them")
+if "GROUPS.map((g) =>" not in JS or "wsOfGroup(g.id).map((w) => row(" not in JS:
+    gaps.add("renderShellTabs must list workspaces UNDER their group heading, not one flat list")
 if "renderWorkspaceGrid" in JS:
     gaps.add("renderWorkspaceGrid is gone — a call left behind renders the old flat list")
 for fn in ("openGroup", "homeNew", "moveWsGroup"):
@@ -257,6 +257,25 @@ if "wsOfGroup(g.id).length" not in JS:
              "not the server's count of every row")
 check("spawning goes through a group first", gaps,
       "a flat list of every workspace on the machine is what groups exist to replace")
+
+# 15 · Ctrl+K phải mở palette ở MỌI chỗ, kể cả khi focus nằm trong terminal của pane. Hỏng im lặng:
+#   - bỏ capture:true → xterm nhận phím trước, terminal gõ ra "k" (hoặc xoá dòng) và palette không mở;
+#   - mất relay {t:"palette"} pane→shell → Ctrl+K chỉ chạy ở màn Home, trong workspace thì im;
+#   - mất {t:"focus"} → chọn agent trong palette mở đúng workspace nhưng không chọn card nào.
+gaps = set()
+if 'addEventListener("keydown", (e) => { if (palKey(e)) palOpen(); }, { capture: true })' not in JS:
+    gaps.add("the shell's capture-phase Ctrl+K listener")
+if 'parent.postMessage({ t: "palette" }, location.origin)' not in JS \
+        or "}, { capture: true });" not in JS[JS.index('t: "palette" }, location.origin)'):][:120]:
+    gaps.add("the pane's capture-phase Ctrl+K relay to the shell")
+if '(e.data || {}).t === "palette") palOpen()' not in JS:
+    gaps.add("the shell's handler for the pane's {t:\"palette\"} message")
+if 'm.t === "focus") paneFocus(m.sid)' not in JS or "paneFocus(window.frameElement?.dataset.focus)" not in JS:
+    gaps.add("the pane's {t:\"focus\"} handler and its boot-time fallback for a pane not yet loaded")
+if 'id="pal-btn"' not in HTML or 'onclick="palOpen()"' not in HTML:
+    gaps.add("the sidebar 'Search or run…' button")
+check("Ctrl+K opens the palette from anywhere, even a terminal", gaps,
+      "xterm swallows keys, so the pane has to catch Ctrl+K before it and hand it to the shell")
 
 if fails:
     print("\n" + "\n\n".join(fails))

@@ -27,16 +27,20 @@ function applyTheme(pref) {
   document.documentElement.dataset.theme = dark ? "dark" : "light";
   const btn = $("theme-btn");
   if (btn) btn.title = `Theme: ${pref} — click to change`;
+  for (const b of document.querySelectorAll("[data-theme-pref]")) {
+    b.classList.toggle("active", b.dataset.themePref === pref);
+    b.setAttribute("aria-checked", b.dataset.themePref === pref);
+  }
   // Pane đọc localStorage lúc boot, nhưng đang chạy thì không biết shell vừa đổi → báo xuống.
   for (const f of document.querySelectorAll("iframe.pane"))
     try { f.contentWindow.postMessage({ t: "theme", pref }, location.origin); } catch { /* chưa load */ }
 }
-function cycleTheme() {
-  const next = THEMES[(THEMES.indexOf(themePref()) + 1) % THEMES.length];
-  try { localStorage.setItem("orch-theme", next); } catch { /* private mode */ }
-  applyTheme(next);
+function setTheme(pref) {
+  try { localStorage.setItem("orch-theme", pref); } catch { /* private mode */ }
+  applyTheme(pref);
 }
-window.cycleTheme = cycleTheme;
+function cycleTheme() { setTheme(THEMES[(THEMES.indexOf(themePref()) + 1) % THEMES.length]); }
+window.cycleTheme = cycleTheme; window.setTheme = setTheme;
 
 const SIGNAL_BADGE = { pending: "b-gray", approved: "b-blue", processing: "b-blue",
                        done: "b-green", failed: "b-red", denied: "b-red", blocked: "b-amber" };
@@ -89,10 +93,12 @@ let sigShown = PAGE;    // signal queue: số record đang hiển thị (tăng d
 let runsShown = PAGE;   // audit log: số record đang hiển thị
 let sigHasMore = false, runsHasMore = false;  // còn record cũ hơn để bấm + không
 
-// Bấm "+" ở một bảng → hiển thị thêm PAGE record cũ (load-more, nối tiếp).
+// "Show older" ở tab Activity → nạp thêm PAGE record cũ của nguồn nào còn (load-more, nối tiếp).
 function showMore(which) {
-  if (which === "signals") sigShown += PAGE;
-  else if (which === "runs") runsShown += PAGE;
+  if (which === "activity") {
+    if (sigHasMore) sigShown += PAGE;
+    if (runsHasMore) runsShown += PAGE;
+  }
   refreshAll();
 }
 window.showMore = showMore;
@@ -374,6 +380,7 @@ window.moveWsGroup = moveWsGroup;
 function openGroup(gid) {
   CURGROUP = gid;
   ACTIVE = -1;
+  pageLeave();
   shellSave(); renderHome(); renderShellTabs(); renderPanes();
 }
 window.openGroup = openGroup;
@@ -402,12 +409,12 @@ function askWsName(msg, cur = "", exceptId = "") {
 }
 
 // Tạo workspace mới (orchestrator sinh id + mkdir thư mục). Hỏi tên hiển thị.
-async function newWorkspace() {
+async function newWorkspace(gid = CURGROUP) {
   const name = askWsName("New workspace name (display label):");
   if (name === null) return;
   try {
     const w = await api("/api/workspaces", "POST",
-      { name, group_id: CURGROUP || undefined });
+      { name, group_id: gid || undefined });
     await refreshAll();               // grid phải có card mới trước khi mở nó thành tab
     selectWorkspace(w.id);
     alert(`Created workspace '${w.name}'\nid: ${w.id}\nfolder: ${w.root_dir}`);
@@ -437,64 +444,147 @@ function renderWorkspaces(list) {
   renderPanes();
 }
 
-// Grid Home: group (chưa chọn group) hoặc workspace của group đang chọn.
+// Home: chưa chọn group thì MỌI group (tiêu đề → card workspace), chọn rồi thì chỉ group đó.
 function renderHome() {
   const inGroup = !!CURGROUP && GROUPS.some((g) => g.id === CURGROUP);
   $("grp-back").hidden = !inGroup;
-  $("home-title").textContent = inGroup ? groupName(CURGROUP) : "Groups";
+  $("home-title").textContent = inGroup ? groupName(CURGROUP) : "Workspaces";
   $("home-new-lbl").textContent = inGroup ? "New workspace" : "New group";
-  $("ws-grid-empty").textContent = inGroup
-    ? "No workspaces in this group yet — create one, or move one in from another group."
-    : "No groups yet — create one to get started.";
-  const rows = inGroup ? wsOfGroup(CURGROUP) : GROUPS;
-  $("ws-grid-empty").hidden = rows.length > 0;
-  $("ws-grid").innerHTML = (inGroup ? rows.map(wsCardHtml) : rows.map(groupCardHtml)).join("");
+  $("ws-grid-empty").hidden = GROUPS.length > 0;
+  $("ws-grid").innerHTML = (inGroup ? GROUPS.filter((g) => g.id === CURGROUP) : GROUPS)
+    .map(groupCardHtml).join("");
+  renderInbox();
+  renderWorking();
 }
 
 function groupCardHtml(g) {
   // Đếm từ WORKSPACES chứ không dùng g.workspaces của server: server đếm MỌI hàng, còn
   // /api/workspaces giấu workspace 'default' lúc nó rỗng. Lấy hai nguồn khác nhau là card ghi
   // "3 workspaces" mà mở ra chỉ thấy 2.
-  const n = wsOfGroup(g.id).length;
-  return `<div class="ws-card" onclick="openGroup('${esc(g.id)}')">
-    <h3>${esc(g.name)}</h3>
-    <div class="ws-id">${esc(g.id)}</div>
-    <div class="ws-meta"><span class="ws-count">${n}</span> workspace${n === 1 ? "" : "s"}
-      <button class="icon-btn ws-del" title="Rename this group"
-        onclick="event.stopPropagation();renameGroup('${esc(g.id)}','${esc(g.name)}')"
-        >${ic("edit", "sm")}</button>
+  const list = wsOfGroup(g.id), n = list.length;
+  return `<div class="grp-sec">
+    <div class="grp-h">
+      <button class="grp-name" onclick="openGroup('${esc(g.id)}')" title="Show only this group"
+        >${esc(g.name)}</button>
+      <span class="grp-n">· ${n} workspace${n === 1 ? "" : "s"}</span>
+      <button class="icon-btn" title="Rename this group"
+        onclick="renameGroup('${esc(g.id)}','${esc(g.name)}')">${ic("edit", "sm")}</button>
       ${g.id === "grp_default" ? "" : `<button class="icon-btn danger"
         title="Delete the group — its workspaces move back to the default group"
-        onclick="event.stopPropagation();deleteGroup('${esc(g.id)}','${esc(g.name)}',${n})"
-        >${ic("trash", "sm")}</button>`}</div>
+        onclick="deleteGroup('${esc(g.id)}','${esc(g.name)}',${n})">${ic("trash", "sm")}</button>`}
+    </div>
+    <div class="ws-grid">${list.map(wsCardHtml).join("")}
+      <button class="ws-new" onclick="newWorkspace('${esc(g.id)}')">${ic("plus", "sm")} New workspace</button>
+    </div>
   </div>`;
 }
 
 // Card workspace: click = mở thành tab. Ô chọn group phải CHẶN click nổi lên card, không thì
 // mỗi lần bấm vào nó là mở luôn workspace.
 function wsCardHtml(w) {
-  const st = badge(w.status, w.status === "active" ? "b-green" : "b-amber");
   const open = OPEN.includes(w.id);
+  const mine = HOME.sessions.filter((s) => s.workspace_id === w.id);
+  const need = needsYou(HOME.signals);
+  const nNeed = homeInbox().filter((i) => i.ws === w.id).length;
+  const nRun = mine.filter((s) => s.status === "running").length;
+  const st = nNeed ? `<span class="ws-st need">needs you</span>`
+    : nRun ? `<span class="ws-st run">${nRun} running</span>` : `<span class="ws-st">idle</span>`;
+  // Chip = agent người dùng tạo; sub-agent/verifier của đội nằm ở tab Team, chen vào đây là rối.
+  const chips = mine.filter((s) => !s.team).map((s) => {
+    const cls = need.has(s.id) ? " need" : s.status === "running" ? " run" : "";
+    return `<span class="chip${cls}" title="${esc(s.name)} — ${esc(need.has(s.id) ? "needs you" : s.status)}"
+      >${esc(s.name)}</span>`;
+  }).join("") || `<span class="side-empty">No agents yet</span>`;
   const move = GROUPS.length < 2 ? "" : `<select class="mini ws-grp" title="Move to another group"
       onclick="event.stopPropagation()" onchange="moveWsGroup('${esc(w.id)}', this.value)">${
     GROUPS.map((g) => `<option value="${esc(g.id)}"${g.id === w.group_id ? " selected" : ""}
       >${esc(g.name)}</option>`).join("")}</select>`;
-  return `<div class="ws-card${open ? " open" : ""}" onclick="selectWorkspace('${esc(w.id)}')">
-    ${open ? `<span class="open-tag">OPEN</span>` : ""}
-    <h3>${esc(w.name || w.id)}</h3>
-    <div class="ws-id">${esc(w.id)}</div>
-    <div class="ws-meta"><span class="ws-count">${w.sessions}</span> session · ${st}
-      <button class="icon-btn ws-del" title="Rename this workspace"
+  return `<div class="ws-card${open ? " open" : ""}" onclick="selectWorkspace('${esc(w.id)}')"
+      title="${esc(w.name || w.id)}${open ? " — open" : ""}">
+    <div class="ws-top"><b>${esc(w.name || w.id)}</b>${w.status !== "active" ? badge(w.status, "b-amber") : ""}${st}</div>
+    ${w.root_dir ? `<div class="ws-root" title="${esc(w.root_dir)}">${esc(w.root_dir)}</div>` : ""}
+    <div class="chips">${chips}</div>
+    <div class="ws-acts"><span class="ws-id">${esc(w.id)}</span>
+      <button class="icon-btn" title="Rename this workspace"
         onclick="event.stopPropagation();renameWs('${esc(w.id)}')"
         >${ic("edit", "sm")}</button>
       ${w.id === "default" ? "" : `<button class="icon-btn danger"
         title="Unregister every agent in this workspace, then delete the empty workspace"
         onclick="event.stopPropagation();deleteWs('${esc(w.id)}','${esc(w.name || w.id)}',${w.sessions})"
-        >${ic("trash", "sm")}</button>`}</div>
-    ${w.root_dir ? `<div class="ws-root" title="${esc(w.root_dir)}">${esc(w.root_dir)}</div>` : ""}
-    ${move}
+        >${ic("trash", "sm")}</button>`}
+      ${move}</div>
   </div>`;
 }
+
+// Dữ liệu Home của MỌI workspace — refreshNow (shell) nạp, renderHome vẽ.
+let HOME = { sessions: [], signals: [], subtasks: [] };
+
+// Một danh sách cho cả hộp Needs you, badge sidebar và chữ "needs you" trên card: ba chỗ đếm
+// từ ba nguồn là sớm muộn lệch nhau.
+function homeInbox() {
+  return [
+    ...waitingApproval(HOME.signals).map((sg) => ({ ws: sg.workspace_id, sg })),
+    ...HOME.subtasks.filter((t) => t.status === "failed" && !t.discarded).map((t) => ({ ws: t.workspace_id, t })),
+  ];
+}
+
+const nameOf = (ref) => (HOME.sessions.find((x) => x.id === ref || x.name === ref) || {}).name || ref || "you";
+
+function renderInbox() {
+  const items = homeInbox();
+  $("inbox").innerHTML = items.map(({ ws, sg, t }) => {
+    const meta = `<span class="inbox-m">· ${esc(wsLabel(ws))} · ${ago(sg ? sg.created_at : t.ended_at || t.updated_at)}</span>`;
+    if (sg) return `<div class="inbox-item" data-sig="${sg.id}">${ic("bell")}
+      <div class="inbox-txt"><div class="inbox-t">Approve a message</div>
+        <div class="inbox-d"><span class="inbox-msg" title="${esc(sg.message)}"><b>${esc(nameOf(sg.from_session))} →
+          ${esc(nameOf(sg.to_session))}:</b> ${esc(sg.message)}</span>${meta}</div></div>
+      <div class="inbox-acts">
+        <button class="secondary" onclick="act('/api/signals/${sg.id}/deny')">Deny</button>
+        <button class="attn-ok" onclick="act('/api/signals/${sg.id}/approve')">Approve</button></div></div>`;
+    return `<div class="inbox-item fail">${ic("x")}
+      <div class="inbox-txt"><div class="inbox-t">Sub-agent failed</div>
+        <div class="inbox-d"><span class="inbox-msg" title="${esc(t.reason)}">“${esc(t.title || t.id)}”${
+          t.reason ? " — " + esc(t.reason) : ""}</span>${meta}</div></div>
+      <div class="inbox-acts"><button class="secondary" onclick="openTeam('${esc(ws)}')">Open in Team</button></div></div>`;
+  }).join("") || `<div class="inbox-calm">Nothing needs you right now.</div>`;
+
+  const n = items.length;
+  $("home-badge").hidden = !n;
+  $("home-badge").textContent = n;
+  const run = HOME.sessions.filter((s) => s.status === "running");
+  const k = new Set(run.map((s) => s.workspace_id)).size;
+  const pl = (x, w) => `${x} ${w}${x === 1 ? "" : "s"}`;
+  $("home-sum").innerHTML = (n ? `<span class="need">${pl(n, "thing")} need${n === 1 ? "s" : ""} you</span>`
+    : "Nothing needs you") + ` · ${pl(run.length, "agent")} working in ${pl(k, "workspace")}`;
+}
+
+function renderWorking() {
+  const run = HOME.sessions.filter((s) => s.status === "running");
+  $("home-working").innerHTML = run.map((s) =>
+    `<button class="work-row" onclick="${s.team ? "openTeam" : "selectWorkspace"}('${esc(s.workspace_id)}')"
+       title="Open ${esc(wsLabel(s.workspace_id))}"><span class="dot"></span>
+       <span class="wr-txt"><b>${esc(s.name)}</b><span class="wr-ws">${esc(wsLabel(s.workspace_id))}</span></span>
+       ${s.last_active ? `<span class="wr-age" title="Last active">${ago(s.last_active)}</span>` : ""}</button>`).join("")
+    || `<div class="side-empty">No agent is running.</div>`;
+  // shortcut: "hôm nay" theo đồng hồ trình duyệt, coi như cùng máy với server; khác múi giờ thì
+  // verified/failed lệch — khi đó lấy mốc 'now' của /api/team.
+  const d = new Date(), day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const ended = (st) => HOME.subtasks.filter((t) => t.status === st && (t.ended_at || "").startsWith(day)).length;
+  $("home-today-box").hidden = !HOME.sessions.length;
+  $("home-today").innerHTML = [
+    [HOME.sessions.reduce((a, s) => a + (s.used_today || 0), 0), "runs", ""],
+    [ended("passed"), "verified", ""], [ended("failed"), "failed", " fail"],
+  ].map(([v, l, c]) => `<div><div class="num${v ? c : ""}">${v}</div><div class="lbl">${l}</div></div>`).join("");
+}
+
+// Pane đọc tab đã lưu lúc boot; pane đang mở sẵn thì nhắn xuống để nó tự đổi tab.
+function openTeam(wid) {
+  try { localStorage.setItem("orch-tab." + wid, "team"); } catch { /* private mode */ }
+  selectWorkspace(wid);
+  const f = [...$("panes").querySelectorAll("iframe.pane")].find((x) => x.dataset.ws === wid);
+  if (f) f.contentWindow.postMessage({ t: "tab", tab: "team" }, location.origin);
+}
+window.openTeam = openTeam;
 
 // Xoá workspace: backend gỡ mọi session của nó (soft — runs/signals giữ cho audit) rồi xoá cái
 // vỏ rỗng. Trước đây muốn dọn một workspace là phải Unregister từng agent bằng tay, mà xong vẫn
@@ -521,6 +611,12 @@ let OPEN = [];        // workspace id đang mở
 let ACTIVE = -1;      // tab đang xem; -1 = màn Home
 let SPLIT = false;    // hiện cả 2 pane cạnh nhau
 let SPLIT_PCT = 50;   // bề rộng pane trái, %
+// Trang toàn màn của shell ("studio" | "settings"), đè lên Home/pane; "" = không có. Workspace
+// đang mở vẫn sống bên dưới (iframe chỉ bị ẩn) để quay lại không phải tải lại terminal.
+let VIEW = "";
+const SUBS = { studio: ["images", "sounds", "speech", "library"],
+               settings: ["connections", "tools", "performance", "removed", "general"] };
+const SUB = { studio: "images", settings: "connections" };
 
 function shellLoad() {
   try { return JSON.parse(localStorage.getItem("orch-shell")) || {}; } catch { return {}; }
@@ -528,44 +624,48 @@ function shellLoad() {
 function shellSave() {
   try {
     localStorage.setItem("orch-shell", JSON.stringify(
-      { open: OPEN, active: ACTIVE, split: SPLIT, pct: SPLIT_PCT, group: CURGROUP }));
+      { open: OPEN, active: ACTIVE, split: SPLIT, pct: SPLIT_PCT, group: CURGROUP, view: VIEW, sub: SUB }));
   } catch { /* private mode */ }
   // Deep-link: F5 hoặc chia sẻ URL giữ nguyên tab đang mở + group đang đứng.
   const parts = [];
   if (OPEN.length) parts.push("ws=" + OPEN.map(encodeURIComponent).join(","));
   if (SPLIT && OPEN.length) parts.push("split=1");
   if (CURGROUP) parts.push("g=" + encodeURIComponent(CURGROUP));
+  if (VIEW) parts.push("view=" + VIEW, "tab=" + SUB[VIEW]);
   history.replaceState(null, "", location.pathname + (parts.length ? "?" + parts.join("&") : ""));
 }
 
-// Thanh tab liệt kê MỌI workspace, không chỉ cái đang mở: mở một workspace khác mà phải quay
-// về màn Home rồi bấm card thì mất luôn chỗ đang đứng. Tab ≠ pane — pane vẫn tối đa MAX_PANES
-// vì mỗi pane là một iframe với terminal sống bên trong, không phải thứ dựng sẵn cho cả chục cái.
+// Sidebar liệt kê MỌI workspace của MỌI group, không chỉ cái đang mở: mở một workspace khác mà
+// phải quay về màn Home rồi bấm card thì mất luôn chỗ đang đứng. Dòng ≠ pane — pane vẫn tối đa
+// MAX_PANES vì mỗi pane là một iframe với terminal sống bên trong.
 function renderShellTabs() {
   const nav = $("ws-tabs");
   if (!nav) return;
   const split = SPLIT && OPEN.length === MAX_PANES;
-  // Workspace đang mở mà không còn trong danh sách (vừa bị xoá) vẫn phải có tab, không thì pane
-  // của nó nằm đó mà không còn chỗ nào bấm đóng.
-  // Tab liệt kê workspace của GROUP đang đứng. Cái đang mở mà không thuộc group đó (vừa bị
-  // chuyển, vừa bị xoá) vẫn phải có tab, không thì pane của nó nằm đó mà không còn chỗ bấm đóng.
-  const rows = wsOfGroup(CURGROUP).map((w) => ({ id: w.id, name: w.name || w.id }))
-    .concat(OPEN.filter((id) => !wsOfGroup(CURGROUP).some((w) => w.id === id))
-      .map((id) => ({ id, name: (WORKSPACES.find((w) => w.id === id) || {}).name || id })));
-  nav.innerHTML = rows.map(({ id, name }) => {
+  const row = (id, name) => {
     const i = OPEN.indexOf(id);
     const open = i >= 0;
     const cls = "ws-tab" + (open ? " open" : "")
-      + (open && !split && i === ACTIVE ? " active" : "") + (open && split ? " split-on" : "");
+      + (open && !split && !VIEW && i === ACTIVE ? " active" : "") + (open && split ? " split-on" : "");
     const tip = open ? `${name} — open${split ? ` in the ${i ? "right" : "left"} pane` : ""}`
                      : `${name} — click to open`;
     return `<button class="${cls}" onclick="selectWorkspace('${esc(id)}')" title="${esc(tip)}">
+       <span class="dot"></span><span class="lbl">${esc(name)}</span>
        ${open && split ? `<span class="pane-tag">${i ? "R" : "L"}</span>` : ""}
-       <span class="lbl">${esc(name)}</span>
        ${open ? `<span class="x" title="Close"
          onclick="event.stopPropagation();closeWs('${esc(id)}')">${ic("x", "sm")}</span>` : ""}
      </button>`;
-  }).join("");
+  };
+  // Workspace đang mở mà không còn thuộc group nào (vừa bị xoá) vẫn phải có dòng, không thì pane
+  // của nó nằm đó mà không còn chỗ nào bấm đóng.
+  const listed = new Set(GROUPS.flatMap((g) => wsOfGroup(g.id).map((w) => w.id)));
+  const orphans = OPEN.filter((id) => !listed.has(id));
+  nav.innerHTML = GROUPS.map((g) =>
+    `<button class="sb-grp" onclick="openGroup('${esc(g.id)}')" title="Show this group on Home"
+       >${esc(g.name)}</button>`
+    + wsOfGroup(g.id).map((w) => row(w.id, w.name || w.id)).join("")).join("")
+    + (orphans.length ? `<div class="sb-grp">Open</div>` : "")
+    + orphans.map((id) => row(id, (WORKSPACES.find((w) => w.id === id) || {}).name || id)).join("");
 
   // Split: chọn thẳng workspace nào nằm pane nào. Trước đây muốn đổi một bên thì phải đóng nó
   // rồi mở cái mới, mà đóng xong split tự tắt — mất luôn cả pane bên kia đang xem dở.
@@ -592,6 +692,7 @@ function setPane(i, id) {
   if (id === OPEN[1 - i]) OPEN = [OPEN[1], OPEN[0]];
   else OPEN[i] = id;        // iframe của workspace bị thay do renderPanes dọn
   ACTIVE = i;
+  pageLeave();
   shellSave(); renderHome(); renderShellTabs(); renderPanes();
 }
 window.setPane = setPane;
@@ -620,12 +721,19 @@ function renderPanes() {
   if (!box) return;
   if (ACTIVE >= OPEN.length) ACTIVE = OPEN.length - 1;
   const home = ACTIVE < 0 || !OPEN.length;
-  $("ws-list-view").hidden = !home;
-  box.hidden = home;
+  $("ws-list-view").hidden = !home || !!VIEW;
+  box.hidden = home || !!VIEW;
+  $("studio-view").hidden = VIEW !== "studio";
+  $("settings-view").hidden = VIEW !== "settings";
+  for (const b of document.querySelectorAll(".sb-item[data-view]")) {
+    const on = b.dataset.view === (VIEW || (home ? "home" : ""));
+    b.classList.toggle("active", on);
+    if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+  }
   // Workspace đã đóng → bỏ iframe (terminal bên trong bị huỷ, đúng ý người bấm ✕).
   for (const f of [...box.querySelectorAll("iframe.pane")])
     if (!OPEN.includes(f.dataset.ws)) f.remove();
-  if (home) return;
+  if (home || VIEW) return;
 
   const split = SPLIT && OPEN.length === MAX_PANES;
   const frames = OPEN.map(paneFrame);
@@ -655,7 +763,7 @@ function renderPanes() {
 
 // Bấm tab = xem MỘT workspace đó. Đang split mà bấm tab thì thoát split — nếu không,
 // tab trông bấm được nhưng bấm xong không có gì đổi, người dùng tưởng hỏng.
-function focusWs(i) { ACTIVE = i; SPLIT = false; shellSave(); renderShellTabs(); renderPanes(); }
+function focusWs(i) { pageLeave(); ACTIVE = i; SPLIT = false; shellSave(); renderShellTabs(); renderPanes(); }
 window.focusWs = focusWs;
 
 // Mở workspace thành tab. Đã mở → nhảy tới nó. Đầy chỗ → đóng tab hiện hành trước
@@ -666,6 +774,7 @@ function selectWorkspace(id) {
   if (w && w.group_id) CURGROUP = w.group_id;
   const i = OPEN.indexOf(id);
   if (i >= 0) return focusWs(i);
+  pageLeave();
   if (OPEN.length >= MAX_PANES) {
     ACTIVE = Math.max(0, ACTIVE);
     OPEN[ACTIVE] = id;        // iframe cũ do renderPanes dọn
@@ -688,10 +797,221 @@ window.closeWs = closeWs;
 function goHome() {
   if (PANE) return;         // trong pane, nút brand không tồn tại
   ACTIVE = -1;
+  pageLeave();
   shellSave(); renderShellTabs(); renderPanes();
   refreshAll();
 }
 window.goHome = goHome;
+
+// Mở tab/mục của từng trang: tải dữ liệu lúc nó hiện ra (như lúc modal cũ mở), không trước.
+const PAGE_ENTER = {
+  images: () => { $("img-prompt").focus(); imgLoad().catch((e) => showMsg("img-msg", "Error: " + e, false)); },
+  sounds: () => { $("snd-q").focus(); sndLoad(true).catch((e) => showMsg("snd-msg", "Error: " + e, false)); },
+  speech: () => {
+    $("tts-msg").textContent = "";
+    $("tts-text").focus();
+    ttsLoad().catch((e) => showMsg("tts-msg", "Error: " + e, false));
+  },
+  library: () => { libKey = ""; libLoad().catch((e) => showMsg("lib-msg", "Error: " + e, false)); libAgents(); },
+  connections: () => {
+    $("mcp-msg").textContent = "";
+    $("mcp-list").innerHTML = `<div class="hint">Loading…</div>`;
+    mcpLoad(true).catch((e) => showMsg("mcp-msg", "Error: " + e, false));
+  },
+  tools: () => {
+    $("tools-msg").textContent = "";
+    $("tools-list").innerHTML = `<div class="hint">Loading…</div>`;
+    toolsLoad().catch((e) => showMsg("tools-msg", "Error: " + e, false));
+  },
+  performance: () => { showMsg("perf-msg", "Measuring…", true); perfLoad(); },
+  removed: () => { showMsg("unreg-msg", "Looking…", true); unregLoad(); },
+  general: () => {},   // nút theme đã được applyTheme() đánh dấu
+};
+// Rời tab/mục: dừng thứ chạy ngầm của nó (poll Performance/Speech, tiếng đang phát) và xoá token
+// gõ dở — đúng việc các hàm *Close của modal cũ làm.
+const PAGE_LEAVE = {
+  speech: () => clearTimeout(ttsPoll),
+  performance: () => clearTimeout(perfT),
+  connections: () => { $("mcp-token").value = ""; },
+};
+function pageLeave() {
+  if (!VIEW) return;
+  const sub = SUB[VIEW];
+  $(VIEW + "-view").querySelector(`.page-sec[data-sub="${sub}"]`).querySelectorAll("audio").forEach((a) => a.pause());
+  PAGE_LEAVE[sub]?.();
+  VIEW = "";
+}
+
+function openPage(view, sub) {
+  if (PANE || !SUBS[view]) return;
+  sub = [sub, SUB[view]].find((x) => SUBS[view].includes(x)) || SUBS[view][0];
+  pageLeave();
+  VIEW = view;
+  SUB[view] = sub;
+  const page = $(view + "-view");
+  for (const el of page.querySelectorAll("[data-sub]")) {
+    const on = el.dataset.sub === sub;
+    if (el.classList.contains("page-sec")) el.hidden = !on;
+    else { el.classList.toggle("active", on); el.setAttribute("aria-selected", on); }
+  }
+  shellSave(); renderShellTabs(); renderPanes();
+  PAGE_ENTER[sub]();
+  if (view === "studio" && sub !== "library") libLoad().catch(() => {});   // số trên tab Library
+}
+window.openPage = openPage;
+
+// Rời trang, về lại chỗ bên dưới (workspace đang mở, hoặc Home).
+function pageClose() { pageLeave(); shellSave(); renderShellTabs(); renderPanes(); }
+window.toolsClose = pageClose;
+
+// Workspace đang mở = gần như chắc chắn là chỗ người dùng muốn thêm agent → chọn sẵn.
+function newAgent() {
+  const w = WORKSPACES.find((x) => x.id === OPEN[ACTIVE]);
+  if (w) { spSel.group = w.group_id; spSel.ws = w.id; }
+  spAutoCwd();
+  renderSpawnPickers();
+  spRoleSlug();
+  $("na-modal").hidden = false;
+  $("sp-role").focus();
+}
+function newAgentClose() { $("na-modal").hidden = true; closeDirBrowse(); }
+window.newAgent = newAgent; window.newAgentClose = newAgentClose;
+
+// ── Command palette (shell) ─────────────────────────────────────────────────
+// Chỉ đọc thứ shell đã có (HOME, WORKSPACES, GROUPS) — không fetch thêm gì.
+const PAL_MAX = 8;          // dòng mỗi nhóm, quá thì "N more"
+let palRows = [];           // các dòng đang hiện, theo thứ tự trên màn hình
+let palSel = -1;            // dòng đang sáng; -1 = chưa chọn (query rỗng)
+let palPrev = null;         // chỗ focus trước khi mở, để trả về khi đóng
+
+// Mở card của một agent: pane có thể chưa load (vừa tạo iframe) → để sid trên chính iframe,
+// pane đọc lúc boot; đã load thì nhắn xuống luôn. Bên nào chạy trước thì xoá nó đi.
+function palFocusAgent(s) {
+  if (s.team) return openTeam(s.workspace_id);   // phiên của đội không có card trên canvas
+  selectWorkspace(s.workspace_id);
+  const f = [...$("panes").querySelectorAll("iframe.pane")].find((x) => x.dataset.ws === s.workspace_id);
+  if (!f) return;
+  f.dataset.focus = s.id;
+  try { f.contentWindow.postMessage({ t: "focus", sid: s.id }, location.origin); } catch { /* chưa load */ }
+}
+
+function palItems() {
+  const need = homeInbox().map(({ ws, sg, t }) => sg
+    ? { g: "Needs you", icon: "bell", lead: "need", label: `Approve ${nameOf(sg.from_session)} → ${nameOf(sg.to_session)}`,
+        sub: sg.message, side: wsLabel(ws), run: () => act(`/api/signals/${sg.id}/approve`) }
+    : { g: "Needs you", icon: "x", lead: "fail", label: `Sub-agent failed: ${t.title || t.id}`,
+        sub: t.reason || "", side: wsLabel(ws), run: () => openTeam(ws) });
+  const agents = HOME.sessions.map((s) => ({ g: "Agents", dot: s.status === "running" ? "run" : "",
+    label: s.name, sub: s.status, side: wsLabel(s.workspace_id), run: () => palFocusAgent(s) }));
+  const workspaces = WORKSPACES.map((w) => ({ g: "Workspaces", icon: "folder", label: w.name || w.id,
+    sub: `${w.sessions || 0} agent${w.sessions === 1 ? "" : "s"}`,
+    side: (GROUPS.find((x) => x.id === w.group_id) || {}).name || "", run: () => selectWorkspace(w.id) }));
+  const A = (label, icon, side, run) => ({ g: "Actions", icon, label, sub: "", side, run });
+  const actions = [
+    A("New agent", "plus", "", newAgent),
+    A("Go Home", "home", "", goHome),
+    A("Images", "image", "Studio", imgOpen),
+    A("Sounds", "music", "Studio", sndOpen),
+    A("Speak text", "speak", "Studio", ttsOpen),
+    A("Library", "library", "Studio", libOpen),
+    A("MCP servers / Connections", "plug", "Settings", mcpOpen),
+    A("Media tools", "wrench", "Settings", toolsOpen),
+    A("Performance", "gauge", "Settings", perfOpen),
+    A("Removed agents", "trash", "Settings", unregOpen),
+    // auto có thể trùng đúng theme đang thấy → bấm mà không đổi gì; đi tiếp một nấc nữa.
+    A("Toggle theme", "theme", themePref(), () => {
+      const was = document.documentElement.dataset.theme;
+      cycleTheme();
+      if (document.documentElement.dataset.theme === was) cycleTheme();
+    }),
+    ...(OPEN.length === MAX_PANES ? [A("Toggle split view", "split", SPLIT ? "on" : "off", toggleSplit)] : []),
+    A("New workspace", "plus", "", () => newWorkspace()),
+  ];
+  return [...need, ...agents, ...workspaces, ...actions];
+}
+
+// 0 = nhãn bắt đầu bằng q, 1 = chuỗi con, 2 = chữ theo thứ tự (subsequence), null = không khớp.
+function palScore(it, q) {
+  if (!q) return 0;
+  const label = it.label.toLowerCase(), hay = label + " " + `${it.sub} ${it.side}`.toLowerCase();
+  if (label.startsWith(q)) return 0;
+  if (hay.includes(q)) return 1;
+  let i = 0;
+  for (const c of hay) if (c === q[i]) i++;
+  return i === q.length ? 2 : null;
+}
+
+function palRender() {
+  const q = $("pal-q").value.trim().toLowerCase();
+  const scored = palItems().map((it, i) => ({ ...it, score: palScore(it, q), i }))
+    .filter((it) => it.score !== null).sort((a, b) => a.score - b.score || a.i - b.i);
+  palRows = [];
+  let html = "";
+  for (const g of ["Needs you", "Agents", "Workspaces", "Actions"]) {
+    const all = scored.filter((it) => it.g === g);
+    if (!all.length) continue;
+    html += `<div class="pal-h${g === "Needs you" ? " need" : ""}" role="presentation">${g}</div>`;
+    for (const it of all.slice(0, PAL_MAX)) {
+      const n = palRows.push(it) - 1;
+      const lead = it.icon ? ic(it.icon) : `<span class="dot ${it.dot}"></span>`;
+      html += `<div id="pal-o${n}" class="pal-o" role="option" aria-selected="false" data-n="${n}">
+        <span class="pal-lead ${it.lead || ""}">${lead}</span><span class="pal-t">${esc(it.label)}</span>
+        ${it.sub ? `<span class="pal-s">${esc(it.sub)}</span>` : ""}
+        ${it.side ? `<span class="pal-side">${esc(it.side)}</span>` : ""}</div>`;
+    }
+    if (all.length > PAL_MAX) html += `<div class="pal-more" role="presentation">${all.length - PAL_MAX} more — keep typing</div>`;
+  }
+  $("pal-list").innerHTML = html || `<div class="pal-none">No match.</div>`;
+  // Gõ rồi thì sáng dòng khớp nhất (điểm thấp nhất, ở nhóm nào cũng được), không phải dòng đầu:
+  // gõ tên một agent mà Enter lại duyệt cái signal ở nhóm Needs you là tai nạn.
+  let best = -1;
+  if (q) palRows.forEach((it, n) => { if (best < 0 || it.score < palRows[best].score) best = n; });
+  palHi(best);
+}
+
+function palHi(n) {
+  palSel = n;
+  for (const el of $("pal-list").querySelectorAll(".pal-o"))
+    el.setAttribute("aria-selected", String(+el.dataset.n === n));
+  const el = $("pal-o" + n);
+  if (el) { $("pal-q").setAttribute("aria-activedescendant", el.id); el.scrollIntoView({ block: "nearest" }); }
+  else $("pal-q").removeAttribute("aria-activedescendant");
+}
+
+function palOpen() {
+  if (PANE) return;
+  if (!$("pal").hidden) return $("pal-q").select();
+  palPrev = document.activeElement;
+  $("pal").hidden = false;
+  $("pal-q").value = "";
+  palRender();
+  $("pal-q").focus();
+}
+
+function palClose() {
+  if ($("pal").hidden) return;
+  $("pal").hidden = true;
+  // Mở từ trong pane thì activeElement của shell là chính iframe — focus lại nó là con trỏ
+  // về đúng terminal bên trong.
+  if (palPrev && palPrev.isConnected) try { palPrev.focus(); } catch { /* không focus được */ }
+  palPrev = null;
+}
+
+function palRun(n) {
+  const it = palRows[n];
+  if (!it) return;
+  palClose();          // đóng trước: action như New agent tự đặt focus của nó
+  it.run();
+}
+window.palOpen = palOpen; window.palClose = palClose; window.palRender = palRender;
+
+// Ctrl+K / ⌘K. capture: phải chặn trước cả ô input và xterm. Pane có listener y hệt, nhắn lên.
+function palKey(e) {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "k") return false;
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
 
 function toggleSplit() {
   if (OPEN.length < MAX_PANES) return;
@@ -736,16 +1056,27 @@ function initSplitDrag() {
 }
 
 // Detail view: tiêu đề + nút suspend/activate của workspace đang xem.
+let paneGroupsAsked = false;
 function renderWsBanner() {
   const w = WORKSPACES.find((x) => x.id === currentWS);
   if (!currentWS || !w) { $("ws-banner-actions").innerHTML = ""; return; }
-  $("ws-detail-title").innerHTML =
-    `${esc(w.name || w.id)} ` +
-    `${badge(w.status, w.status === "active" ? "b-green" : "b-amber")}`;
+  // Pane không nạp group mỗi lượt refresh (xem refreshNow) — chỉ cần tên, nạp một lần.
+  if (PANE && !paneGroupsAsked) {
+    paneGroupsAsked = true;
+    api("/api/groups").then((g) => { GROUPS = g; renderWsBanner(); }).catch(() => {});
+  }
+  const g = GROUPS.find((x) => x.id === w.group_id);
+  $("ws-detail-title").innerHTML = (g ? `<span class="pb-grp">${esc(g.name)} /</span> ` : "")
+    + `<b>${esc(w.name || w.id)}</b>`;
+  $("ws-detail-path").textContent = w.root_dir || "";
+  $("ws-detail-path").title = w.root_dir || "";
+  $("ws-detail-path").hidden = !w.root_dir;
   const suspend = w.status === "active"
     ? `<button class="warn" onclick="act('/api/workspaces/${encodeURIComponent(w.id)}/suspend')">Suspend</button>`
     : `<button onclick="act('/api/workspaces/${encodeURIComponent(w.id)}/activate')">Activate</button>`;
-  $("ws-banner-actions").innerHTML = w.id === "default" ? "" : suspend;
+  $("ws-banner-actions").innerHTML =
+    `<span class="pill ${w.status === "active" ? "live" : "dry"}">${esc(w.status)}</span>`
+    + (w.id === "default" ? "" : suspend);
 }
 
 // Query suffix để scope API theo workspace đang lọc.
@@ -1010,6 +1341,22 @@ function focusNode(nid) {
 }
 window.focusNode = focusNode;
 
+// Palette của shell chọn một agent: pane mở tab Agents, chọn + căn giữa card của nó. Card chưa
+// vẽ (pane vừa load, chưa refresh xong) → giữ sid, refreshNow thử lại sau renderCanvas.
+let paneFocusSid = null;
+function paneFocus(sid) {
+  if (!sid) return;
+  if (window.frameElement) delete window.frameElement.dataset.focus;
+  paneFocusSid = sid;
+  switchTab("agents");
+  requestAnimationFrame(paneFocusTry);   // sau cvFit của switchTab, không thì nó kéo khung nhìn đi
+}
+function paneFocusTry() {
+  if (!paneFocusSid || !$("world").querySelector(`.node[data-nid="s:${CSS.escape(paneFocusSid)}"]`)) return;
+  focusNode("s:" + paneFocusSid);
+  paneFocusSid = null;
+}
+
 // ── Minimap ─────────────────────────────────────────────────────────────────
 // Toàn cảnh canvas + ô khung nhìn. Click/kéo trong map = dời khung nhìn tới đó.
 // Vẽ lại từ applyView (pan/zoom) và redrawEdges (node đổi vị trí/số lượng) — hai chỗ đó
@@ -1169,6 +1516,12 @@ const CLI_ICON = { claude: "🅒", agy: "🅖" };
 // Lệch với backend là UI hiện sai nút (vd mời xóa vĩnh viễn một session Claude rồi ăn 400).
 // 'codex' vẫn được nhận ra: card Codex cũ (engine đã bỏ) phải hiện đúng là codex để người dùng
 // biết đổi model, chứ không giả làm claude.
+// Tên đọc được của model (Sonnet 5.5) thay cho id; id lạ thì hiện nguyên id.
+function modelLabel(model) {
+  for (const t of MODEL_TABS) { const m = t.models.find((x) => x.id === model); if (m) return t.engine === "agy" ? "Gemini " + m.name : m.name; }
+  return model || "auto";
+}
+
 function engineOfModel(model) {
   const m = (model || "").trim().toLowerCase();
   if (m === "codex" || m.startsWith("codex:")) return "codex";
@@ -1616,7 +1969,7 @@ function attachTerms() {
   for (const key of Object.keys(cvTerms)) if (!seen.has(key)) destroyTerm(key);
 }
 
-// Form gửi signal thủ công (tab History): chọn role, bật requires_approval / dry_run.
+// Modal "Send a message" (tab Activity): chọn role, bật requires_approval / dry_run.
 function fillSignalForm(sessions) {
   const sel = $("sg-to");
   if (!sel) return;
@@ -1629,7 +1982,7 @@ function fillSignalForm(sessions) {
 async function sendSignal() {
   const to = $("sg-to").value;
   const msg = $("sg-msg").value.trim();
-  if (!to || !msg) { alert("Pick a target role and type a message."); return; }
+  if (!to || !msg) return showMsg("sg-err", "Pick an agent and type a message.", false);
   try {
     await api("/api/signals", "POST", {
       to_role: to, message: msg, from_role: "human",
@@ -1638,10 +1991,20 @@ async function sendSignal() {
       dry_run: $("sg-dry").checked ? 1 : 0,
     });
     $("sg-msg").value = "";
+    sigClose();
+    toast("Message sent", `to ${to}`);
     await refreshAll();
-  } catch (e) { console.error(e); alert("Could not send signal: " + e); }
+  } catch (e) { console.error(e); showMsg("sg-err", "Could not send: " + e, false); }
 }
 window.sendSignal = sendSignal;
+
+function sigOpen() {
+  $("sg-err").textContent = "";
+  $("sg-modal").hidden = false;
+  $("sg-msg").focus();
+}
+function sigClose() { $("sg-modal").hidden = true; }
+window.sigOpen = sigOpen; window.sigClose = sigClose;
 
 // 1 card agent. needsYou = có signal chờ duyệt tới nó.
 // MỌI card đều là card terminal: terminal nhúng thẳng trong card, action buttons xếp dọc ở cột
@@ -1703,11 +2066,12 @@ function agentCard(s, needsYou) {
     const head = `<div class="node-head">
       <span class="status-dot dot-${esc(s.status)}"></span>
       <b title="${esc(s.name)} — double-click to rename">${esc(s.name)}</b>
-      ${needsYou ? `<span class="needs-badge">NEEDS YOU</span>` : ""}
-      ${crewBadge(s)}
+      ${needsYou ? `<span class="needs-badge">needs you</span>` : ""}
+      ${crewBadge(s) || (s.subtasks?.total ? `<span class="role-badge" title="Delegates work to sub-agents">director</span>` : "")}
       <span class="spacer"></span>
       ${adopt}
       ${sidSel}
+      <span class="node-meta">${esc(modelLabel(s.model))} · ${esc(s.effort || DEFAULT_EFFORT)}</span>
     </div>`;
     const lock = busy
       ? `<div class="term-lock">⏳ An automatic run is in progress (handling a report from another agent)…<br>
@@ -1897,6 +2261,16 @@ async function deleteCliSession(sid, cli, id) {
 }
 window.deleteCliSession = deleteCliSession;
 
+// Tab đang mở trong inspector. Biến module chứ không đọc từ DOM: renderInspector chạy lại mỗi lượt
+// refresh, đọc lại DOM là lần nào cũng về Overview.
+let inspTabSel = "overview";
+const INSP_TABS = ["overview", "work", "settings"];
+function inspTab(name) {
+  inspTabSel = INSP_TABS.includes(name) ? name : "overview";
+  renderInspector();
+}
+window.inspTab = inspTab;
+
 function renderInspector() {
   const box = $("inspector");
   if (!box) return;
@@ -1906,6 +2280,13 @@ function renderInspector() {
   $("insp-dot").className = "status-dot dot-" + esc(s.status);
   $("insp-name").textContent = s.name;
   $("insp-name").title = s.name;
+  $("insp-path").textContent = s.cwd || "no working folder";
+  $("insp-path").title = s.cwd || "";
+  $("insp-msg").placeholder = `Message ${s.name}…`;
+  for (const t of INSP_TABS) {
+    $("insp-tab-" + t).classList.toggle("on", t === inspTabSel);
+    $("insp-tab-" + t).setAttribute("aria-selected", t === inspTabSel);
+  }
 
   const id = encodeURIComponent(s.id);
   const engine = engineOfModel(s.model);
@@ -1915,43 +2296,55 @@ function renderInspector() {
     + effortOptsFor(s.model).map((e) =>
         `<option value="${e}"${e === (s.effort || "") ? " selected" : ""}>${e || "default (" + DEFAULT_EFFORT + ")"}</option>`).join("")
     + `</select>`;
+  const pct = s.daily_limit ? Math.min(100, Math.round(100 * s.used_today / s.daily_limit)) : 0;
   const limit = s.daily_limit
-    ? `<span class="${s.daily_blocked ? "day-hit" : "day-ok"} num">${s.used_today}/${s.daily_limit}</span>`
+    ? `<div class="insp-bar-head"><span>Runs today</span>
+         <span class="${s.daily_blocked ? "day-hit" : "day-ok"} num">${s.used_today} / ${s.daily_limit}</span></div>
+       <div class="insp-bar${s.daily_blocked ? " hit" : ""}"><div style="width:${pct}%"></div></div>`
       + (s.daily_blocked
-          ? ` <button class="warn" onclick="allowMore('${id}','${esc(s.name)}')">Allow +${DAILY_STEP}</button>` : "")
-    : `<span>no limit</span>`;
+          ? `<button class="warn" onclick="allowMore('${id}','${esc(s.name)}')">Allow +${DAILY_STEP}</button>` : "")
+    : `<div class="insp-bar-head"><span>Runs today</span><span class="num">${s.used_today || 0} · no limit</span></div>`;
+  // Run đang chạy của agent này, nếu nó nằm trong trang đầu audit log (dữ liệu đã có sẵn).
+  const run = s.status === "running" && cvRuns.find((r) => r.session_id === s.id && r.status === "running");
+  // Tiêu đề = tin nhắn của signal đang xử lý (prompt của run mở đầu bằng khung vai, đọc không ra).
+  const sig = run && (cvLast.signals || []).find((sg) => sg.id === run.signal_id);
+  const title = sig ? sig.message.split("\n")[0] : run ? (run.prompt || "").split("\n")[0] || "Run #" + run.id : "";
+  const now = s.status !== "running" ? "" : `<div class="insp-now">
+      <div class="insp-now-h">Working now <span>${run ? fmtAge(secsSince(run.started_at)) : ""}</span></div>
+      <div class="insp-now-t" title="${esc(title)}">${esc(title || "A run is in progress")}</div>
+      ${run ? `<button class="secondary" onclick="openRun(${run.id})">${ic("doc", "sm")} Watch run #${run.id}</button>` : ""}
+    </div>`;
 
-  keepOpen($("insp-body"), () => { $("insp-body").innerHTML = `
+  const tabs = {
+    overview: () => `
     <div class="insp-sec">
-      <div class="insp-row">
+      <div class="insp-row chips">
         ${engine === "codex"
           ? `<span class="eng-chip" title="Codex support was removed. Pick a Claude or Gemini model below, or unregister this agent.">codex · removed</span>`
           : `<span class="eng-chip eng-${esc(engine)}">${esc(engine)}</span>`}
         ${badge(s.status, { running: "b-blue", paused: "b-amber", stopped: "b-red" }[s.status] || "b-gray")}
       </div>
       <div class="insp-kv"><span>Session</span><span class="mono" title="${esc(s.id)}">${esc(s.id)}</span></div>
-      <div class="insp-kv"><span>Folder</span><span class="mono" title="${esc(s.cwd || "")}">${esc(s.cwd || "—")}</span></div>
       <div class="insp-kv"><span>Tools</span><span title="${esc(tools.join(", ") || "every tool allowed")}">${tools.length ? tools.length + " allowed" : "all tools"}</span></div>
-      <div class="insp-kv"><span>Today</span>${limit}</div>
     </div>
+    ${now}
+    <div class="insp-sec">
+      <h4>Brain</h4>
+      <div class="insp-brain">
+        <label>Model ${modelSel(s, id)}</label>
+        <label>Effort ${effortSel}</label>
+      </div>
+    </div>
+    <div class="insp-sec">${limit}</div>
 ${pairBudget(s)}
-${inspTeamSec(s)}
-
+${inspTeamSec(s)}`,
+    work: () => `
     <div class="insp-sec">
-      <h4>Model</h4>
-      ${modelSel(s, id)}
-      ${effortSel}
-    </div>
-
-    ${wsMove(s)}
-
-    <div class="insp-sec">
-      <h4>Work</h4>
+      <h4>Runs</h4>
       <div class="insp-row">
         <button class="secondary" onclick="openSessionRun('${esc(s.id)}')">${ic("doc", "sm")} Latest run</button>
       </div>
     </div>
-
     <div class="insp-sec">
       <h4>Context</h4>
       <div class="insp-row">
@@ -1960,10 +2353,10 @@ ${inspTeamSec(s)}
         <button class="secondary" onclick="editSkill('${id}','${esc(s.name)}')"
           title="Edit this role's SKILL (upserts into .claude/skills in the project cwd)">${ic("book", "sm")} SKILL</button>
       </div>
-    </div>
-
+    </div>`,
+    settings: () => `
+    ${wsMove(s)}
     ${sessCleanup(s, CLI_ICON[engine] ? engine : "claude")}
-
     <div class="insp-sec insp-danger">
       <h4>Danger zone</h4>
       <button class="danger" onclick="if(confirm('Remove session ${esc(s.name)} from the orchestrator?\\n\\nRuns, signals and audit records are kept.'))act('/api/sessions/${id}/unregister')">
@@ -1971,14 +2364,38 @@ ${inspTeamSec(s)}
       <div class="hint">There is no permanent delete: the transcript belongs to the CLI that
         owns the session, so the orchestrator cannot wipe it. Unregister drops the session here
         and keeps its runs, signals and audit records.</div>
-    </div>`; });
+    </div>`,
+  };
+  keepOpen($("insp-body"), () => { $("insp-body").innerHTML = tabs[inspTabSel](); });
 }
+
+// Composer cuối inspector: cùng API với form Send signal ở tab Activity, người gửi là người dùng.
+async function inspSend(e) {
+  e.preventDefault();
+  const s = (cvLast.sessions || []).find((x) => x.id === selSid);
+  const msg = $("insp-msg").value.trim();
+  if (!s || !msg) return;
+  $("insp-send").disabled = true;
+  try {
+    await api("/api/signals", "POST", { to_session: s.id, message: msg, from_role: "human",
+                                        workspace_id: currentWS || undefined });
+    $("insp-msg").value = "";
+    toast("Sent", `Message queued for ${s.name}.`);
+    await refreshAll();
+  } catch (err) {
+    let m = String(err);
+    try { const j = JSON.parse(err); if (j && j.error) m = j.error; } catch (_) { /* không phải JSON */ }
+    toast("Could not send", m);
+  } finally { $("insp-send").disabled = false; }
+}
+window.inspSend = inspSend;
 
 // ── Zone (cwd) + orchestrator + chat ────────────────────────────────────────
 let cvPairOf = {};    // nid card editor → el card terminal của nó (xem snapPairs)
 let cvGroups = [];    // [{cwd, els:[nodeEl]}] — rebuild mỗi render; drag group đọc từ đây
 let cvNodeEls = {};   // session_id → node element (để vẽ edge)
 let cvEdges = [];     // [{from, to, cls}] resolve từ signal list
+let cvRuns = [];      // trang đầu của audit log — "Working now" ở inspector đọc run đang chạy từ đây
 let cvLast = { sessions: [], signals: [] };  // data mới nhất (re-render cục bộ không cần fetch)
 
 // Chỉ dùng cho <marker> đầu mũi tên. Đọc token thay vì hex cứng: dây vẽ bằng CSS
@@ -2179,16 +2596,44 @@ function redrawEdges() {
   redrawMinimap();   // gọi ở đây = mọi lần node đổi vị trí/kích thước/số lượng đều bắt được
 }
 
+// Signal pending chờ duyệt → card đích sáng "NEEDS YOU" (kiểu nodeterm). Strip chú ý dùng
+// chung hàm này để hai nơi không bao giờ đếm lệch nhau.
+const waitingApproval = (signals) => (signals || []).filter((s) => s.requires_approval && s.status === "pending");
+const needsYou = (signals) => new Set(waitingApproval(signals).map((s) => s.to_session));
+
+const ago = (iso) => { const t = secsSince(iso);
+  return t < 60 ? "now" : t < 3600 ? Math.floor(t / 60) + "m" : t < 86400 ? Math.floor(t / 3600) + "h" : Math.floor(t / 86400) + "d"; };
+
+// Strip ngay dưới pane bar: mọi thứ đang đợi người dùng, khỏi phải lục tab Activity.
+// Signal chỉ lấy từ trang đầu của queue (cùng dữ liệu với badge trên card).
+function renderAttn(sessions, signals) {
+  const box = $("attn");
+  const nameOf = (ref) => (sessions.find((x) => x.id === ref || x.name === ref) || {}).name || ref || "you";
+  const sigs = waitingApproval(signals);
+  // "Needs you" của một agent CHÍNH LÀ signal chờ duyệt gửi tới nó — đếm signal thôi, không đếm đôi.
+  const n = sigs.length;
+  box.hidden = !n;
+  if (!n) { box.innerHTML = ""; return; }
+  box.innerHTML = `<span class="attn-n">${ic("bell", "sm")} ${n} need${n === 1 ? "s" : ""} you</span>`
+    + sigs.map((sg) => {
+      const to = sessions.find((x) => x.id === sg.to_session || x.name === sg.to_session);
+      return `<span class="attn-item" data-sig="${sg.id}">
+        <b>${esc(nameOf(sg.from_session))} → ${esc(nameOf(sg.to_session))}:</b>
+        <span class="attn-msg" title="${esc(sg.message)}">${esc(sg.message)}</span>
+        <span class="attn-age">· ${ago(sg.created_at)}</span>
+        <button class="attn-ok" onclick="act('/api/signals/${sg.id}/approve')">Approve</button>
+        <button class="secondary" onclick="act('/api/signals/${sg.id}/deny')">Deny</button>
+        ${to ? `<button class="attn-show" onclick="switchTab('agents'); focusNode('s:${esc(to.id)}')">Show</button>` : ""}</span>`;
+    }).join("");
+}
+
 function renderCanvas(sessions, signals) {
   cvLast = { sessions, signals };
   if (cvInteracting) { cvPending = cvLast; return; }  // đừng phá thao tác kéo
   const world = $("world");
   $("cv-empty").hidden = sessions.length > 0;
 
-  // Signal pending chờ duyệt → card đích sáng "NEEDS YOU" (kiểu nodeterm).
-  const needs = new Set((signals || [])
-    .filter((s) => s.requires_approval && s.status === "pending")
-    .map((s) => s.to_session));
+  const needs = needsYou(signals);
 
   const st = cvLoad();
   const pos = st.pos || {};
@@ -2742,23 +3187,25 @@ function renderSpawnPickers() {
   // Group đang chọn bám theo group đang MỞ trên màn Home: người dùng vừa vào "Hobby" rồi spawn
   // thì gần như chắc chắn là spawn vào Hobby.
   if (!GROUPS.some((g) => g.id === spSel.group))
-    spSel.group = GROUPS.some((g) => g.id === CURGROUP) ? CURGROUP : (GROUPS[0] || {}).id || "";
+    spSel.group = GROUPS.some((g) => g.id === CURGROUP) ? CURGROUP
+      : (GROUPS.find((g) => wsOfGroup(g.id).length) || GROUPS[0] || {}).id || "";
   $("sp-group-cards").innerHTML = GROUPS.map((g) => {
     const n = wsOfGroup(g.id).length;
     return pickCard("group", g.id,
       `<b>${esc(g.name)}</b><div class="pd">${n} workspace${n === 1 ? "" : "s"}</div>`);
-  }).join("") || `<div class="hint">No groups yet — create one on the left.</div>`;
+  }).join("") || `<div class="hint">No groups yet — create one on Home.</div>`;
   const wsItems = wsOfGroup(spSel.group).map((w) => ({
     id: w.id, name: w.name || w.id,
     note: w.id + (w.status !== "active" ? " · " + w.status : ""),
   }));
   wsBox.innerHTML = wsItems.map((w) =>
     pickCard("ws", w.id, `<b>${esc(w.name)}</b><div class="pd">${esc(w.note)}</div>`)).join("")
-    || `<div class="hint">No workspaces in this group yet — open it on the left and use
+    || `<div class="hint">No workspaces in this group yet — add one on Home with
         <b>New workspace</b>.</div>`;
   $("sp-template-cards").innerHTML = SP_TEMPLATES.length
     ? SP_TEMPLATES.map((t) => pickCard("template", t.name,
-        `<b>${esc(t.name)}</b><div class="pd">${esc(t.description || "")}</div>`, t.description)).join("")
+        `<b>${esc(t.name)}</b>${t.name === "director" ? `<span class="tag">suggested</span>` : ""}`
+        + `<div class="pd">${esc(t.description || "")}</div>`, t.description)).join("")
     // Init prompt gõ tay đã bỏ → hết template là hết đường spawn. Nói thẳng thay vì để form câm.
     : `<div class="hint">No templates found in <code>templates/roles/</code> next to the program —
        add a <code>&lt;name&gt;/SKILL.md</code> folder there and reload this page.</div>`;
@@ -2787,7 +3234,10 @@ function renderSpawnEffort() {
   const opts = effortOptsFor(spModel());
   sel.innerHTML = opts.map((e) =>
     `<option value="${e}">${e || `— select — (server default: ${esc(DEFAULT_EFFORT)})`}</option>`).join("");
-  sel.value = opts.includes(cur) ? cur : "";   // mức cũ vượt trần model mới → về default
+  // Effort nằm trong "More options" (đóng sẵn) nên phải có giá trị sẵn: mức server mặc định, vượt
+  // trần model thì mức cao nhất model đó nhận.
+  const want = cur || DEFAULT_EFFORT;
+  sel.value = opts.includes(want) ? want : opts[opts.length - 1];
 }
 
 function spTabPick(engine) {
@@ -2810,7 +3260,16 @@ function spPick(group, val) {
   // Đổi group: workspace đang chọn thường không nằm trong group mới → bỏ chọn, đừng để form gửi
   // một workspace không còn hiện trên màn hình.
   if (group === "group" && !wsOfGroup(val).some((w) => w.id === spSel.ws)) spSel.ws = "";
+  spAutoCwd();
   renderSpawnPickers();
+}
+
+// Ô Project folder tự điền thư mục của workspace đang chọn — trừ khi người dùng đã gõ tay.
+let spAutoDir = "";
+function spAutoCwd() {
+  const el = $("sp-cwd"), w = WORKSPACES.find((x) => x.id === spSel.ws);
+  if (el.value.trim() && el.value !== spAutoDir) return;
+  el.value = spAutoDir = (w && w.root_dir) || "";
 }
 window.spPick = spPick;
 
@@ -2918,9 +3377,13 @@ function toolRows(list) {
 
 function toolsMark(missing) {
   const b = $("tools-btn");
-  if (!b) return;                     // pane không có topbar
-  b.classList.toggle("warn", missing > 0);
-  b.title = missing ? `Media tools — ${missing} missing` : "Media tools";
+  if (!b) return;                     // pane không có sidebar
+  b.classList.toggle("has-dot", missing > 0);
+  const what = missing ? `${missing} media tool${missing > 1 ? "s" : ""} missing` : "";
+  b.title = what ? `Settings — ${what}` : "Settings";
+  $("tools-item").classList.toggle("has-dot", missing > 0);
+  $("tools-item").title = what;
+  $("tools-n").textContent = missing ? `${missing} missing` : "";
 }
 
 async function toolsLoad() {
@@ -2935,16 +3398,8 @@ function toolsBadge() {
   api("/api/tools").then((r) => toolsMark(r.missing)).catch(() => {});
 }
 
-function toolsOpen() {
-  $("tools-modal").hidden = false;
-  $("tools-msg").textContent = "";
-  $("tools-list").innerHTML = `<div class="hint">Loading…</div>`;
-  toolsLoad().catch((e) => showMsg("tools-msg", "Error: " + e, false));
-}
+function toolsOpen() { openPage("settings", "tools"); }
 window.toolsOpen = toolsOpen;
-
-function toolsClose() { $("tools-modal").hidden = true; }
-window.toolsClose = toolsClose;
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 function toast(title, text, onClick) {
@@ -3036,31 +3491,14 @@ async function mcpLoad(check) {
   return list;
 }
 
-function mcpOpen() {
-  $("mcp-modal").hidden = false;
-  $("mcp-msg").textContent = "";
-  $("mcp-list").innerHTML = `<div class="hint">Loading…</div>`;
-  mcpLoad(true).catch((e) => showMsg("mcp-msg", "Error: " + e, false));
-}
+function mcpOpen() { openPage("settings", "connections"); }
 window.mcpOpen = mcpOpen;
 
-function mcpClose() {
-  $("mcp-modal").hidden = true;
-  $("mcp-token").value = "";   // đừng để token gõ dở nằm lại trong DOM sau khi đóng
-}
-window.mcpClose = mcpClose;
-
 document.addEventListener("keydown", (e) => {
-  // Editor nằm trên Sounds: Esc chỉ hỏi bỏ bản nháp, không đóng luôn Sounds bên dưới.
   if (e.key === "Escape" && !$("sed-modal").hidden) return sedDiscard();
-  if (e.key === "Escape" && !$("tts-modal").hidden) return ttsClose();
-  if (e.key === "Escape" && !$("perf-modal").hidden) return perfClose();
-  if (e.key === "Escape" && !$("unreg-modal").hidden) return unregClose();
-  if (e.key === "Escape" && libIsOpen()) libClose();
-  if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
-  if (e.key === "Escape" && !$("img-modal").hidden) imgClose();
-  if (e.key === "Escape" && !$("snd-modal").hidden) sndClose();
-  if (e.key === "Escape" && !$("tools-modal").hidden) toolsClose();
+  if (e.key === "Escape" && !$("na-modal").hidden) newAgentClose();
+  if (e.key === "Escape" && !$("td-modal").hidden) teamDelegateClose();
+  if (e.key === "Escape" && !$("sg-modal").hidden) sigClose();
 });
 
 // Nút trong danh sách: tên đi qua data-attribute, không qua inline onclick.
@@ -3181,23 +3619,8 @@ async function imgLoad() {
   imgPaint();
 }
 
-function imgOpen() {
-  $("img-modal").hidden = false;
-  $("img-prompt").focus();
-  imgLoad().catch((e) => showMsg("img-msg", "Error: " + e, false));
-}
+function imgOpen() { openPage("studio", "images"); }
 window.imgOpen = imgOpen;
-
-// Menu Tools nằm ở top layer: đặt nó ngay dưới nút mỗi lần mở, canh mép phải nếu sát lề.
-$("tools-menu").addEventListener("beforetoggle", (e) => {
-  if (e.newState !== "open") return;
-  const r = $("tools-menu-btn").getBoundingClientRect(), m = $("tools-menu");
-  m.style.top = r.bottom + 4 + "px";
-  m.style.left = Math.max(8, Math.min(r.left, innerWidth - 178)) + "px";
-});
-// Bấm vào workspace (iframe) không tới được trang này nên trình duyệt không tự đóng menu; trang
-// mất focus thì đóng theo.
-addEventListener("blur", () => { if ($("tools-menu").matches(":popover-open")) $("tools-menu").hidePopover(); });
 
 // ── Performance (Tools) ──────────────────────────────────────────────────────
 // Hỏi /api/perf mỗi 2 s khi bảng đang mở (CPU là độ chênh giữa hai lần hỏi). Lời khuyên viết
@@ -3218,27 +3641,18 @@ function perfPageStats() {
            heap: performance.memory?.usedJSHeapSize || 0 };   // chỉ Chrome/Edge có performance.memory
 }
 
-function perfOpen() {
-  $("perf-modal").hidden = false;
-  showMsg("perf-msg", "Measuring…", true);
-  perfLoad();
-}
+const perfOn = () => VIEW === "settings" && SUB.settings === "performance";
+function perfOpen() { openPage("settings", "performance"); }
 window.perfOpen = perfOpen;
-
-function perfClose() {
-  $("perf-modal").hidden = true;
-  clearTimeout(perfT);
-}
-window.perfClose = perfClose;
 
 async function perfLoad() {
   clearTimeout(perfT);
-  if ($("perf-modal").hidden) return;
+  if (!perfOn()) return;
   try {
     perfPaint(await api("/api/perf"), perfPageStats());
     $("perf-msg").textContent = "";
   } catch (e) { showMsg("perf-msg", mcpErr(e), false); }
-  if (!$("perf-modal").hidden) perfT = setTimeout(perfLoad, document.hidden ? 10000 : 2000);
+  if (perfOn()) perfT = setTimeout(perfLoad, document.hidden ? 10000 : 2000);
 }
 
 function perfPaint(d, page) {
@@ -3282,17 +3696,8 @@ const unregName = (r) => r.name || r.id.slice(0, 8);
 const unregFree = () => unregRows.filter((r) => !r.in_use.length && !r.running);
 const fmtSize = (b) => b < 1048576 ? Math.max(1, Math.round(b / 1024)) + " KB" : fmtMB(b);
 
-function unregOpen() {
-  $("unreg-modal").hidden = false;
-  showMsg("unreg-msg", "Looking…", true);
-  unregLoad();
-}
+function unregOpen() { openPage("settings", "removed"); }
 window.unregOpen = unregOpen;
-
-function unregClose() {
-  $("unreg-modal").hidden = true;
-}
-window.unregClose = unregClose;
 
 async function unregLoad() {
   try { unregRows = (await api("/api/unregistered")).agents || []; }
@@ -3341,11 +3746,6 @@ async function unregDelete(i) {
   else showMsg("unreg-msg", `Deleted ${n} agent${n === 1 ? "" : "s"}.`, true);
 }
 window.unregDelete = unregDelete;
-
-function imgClose() {
-  $("img-modal").hidden = true;
-}
-window.imgClose = imgClose;
 
 function imgToggleRef(name) {
   if (imgRefs.includes(name)) imgRefs = imgRefs.filter((n) => n !== name);
@@ -3476,11 +3876,7 @@ async function sndLoad(withStatus) {
   sndPaintLib(r.items);
 }
 
-function sndOpen() {
-  $("snd-modal").hidden = false;
-  $("snd-q").focus();
-  sndLoad(true).catch((e) => showMsg("snd-msg", "Error: " + e, false));
-}
+function sndOpen() { openPage("studio", "sounds"); }
 window.sndOpen = sndOpen;
 
 // Cache version phía server đọc lại khi file yt-dlp đổi, nên chỉ cần hỏi lại.
@@ -3491,9 +3887,6 @@ async function sndRecheck() {
   } catch (e) { showMsg("snd-msg", "Error: " + e, false); }
 }
 window.sndRecheck = sndRecheck;
-
-function sndClose() { $("snd-modal").hidden = true; }
-window.sndClose = sndClose;
 
 async function sndSearch() {
   const query = $("snd-q").value.trim();
@@ -3711,11 +4104,12 @@ window.sedDiscard = sedDiscard;
 // Agent đọc đúng thư viện này qua /library/mcp: search_media, inspect_media.
 let libKey = "";      // như sndLibKey: poll chỉ vẽ lại khi danh sách đổi, kẻo <audio> đang phát bị cắt
 
-const libIsOpen = () => $("lib-drawer").classList.contains("open");
+const libIsOpen = () => VIEW === "studio" && SUB.studio === "library";
 
 async function libLoad() {
   const [imgs, snd] = await Promise.all([api("/api/images"), api("/api/sounds")]);
   $("lib-n-snd").textContent = snd.items.length ? `(${snd.items.length})` : "";
+  $("lib-n").textContent = snd.items.length + imgs.length || "";
   $("lib-n-img").textContent = imgs.length ? `(${imgs.length})` : "";
   const key = [...snd.items, ...imgs].map((i) => i.name).join("|");
   if (key === libKey) return;
@@ -3724,13 +4118,7 @@ async function libLoad() {
   $("lib-img").innerHTML = imgRows(imgs, false);
 }
 
-function libOpen() {
-  $("lib-drawer").classList.add("open");
-  $("lib-overlay").classList.add("open");
-  libKey = "";
-  libLoad().catch((e) => showMsg("lib-msg", "Error: " + e, false));
-  libAgents();
-}
+function libOpen() { openPage("studio", "library"); }
 
 // CLI nào đã có /library/mcp — đọc từ danh sách của modal MCP, không gọi thử server.
 async function libAgents() {
@@ -3754,14 +4142,7 @@ async function libConnect() {
 window.libConnect = libConnect;
 window.libOpen = libOpen;
 
-function libClose() {
-  $("lib-drawer").classList.remove("open");
-  $("lib-overlay").classList.remove("open");
-  $("lib-drawer").querySelectorAll("audio").forEach((a) => a.pause());
-}
-window.libClose = libClose;
-
-// Agent vẽ ảnh (qua /v1/images) lúc drawer đang mở → hiện ra trong vòng 5 giây.
+// Agent vẽ ảnh (qua /v1/images) lúc tab Library đang mở → hiện ra trong vòng 5 giây.
 setInterval(() => { if (libIsOpen()) libLoad().catch(() => {}); }, 5000);
 
 function libPick() {
@@ -3828,27 +4209,15 @@ function ttsPaint(st) {
     $("tts-voice").value = st.default;
   }
   clearTimeout(ttsPoll);
-  if (!$("tts-modal").hidden && (d.state === "downloading" || d.state === "unpacking")) {
+  if (VIEW === "studio" && SUB.studio === "speech" && (d.state === "downloading" || d.state === "unpacking")) {
     ttsPoll = setTimeout(() => ttsLoad().catch(() => {}), 1000);
   }
 }
 
 async function ttsLoad() { ttsPaint(await api("/api/tts")); }
 
-function ttsOpen() {
-  $("tts-modal").hidden = false;
-  $("tts-msg").textContent = "";
-  $("tts-text").focus();
-  ttsLoad().catch((e) => showMsg("tts-msg", "Error: " + e, false));
-}
+function ttsOpen() { openPage("studio", "speech"); }
 window.ttsOpen = ttsOpen;
-
-function ttsClose() {
-  $("tts-modal").hidden = true;
-  $("tts-audio").pause();
-  clearTimeout(ttsPoll);
-}
-window.ttsClose = ttsClose;
 
 async function ttsDownload() {
   try { ttsPaint(await api("/api/tts/download", "POST", {})); }
@@ -3899,6 +4268,7 @@ async function spawnAgent() {
     : !cwd ? "Working dir is required"
     : !model ? (spSel.model === "__custom" ? "Type a custom model id" : "Pick a model")
     : !effort ? "Pick a reasoning effort level" : "";
+  if (!effort) $("sp-more").open = true;
   if (missing) return showMsg("sp-msg", missing, false);
   showMsg("sp-msg", "Spawning…", true);
   try {
@@ -3911,70 +4281,133 @@ async function spawnAgent() {
       // tool. Đó là mặc định cho cả claude lẫn agy. Muốn siết thì gọi thẳng API.
       template: spSel.template,
     });
-    showMsg("sp-msg", `Spawned '${r.name}' (${r.id})`, true);
+    showMsg("sp-msg", "", true);
     $("sp-role").value = "";
     spRoleSlug();
-    refreshAll();
+    newAgentClose();
+    toast("Agent created", `'${r.name}' in ${wsLabel(spSel.ws)}`);
+    const wid = spSel.ws;
+    await refreshAll();
+    selectWorkspace(wid);
   } catch (e) { showMsg("sp-msg", "Error: " + e, false); }
 }
 
 window.spawnAgent = spawnAgent;
 
-// Hàng "load more" ở cuối bảng: nút + hiển thị thêm PAGE record cũ. Ẩn khi đã hết.
-function moreRow(which, cols, hasMore, shown) {
-  if (!hasMore) {
-    // Chỉ hiện dòng "đã hết" khi đang xem nhiều hơn 1 trang (đỡ rối khi ít record).
-    if (shown <= PAGE) return "";
-    return `<tr class="more-row"><td colspan="${cols}"><span class="more-done">— end —</span></td></tr>`;
+// ── Activity: signal + run trên MỘT timeline ────────────────────────────────
+let actSignals = [], actRuns = [], actSessions = [];
+let actChip = (() => { try { return localStorage.getItem("orch-act-chip") || "all"; } catch { return "all"; } })();
+const ACT_CHIPS = [["all", "All"], ["wait", "Waiting for approval"], ["running", "Running"], ["failed", "Failed"]];
+const RERUNNABLE = ["failed", "denied", "blocked"];
+// Trạng thái hiển thị: [nhãn, màu, khoá lọc]. "Now" = mọi thứ còn đang đi.
+const SIG_ST = { approved: ["queued", "blue"], processing: ["processing", "blue"], done: ["delivered", "green"],
+                 failed: ["failed", "red", "failed"], denied: ["denied", "red"], blocked: ["blocked", "amber"] };
+const tsOf = (iso) => new Date(String(iso || "").replace(" ", "T")).getTime() || 0;
+const fmtDur = (s) => s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+const fmtTok = (n) => n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k tok` : `${n || 0} tok`;
+
+function actItems() {
+  const nameOf = (ref) => ref === "human" || !ref ? "you"
+    : (actSessions.find((x) => x.id === ref || x.name === ref) || {}).name || ref;
+  const sigById = Object.fromEntries(actSignals.map((s) => [s.id, s]));
+  const sigs = actSignals.map((s) => {
+    const wait = !!(s.requires_approval && s.status === "pending");
+    const [label, color, key] = wait ? ["waiting for you", "amber", "wait"]
+      : SIG_ST[s.status] || ["queued", "gray"];
+    return { kind: "sig", s, ts: tsOf(s.created_at), time: s.created_at, wait, label, color, key,
+             now: ["pending", "approved", "processing"].includes(s.status),
+             who: `${nameOf(s.from_session)} → ${nameOf(s.to_session)}`, msg: s.message };
+  });
+  const runs = actRuns.map((r) => {
+    const sg = sigById[r.signal_id];
+    const agent = nameOf(r.session_id);
+    const live = r.status === "running";
+    const [label, color] = live ? ["running", "blue"] : r.status === "ok" ? ["done", "green"] : ["failed", "red"];
+    return { kind: "run", r, ts: tsOf(r.started_at), time: r.started_at, label, color, now: live,
+             key: live ? "running" : r.status === "error" ? "failed" : "",
+             who: `Run #${r.id} · ${agent}`, agent,
+             // Prompt mở đầu bằng khung vai, đọc không ra — ưu tiên tin nhắn của signal sinh ra run.
+             msg: sg ? sg.message : (r.prompt || "").split("\n").find((l) => l && !l.startsWith("[")) || r.prompt || "" };
+  });
+  // Hai nguồn phân trang riêng: ẩn record cũ hơn mốc mà nguồn kia chưa nạp tới, kẻo timeline thủng lỗ.
+  const cut = Math.max(sigHasMore && sigs.length ? Math.min(...sigs.map((x) => x.ts)) : 0,
+                       runsHasMore && runs.length ? Math.min(...runs.map((x) => x.ts)) : 0);
+  return [...sigs, ...runs].filter((x) => x.ts >= cut).sort((a, b) => b.ts - a.ts);
+}
+
+function actRow(x) {
+  const sel = x.kind === "run" && x.r.id === openRunId && $("drawer").parentElement === $("tab-history");
+  const t = `<span class="act-t">${esc(shortTime(x.time).slice(0, 5))}</span>`;
+  const who = `<span class="act-who" title="${esc(x.who)}">${esc(x.who)}</span>`;
+  const msg = `<span class="act-msg" title="${esc(x.msg)}">${esc(x.msg)}</span>`;
+  const st = `<span class="act-st ${x.color}"${x.kind === "sig" && x.s.reason ? ` title="${esc(x.s.reason)}"` : ""}>${
+    x.label === "running" ? '<span class="act-live"></span>' : ""}${esc(x.label)}${
+    x.label === "running" ? " " + fmtAge(secsSince(x.time)) : ""}</span>`;
+  if (x.kind === "run") {
+    const r = x.r;
+    const meta = r.status === "running" ? ""
+      : `<span class="act-meta">${fmtTok(r.tokens)}${r.ended_at ? " · " + fmtDur(Math.max(0, Math.round((tsOf(r.ended_at) - tsOf(r.started_at)) / 1000))) : ""}</span>`;
+    return `<button class="act-row run${sel ? " sel" : ""}" data-run="${r.id}" onclick="actRun(${r.id})">${t}${who}${msg}${meta}${st}</button>`;
   }
-  return `<tr class="more-row"><td colspan="${cols}">
-    <button class="more-btn" onclick="showMore('${which}')">+ ${PAGE} older</button>
-    <span class="more-count">showing ${shown}</span></td></tr>`;
+  const s = x.s;
+  let actions = "";
+  if (x.wait) {
+    actions = `<button class="primary" onclick="act('/api/signals/${s.id}/approve')">Approve</button>
+       <button class="danger" onclick="act('/api/signals/${s.id}/deny')">Deny</button>`;
+  } else {
+    if (RERUNNABLE.includes(s.status))
+      actions += `<button onclick="act('/api/signals/${s.id}/rerun')">↻ Re-run</button>`;
+    if (s.status === "failed")
+      actions += `<button class="danger" onclick="deleteSignal(${s.id})">Delete</button>`;
+  }
+  const oneWay = s.expects_reply === 0 ? badge("one-way", "b-gray", "No reply expected: the receiver does the work and stops — a report, or a request sent with expect_reply=False") : "";
+  return `<div class="act-row sig${x.wait ? " wait" : ""}" data-sig="${s.id}">${t}${who}${oneWay}${msg}${st}${
+    actions ? `<div class="actions">${actions}</div>` : ""}</div>`;
 }
 
-function renderSignals(list) {
-  const tb = $("signals");
-  $("signals-empty").hidden = list.length > 0;
-  const RERUNNABLE = ["failed", "denied", "blocked"];
-  tb.innerHTML = list.map((s) => {
-    const needsApproval = s.requires_approval && s.status === "pending";
-    let actions = "";
-    if (needsApproval) {
-      actions = `<button onclick="act('/api/signals/${s.id}/approve')">Approve</button>
-         <button class="danger" onclick="act('/api/signals/${s.id}/deny')">Deny</button>`;
-    } else {
-      if (RERUNNABLE.includes(s.status))
-        actions += `<button onclick="act('/api/signals/${s.id}/rerun')">↻ Re-run</button>`;
-      if (s.status === "failed")
-        actions += `<button class="danger" onclick="deleteSignal(${s.id})">🗑 Delete</button>`;
-    }
-    return `<tr>
-      <td>${s.id}</td>
-      <td><code>${esc(s.from_session || "—")} → ${esc(s.to_session)}</code>
-        ${s.expects_reply === 0 ? badge("one-way", "b-gray", "No reply expected: the receiver does the work and stops — a report, or a request sent with expect_reply=False") : ""}</td>
-      <td class="msg" title="${esc(s.message)}">${esc(s.message)}</td>
-      <td>${s.requires_approval ? badge("required", "b-amber") : "—"}</td>
-      <td>${badge(s.status, SIGNAL_BADGE[s.status], s.reason)}</td>
-      <td><div class="actions">${actions}</div></td>
-    </tr>`;
-  }).join("") + moreRow("signals", 6, sigHasMore, sigShown);
+function renderActivity() {
+  const all = actItems();
+  const n = (k) => all.filter((x) => x.key === k).length;
+  $("act-chips").innerHTML = ACT_CHIPS.map(([k, label]) => {
+    const c = k === "wait" || k === "running" ? ` · ${n(k)}` : "";
+    return `<button class="${k}" aria-pressed="${actChip === k}" onclick="actSetChip('${k}')">${label}${c}</button>`;
+  }).join("");
+  const q = $("act-q").value.trim().toLowerCase();
+  const list = all.filter((x) => (actChip === "all" || x.key === actChip) && (!q || x.who.toLowerCase().includes(q)));
+  const group = (title, xs) => xs.length
+    ? `<div class="act-group">${title}</div><div class="act-list">${xs.map(actRow).join("")}</div>` : "";
+  const more = sigHasMore || runsHasMore
+    ? `<div class="more-row"><button class="more-btn" onclick="showMore('activity')">Show older</button>
+        <span class="more-count">showing ${all.length}</span></div>` : "";
+  $("activity").innerHTML = group("Now", list.filter((x) => x.now)) + group("Earlier", list.filter((x) => !x.now)) + more;
+  const empty = $("activity-empty");
+  empty.hidden = list.length > 0;
+  empty.innerHTML = all.length
+    ? "Nothing here matches this filter."
+    : `<b>No activity yet.</b>Send a message to an agent and its run shows up here.`;
 }
+window.renderActivity = renderActivity;
 
-function renderRuns(list) {
-  const tb = $("runs");
-  $("runs-empty").hidden = list.length > 0;
-  tb.innerHTML = list.map((r) => {
-    const live = r.status === "running" ? " live" : "";
-    return `<tr class="run-row${live}" onclick="openRun(${r.id})">
-      <td>${r.id}</td>
-      <td><code>${esc(r.session_id)}</code></td>
-      <td>${r.signal_id ?? "—"}</td>
-      <td>${badge(r.status, RUN_BADGE[r.status])}</td>
-      <td>${r.tokens || 0}</td>
-      <td><code>${shortTime(r.ended_at || r.started_at)}</code></td>
-    </tr>`;
-  }).join("") + moreRow("runs", 6, runsHasMore, runsShown);
+function actSetChip(k) {
+  actChip = k;
+  try { localStorage.setItem("orch-act-chip", k); } catch { /* private mode */ }
+  renderActivity();
 }
+window.actSetChip = actSetChip;
+
+// Mở transcript của run thành cột phải ngay trong tab (dời #drawer vào đây; closeDrawer trả lại).
+async function actRun(id) {
+  const x = actRuns.find((r) => r.id === id);
+  $("tab-history").appendChild($("drawer"));
+  const p = openRun(id);
+  for (const el of $("activity").querySelectorAll(".act-row.run"))
+    el.classList.toggle("sel", +el.dataset.run === id);
+  await p;
+  if (!x || openRunId !== id) return;
+  $("dr-title").textContent = `Run #${id} · ${(actSessions.find((s) => s.id === x.session_id) || {}).name || x.session_id}`;
+  $("dr-badge").innerHTML = badge(x.status, RUN_BADGE[x.status]);
+}
+window.actRun = actRun;
 
 // ── Transcript drawer ────────────────────────────────────────────────────────
 
@@ -3999,9 +4432,15 @@ function evRow(e) {
         <span class="rep" ${n > 1 ? "" : "hidden"}>×${n}</span>
         <span class="t">${shortTime(e.ts)}</span>
       </div>
-      <div class="s">${esc(e.summary)}</div>${tr}
+      <div class="s">${kind === "tool_use" ? toolSum(e.summary) : esc(e.summary)}</div>${tr}
     </div>
   </div>`;
+}
+
+// Summary tool_use có dạng "Name(args)" (xem parse ở service) → chip tên + tham số mono.
+function toolSum(sum) {
+  const m = /^([\w.:-]+)\(([\s\S]*)\)$/.exec(sum || "");
+  return m ? `<span class="ev-tool">${esc(m[1])}</span> <span class="ev-arg">${esc(m[2])}</span>` : esc(sum);
 }
 
 // Ghép tool_result vào tool_use đứng ngay trước nó → 1 card gọi + kết quả.
@@ -4058,6 +4497,10 @@ function closeDrawer() {
   $("dr-body").innerHTML = "";   // run dài có thể để lại hàng nghìn dòng, mở lần sau dựng lại
   $("drawer").classList.remove("open");
   $("drawer-overlay").classList.remove("open");
+  if ($("drawer").parentElement !== document.body) {
+    document.body.insertBefore($("drawer"), $("drawer-overlay").nextSibling);
+    for (const el of document.querySelectorAll(".act-row.sel")) el.classList.remove("sel");
+  }
 }
 window.closeDrawer = closeDrawer;
 
@@ -4093,10 +4536,13 @@ function switchTab(name) {
   $("tab-agents").hidden = name !== "agents";
   $("tab-history").hidden = name !== "history";
   $("tab-team").hidden = name !== "team";
-  $("tab-btn-agents").classList.toggle("active", name === "agents");
-  $("tab-btn-history").classList.toggle("active", name === "history");
-  $("tab-btn-team").classList.toggle("active", name === "team");
+  for (const t of TABS) {
+    $("tab-btn-" + t).classList.toggle("active", name === t);
+    $("tab-btn-" + t).setAttribute("aria-selected", name === t);
+  }
   if (name === "team") teamLoad().catch((e) => console.error(e));
+  // Transcript đang là cột của Activity: rời tab thì đóng, kẻo drawer kẹt trong tab bị ẩn.
+  if (name !== "history" && $("drawer").parentElement === $("tab-history")) closeDrawer();
   // Key theo workspace: hai pane mở cùng lúc dùng chung một key thì đổi tab ở pane này
   // lật luôn pane kia.
   try { localStorage.setItem("orch-tab." + currentWS, name); } catch { /* private mode */ }
@@ -4164,7 +4610,7 @@ function setConn(ok) {
   const el = $("conn");
   if (!el) return;
   el.className = "pill " + (ok ? "live" : "dead");
-  el.textContent = ok ? "live" : "offline";
+  el.textContent = ok ? "Live" : "offline";
 }
 
 // Một lượt refresh một lúc: lượt chậm mà lượt mới vẫn chen vào là chồng fetch + dựng canvas lên
@@ -4188,8 +4634,10 @@ function refreshAll() {
 async function refreshNow() {
   try {
     // Group chỉ có ở shell — pane không có màn Home nên không tốn một lượt gọi cho nó.
-    const [workspaces, health, groups] = await Promise.all(
-      [api("/api/workspaces"), api("/health"), PANE ? [] : api("/api/groups")]);
+    const [workspaces, health, groups, homeSessions, homeSignals] = await Promise.all(
+      [api("/api/workspaces"), api("/health"), PANE ? [] : api("/api/groups"),
+       // Home của shell: không lọc workspace = mọi workspace. Chỉ trang đầu 200 signal mới nhất.
+       PANE ? [] : api("/api/sessions"), PANE ? {} : api("/api/signals?limit=200")]);
     if (!PANE) GROUPS = groups;
     if (health.daily_allow_step) DAILY_STEP = health.daily_allow_step;
     if (health.default_effort) DEFAULT_EFFORT = health.default_effort;
@@ -4206,6 +4654,14 @@ async function refreshNow() {
         if (!OPEN.length) { ACTIVE = -1; SPLIT = false; }
         shellSave();
       }
+      // shortcut: /api/team chỉ trả MỘT workspace, nên gọi từng cái — chỉ workspace có director
+      // từng giao việc. Nhiều workspace có đội thì nên có endpoint gộp.
+      const teamWs = [...new Set(homeSessions.filter((x) => x.subtasks && x.subtasks.total)
+        .map((x) => x.workspace_id))];
+      const subs = await Promise.all(teamWs.map((w) =>
+        api("/api/team?workspace_id=" + encodeURIComponent(w))
+          .then((t) => (t.subtasks || []).map((x) => ({ ...x, workspace_id: w }))).catch(() => [])));
+      HOME = { sessions: homeSessions, signals: homeSignals.items || [], subtasks: subs.flat() };
       renderWorkspaces(workspaces);
       setConn(true);
       return;   // shell không đụng tới sessions/signals/runs — pane lo phần đó
@@ -4237,11 +4693,15 @@ async function refreshNow() {
     const crewN = Object.values(CREW).reduce((a, b) => a + b, 0);
     $("team-live").hidden = !crewN;
     $("team-live").textContent = crewN;
+    cvRuns = runs.items;
     renderCanvas(work, signals.items);
+    if (paneFocusSid) paneFocusTry();
+    renderAttn(work, signals.items);
     fillSignalForm(work);
     if (teamVisible()) teamLoad().catch(() => {});
-    sigHasMore = signals.has_more; renderSignals(signals.items);
-    runsHasMore = runs.has_more; renderRuns(runs.items);
+    sigHasMore = signals.has_more; runsHasMore = runs.has_more;
+    actSignals = signals.items; actRuns = runs.items; actSessions = sessions;
+    renderActivity();
   } catch (e) { console.error(e); if (!PANE) setConn(false); }
 }
 
@@ -4328,62 +4788,138 @@ function keepOpen(box, rebuild) {
 }
 
 function inspShowTeam(sid) {
+  inspTabSel = "overview";
   selectNode(sid);
   requestAnimationFrame(() => { const el = $("insp-team"); if (el) el.scrollIntoView({ block: "start", behavior: "smooth" }); });
 }
 window.inspShowTeam = inspShowTeam;
 
-async function teamLoad() {
-  try { TEAM = await api("/api/team" + wsQuery()); }
+// Tab Team nạp từng trang 10 card / 10 quyết định, cuộn tới đáy thì nạp tiếp. Lọc và đếm ở server.
+const TEAM_PAGE = 10;
+let teamSeq = 0, teamGen = 0, teamObs = null;
+const teamBusy = { subtasks: false, decisions: false };
+const TEAM_MORE = { subtasks: "team-board-more", decisions: "team-dec-more" };
+
+function teamUrl(p) {
+  const dir = $("team-dir").hidden ? "" : $("team-dir").value;
+  return "/api/team?" + new URLSearchParams({ ...(currentWS ? { workspace_id: currentWS } : {}),
+    filter: $("team-filter").value, director_id: dir, ...p });
+}
+
+// Refresh nạp lại từ đầu ĐÚNG số đã hiện (làm tròn lên 10): card cập nhật tại chỗ, không co về 10
+// mà nhảy mất chỗ đang cuộn.
+async function teamLoad(reset) {
+  const my = ++teamSeq;
+  const n = (k) => reset || !TEAM ? TEAM_PAGE : Math.min(200, Math.max(TEAM_PAGE, Math.ceil(TEAM[k].length / TEAM_PAGE) * TEAM_PAGE));
+  let t;
+  try { t = await api(teamUrl({ sub_limit: n("subtasks"), sub_offset: 0, dec_limit: n("decisions"), dec_offset: 0 })); }
   catch (e) { console.error(e); return; }
+  if (my !== teamSeq) return;     // lần nạp sau đã chạy, bản này cũ
+  TEAM = t;
   if (TEAM.now) teamSkew = Date.now() - new Date(TEAM.now).getTime();
   teamRender();
 }
 
+function teamReset() { teamGen++; $("tab-team").scrollTop = 0; teamLoad(true); }
+window.teamReset = teamReset;
+
+async function teamMore(k) {
+  if (!TEAM || teamBusy[k] || !TEAM[k + "_more"]) return;
+  const gen = teamGen, sub = k === "subtasks";
+  teamBusy[k] = true;
+  $(TEAM_MORE[k]).textContent = "Loading…";
+  try {
+    const t = await api(teamUrl(sub ? { sub_limit: TEAM_PAGE, sub_offset: TEAM.subtasks.length, dec_limit: 1 }
+      : { dec_limit: TEAM_PAGE, dec_offset: TEAM.decisions.length, sub_limit: 1 }));
+    if (gen !== teamGen || !TEAM) return;
+    // Có việc mới chen vào đầu thì trang sau lặp lại card cuối — bỏ trùng theo id.
+    const have = new Set(TEAM[k].map((x) => x.id));
+    TEAM[k].push(...t[k].filter((x) => !have.has(x.id)));
+    TEAM[k + "_more"] = t[k + "_more"];
+    if (sub) Object.assign(TEAM, { counts: t.counts, stats: t.stats });
+  } catch (e) { console.error(e); return; }   // không render: tránh thử lại liên tục
+  finally { teamBusy[k] = false; $(TEAM_MORE[k]).textContent = ""; }
+  teamRender();
+}
+
+// Quan sát lại sau mỗi lần dựng: observe() mới luôn báo trạng thái hiện tại, nên nạp xong mà đáy
+// vẫn trong tầm nhìn thì nạp tiếp. Chưa cuộn thì chưa nạp (cột quyết định ngắn, đáy của nó lộ
+// ngay từ đầu) — trừ khi tab không đủ dài để cuộn.
+function teamSentinels() {
+  const box = $("tab-team");
+  const watch = () => Object.values(TEAM_MORE).forEach((id) => { teamObs.unobserve($(id)); teamObs.observe($(id)); });
+  if (!teamObs) {
+    teamObs = new IntersectionObserver((es) => es.forEach((e) => {
+      if (e.isIntersecting && (box.scrollTop > 0 || box.scrollHeight <= box.clientHeight))
+        teamMore(e.target.id === TEAM_MORE.subtasks ? "subtasks" : "decisions");
+    }), { root: box });
+    // Đáy đã lộ sẵn lúc scrollTop = 0 thì cuộn không đổi giao cắt, observer im — hỏi lại khi cuộn.
+    let scrolled = false;
+    box.addEventListener("scroll", () => { const s = box.scrollTop > 0; if (s && !scrolled) watch(); scrolled = s; }, { passive: true });
+  }
+  for (const k of ["subtasks", "decisions"]) {
+    $(TEAM_MORE[k]).hidden = !TEAM[k + "_more"];
+    $(TEAM_MORE[k]).textContent = teamBusy[k] ? "Loading…" : "";
+  }
+  watch();
+}
+
 // Ô nào đang gõ / select nào đang mở thì KHÔNG dựng lại: SSE refresh liên tục, dựng lại là mất chữ.
+// Modal Delegate nằm ngoài #tab-team nhưng select người nhận của nó cũng do teamForms() dựng.
 const teamEditing = () => {
   const a = document.activeElement;
-  return a && $("tab-team").contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+  return a && ($("tab-team").contains(a) || $("td-modal").contains(a)) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
 };
+
+// Cột của bảng theo trạng thái. cancelled chỉ hiện khi lọc "All", nằm chung cột Failed.
+const TB_COLS = [["building", "Building", ["queued", "running", "fixing"]], ["verifying", "Verifying", ["verifying"]],
+                 ["passed", "Passed", ["passed"]], ["failed", "Failed", ["failed", "cancelled"]]];
 
 function teamRender() {
   if (!TEAM) return;
-  const subs = TEAM.subtasks.filter((s) => s.kind !== "reflect");
-  const day = (s) => secsSince(s.ended_at || s.updated_at) < 86400;
-  const n = (f) => subs.filter(f).length;
-  $("team-stats").innerHTML = [
-    ["live", n((s) => ["queued", "running", "fixing"].includes(s.status)), "Working"],
-    ["live", n((s) => s.status === "verifying"), "Verifying"],
-    ["ok", n((s) => s.status === "passed" && day(s)), "Passed · 24 h"],
-    ["bad", n((s) => s.status === "failed" && day(s)), "Failed · 24 h"],
-    ["warn", n((s) => s.attempts > 0 && day(s)), "Sent back to fix · 24 h"],
-  ].map(([c, v, l]) => `<div class="team-stat ${v ? c : ""}"><b>${v}</b><span>${l}</span></div>`).join("");
-
-  const f = $("team-filter").value;
-  const show = subs.filter((s) => f === "all" ? true : f === "failed" ? s.status === "failed"
-    : ST_ACTIVE.includes(s.status) || secsSince(s.ended_at || s.updated_at) < 6 * 3600);
-  teamView = show;
-  const byDir = {};
-  show.forEach((s, i) => (byDir[s.director_id] = byDir[s.director_id] || []).push([s, i]));
-  const dirs = TEAM.directors.filter((d) => byDir[d.id]);
-  const orphan = Object.keys(byDir).filter((id) => !TEAM.directors.some((d) => d.id === id));
-  $("team-lanes").innerHTML = [...dirs.map((d) => teamLane(d, byDir[d.id])),
-    ...orphan.map((id) => teamLane({ id, name: "removed agent", status: "stopped", active: 0 }, byDir[id]))].join("")
-    || `<div class="empty">Nothing delegated ${f === "active" ? "recently" : "yet"}. Spawn an agent with the
-        <b>director</b> template and ask it for work — it splits the job and delegates here — or use
-        <b>Delegate</b> below.</div>`;
-
   if (!teamEditing()) teamForms();
-  $("team-decisions").innerHTML = TEAM.decisions.map((d) => `<tr>
-      <td title="${esc(d.ts)}">${esc(shortDateTime(d.ts).slice(5, 16))}</td>
-      <td>${esc(d.session_name || "?")}${d.subtask_id ? ` <span class="hint">${esc(d.subtask_id)}</span>` : ""}</td>
-      <td>${esc(d.decision)}</td>
-      <td>${esc(d.reason)}${d.evidence ? `<details><summary>evidence</summary><pre class="tm-pre">${esc(d.evidence)}</pre></details>` : ""}</td>
-    </tr>`).join("") || `<tr><td colspan="4" class="hint">No decisions logged yet. Directors and sub-agents log them with record_decision.</td></tr>`;
+  const st = TEAM.stats, c = TEAM.counts;
+  $("team-stats").innerHTML = [
+    ["live", st.building, "working"],
+    ["live", st.verifying, "verifying"],
+    ["ok", st.passed_24h, "passed · 24 h"],
+    ["bad", st.failed_24h, "failed · 24 h"],
+    ["warn", st.sent_back_24h, "sent back to fix · 24 h"],
+  ].map(([c, v, l]) => `<span class="team-stat ${v ? c : ""}"><b>${v}</b>${l}</span>`).join("");
+
+  const show = TEAM.subtasks;
+  teamView = show;
+  keepOpen($("team-board"), () => {
+    $("team-board").innerHTML = TB_COLS.map(([k, label, sts]) => {
+      const cards = show.map((s, i) => [s, i]).filter(([s]) => sts.includes(s.status));
+      return `<div class="tb-col"><div class="tb-head"><span class="tb-dot ${k}"></span>${label}
+          <span class="n">${k === "failed" ? c.failed + c.cancelled : c[k]}</span></div>
+        ${cards.map(([s, i]) => stCard(s, i)).join("") || `<div class="tb-empty">${
+          k === "building" && !st.total ? "Nothing delegated yet. Ask a <b>director</b> agent for work, or use <b>Delegate a task</b>." : "None"}</div>`}</div>`;
+    }).join("");
+  });
+
+  keepOpen($("team-decisions"), () => {
+    $("team-decisions").innerHTML = TEAM.decisions.map((d) => `<li data-st="d${d.id}">
+        <div class="when" title="${esc(d.ts)}">${esc(shortDateTime(d.ts).slice(5, 16))} · ${esc(d.session_name || "?")}${d.subtask_id ? ` · ${esc(d.subtask_id)}` : ""}</div>
+        <b>${esc(d.decision)}</b>
+        ${d.reason ? `<div class="why">${esc(d.reason)}</div>` : ""}
+        ${d.evidence ? `<details><summary>Evidence</summary><pre class="tm-pre">${esc(d.evidence)}</pre></details>` : ""}
+      </li>`).join("") || `<li class="hint">No decisions logged yet. Directors and sub-agents log them with record_decision.</li>`;
+  });
+  teamSentinels();
   $("tg-edges").innerHTML = TEAM.edges.map((e, i) => `<span class="tg-edge">${esc(e.from_role)} → ${esc(e.to_role)}
       <button title="Remove this edge" onclick="teamEdgeDel(${i})">${ic("x", "sm")}</button></span>`).join("")
     || `<span class="hint">No edges. ${TEAM.graph_mode === "enforced" ? "Enforced with no edges: agents cannot signal each other." : "Open: any agent may signal any other."}</span>`;
-  $("team-proposals").innerHTML = TEAM.proposals.map((p, i) => `<div class="tp">
+  const ne = TEAM.edges.length;
+  $("trs-graph").textContent = `${TEAM.graph_mode === "enforced" ? "Enforced" : "Open"} · ${ne} link${ne === 1 ? "" : "s"}`;
+  $("trs-models").textContent = TEAM_ROLES.map(([r]) => `${{ implement: "Builder", investigate: "Investigator", verify: "Verifier" }[r]} ${
+    TEAM.models[r] ? modelLabel(TEAM.models[r]) : "Claude"}`).join(" · ");
+  const np = TEAM.proposals.filter((p) => p.status === "pending").length;
+  $("trs-props").textContent = np ? `${np} suggestion${np === 1 ? "" : "s"} to review` : "Reflect on failed runs";
+  $("trs-props").classList.toggle("warn", !!np);
+  keepOpen($("team-proposals"), () => {
+    $("team-proposals").innerHTML = TEAM.proposals.map((p, i) => `<div class="tp" data-st="p${p.id}">
       <div class="st-top">${badge(p.status, { pending: "b-amber", approved: "b-green", rejected: "b-gray" }[p.status])}
         <b title="${esc(p.path)}">${esc(p.target.replace(/^role:.*/, "role SKILL").replace("playbook:", "playbook · "))}</b>
         <span class="hint">${esc(shortDateTime(p.created_at).slice(5, 16))}</span></div>
@@ -4392,14 +4928,7 @@ function teamRender() {
       ${p.status === "pending" ? `<div class="st-acts"><button class="primary" onclick="teamDecide(${i}, true)">Approve and write</button>
         <button class="secondary" onclick="teamDecide(${i}, false)">Reject</button></div>` : ""}
     </div>`).join("") || `<span class="hint">No proposals yet.</span>`;
-}
-
-function teamLane(d, rows) {
-  return `<div><div class="team-lane-head">
-      <span class="status-dot dot-${esc(d.status)}"></span><b>${esc(d.name)}</b>
-      ${d.model ? `<span class="eng-chip">${esc(d.model)}</span>` : ""}
-      <span class="hint">${d.active} active · up to ${TEAM.max_active} at once${d.cwd ? " · " + esc(d.cwd) : ""}</span>
-    </div><div class="team-cards">${rows.map(([s, i]) => stCard(s, i)).join("")}</div></div>`;
+  });
 }
 
 function stStages(s) {
@@ -4412,49 +4941,69 @@ function stStages(s) {
   return ST_STAGES.map((_, j) => j < at ? "done" : j === at ? "now" : "");
 }
 
+// Vài dòng đầu cho ô tóm tắt trên card; `lệnh` trong backtick hiện mono.
+const stLines = (t, k) => String(t || "").split("\n").map((l) => l.trim()).filter(Boolean).slice(0, k)
+  .map((l) => esc(l).replace(/`([^`]+)`/g, "<code>$1</code>")).join("<br>");
+
 // sc = nơi card nằm: "t" tab Team (teamView), "i" panel của director (inspView). Nút gọi theo
 // (vị trí, nơi) để hai danh sách khác thứ tự không bấm nhầm việc của nhau.
 function stCard(s, i, sc = "t") {
   const v = s.verdict || {};
   const live = ST_ACTIVE.includes(s.status);
+  const gone = s.discarded || s.status === "cancelled";
   const stages = stStages(s);
-  const label = (j) => j === 1 && s.status === "fixing" ? `Fix ${s.attempts}/${s.max_attempts}` : ST_STAGES[j];
   const lastLine = s.last ? `${EV_ICON[s.last.kind] || "·"} <span class="s" title="${esc(s.last.summary)}">${esc(s.last.summary)}</span>`
     : `<span class="s">${live ? "starting…" : esc(s.reason || (s.status === "passed" ? "verified" : s.status))}</span>`;
-  const since = live ? s.created_at : "";
-  return `<div class="st-card s-${esc(s.status)}" data-st="${esc(s.id)}">
-    <div class="st-top">${badge(esc(s.status), ST_BADGE[s.status])}
-      <span class="eng-chip">${esc(s.kind === "handoff" ? "handoff" : s.playbook)}</span>
-      <b title="${esc(s.title || s.brief)}">${esc(s.title || s.brief.split("\n")[0] || s.id)}</b>
-      <span class="hint st-age" data-since="${esc(since)}">${since ? fmtAge(secsSince(since)) : ""}</span></div>
-    <div class="st-pipe">${stages.map((c, j) => `<span class="${c}">${label(j)}</span>`).join("")}</div>
-    <div class="st-live" id="${sc}stl-${i}">${lastLine}</div>
-    <div class="st-meta">
-      <span title="Builder session">${esc(s.session_name || "—")}${s.model ? " · " + esc(s.model) : ""}</span>
-      ${s.verifier_name ? `<span title="Current verifier session">✓ ${esc(s.verifier_name)}</span>` : ""}
-      ${s.branch ? `<span title="${esc(s.worktree)}"><code>${esc(s.branch)}</code>${s.discarded ? " (discarded)" : ""}</span>`
-        : s.kind === "subagent" && s.playbook !== "investigate" ? `<span title="The director's folder is not a git repo, so this sub-agent shared it">no worktree</span>` : ""}
-      <span>${s.runs} run${s.runs === 1 ? "" : "s"} · ${(s.tokens || 0).toLocaleString()} tokens</span>
-      ${s.attempts ? `<span>${s.attempts}/${s.max_attempts} checks failed</span>` : ""}
-    </div>
-    <details><summary>Brief and Done means</summary><pre>${esc(s.brief)}</pre>
-      ${s.done_when ? `<pre>Done means:\n${esc(s.done_when)}</pre>` : ""}</details>
-    ${v.verdict ? `<div class="st-verdict ${v.verdict === "PASS" ? "pass" : "fail"}">
-        <b>${v.verdict === "PASS" ? "Verified" : "Verifier: FAIL"}</b>${v.sha ? ` at <code>${esc(v.sha.slice(0, 10))}</code>` : ""}
-        <details><summary>${v.verdict === "PASS" ? "evidence" : "findings and evidence"}</summary>
-          <pre>${esc([v.findings, v.evidence].filter(Boolean).join("\n\n— evidence —\n"))}</pre></details></div>` : ""}
-    ${s.report ? `<details><summary>Builder's report</summary><pre>${esc(s.report)}</pre></details>` : ""}
-    <div class="st-acts">
-      ${s.session_id ? `<button class="secondary" onclick="teamRun(${i}, 'b', '${sc}')" title="Open the builder's latest run">Builder run</button>` : ""}
-      ${s.verifier_id ? `<button class="secondary" onclick="teamRun(${i}, 'v', '${sc}')" title="Open the verifier's latest run">Verifier run</button>` : ""}
-      ${s.branch && !s.discarded ? `<button class="secondary" onclick="teamDiff(${i}, '${sc}')">Diff</button>` : ""}
-      ${s.status === "passed" && s.branch && !s.discarded ? `<button onclick="teamCopyMerge(${i}, '${sc}')" title="Copy the merge command">Copy merge</button>` : ""}
-      ${live ? `<button class="danger" onclick="teamCancel(${i}, '${sc}')">Cancel</button>` : ""}
-      ${!live && s.kind !== "reflect" && s.status !== "cancelled" && !s.discarded ? `<button onclick="teamReverify(${i}, '${sc}')"
-          title="Run one more independent check — e.g. after you fixed something by hand">Verify again</button>` : ""}
-      ${!live && s.worktree && !s.discarded ? `<button class="secondary" onclick="teamDiscard(${i}, '${sc}')"
-          title="Remove the worktree and delete its branch">Discard</button>` : ""}
-    </div></div>`;
+  const since = live ? s.created_at : s.ended_at || s.updated_at;
+  const where = s.branch ? `<span class="st-br" title="${esc(s.worktree)}">${esc(s.branch)}${s.discarded ? " · discarded" : ""}</span>`
+    : s.playbook === "investigate" || s.kind === "reflect" ? `<span class="st-br">read-only</span>`
+    : s.kind === "subagent" ? `<span class="st-br" title="The director's folder is not a git repo, so this sub-agent shared it">no worktree</span>` : "";
+  const multi = sc === "i" || !$("team-dir").hidden;
+  const attempt = live ? `Attempt ${s.attempts + 1} of ${s.max_attempts}`
+    : s.status === "failed" ? `${s.attempts} of ${s.max_attempts} attempts used`
+    : s.status === "passed" ? `Passed on attempt ${s.attempts + 1}` : "";
+  const btn = (cls, fn, label, tip) => `<button class="${cls}" onclick="${fn}"${tip ? ` title="${tip}"` : ""}>${label}</button>`;
+  const canDiff = s.branch && !s.discarded;
+  const canReverify = !live && s.kind !== "reflect" && !gone;
+  const primary = live ? btn("danger", `teamCancel(${i}, '${sc}')`, "Cancel")
+    : s.status === "passed" && canDiff ? btn("secondary", `teamDiff(${i}, '${sc}')`, "Diff")
+    : s.status === "failed" && canReverify ? btn("", `teamReverify(${i}, '${sc}')`, "Verify again",
+      "Run one more independent check — e.g. after you fixed something by hand") : "";
+  const sec = [
+    s.session_id && btn("st-sec", `teamRun(${i}, 'b', '${sc}')`, "Builder run", "Open the builder's latest run"),
+    s.verifier_id && btn("st-sec", `teamRun(${i}, 'v', '${sc}')`, "Verifier run", "Open the verifier's latest run"),
+    canDiff && !(s.status === "passed") && btn("st-sec", `teamDiff(${i}, '${sc}')`, "Diff"),
+    s.status === "passed" && canDiff && btn("st-sec", `teamCopyMerge(${i}, '${sc}')`, "Copy merge", "Copy the merge command"),
+    canReverify && s.status !== "failed" && btn("st-sec", `teamReverify(${i}, '${sc}')`, "Verify again",
+      "Run one more independent check — e.g. after you fixed something by hand"),
+    !live && s.worktree && !s.discarded && btn("st-sec", `teamDiscard(${i}, '${sc}')`, "Discard", "Remove the worktree and delete its branch"),
+  ].filter(Boolean).join("");
+  return `<article class="st-card s-${esc(s.status)}" data-st="${esc(s.id)}">
+    <div class="st-top">${sc === "i" ? badge(esc(s.status), ST_BADGE[s.status]) : ""}
+      <span class="st-chip">${esc(s.kind === "handoff" ? "handoff" : s.playbook)}</span>
+      ${multi && sc !== "i" && s.director_name ? `<span class="st-who" title="Reports to">${esc(s.director_name)}</span>` : ""}
+      ${where}</div>
+    <div class="st-title">${esc(s.title || s.brief.split("\n")[0] || s.id)}</div>
+    ${live || s.status === "cancelled" ? `<div class="st-live" id="${sc}stl-${i}">${lastLine}</div>` : ""}
+    ${live ? `<div class="st-prog" title="${ST_STAGES.map((l, j) => l + (stages[j] === "now" ? " (now)" : "")).join(" → ")}">${
+      stages.map((c) => `<span class="${c}"></span>`).join("")}</div>` : ""}
+    ${s.status === "verifying" && s.done_when ? `<div class="st-box"><div>Done means</div><p>${stLines(s.done_when, 2)}</p></div>` : ""}
+    ${s.status === "failed" && (v.findings || v.evidence || s.reason) ? `<div class="st-box bad"><div>${v.verdict ? "Verifier found" : "Stopped"}</div>
+        <p>${stLines(v.findings || v.evidence || s.reason, 3)}</p></div>` : ""}
+    ${s.status === "passed" && v.verdict === "PASS" ? `<div class="st-ok">Verified${v.sha ? ` at <code>${esc(v.sha.slice(0, 7))}</code>` : ""}</div>
+        <div class="st-note">Director notified${canDiff ? " · waiting to merge" : ""}</div>` : ""}
+    <div class="st-meta"><span>${s.status === "cancelled" && sc !== "i" ? badge("cancelled", "b-gray") : attempt}</span>
+      <span class="st-age" data-since="${esc(since)}"${live ? ` title="Running for"` : ` data-ago="1" title="Finished"`}>${since ? fmtAge(secsSince(since)) + (live ? "" : " ago") : ""}</span></div>
+    <div class="st-acts">${primary}<details><summary>Details</summary><div>
+      ${sec ? `<div class="st-acts">${sec}</div>` : ""}
+      <div class="hint">${esc(s.session_name || "—")}${s.model ? " · " + esc(s.model) : ""}${s.verifier_name ? ` · verifier ${esc(s.verifier_name)}` : ""}
+        · ${s.runs} run${s.runs === 1 ? "" : "s"} · ${(s.tokens || 0).toLocaleString()} tokens${s.worktree ? ` · ${esc(s.worktree)}` : ""}</div>
+      <pre>${esc(s.brief)}</pre>
+      ${s.done_when ? `<pre>Done means:\n${esc(s.done_when)}</pre>` : ""}
+      ${v.verdict ? `<pre>Verifier: ${esc(v.verdict)}${v.sha ? " at " + esc(v.sha.slice(0, 10)) : ""}\n\n${
+        esc([v.findings, v.evidence].filter(Boolean).join("\n\n— evidence —\n"))}</pre>` : ""}
+      ${s.report ? `<pre>Builder's report:\n${esc(s.report)}</pre>` : ""}
+    </div></details></div></article>`;
 }
 
 function diffHtml(text) {
@@ -4472,6 +5021,13 @@ function teamForms() {
   const was = keep("td-director");
   $("td-director").innerHTML = dirOpts || `<option value="">No agents in this workspace</option>`;
   if (was) $("td-director").value = was;
+  // Lọc theo director chỉ có nghĩa khi hơn một người đang giao việc.
+  const givers = TEAM.givers;
+  const wd = keep("team-dir");
+  $("team-dir").hidden = givers.length < 2;
+  $("team-dir").innerHTML = `<option value="">All directors</option>` + givers.map((id) =>
+    `<option value="${esc(id)}">${esc((TEAM.directors.find((d) => d.id === id) || {}).name || "removed agent")}</option>`).join("");
+  $("team-dir").value = givers.includes(wd) ? wd : "";
   const names = TEAM.directors.map((d) => d.name);
   for (const id of ["tg-from", "tg-to"]) {
     const w = keep(id);
@@ -4515,7 +5071,7 @@ function teamLive(ev) {
 
 setInterval(() => {
   document.querySelectorAll("#tab-team:not([hidden]) .st-age[data-since], #insp-team .st-age[data-since]").forEach((el) => {
-    if (el.dataset.since) el.textContent = fmtAge(secsSince(el.dataset.since));
+    if (el.dataset.since) el.textContent = fmtAge(secsSince(el.dataset.since)) + (el.dataset.ago ? " ago" : "");
   });
 }, 5000);
 
@@ -4596,10 +5152,22 @@ async function teamDelegate() {
   const r = await teamDo("/api/team/spawn", body, "td-msg");
   if (r) {
     ["td-title", "td-brief", "td-done"].forEach((id) => { $(id).value = ""; });
-    showMsg("td-msg", `Queued ${r.id}.`, true);
+    teamDelegateClose();
+    toast("Delegated", `${body.title || "Task"} queued as ${r.id}.`);
   }
 }
 window.teamDelegate = teamDelegate;
+
+function teamDelegateOpen() {
+  if (TEAM) teamForms();
+  const dir = $("team-dir").hidden ? "" : $("team-dir").value;
+  if (dir && TEAM && TEAM.directors.some((d) => d.id === dir)) $("td-director").value = dir;
+  $("td-msg").textContent = "";
+  $("td-modal").hidden = false;
+  $("td-title").focus();
+}
+function teamDelegateClose() { $("td-modal").hidden = true; }
+window.teamDelegateOpen = teamDelegateOpen; window.teamDelegateClose = teamDelegateClose;
 
 function teamModel(role, value) {
   teamDo("/api/team/models", { workspace_id: currentWS, roles: { [role]: value } });
@@ -4709,7 +5277,19 @@ if (PANE) {
       if (refreshDirty) scheduleRefresh();   // lúc ẩn đã bỏ qua refresh
     }
     else if (m.t === "theme") applyTheme(m.pref);
+    else if (m.t === "tab") switchTab(m.tab);
+    else if (m.t === "focus") paneFocus(m.sid);
   });
+  // xterm nuốt phím: chặn Ctrl+K ở pha capture (terminal không nhận chữ "k") rồi nhờ shell mở palette.
+  // Rời iframe là terminal mất focus bên trong; shell đóng palette thì focus lại iframe → trả về đây.
+  let palFrom = null;
+  window.addEventListener("keydown", (e) => {
+    if (!palKey(e)) return;
+    palFrom = document.activeElement;
+    try { parent.postMessage({ t: "palette" }, location.origin); } catch { /* không có shell */ }
+  }, { capture: true });
+  window.addEventListener("focus", () => { if (palFrom?.isConnected) palFrom.focus(); palFrom = null; });
+  paneFocus(window.frameElement?.dataset.focus);   // shell gửi lúc pane chưa load
   refreshAll();
   agyLiveLoad();      // model agy thật của máy này cho select model ở panel
   // SSE CHỈ ở pane. HTTP/1.1 giới hạn 6 kết nối mỗi origin và EventSource giữ kết nối
@@ -4724,14 +5304,38 @@ if (PANE) {
   CURGROUP = qs.get("g") || st.group || "";
   SPLIT = qs.has("split") ? qs.get("split") === "1" : !!st.split;
   SPLIT_PCT = st.pct || 50;
+  // URL có ws= mà không có view= là link tới một workspace — trang đã lưu không được đè lên nó.
+  const view = qs.has("view") ? qs.get("view") : fromUrl.length ? "" : st.view;
+  Object.assign(SUB, st.sub);
   ACTIVE = !OPEN.length ? -1
     : fromUrl.length ? 0
     : Math.min(st.active == null ? 0 : st.active, OPEN.length - 1);
   initSplitDrag();
-  // Pane báo lên: workspace của nó không còn → đóng tab.
+  if (SUBS[view]) openPage(view, qs.get("view") === view ? qs.get("tab") : SUB[view]);
+  // Pane báo lên: workspace của nó không còn → đóng tab; 'palette' = Ctrl+K bấm trong pane.
   window.addEventListener("message", (e) => {
     if (e.origin !== location.origin) return;
     if ((e.data || {}).t === "gone") closeWs(e.data.ws);
+    else if ((e.data || {}).t === "palette") palOpen();
+  });
+  window.addEventListener("keydown", (e) => { if (palKey(e)) palOpen(); }, { capture: true });
+  $("pal-kbd").textContent = /Mac|iP(hone|ad|od)/.test(navigator.platform) ? "⌘K" : "Ctrl K";
+  $("pal-q").addEventListener("keydown", (e) => {
+    const n = palRows.length;
+    if (e.key === "Escape") { e.stopPropagation(); palClose(); }
+    else if (e.key === "ArrowDown" && n) palHi(palSel < 0 ? 0 : (palSel + 1) % n);
+    else if (e.key === "ArrowUp" && n) palHi(palSel <= 0 ? n - 1 : palSel - 1);
+    else if (e.key === "Enter") palRun(palSel);
+    else return;
+    e.preventDefault();
+  });
+  $("pal-list").addEventListener("mousemove", (e) => {
+    const o = e.target.closest(".pal-o");
+    if (o && +o.dataset.n !== palSel) palHi(+o.dataset.n);
+  });
+  $("pal-list").addEventListener("click", (e) => {
+    const o = e.target.closest(".pal-o");
+    if (o) palRun(+o.dataset.n);
   });
   // Duyệt thư mục: click folder trong panel → đi sâu vào (path ở data-path, không inline).
   $("sp-dir").addEventListener("click", (ev) => {
