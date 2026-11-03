@@ -161,15 +161,15 @@ check("shift+wheel zooms even over a terminal", gaps,
       "a card covering the canvas leaves no background to scroll on")
 
 # 10 · Màn Home dùng MỘT grid cho hai tầng (group / workspace của group). Hỏng im lặng ở đây là
-# lọc bị bỏ đi: thanh tab hoặc grid lại liệt kê MỌI workspace, trông vẫn chạy, nhưng group thành
+# lọc bị bỏ đi: grid lại liệt kê MỌI workspace (hoặc sidebar thành một danh sách phẳng), trông vẫn chạy, nhưng group thành
 # vô nghĩa — và ở máy nhiều workspace thì đó đúng là cái nó sinh ra để chữa.
 gaps = set()
 if "function renderHome()" not in JS:
     gaps.add("renderHome() — the one renderer both Home layers go through")
 if "wsOfGroup = (gid)" not in JS:
     gaps.add("wsOfGroup() — the filter that makes a group mean anything")
-if "wsOfGroup(CURGROUP).map" not in JS:
-    gaps.add("renderShellTabs must list the OPEN GROUP's workspaces, not all of them")
+if "GROUPS.map((g) =>" not in JS or "wsOfGroup(g.id).map((w) => row(" not in JS:
+    gaps.add("renderShellTabs must list workspaces UNDER their group heading, not one flat list")
 if "renderWorkspaceGrid" in JS:
     gaps.add("renderWorkspaceGrid is gone — a call left behind renders the old flat list")
 for fn in ("openGroup", "homeNew", "moveWsGroup"):

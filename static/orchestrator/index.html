@@ -26,55 +26,60 @@
   /* ── Design tokens ────────────────────────────────────────────────────────
      Mọi màu đi qua đây. Thêm màu hardcode vào rule bên dưới là làm hỏng dark mode
      một cách âm thầm — chỉ phát hiện khi ai đó bật theme tối. */
+  @font-face { font-family: "Geist"; src: url("/vendor/fonts/Geist-Variable.woff2") format("woff2");
+    font-weight: 100 900; font-display: swap; }
+  @font-face { font-family: "Geist Mono"; src: url("/vendor/fonts/GeistMono-Variable.woff2") format("woff2");
+    font-weight: 100 900; font-display: swap; }
   :root, :root[data-theme="light"] {
     color-scheme: light;
-    --bg: #f6f7f9; --panel: #ffffff; --panel2: #f0f2f5;
-    --canvas: #eceff3; --dot: #cfd6e0;
-    --border: #dfe3ea; --border-strong: #c3cad6;
-    --text: #161d2b; --muted: #616c80; --faint: #8c95a5;
-    --accent: #3b74e0; --accent-fg: #ffffff; --accent-soft: rgba(59,116,224,.10);
-    --gray: #6b7280; --blue: #3b74e0; --amber: #b06f0a; --red: #d92d20; --green: #1a7f4e;
-    --gray-soft: rgba(107,114,128,.14); --blue-soft: rgba(59,116,224,.12);
-    --amber-soft: rgba(176,111,10,.14); --red-soft: rgba(217,45,32,.12);
-    --green-soft: rgba(26,127,78,.13);
-    --edge-wait: #e0930c; --edge-run: #3b74e0;
-    --zone-line: #b9c4d6; --zone-fill: rgba(59,116,224,.045);
-    --term-bg: #0c0e12; --scrim: rgba(16,24,40,.45);
-    --sh-1: 0 1px 2px rgba(16,24,40,.07);
-    --sh-2: 0 4px 14px rgba(16,24,40,.10);
-    --sh-3: 0 14px 40px rgba(16,24,40,.16);
-    --ring: 0 0 0 3px rgba(59,116,224,.28);
+    --font: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --bg: #f7f8fa; --panel: #ffffff; --card: #ffffff; --panel2: #f1f3f6;
+    --canvas: #f1f3f6; --dot: #d5dae1;
+    --border: #e3e6eb; --border-strong: #cdd2da;
+    --text: #12161e; --muted: #5a6372; --faint: #6b7482;
+    --accent: #4f5fe0; --accent-fg: #ffffff; --accent-soft: rgba(79,95,224,.10);
+    --gray: #9aa2ae; --blue: #4f5fe0; --amber: #a86a00; --red: #c8402d; --green: #12805c;
+    --gray-soft: rgba(90,99,114,.12); --blue-soft: rgba(79,95,224,.12);
+    --amber-soft: rgba(168,106,0,.12); --red-soft: rgba(200,64,45,.11);
+    --green-soft: rgba(18,128,92,.12);
+    --edge-wait: #f5b94f; --edge-run: #4f5fe0;
+    --zone-line: #c3c9e8; --zone-fill: rgba(79,95,224,.045);
+    --term-bg: #0b0d11; --scrim: rgba(18,22,30,.45);
+    --sh-1: 0 1px 2px rgba(18,22,30,.06);
+    --sh-2: 0 4px 14px rgba(18,22,30,.10);
+    --sh-3: 0 14px 40px rgba(18,22,30,.16);
+    --ring: 0 0 0 3px rgba(79,95,224,.28);
     --r-card: 12px; --r-ctl: 8px;
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --bg: #0e1117; --panel: #161b22; --panel2: #1d232d;
-    --canvas: #0a0d13; --dot: #222a36;
-    --border: #262d39; --border-strong: #3a4351;
-    --text: #e6e9ef; --muted: #98a2b3; --faint: #6b7484;
-    --accent: #4d8bff; --accent-fg: #0a0d13; --accent-soft: rgba(77,139,255,.16);
-    --gray: #8b93a1; --blue: #4d8bff; --amber: #e8a33d; --red: #ff6b5e; --green: #3ecf8e;
-    --gray-soft: rgba(139,147,161,.16); --blue-soft: rgba(77,139,255,.18);
-    --amber-soft: rgba(232,163,61,.16); --red-soft: rgba(255,107,94,.15);
-    --green-soft: rgba(62,207,142,.15);
-    --edge-wait: #e8a33d; --edge-run: #4d8bff;
-    --zone-line: #35415a; --zone-fill: rgba(77,139,255,.05);
-    --term-bg: #0a0d13; --scrim: rgba(0,0,0,.62);
+    --bg: #0b0d11; --panel: #101318; --card: #151920; --panel2: #1a1f27;
+    --canvas: #0b0d11; --dot: #1e232c;
+    --border: #242a33; --border-strong: #313844;
+    --text: #e8ebf0; --muted: #a3abb7; --faint: #7d8694;
+    --accent: #8c9eff; --accent-fg: #0b0d11; --accent-soft: rgba(140,158,255,.14);
+    --gray: #4a515d; --blue: #8c9eff; --amber: #f5b94f; --red: #ff8a78; --green: #5ed3a5;
+    --gray-soft: rgba(163,171,183,.12); --blue-soft: rgba(140,158,255,.14);
+    --amber-soft: rgba(245,185,79,.14); --red-soft: rgba(255,138,120,.14);
+    --green-soft: rgba(94,211,165,.13);
+    --edge-wait: #f5b94f; --edge-run: #8c9eff;
+    --zone-line: #313a52; --zone-fill: rgba(140,158,255,.05);
+    --term-bg: #0b0d11; --scrim: rgba(0,0,0,.62);
     --sh-1: 0 1px 2px rgba(0,0,0,.5);
     --sh-2: 0 4px 14px rgba(0,0,0,.45);
     --sh-3: 0 16px 44px rgba(0,0,0,.6);
-    --ring: 0 0 0 3px rgba(77,139,255,.32);
+    --ring: 0 0 0 3px rgba(140,158,255,.32);
   }
 
   * { box-sizing: border-box; }
-  /* App shell: header mảnh cố định, main chiếm phần còn lại (canvas full-bleed bên trong) */
+  /* App shell: sidebar cố định bên trái, main chiếm phần còn lại (canvas full-bleed bên trong) */
   body { margin: 0; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden;
-    display: flex; flex-direction: column;
-    font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    display: flex; font: 13px/1.5 var(--font); }
   /* Pane mode (?pane=1): document chạy TRONG iframe của shell → không có chrome riêng,
      không có màn Home, không có pane lồng pane. */
-  .pane header, .pane #ws-list-view, .pane #panes { display: none; }
-  main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .pane .sidebar, .pane #ws-list-view, .pane #panes { display: none; }
+  main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 
   /* Icon sprite: <svg class="ic"><use href="#i-play"/></svg> */
   #sprite { display: none; }
@@ -83,76 +88,117 @@
   .ic.sm { width: 13px; height: 13px; }
   .ic.fill { fill: currentColor; stroke: none; }
 
-  /* ── Header ───────────────────────────────────────────────────────────── */
-  header { display: flex; align-items: center; gap: 10px; padding: 0 12px; height: 48px; flex: none;
-    background: var(--panel); border-bottom: 1px solid var(--border); z-index: 5; }
-  .brand { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border: none;
-    background: transparent; color: var(--text); font-size: 13.5px; font-weight: 650;
-    white-space: nowrap; border-radius: var(--r-ctl); }
-  .brand:hover { background: var(--panel2); }
-  .brand img { width: 18px; height: 18px; display: block; }
+  /* ── Sidebar ──────────────────────────────────────────────────────────── */
+  .sidebar { flex: none; width: 240px; display: flex; flex-direction: column; gap: 2px;
+    padding: 14px 12px; background: var(--panel); border-right: 1px solid var(--border);
+    overflow: hidden auto; z-index: 5; }
+  .sb-brand { display: flex; align-items: center; gap: 9px; padding: 2px 6px 12px; min-height: 36px; }
+  .sb-brand img { width: 20px; height: 20px; display: block; flex: none; }
+  .sb-name { font-weight: 650; font-size: 14px; white-space: nowrap; }
   .spacer { flex: 1; }
+  #conn { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0;
+    background: transparent; font-size: 11px; }
+  #conn::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  #dry { align-self: flex-start; margin: 0 6px 8px; }
+  .sb-item { display: flex; align-items: center; gap: 10px; width: 100%; height: 36px; padding: 0 10px;
+    flex: none; border: 1px solid transparent; background: transparent; color: var(--muted);
+    border-radius: var(--r-ctl); text-align: left; white-space: nowrap; font-weight: 500; }
+  .sb-item:hover { background: var(--panel2); color: var(--text); border-color: transparent; }
+  .sb-item .ic { width: 16px; height: 16px; }
+  /* Chấm trên Settings: thiếu tool BẮT BUỘC. Người dùng không tự mở modal để kiểm tra —
+     phải có gì đó đập vào mắt thì mới biết mà mở. */
+  .sb-item.has-dot { position: relative; }
+  .sb-item.has-dot::after { content: ""; position: absolute; top: 9px; left: 22px;
+    width: 7px; height: 7px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 2px var(--panel); }
+  .sb-sec { display: flex; align-items: center; padding: 18px 10px 4px; font-size: 11px; font-weight: 600;
+    letter-spacing: .06em; text-transform: uppercase; color: var(--faint); white-space: nowrap; }
+  .sb-sec .icon-btn { margin-left: auto; width: 24px; height: 24px; }
+  .sb-grp { display: block; width: 100%; padding: 6px 10px 2px; border: 0; background: transparent;
+    color: var(--faint); font-size: 12px; text-align: left; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; border-radius: 6px; }
+  .sb-grp:hover { color: var(--text); background: transparent; }
+  .sb-foot { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; }
+  .sb-new { display: flex; align-items: center; justify-content: center; gap: 8px; height: 40px;
+    border-radius: 10px; white-space: nowrap; }
+  .sb-tools { display: flex; gap: 4px; }
   /* Chọn workspace cho từng pane, chỉ hiện khi đang split. */
-  .pane-pick { display: flex; align-items: center; gap: 6px; flex: none; }
+  .pane-pick { display: grid; gap: 6px; }
   .pane-pick[hidden] { display: none; }
-  .pane-one { display: flex; align-items: center; gap: 4px; }
-  .pane-one > span { font-size: 9.5px; font-weight: 700; color: var(--faint); }
-  .pane-one select { max-width: 140px; }
+  .pane-one { display: flex; align-items: center; gap: 6px; }
+  .pane-one > span { font-size: 10px; font-weight: 700; color: var(--faint); width: 12px; }
+  .pane-one select { flex: 1; min-width: 0; }
 
-  /* Workspace tabs (kiểu browser): liệt kê MỌI workspace. Số pane vẫn tối đa 2 — tab chỉ là
-     chỗ bấm, pane mới là iframe tốn tài nguyên. Nhiều workspace thì cuộn ngang, đừng cắt cụt. */
-  .ws-tabs { display: flex; align-items: center; gap: 4px; min-width: 0; overflow-x: auto;
-    scrollbar-width: thin; }
-  .ws-tab { display: flex; align-items: center; gap: 7px; max-width: 220px; padding: 5px 6px 5px 11px;
-    border: 1px solid transparent; background: transparent; color: var(--muted);
-    border-radius: var(--r-ctl); font-size: 12.5px; }
-  .ws-tab:hover { background: var(--panel2); border-color: transparent; }
-  .ws-tab.active { background: var(--panel2); border-color: var(--border); color: var(--text);
-    font-weight: 600; }
-  .ws-tab.open { border-color: var(--border); color: var(--text); }
-  .ws-tab.split-on { border-color: var(--accent); }
+  /* Danh sách workspace theo group: MỌI group, mỗi group một tiêu đề nhỏ. Số pane vẫn tối đa 2 —
+     dòng ở đây chỉ là chỗ bấm, pane mới là iframe tốn tài nguyên. */
+  .ws-tabs { display: flex; flex-direction: column; gap: 1px; min-height: 0; }
+  .ws-tab { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; height: 34px;
+    flex: none; padding: 0 6px 0 18px; border: 1px solid transparent; background: transparent;
+    color: var(--muted); border-radius: var(--r-ctl); text-align: left; }
+  .ws-tab:hover { background: var(--panel2); color: var(--text); border-color: transparent; }
+  .ws-tab .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--gray); }
+  .ws-tab.open { color: var(--text); }
+  .ws-tab.open .dot { background: var(--accent); }
+  .ws-tab.active, .ws-tab.split-on { background: var(--accent-soft); color: var(--text); font-weight: 600; }
   .ws-tab .pane-tag { flex: none; font-size: 9.5px; font-weight: 700; letter-spacing: .04em;
     color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 3px; }
-  .ws-tab .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ws-tab .x { display: flex; padding: 2px; border-radius: 5px; color: var(--faint); }
+  .ws-tab .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-tab .x { display: flex; padding: 3px; border-radius: 5px; color: var(--faint); }
   .ws-tab .x:hover { background: var(--red-soft); color: var(--red); }
+
+  /* Hẹp: sidebar thu thành rail icon; rê chuột/tab vào thì nở ra ĐÈ lên nội dung (margin âm giữ
+     main đứng yên — không thì cả hai pane co giãn, xterm fit lại mỗi lần rê qua). */
+  @media (max-width: 900px) {
+    .sidebar { width: 60px; padding: 14px 8px; transition: width .15s, margin-right .15s; }
+    .sidebar:hover, .sidebar:has(:focus-visible) { width: 240px; margin-right: -180px; box-shadow: var(--sh-3); }
+    .sidebar:not(:hover, :has(:focus-visible)) :is(.sb-name, .sb-sec, .sb-grp, #conn, #dry, .lbl, .x,
+      .pane-tag, .sb-new span, .pane-pick) { display: none; }
+    .sidebar:not(:hover, :has(:focus-visible)) .ws-tab { padding-left: 16px; }
+    .sidebar:not(:hover, :has(:focus-visible)) .sb-tools { flex-direction: column; }
+  }
 
   /* ── Controls ─────────────────────────────────────────────────────────── */
   button { font: inherit; cursor: pointer; border: 1px solid var(--border); background: var(--panel2);
-    color: var(--text); padding: 4px 10px; border-radius: var(--r-ctl); }
+    color: var(--text); padding: 5px 12px; border-radius: var(--r-ctl);
+    transition: background .12s, border-color .12s, color .12s; }
   button:hover { border-color: var(--border-strong); }
   button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
     outline: none; box-shadow: var(--ring); border-color: var(--accent); }
-  button.danger { border-color: var(--red); color: var(--red); background: transparent; }
-  button.danger:hover { background: var(--red-soft); }
+  button.danger { border-color: var(--red-soft); color: var(--red); background: transparent; }
+  button.danger:hover { background: var(--red-soft); border-color: var(--red); }
   button.warn { border-color: var(--amber); color: var(--amber); background: transparent; font-weight: 600; }
   button.warn:hover { background: var(--amber-soft); }
-  button.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); font-weight: 500; }
-  button.secondary:hover { border-color: var(--accent); color: var(--accent); }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border-strong); font-weight: 500; }
+  button.secondary:hover { background: var(--panel2); border-color: var(--border-strong); }
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
   button.primary:hover { filter: brightness(1.08); border-color: var(--accent); }
   button:disabled { opacity: .45; cursor: not-allowed; }
   /* Nút chỉ có icon — vuông, không nhãn */
   .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
     padding: 0; border-color: transparent; background: transparent; color: var(--muted); }
-  .icon-btn:hover { background: var(--panel2); color: var(--text); border-color: var(--border); }
-  .icon-btn.on { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
-  .tb-sep { width: 1px; height: 20px; background: var(--border); flex: none; }
-  .icon-btn.lib-btn { width: auto; gap: 6px; padding: 0 9px; font-size: 12.5px; }
-  @media (max-width: 560px) { .lib-lbl { display: none; } .icon-btn.lib-btn { padding: 0; width: 28px; } }
-  /* Menu Tools: popover → trình duyệt tự đóng khi bấm ra ngoài hay Esc (bấm vào iframe workspace
-     thì app.js đóng theo blur). top/left đặt theo nút
-     lúc mở (app.js), vì popover nằm ở top layer, không theo header. */
-  .menu { margin: 0; inset: auto; padding: 4px; min-width: 170px; background: var(--panel);
-    color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl); box-shadow: var(--sh-2); }
-  .menu button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px;
+  .icon-btn:hover { background: var(--panel2); color: var(--text); border-color: transparent; }
+  .icon-btn.on { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+  .icon-btn.danger { border-color: transparent; }
+  /* :where = specificity 0: các ô đã có rule riêng (.form-card input, select.mini…) vẫn thắng.
+     Chừa ô ẩn của xterm — nó phải vô hình. */
+  :where(input:not([type=checkbox], [type=radio], [type=range], [type=color], [type=file]), select,
+    textarea):not(.xterm-helper-textarea) {
+    font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--r-ctl); padding: 6px 10px; }
+  :where(input, select, textarea):not(.xterm-helper-textarea):hover { border-color: var(--border-strong); }
+  input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
+  /* Menu popover → trình duyệt tự đóng khi bấm ra ngoài hay Esc (bấm vào iframe workspace thì
+     app.js đóng theo blur). top/left đặt theo nút lúc mở (app.js): popover nằm ở top layer. */
+  .menu { margin: 0; inset: auto; padding: 4px; min-width: 190px; background: var(--card);
+    color: var(--text); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--sh-2); }
+  .menu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 10px;
     border: 0; background: transparent; color: var(--text); text-align: left; font-size: 13px; }
   .menu button:hover, .menu button:focus-visible { background: var(--panel2); }
-  .pill { font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border);
-    color: var(--muted); white-space: nowrap; }
-  .pill.live { color: var(--green); border-color: var(--green); background: var(--green-soft); }
-  .pill.dead { color: var(--red); border-color: var(--red); background: var(--red-soft); }
-  .pill.dry { color: var(--amber); border-color: var(--amber); background: var(--amber-soft); }
+  .menu button .ic { color: var(--muted); }
+  .pill { font-size: 11px; font-weight: 500; padding: 2px 9px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+  .pill.live { color: var(--green); border-color: transparent; background: var(--green-soft); }
+  .pill.dead { color: var(--red); border-color: transparent; background: var(--red-soft); }
+  .pill.dry { color: var(--amber); border-color: transparent; background: var(--amber-soft); font-weight: 650; }
   .badge { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
     text-transform: uppercase; letter-spacing: .03em; }
   .badge.has-tip { cursor: help; text-decoration: underline dotted var(--faint); text-underline-offset: 2px; }
@@ -161,7 +207,7 @@
   .b-amber { background: var(--amber-soft); color: var(--amber); }
   .b-red { background: var(--red-soft); color: var(--red); }
   .b-green { background: var(--green-soft); color: var(--green); }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--muted); }
+  code { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
   .hint { font-size: 11px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
   .empty { padding: 16px; color: var(--muted); font-style: italic; }
   .day-cell { font-variant-numeric: tabular-nums; text-align: center; }
@@ -177,17 +223,17 @@
   .sec-head { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; }
   .sec-head h2 { margin: 0; font-size: 17px; font-weight: 640; letter-spacing: -.01em; }
   .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
-  .ws-card { position: relative; background: var(--panel); border: 1px solid var(--border);
+  .ws-card { position: relative; background: var(--card); border: 1px solid var(--border);
     border-radius: var(--r-card); padding: 15px; cursor: pointer; box-shadow: var(--sh-1);
     transition: border-color .12s, box-shadow .12s, transform .12s; }
   .ws-card:hover { border-color: var(--accent); box-shadow: var(--sh-2); transform: translateY(-2px); }
   .ws-card.open { border-color: var(--accent); }
   .ws-card h3 { margin: 0 0 3px; font-size: 14.5px; font-weight: 620; }
-  .ws-card .ws-id { font-size: 10.5px; color: var(--faint); font-family: ui-monospace, monospace; }
+  .ws-card .ws-id { font-size: 10.5px; color: var(--faint); font-family: var(--mono); }
   .ws-card .ws-meta { margin-top: 13px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
     font-size: 11.5px; color: var(--muted); }
   .ws-card .ws-root { margin-top: 8px; font-size: 10.5px; color: var(--faint);
-    font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ws-count { font-size: 21px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
   .ws-card .ws-del { margin-left: auto; width: 24px; height: 24px; }
   .ws-card .open-tag { position: absolute; top: 12px; right: 12px; font-size: 9.5px; font-weight: 700;
@@ -196,7 +242,7 @@
   .sec-head .crumb { padding: 4px 10px; font-size: 11.5px; }
 
   /* ── Panels / tables ──────────────────────────────────────────────────── */
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-card);
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card);
     overflow: hidden; box-shadow: var(--sh-1); }
   .panel > h2 { display: flex; align-items: center; gap: 10px; font-size: 11.5px; text-transform: uppercase;
     letter-spacing: .05em; color: var(--muted); margin: 0; padding: 11px 15px;
@@ -207,6 +253,7 @@
   th, td { text-align: left; padding: 9px 15px; border-bottom: 1px solid var(--border); vertical-align: middle; }
   th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); font-weight: 600; }
   tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: var(--panel2); }
   td.msg { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
   tr.more-row td { text-align: center; padding: 10px 15px; }
   tr.more-row:hover td { background: transparent; }
@@ -225,7 +272,7 @@
   @keyframes pulse { 50% { opacity: .3; } }
 
   /* ── Forms ────────────────────────────────────────────────────────────── */
-  .form-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-card);
+  .form-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card);
     padding: 18px; box-shadow: var(--sh-1); }
   .form-card h3 { margin: 0 0 4px; font-size: 14px; font-weight: 620; display: flex; align-items: center; gap: 8px; }
   .form-card label { display: block; font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
@@ -261,7 +308,7 @@
     background: var(--panel2); border-color: var(--border); color: var(--text); font-weight: 500; }
   .dir-browse { margin-top: 6px; border: 1px solid var(--border); border-radius: var(--r-ctl);
     background: var(--bg); padding: 8px; font-size: 12px; }
-  .dir-crumb { font-family: ui-monospace, monospace; font-size: 10.5px; color: var(--muted);
+  .dir-crumb { font-family: var(--mono); font-size: 10.5px; color: var(--muted);
     margin-bottom: 6px; word-break: break-all; }
   .dir-list { max-height: 180px; overflow-y: auto; display: grid; gap: 2px; }
   .dir-item { padding: 4px 8px; border-radius: 6px; cursor: pointer; }
@@ -279,7 +326,7 @@
   /* overflow-x hidden + min-width:0 ở dưới: một dòng server có url dài đẩy khung rộng ra và
      modal mọc thanh cuộn NGANG, che mất nút dưới cùng. Chữ phải co lại, không phải khung. */
   .modal { width: min(660px, 100%); max-height: calc(100vh - 40px);
-    overflow-y: auto; overflow-x: hidden; }
+    overflow-y: auto; overflow-x: hidden; box-shadow: var(--sh-3); }
   .modal input + input { margin-top: 6px; }
   .ai-actions button { padding: 8px 16px; }   /* nút trong cột hẹp, 28px là tràn */
   /* minmax(0,1fr) + min-width:0: ô grid mặc định là min-width:auto, tức là KHÔNG co dưới bề
@@ -310,11 +357,6 @@
   .tool-fix { margin-top: 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .tool-fix code { user-select: all; background: var(--panel2); border: 1px solid var(--border);
     border-radius: 6px; padding: 3px 7px; font-size: 11.5px; }
-  /* Chấm trên nút topbar: thiếu tool BẮT BUỘC. Người dùng không tự mở modal để kiểm tra —
-     phải có gì đó đập vào mắt thì mới biết mà mở. */
-  .icon-btn.warn { position: relative; }
-  .icon-btn.warn::after { content: ""; position: absolute; top: 4px; right: 4px;
-    width: 7px; height: 7px; border-radius: 50%; background: var(--red); }
   /* Thư viện của modal Images. min-width:0 cùng lý do như .mcp-row: chú thích dài phải co lại,
      không được đẩy khung rộng ra. */
   .img-grid { margin-top: 12px; display: grid; gap: 8px;
@@ -409,7 +451,7 @@
   .node-head .cli-adopt { flex: none; padding: 1px 7px; font-size: 10.5px; border-radius: 6px; }
   .sk-path { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; color: var(--faint); }
   .sk-path.on { color: var(--text); font-weight: 600; }
-  .sk-path .mono { font-family: ui-monospace, monospace; word-break: break-all; }
+  .sk-path .mono { font-family: var(--mono); word-break: break-all; }
   .win-bar { display: flex; align-items: center; gap: 6px; padding: 5px 10px; flex: none;
     overflow-x: auto; scrollbar-width: thin; background: var(--panel);
     border-bottom: 1px solid var(--border); }
@@ -547,7 +589,7 @@
   /* Toast góc dưới, tự tắt. */
   #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: grid; gap: 8px;
     max-width: min(360px, calc(100vw - 32px)); }
-  .toast { background: var(--panel); border: 1px solid var(--amber); border-left: 4px solid var(--amber);
+  .toast { background: var(--card); border: 1px solid var(--amber); border-left: 4px solid var(--amber);
     border-radius: var(--r-ctl); box-shadow: var(--sh-3); padding: 10px 12px; font-size: 12.5px;
     line-height: 1.55; display: grid; gap: 4px; cursor: pointer; }
   .toast b { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--amber); }
@@ -656,7 +698,7 @@
   .zone-title { display: flex; align-items: center; gap: 8px; overflow: hidden; color: var(--muted); }
   .zone-title b { font-size: 12.5px; color: var(--text); }
   .g-count { font-size: 10.5px; color: var(--muted); flex: none; }
-  .g-path { font-family: ui-monospace, monospace; font-size: 10px; color: var(--faint);
+  .g-path { font-family: var(--mono); font-size: 10px; color: var(--faint);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Khung CẶP: terminal + card editor của cùng một session. Viền nét đứt để phân biệt với zone
      cwd (nét liền) khi hai khung lồng nhau, và nền trong suốt để zone cwd bên dưới không bị
@@ -778,7 +820,7 @@
   .insp-kv { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted);
     min-width: 0; }
   .insp-kv > span:first-child { flex: none; width: 62px; }
-  .insp-kv .mono { flex: 1; min-width: 0; font-family: ui-monospace, monospace; font-size: 10.5px;
+  .insp-kv .mono { flex: 1; min-width: 0; font-family: var(--mono); font-size: 10.5px;
     color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Hàng ngân sách ping-pong: tên peer co được, con số không. Không dùng .insp-kv vì cột
      nhãn cố định 62px của nó sẽ cắt cụt tên vai. */
@@ -794,7 +836,7 @@
     border-bottom: 1px solid var(--border); }
   .sess-row:last-child { border-bottom: none; }
   .sess-when { flex: none; font-size: 10.5px; color: var(--faint);
-    font-family: ui-monospace, monospace; }
+    font-family: var(--mono); }
   .sess-title { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sess-keep { flex: none; font-size: 9.5px; font-weight: 700; letter-spacing: .04em;
@@ -841,20 +883,20 @@
     -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
   .ev.open .s { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
   .ev .tr { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border);
-    font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted);
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
     white-space: pre-wrap; word-break: break-word; display: -webkit-box;
     -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
   .ev.open .tr { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
   .ev .tr.pend { font-style: italic; border-top-style: dotted; }
   .ev .tr.err { color: var(--red); }
   .ev.thinking { border-left-color: var(--amber); } .ev.thinking .s { color: var(--amber); font-style: italic; }
-  .ev.tool_use { border-left-color: var(--blue); } .ev.tool_use .s { font-family: ui-monospace, monospace; font-size: 11.5px; }
+  .ev.tool_use { border-left-color: var(--blue); } .ev.tool_use .s { font-family: var(--mono); font-size: 11.5px; }
   .ev.tool_result { border-left-color: var(--gray); } .ev.tool_result .s { color: var(--muted); font-size: 11.5px; }
   .ev.text { border-left-color: var(--green); }
   .ev.system, .ev.result { border-left-color: var(--border); opacity: .85; }
   .ev.system .s, .ev.result .s { color: var(--muted); font-size: 11.5px; }
   .ev.error { border-left-color: var(--red); } .ev.error .s { color: var(--red); }
-  .skill-ta { width: 100%; height: 55vh; resize: vertical; font-family: ui-monospace, monospace;
+  .skill-ta { width: 100%; height: 55vh; resize: vertical; font-family: var(--mono);
     font-size: 11.5px; line-height: 1.5; background: var(--panel2); color: var(--text);
     border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 8px 10px; box-sizing: border-box; }
   .skill-save { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
@@ -890,49 +932,65 @@
   <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5 17.5 10.5"/></symbol>
   <symbol id="i-window" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01"/></symbol>
   <symbol id="i-library" viewBox="0 0 24 24"><path d="M4 4v16M8 8v12M12 6v14M16 6l4 14"/></symbol>
-  <symbol id="i-apps" viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></symbol>
   <symbol id="i-speak" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L12 18V6L7.5 9.5z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
   <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
   <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9.5" r="1.5"/><path d="m20 15.5-4.5-4.5L6 20"/></symbol>
   <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M15.5 3.5a5 5 0 0 0-6.2 6.2L3.9 15a2 2 0 0 0 0 2.8l2.3 2.3a2 2 0 0 0 2.8 0l5.3-5.4a5 5 0 0 0 6.2-6.2l-3 3-2.8-2.8z"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 11l8-6 8 6v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></symbol>
   <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></symbol>
 </defs></svg>
 
-<header>
-  <button class="brand" onclick="goHome()" title="Workspaces">
-    <img src="/logo.png" alt=""> Orchestrator
-  </button>
-  <nav id="ws-tabs" class="ws-tabs"></nav>
-  <div class="spacer"></div>
-  <span id="pane-pick" class="pane-pick" hidden></span>
+<nav id="sidebar" class="sidebar" aria-label="Main">
+  <div class="sb-brand">
+    <img src="/logo.png" alt=""><span class="sb-name">Orchestrator</span>
+    <span class="spacer"></span>
+    <span id="conn" class="pill dead">offline</span>
+  </div>
   <span id="dry" class="pill dry" hidden>DRY-RUN</span>
-  <button id="tools-btn" class="icon-btn" onclick="toolsOpen()" title="Media tools">
-    <svg class="ic"><use href="#i-wrench"/></svg></button>
-  <button id="mcp-btn" class="icon-btn" onclick="mcpOpen()" title="MCP servers">
-    <svg class="ic"><use href="#i-plug"/></svg></button>
-  <button id="split-btn" class="icon-btn" onclick="toggleSplit()" title="Side-by-side (needs 2 open workspaces)">
-    <svg class="ic"><use href="#i-split"/></svg></button>
-  <span class="tb-sep" aria-hidden="true"></span>
-  <button id="tools-menu-btn" class="icon-btn lib-btn" popovertarget="tools-menu" title="Make images and speech">
-    <svg class="ic"><use href="#i-apps"/></svg><span class="lib-lbl">Tools</span></button>
-  <button id="lib-btn" class="icon-btn lib-btn" onclick="libOpen()" title="Images and sounds you have kept">
-    <svg class="ic"><use href="#i-library"/></svg><span class="lib-lbl">Library</span></button>
-  <span class="tb-sep" aria-hidden="true"></span>
-  <button id="theme-btn" class="icon-btn" onclick="cycleTheme()" title="Theme">
-    <svg class="ic"><use href="#i-theme"/></svg></button>
-  <span id="conn" class="pill dead">offline</span>
-</header>
+  <button class="sb-item" onclick="goHome()" title="Home">
+    <svg class="ic"><use href="#i-home"/></svg><span class="lbl">Home</span></button>
+  <button id="studio-btn" class="sb-item" popovertarget="studio-menu" title="Make images and speech, see what you kept">
+    <svg class="ic"><use href="#i-image"/></svg><span class="lbl">Studio</span></button>
+  <button id="tools-btn" class="sb-item" popovertarget="settings-menu" title="Settings">
+    <svg class="ic"><use href="#i-settings"/></svg><span class="lbl">Settings</span></button>
+  <div class="sb-sec">Workspaces
+    <button class="icon-btn" onclick="newWorkspace()" title="New workspace">
+      <svg class="ic sm"><use href="#i-plus"/></svg></button></div>
+  <div id="ws-tabs" class="ws-tabs"></div>
+  <div class="spacer"></div>
+  <div class="sb-foot">
+    <div id="pane-pick" class="pane-pick" hidden></div>
+    <button class="primary sb-new" onclick="newAgent()" title="New agent">
+      <svg class="ic"><use href="#i-plus"/></svg><span>New agent</span></button>
+    <div class="sb-tools">
+      <button id="split-btn" class="icon-btn" onclick="toggleSplit()" title="Side-by-side (needs 2 open workspaces)">
+        <svg class="ic"><use href="#i-split"/></svg></button>
+      <button id="theme-btn" class="icon-btn" onclick="cycleTheme()" title="Theme">
+        <svg class="ic"><use href="#i-theme"/></svg></button>
+    </div>
+  </div>
+</nav>
 <!-- popovertargetaction="hide": chọn xong thì menu tự đóng, khỏi viết JS. -->
-<div id="tools-menu" class="menu" popover>
-  <button popovertarget="tools-menu" popovertargetaction="hide" onclick="imgOpen()">
+<div id="studio-menu" class="menu" popover>
+  <button popovertarget="studio-menu" popovertargetaction="hide" onclick="imgOpen()">
     <svg class="ic"><use href="#i-image"/></svg> Images</button>
-  <button popovertarget="tools-menu" popovertargetaction="hide" onclick="ttsOpen()"
+  <button popovertarget="studio-menu" popovertargetaction="hide" onclick="ttsOpen()"
     title="Turn English text into speech with a natural voice, on this machine">
     <svg class="ic"><use href="#i-speak"/></svg> Speak text</button>
-  <button popovertarget="tools-menu" popovertargetaction="hide" onclick="perfOpen()"
+  <button popovertarget="studio-menu" popovertargetaction="hide" onclick="libOpen()"
+    title="Images and sounds you have kept">
+    <svg class="ic"><use href="#i-library"/></svg> Library</button>
+</div>
+<div id="settings-menu" class="menu" popover>
+  <button popovertarget="settings-menu" popovertargetaction="hide" onclick="mcpOpen()">
+    <svg class="ic"><use href="#i-plug"/></svg> MCP servers</button>
+  <button id="tools-item" popovertarget="settings-menu" popovertargetaction="hide" onclick="toolsOpen()">
+    <svg class="ic"><use href="#i-wrench"/></svg> Media tools</button>
+  <button popovertarget="settings-menu" popovertargetaction="hide" onclick="perfOpen()"
     title="See what is using this computer's CPU and memory">
     <svg class="ic"><use href="#i-gauge"/></svg> Performance</button>
-  <button popovertarget="tools-menu" popovertargetaction="hide" onclick="unregOpen()"
+  <button popovertarget="settings-menu" popovertargetaction="hide" onclick="unregOpen()"
     title="Agents you unregistered that still leave runs and transcripts behind">
     <svg class="ic"><use href="#i-trash"/></svg> Unregistered agents</button>
 </div>
