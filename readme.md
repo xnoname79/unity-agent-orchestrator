@@ -2,67 +2,57 @@
 
 # Agent Orchestrator
 
-Claude Code and Antigravity CLI on one canvas, working together. It drives the CLIs already
-installed on your machine, so each provider keeps its own login and subscription.
+Run a team of coding agents on your own machine and stay in charge of it. You talk to one
+director; it splits the job across sub-agents in their own git worktrees, and nothing counts as
+done until an independent verifier has seen it work.
 
-![The canvas](images/screenshot-canvas.png)
+It drives the Claude Code and Antigravity (Gemini) CLIs you already have, so each provider keeps
+its own login and subscription.
+
+![Workspace canvas: the director, its agents, and what waits on you](images/screenshot-canvas.png)
 
 [Download](../../releases) · [Report a bug](../../issues/new)
+
+## How it works
+
+1. **Start a director** for a repo. It is the one agent you talk to.
+2. **It splits the work** and hands each unit to a sub-agent with
+   `spawn_subagent(playbook, brief, done_when)`. Code is written in a worktree on branch
+   `orch/<id>`; your checkout is never touched.
+3. **A fresh verifier checks `done_when`**: a command and its output, a flow in the running app.
+   FAIL goes back to the builder with findings; PASS tells the director which branch to merge.
+4. **You step in only when needed.** Approvals, questions and failed checks land in one inbox.
 
 ## Features
 
 **Agents**
-- Live terminal cards for Claude Code and Antigravity (Gemini) on one canvas, with the model
-  and reasoning effort picked per agent. Claude offers the `fable` / `opus` / `sonnet` / `haiku`
-  aliases (always the newest) and pinned ids (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5); the
-  Gemini list is read from `agy models` on your machine, so new models show up when agy adds them.
-- Agents hand work to each other with `send_signal`. Every run is queued, capped and logged in
-  History.
-- Role playbooks that fill themselves in from the project. Rename an agent at any time.
-- Workspaces (isolated folders and agents) filed into groups, two of them side by side.
-- A folder card to browse a project from the dashboard; `--dev` swaps it for neovim with a git diff
-  view.
+- Live terminal cards for Claude Code and Antigravity on one canvas, with model and reasoning
+  effort per agent. Gemini models are read from `agy models`, so new ones show up on their own.
+- Agents hand work to each other with `send_signal`; every run is queued, capped and logged.
+- Role playbooks that fill themselves in from the project.
+- Workspaces (isolated folders and agents) in groups, two side by side.
 - Guard rails: approval gate, ping-pong and daily caps, kill switch, one prompt at a time per
   agent, reachable from your own machine only by default.
 
 **Director and sub-agents**
-- Spawn an agent for a repo with the **director** template: it is the one agent you talk to. It
-  goes deep first, splits the work, and delegates each unit to a sub-agent with
-  `spawn_subagent(playbook, brief, done_when)`.
-- Each sub-agent that writes code gets its own git worktree and branch `orch/<id>`; your checkout
-  is never touched. Playbooks: `feature`, `bugfix` (reproduce first), `refactor` (record behaviour
-  first), `investigate` (read-only).
-- Nothing counts as done until a fresh verifier session observes the `done_when` contract and
-  records a verdict. A FAIL goes back to the builder with findings; a verifier that edits files
-  has its verdict thrown away. The director is messaged when each one passes (with the branch to
-  merge) or fails.
-- Sub-agents and verifiers run on Claude (the director's model when it runs Claude). Gemini (agy)
-  only when you pick it for a role in the **Team** tab; a director cannot pick it itself.
-- `send_signal(..., done_when=...)` puts any hand-off between agents through the same check.
-- Select a director on the canvas (or click its **N sub-agents** badge) to watch its team in its
-  own panel: each sub-agent's stage, current step, verdict and diff, with cancel and verify again.
-- **Team** tab: every director's sub-agents at once (stage, current step, verdict, diff, runs), cancel, verify
-  again, discard; the decision log (`record_decision`); per-role models; a handoff graph you can
-  enforce; and **Reflect**, which turns failed runs into a proposed playbook change you approve.
+- Playbooks: `feature`, `bugfix` (reproduce first), `refactor` (record behaviour first),
+  `investigate` (read-only).
+- A verdict is tied to the commit that was checked; a verifier that edits files has its verdict
+  thrown away. Repeated FAILs stop at a cap and tell the director.
+- **Team** tab: a pipeline board (Building → Verifying → Passed / Failed) with each sub-agent's
+  step, verdict and diff; the director's decision log; who may message whom; models per role;
+  **Reflect**, which turns failed runs into a playbook change you approve.
+- Sub-agents run on Claude; Gemini only when you pick it for a role in the Team tab.
 
-**Media**
-- **Images** — generate and edit pictures, with up to three reference images.
-- **Sounds** — search YouTube (AI-generated, filtered by length), pull out the audio, crop it in a
-  waveform editor.
-- **Library** — every kept image and sound in one drawer. Upload an mp3 and crop it.
-- **Speak text** — natural English speech made on your machine (Kokoro, 28 US and UK voices).
-- **Performance** — **Tools › Performance** shows what is using your computer's CPU and memory: each
-  agent's terminal, run and editor, the orchestrator itself, and plain advice when something is off.
-- **Media tools** — checks for ffmpeg, ImageMagick, yt-dlp, SoX and ExifTool, and tells you how to
-  install what is missing.
+![Team tab: sub-agents by stage and the director's decisions](images/screenshot-team.png)
 
-**For agents and other apps**
-- Built-in MCP servers, connected to every CLI with one click: `signal` (message other agents),
-  `library` (search media, measure sounds), `voice` (speak).
-- An MCP manager that adds any HTTP MCP server to all installed CLIs at once. Tokens never touch a
-  command line.
-- An OpenAI-compatible API: chat with an agent at `/v1/chat/completions`, make images at
-  `/v1/images/generations`. API docs at `/docs`.
+**Staying in control**
+- **Home** inbox: every message waiting for approval, every question and every failed check
+  across workspaces, with Approve / Deny in place.
+- **Activity**: one timeline of messages and runs, with live transcripts.
+- **Ctrl/⌘K**: jump to any agent or workspace, or run any action.
+
+![Home: what needs you and what is running](images/screenshot-home.png)
 
 ## Setup
 
@@ -74,8 +64,6 @@ At least one, installed and logged in:
 |---|---|
 | Claude Code | [code.claude.com/docs](https://code.claude.com/docs/en/quickstart#native-install-recommended) |
 | Antigravity CLI | [antigravity.google/docs/cli](https://antigravity.google/docs/cli/reference) — the `agy` command |
-
-Images need the Antigravity CLI.
 
 ### 2. Install the orchestrator
 
@@ -127,45 +115,18 @@ Then open <http://localhost:8992>.
 
 ### 3. Connect the agents' tools
 
-In the dashboard, press 🔌 and, under **Built into the orchestrator**, press **Connect** next to
-`signal` — and next to `library` and `voice` if you want them. `signal` also carries
-the director's team tools (`spawn_subagent`, `submit_verdict`, `record_decision`…). Agents already running
-pick the tools up after a restart.
+In the dashboard, open **Settings › Connections** and press **Connect** next to `signal`. It
+carries messaging between agents and the director's team tools (`spawn_subagent`,
+`submit_verdict`, `record_decision`…). Agents already running pick it up after a restart.
 
-Or by hand, once per CLI (same pattern for `library` and `voice`):
+Or by hand, once per CLI:
 
 ```bash
 claude mcp add --transport http --scope user signal http://127.0.0.1:8992/signal/mcp
 agy mcp add signal http://127.0.0.1:8992/signal/mcp
 ```
 
-### 4. Optional extras
-
-**Media tools**, for agents that edit video and audio, and for the Sounds panel:
-
-```powershell
-# Windows
-winget install Gyan.FFmpeg
-winget install ImageMagick.ImageMagick
-```
-
-```bash
-# macOS
-brew install ffmpeg imagemagick sox exiftool
-# Linux
-sudo apt install ffmpeg imagemagick sox libimage-exiftool-perl
-```
-
-```bash
-# yt-dlp, any OS (needed for Sounds; the distro version is usually too old)
-python3 -m pip install --upgrade yt-dlp
-```
-
-Restart the orchestrator after installing, then check the wrench in the top bar.
-
-**Speak text** needs its voice once: **Tools › Speak text › Download** (350 MB).
-
-### 5. Settings
+### 4. Settings
 
 Put these in a `.env` file next to `session_orchestrator.py` (or next to `agent-orch.exe`):
 
@@ -181,7 +142,7 @@ Put these in a `.env` file next to `session_orchestrator.py` (or next to `agent-
 > Agents run shell commands with permissions bypassed, and there is no API key.
 > `ORCH_HOST=0.0.0.0` hands that to everyone on your network.
 
-### 6. Keep it running (optional)
+### 5. Keep it running (optional)
 
 Run it as your own user, never root. Replace the paths with where you unzipped or cloned it.
 
