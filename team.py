@@ -34,6 +34,7 @@ import os
 import secrets
 import shutil
 import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
 
 TEAM_SENDER = "team"
@@ -1295,19 +1296,73 @@ def _items(subs, sessions):
     return items
 
 
-def overview(workspace_id):
+_ENDED = "COALESCE(NULLIF(ended_at, ''), updated_at)"
+# Cột của bảng Team; cancelled tách riêng (UI gộp vào cột Failed khi lọc "All").
+_COUNT_SQL = ("SELECT COUNT(*) total, "
+              "COALESCE(SUM(status IN ('queued', 'running', 'fixing')), 0) building, "
+              "COALESCE(SUM(status = 'verifying'), 0) verifying, COALESCE(SUM(status = 'passed'), 0) passed, "
+              "COALESCE(SUM(status = 'failed'), 0) failed, COALESCE(SUM(status = 'cancelled'), 0) cancelled, "
+              f"COALESCE(SUM(status = 'passed' AND {_ENDED} >= ?), 0) passed_24h, "
+              f"COALESCE(SUM(status = 'failed' AND {_ENDED} >= ?), 0) failed_24h, "
+              f"COALESCE(SUM(attempts > 0 AND {_ENDED} >= ?), 0) sent_back_24h FROM subtasks WHERE ")
+FILTERS = ("active", "all", "failed")
+
+
+def _ago(hours):
+    return (datetime.now() - timedelta(hours=hours)).isoformat()
+
+
+def _subtask_page(workspace_id, sessions, page):
+    """Một trang subtask cho tab Team + số đếm SQL trên CẢ tập đã lọc (không theo trang) — cột và
+    hàng số liệu hiện tổng thật, không phải số card đã nạp."""
+    q = ",".join("?" * len(ACTIVE))
+    base, args = "workspace_id = ? AND kind != 'reflect'", [workspace_id]
+    givers = [r["director_id"] for r in _rows(f"SELECT DISTINCT director_id FROM subtasks WHERE {base}",
+                                               tuple(args))]
+    if page["director_id"]:
+        base, args = base + " AND director_id = ?", [*args, page["director_id"]]
+    where, wargs = base, list(args)
+    if page["filter"] == "failed":
+        where += " AND status = 'failed'"
+    elif page["filter"] == "active":     # giống teamRender cũ: đang chạy, hoặc xong trong 6 giờ
+        where += f" AND status != 'cancelled' AND (status IN ({q}) OR {_ENDED} >= ?)"
+        wargs += [*ACTIVE, _ago(6)]
+    day = [_ago(24)] * 3
+    counts = _row(_COUNT_SQL + where, (*day, *wargs))
+    stats = _row(_COUNT_SQL + base, (*day, *args))
+    lim, off = page["sub_limit"], page["sub_offset"]
+    subs = _rows(f"SELECT * FROM subtasks WHERE {where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                 (*wargs, lim + 1, off))
+    return {"subtasks": _items(subs[:lim], sessions), "subtasks_more": len(subs) > lim,
+            "counts": counts, "stats": stats, "givers": givers}
+
+
+def overview(workspace_id, page=None):
+    """page=None: đúng như cũ (200 subtask, 60 quyết định) — Home và panel director dùng đường này.
+    page = parse_page(...): tab Team, nạp từng trang (sub_/dec_ limit+offset, filter, director_id)."""
     so = _so()
     sessions = {s["id"]: s for s in so.list_sessions() if s.get("workspace_id") == workspace_id}
-    subs = _rows("SELECT * FROM subtasks WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 200",
-                 (workspace_id,))
-    items = _items(subs, sessions)
+    if page:
+        paged = _subtask_page(workspace_id, sessions, page)
+        dec_lim, dec_off = page["dec_limit"], page["dec_offset"]
+    else:
+        subs = _rows("SELECT * FROM subtasks WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 200",
+                     (workspace_id,))
+        paged = {"subtasks": _items(subs, sessions)}
+        dec_lim, dec_off = 60, 0
+    q = ",".join("?" * len(ACTIVE))
+    active = {r["director_id"]: r["n"] for r in _rows(
+        f"SELECT director_id, COUNT(*) n FROM subtasks WHERE workspace_id = ? AND status IN ({q}) "
+        f"GROUP BY director_id", (workspace_id, *ACTIVE))}
     directors = [{"id": s["id"], "name": s["name"], "status": s["status"], "model": s.get("model", ""),
-                  "cwd": s.get("cwd", ""),
-                  "active": sum(1 for i in items if i["director_id"] == s["id"] and i["status"] in ACTIVE)}
+                  "cwd": s.get("cwd", ""), "active": active.get(s["id"], 0)}
                  for s in sessions.values() if not is_team_session(s)]
     decisions = _rows("SELECT d.*, s.name AS session_name FROM team_decisions d LEFT JOIN sessions s "
-                      "ON s.id = d.session_id WHERE d.workspace_id = ? ORDER BY d.id DESC LIMIT 60",
-                      (workspace_id,))
+                      "ON s.id = d.session_id WHERE d.workspace_id = ? ORDER BY d.id DESC LIMIT ? OFFSET ?",
+                      (workspace_id, dec_lim + (1 if page else 0), dec_off))
+    if page:
+        paged["decisions_more"] = len(decisions) > dec_lim
+        decisions = decisions[:dec_lim]
     proposals = []
     for p in _rows("SELECT * FROM skill_proposals WHERE workspace_id = ? ORDER BY id DESC LIMIT 20",
                    (workspace_id,)):
@@ -1316,7 +1371,7 @@ def overview(workspace_id):
                          | {"diff": proposal_diff(p)})
     return {
         "directors": sorted(directors, key=lambda d: (-d["active"], d["name"])),
-        "subtasks": items, "decisions": decisions, "proposals": proposals,
+        **paged, "decisions": decisions, "proposals": proposals,
         "edges": edges(workspace_id), "graph_mode": graph_mode(workspace_id),
         "models": model_roles(workspace_id), "engines": installed_engines(),
         "playbooks": list(PLAYBOOKS), "max_active": MAX_ACTIVE, "max_attempts": MAX_ATTEMPTS,
@@ -1324,6 +1379,24 @@ def overview(workspace_id):
         # khác thì tự tính tuổi sẽ lệch đúng số giờ chênh — dashboard đo lệch theo mốc này.
         "now": so._now(),
     }
+
+
+def parse_page(params):
+    """Query string → page cho overview(); không có tham số phân trang nào thì None (đường cũ).
+    Giá trị hỏng thì về mặc định, không từ chối."""
+    keys = ("sub_limit", "sub_offset", "filter", "director_id", "dec_limit", "dec_offset")
+    if not any(k in params for k in keys):
+        return None
+
+    def num(k, default, lo, hi):
+        try:
+            return max(lo, min(int(params.get(k, default)), hi))
+        except (TypeError, ValueError):
+            return default
+    f = params.get("filter", "active")
+    return {"sub_limit": num("sub_limit", 10, 1, 200), "sub_offset": num("sub_offset", 0, 0, 10**9),
+            "dec_limit": num("dec_limit", 10, 1, 200), "dec_offset": num("dec_offset", 0, 0, 10**9),
+            "filter": f if f in FILTERS else "active", "director_id": params.get("director_id", "")}
 
 
 def director_view(director_id, limit=12):
@@ -1382,7 +1455,8 @@ def routes():
             or so.DEFAULT_WORKSPACE
 
     async def api_team(request: Request):
-        return JSONResponse(await asyncio.to_thread(overview, ws_of(request)))
+        return JSONResponse(await asyncio.to_thread(overview, ws_of(request),
+                                                 parse_page(request.query_params)))
 
     async def api_director(request: Request):
         return reply(await asyncio.to_thread(director_view, request.path_params["sid"]))

@@ -4794,11 +4794,74 @@ function inspShowTeam(sid) {
 }
 window.inspShowTeam = inspShowTeam;
 
-async function teamLoad() {
-  try { TEAM = await api("/api/team" + wsQuery()); }
+// Tab Team nạp từng trang 10 card / 10 quyết định, cuộn tới đáy thì nạp tiếp. Lọc và đếm ở server.
+const TEAM_PAGE = 10;
+let teamSeq = 0, teamGen = 0, teamObs = null;
+const teamBusy = { subtasks: false, decisions: false };
+const TEAM_MORE = { subtasks: "team-board-more", decisions: "team-dec-more" };
+
+function teamUrl(p) {
+  const dir = $("team-dir").hidden ? "" : $("team-dir").value;
+  return "/api/team?" + new URLSearchParams({ ...(currentWS ? { workspace_id: currentWS } : {}),
+    filter: $("team-filter").value, director_id: dir, ...p });
+}
+
+// Refresh nạp lại từ đầu ĐÚNG số đã hiện (làm tròn lên 10): card cập nhật tại chỗ, không co về 10
+// mà nhảy mất chỗ đang cuộn.
+async function teamLoad(reset) {
+  const my = ++teamSeq;
+  const n = (k) => reset || !TEAM ? TEAM_PAGE : Math.min(200, Math.max(TEAM_PAGE, Math.ceil(TEAM[k].length / TEAM_PAGE) * TEAM_PAGE));
+  let t;
+  try { t = await api(teamUrl({ sub_limit: n("subtasks"), sub_offset: 0, dec_limit: n("decisions"), dec_offset: 0 })); }
   catch (e) { console.error(e); return; }
+  if (my !== teamSeq) return;     // lần nạp sau đã chạy, bản này cũ
+  TEAM = t;
   if (TEAM.now) teamSkew = Date.now() - new Date(TEAM.now).getTime();
   teamRender();
+}
+
+function teamReset() { teamGen++; $("tab-team").scrollTop = 0; teamLoad(true); }
+window.teamReset = teamReset;
+
+async function teamMore(k) {
+  if (!TEAM || teamBusy[k] || !TEAM[k + "_more"]) return;
+  const gen = teamGen, sub = k === "subtasks";
+  teamBusy[k] = true;
+  $(TEAM_MORE[k]).textContent = "Loading…";
+  try {
+    const t = await api(teamUrl(sub ? { sub_limit: TEAM_PAGE, sub_offset: TEAM.subtasks.length, dec_limit: 1 }
+      : { dec_limit: TEAM_PAGE, dec_offset: TEAM.decisions.length, sub_limit: 1 }));
+    if (gen !== teamGen || !TEAM) return;
+    // Có việc mới chen vào đầu thì trang sau lặp lại card cuối — bỏ trùng theo id.
+    const have = new Set(TEAM[k].map((x) => x.id));
+    TEAM[k].push(...t[k].filter((x) => !have.has(x.id)));
+    TEAM[k + "_more"] = t[k + "_more"];
+    if (sub) Object.assign(TEAM, { counts: t.counts, stats: t.stats });
+  } catch (e) { console.error(e); return; }   // không render: tránh thử lại liên tục
+  finally { teamBusy[k] = false; $(TEAM_MORE[k]).textContent = ""; }
+  teamRender();
+}
+
+// Quan sát lại sau mỗi lần dựng: observe() mới luôn báo trạng thái hiện tại, nên nạp xong mà đáy
+// vẫn trong tầm nhìn thì nạp tiếp. Chưa cuộn thì chưa nạp (cột quyết định ngắn, đáy của nó lộ
+// ngay từ đầu) — trừ khi tab không đủ dài để cuộn.
+function teamSentinels() {
+  const box = $("tab-team");
+  const watch = () => Object.values(TEAM_MORE).forEach((id) => { teamObs.unobserve($(id)); teamObs.observe($(id)); });
+  if (!teamObs) {
+    teamObs = new IntersectionObserver((es) => es.forEach((e) => {
+      if (e.isIntersecting && (box.scrollTop > 0 || box.scrollHeight <= box.clientHeight))
+        teamMore(e.target.id === TEAM_MORE.subtasks ? "subtasks" : "decisions");
+    }), { root: box });
+    // Đáy đã lộ sẵn lúc scrollTop = 0 thì cuộn không đổi giao cắt, observer im — hỏi lại khi cuộn.
+    let scrolled = false;
+    box.addEventListener("scroll", () => { const s = box.scrollTop > 0; if (s && !scrolled) watch(); scrolled = s; }, { passive: true });
+  }
+  for (const k of ["subtasks", "decisions"]) {
+    $(TEAM_MORE[k]).hidden = !TEAM[k + "_more"];
+    $(TEAM_MORE[k]).textContent = teamBusy[k] ? "Loading…" : "";
+  }
+  watch();
 }
 
 // Ô nào đang gõ / select nào đang mở thì KHÔNG dựng lại: SSE refresh liên tục, dựng lại là mất chữ.
@@ -4815,30 +4878,24 @@ const TB_COLS = [["building", "Building", ["queued", "running", "fixing"]], ["ve
 function teamRender() {
   if (!TEAM) return;
   if (!teamEditing()) teamForms();
-  const subs = TEAM.subtasks.filter((s) => s.kind !== "reflect");
-  const day = (s) => secsSince(s.ended_at || s.updated_at) < 86400;
-  const n = (f) => subs.filter(f).length;
+  const st = TEAM.stats, c = TEAM.counts;
   $("team-stats").innerHTML = [
-    ["live", n((s) => ["queued", "running", "fixing"].includes(s.status)), "working"],
-    ["live", n((s) => s.status === "verifying"), "verifying"],
-    ["ok", n((s) => s.status === "passed" && day(s)), "passed · 24 h"],
-    ["bad", n((s) => s.status === "failed" && day(s)), "failed · 24 h"],
-    ["warn", n((s) => s.attempts > 0 && day(s)), "sent back to fix · 24 h"],
+    ["live", st.building, "working"],
+    ["live", st.verifying, "verifying"],
+    ["ok", st.passed_24h, "passed · 24 h"],
+    ["bad", st.failed_24h, "failed · 24 h"],
+    ["warn", st.sent_back_24h, "sent back to fix · 24 h"],
   ].map(([c, v, l]) => `<span class="team-stat ${v ? c : ""}"><b>${v}</b>${l}</span>`).join("");
 
-  const f = $("team-filter").value;
-  const dir = $("team-dir").hidden ? "" : $("team-dir").value;
-  const show = subs.filter((s) => (!dir || s.director_id === dir) && (f === "all" ? true
-    : f === "failed" ? s.status === "failed"
-    : s.status !== "cancelled" && (ST_ACTIVE.includes(s.status) || secsSince(s.ended_at || s.updated_at) < 6 * 3600)));
+  const show = TEAM.subtasks;
   teamView = show;
   keepOpen($("team-board"), () => {
     $("team-board").innerHTML = TB_COLS.map(([k, label, sts]) => {
       const cards = show.map((s, i) => [s, i]).filter(([s]) => sts.includes(s.status));
       return `<div class="tb-col"><div class="tb-head"><span class="tb-dot ${k}"></span>${label}
-          <span class="n">${cards.length}</span></div>
+          <span class="n">${k === "failed" ? c.failed + c.cancelled : c[k]}</span></div>
         ${cards.map(([s, i]) => stCard(s, i)).join("") || `<div class="tb-empty">${
-          k === "building" && !subs.length ? "Nothing delegated yet. Ask a <b>director</b> agent for work, or use <b>Delegate a task</b>." : "None"}</div>`}</div>`;
+          k === "building" && !st.total ? "Nothing delegated yet. Ask a <b>director</b> agent for work, or use <b>Delegate a task</b>." : "None"}</div>`}</div>`;
     }).join("");
   });
 
@@ -4850,6 +4907,7 @@ function teamRender() {
         ${d.evidence ? `<details><summary>Evidence</summary><pre class="tm-pre">${esc(d.evidence)}</pre></details>` : ""}
       </li>`).join("") || `<li class="hint">No decisions logged yet. Directors and sub-agents log them with record_decision.</li>`;
   });
+  teamSentinels();
   $("tg-edges").innerHTML = TEAM.edges.map((e, i) => `<span class="tg-edge">${esc(e.from_role)} → ${esc(e.to_role)}
       <button title="Remove this edge" onclick="teamEdgeDel(${i})">${ic("x", "sm")}</button></span>`).join("")
     || `<span class="hint">No edges. ${TEAM.graph_mode === "enforced" ? "Enforced with no edges: agents cannot signal each other." : "Open: any agent may signal any other."}</span>`;
@@ -4964,7 +5022,7 @@ function teamForms() {
   $("td-director").innerHTML = dirOpts || `<option value="">No agents in this workspace</option>`;
   if (was) $("td-director").value = was;
   // Lọc theo director chỉ có nghĩa khi hơn một người đang giao việc.
-  const givers = [...new Set(TEAM.subtasks.filter((s) => s.kind !== "reflect").map((s) => s.director_id))];
+  const givers = TEAM.givers;
   const wd = keep("team-dir");
   $("team-dir").hidden = givers.length < 2;
   $("team-dir").innerHTML = `<option value="">All directors</option>` + givers.map((id) =>
