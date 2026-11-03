@@ -112,6 +112,49 @@
   .sb-item.has-dot { position: relative; }
   .sb-item.has-dot::after { content: ""; position: absolute; top: 9px; left: 22px;
     width: 7px; height: 7px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 2px var(--panel); }
+  .sb-search { display: flex; align-items: center; gap: 10px; width: 100%; height: 36px; padding: 0 8px 0 10px;
+    flex: none; margin-bottom: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--muted);
+    border-radius: var(--r-ctl); text-align: left; white-space: nowrap; font-weight: 500; }
+  .sb-search:hover { color: var(--text); border-color: var(--border-strong); background: var(--bg); }
+  .sb-search .ic { width: 16px; height: 16px; }
+  .sb-search .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .kbd, .pal-foot kbd { font-family: var(--mono); font-size: 11px; color: var(--muted); border: 1px solid var(--border-strong);
+    border-radius: 5px; padding: 0 6px; line-height: 18px; background: transparent; }
+  /* ── Command palette ───────────────────────────────────────────────────── */
+  .modal-overlay.pal-ov { align-items: flex-start; padding: 12vh 16px 20px; z-index: 40; }
+  .pal { width: min(640px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: hidden;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border-strong); border-radius: 16px;
+    box-shadow: var(--sh-3); }
+  .pal-in { display: flex; align-items: center; gap: 12px; padding: 0 18px; height: 60px; flex: none;
+    border-bottom: 1px solid var(--border); color: var(--muted); }
+  .pal-in .ic { width: 18px; height: 18px; flex: none; }
+  .pal .pal-in input { flex: 1; min-width: 0; border: 0; background: transparent; outline: none; box-shadow: none;
+    padding: 0; color: var(--text); font-size: 16px; }
+  .pal-list { padding: 8px; overflow: auto; min-height: 0; }
+  .pal-h { padding: 12px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--faint); }
+  .pal-h:first-child { padding-top: 8px; }
+  .pal-h.need { color: var(--amber-ink); }
+  .pal-o { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 10px; border-radius: 9px;
+    cursor: pointer; min-width: 0; }
+  .pal-o[aria-selected="true"] { background: var(--accent-soft); }
+  .pal-lead { flex: none; width: 28px; height: 28px; display: grid; place-items: center; color: var(--muted); }
+  .pal-lead .ic { width: 15px; height: 15px; }
+  .pal-lead.need { border-radius: 8px; background: var(--amber-soft); color: var(--amber-ink); }
+  .pal-lead.fail { border-radius: 8px; background: var(--red-soft); color: var(--red); }
+  .pal-lead .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gray); }
+  .pal-lead .dot.run { background: var(--accent); }
+  .pal-t { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pal-t b { font-weight: 600; }
+  .pal-s { flex: 0 1 auto; min-width: 0; font-size: 12px; color: var(--faint); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .pal-side { margin-left: auto; flex: none; padding-left: 8px; font-size: 11.5px; color: var(--faint);
+    max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pal-more { padding: 4px 10px 6px 50px; font-size: 11.5px; color: var(--faint); }
+  .pal-none { padding: 18px 10px; color: var(--muted); }
+  .pal-foot { display: flex; gap: 16px; padding: 10px 18px; flex: none; border-top: 1px solid var(--border);
+    font-size: 11.5px; color: var(--faint); }
+  .pal-foot kbd { border: 0; padding: 0; color: var(--muted); }
   .sb-sec { display: flex; align-items: center; padding: 18px 10px 4px; font-size: 11px; font-weight: 600;
     letter-spacing: .06em; text-transform: uppercase; color: var(--faint); white-space: nowrap; }
   .sb-sec .icon-btn { margin-left: auto; width: 24px; height: 24px; }
@@ -153,7 +196,7 @@
     .sidebar { width: 60px; padding: 14px 8px; transition: width .15s, margin-right .15s; }
     .sidebar:hover, .sidebar:has(:focus-visible) { width: 240px; margin-right: -180px; box-shadow: var(--sh-3); }
     .sidebar:not(:hover, :has(:focus-visible)) :is(.sb-name, .sb-sec, .sb-grp, #conn, #dry, .lbl, .x,
-      .pane-tag, .sb-new span, .pane-pick) { display: none; }
+      .pane-tag, .sb-new span, .pane-pick, .sb-search .kbd) { display: none; }
     .sidebar:not(:hover, :has(:focus-visible)) .ws-tab { padding-left: 16px; }
     .sidebar:not(:hover, :has(:focus-visible)) .sb-tools { flex-direction: column; }
   }
@@ -1223,6 +1266,7 @@
   <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9z"/><path d="M10.5 20a1.7 1.7 0 0 0 3 0"/></symbol>
   <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4-4"/></symbol>
 </defs></svg>
 
 <nav id="sidebar" class="sidebar" aria-label="Main">
@@ -1232,6 +1276,9 @@
     <span id="conn" class="pill dead">offline</span>
   </div>
   <span id="dry" class="pill dry" hidden>DRY-RUN</span>
+  <button id="pal-btn" class="sb-search" onclick="palOpen()" title="Jump to an agent, workspace or action">
+    <svg class="ic"><use href="#i-search"/></svg><span class="lbl">Search or run…</span>
+    <kbd id="pal-kbd" class="kbd">Ctrl K</kbd></button>
   <button class="sb-item" data-view="home" onclick="goHome()" title="Home">
     <svg class="ic"><use href="#i-home"/></svg><span class="lbl">Home</span>
     <span id="home-badge" class="sb-badge" hidden title="Things waiting for you"></span></button>
@@ -1883,6 +1930,19 @@
       <button id="sed-save" class="primary" onclick="sedSave()">Save to library</button>
     </div>
     <audio id="sed-audio" preload="auto"></audio>
+  </div>
+</div>
+
+<!-- Command palette. Bấm nền ĐÓNG được (khác New agent): ở đây không có chữ nào để mất. -->
+<div id="pal" class="modal-overlay pal-ov" hidden onclick="if (event.target === this) palClose()">
+  <div class="pal" role="dialog" aria-modal="true" aria-label="Command palette">
+    <label class="pal-in"><svg class="ic"><use href="#i-search"/></svg>
+      <input id="pal-q" role="combobox" aria-expanded="true" aria-controls="pal-list" aria-autocomplete="list"
+        aria-label="Search agents, workspaces and actions" placeholder="Jump to an agent, or type a command…"
+        autocomplete="off" spellcheck="false" oninput="palRender()">
+      <kbd class="kbd">esc</kbd></label>
+    <div id="pal-list" class="pal-list" role="listbox" aria-label="Results"></div>
+    <div class="pal-foot"><span><kbd>↑↓</kbd> move</span><span><kbd>↵</kbd> open</span><span><kbd>esc</kbd> close</span></div>
   </div>
 </div>
 

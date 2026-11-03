@@ -528,9 +528,10 @@ function homeInbox() {
   ];
 }
 
+const nameOf = (ref) => (HOME.sessions.find((x) => x.id === ref || x.name === ref) || {}).name || ref || "you";
+
 function renderInbox() {
   const items = homeInbox();
-  const nameOf = (ref) => (HOME.sessions.find((x) => x.id === ref || x.name === ref) || {}).name || ref || "you";
   $("inbox").innerHTML = items.map(({ ws, sg, t }) => {
     const meta = `<span class="inbox-m">· ${esc(wsLabel(ws))} · ${ago(sg ? sg.created_at : t.ended_at || t.updated_at)}</span>`;
     if (sg) return `<div class="inbox-item" data-sig="${sg.id}">${ic("bell")}
@@ -876,6 +877,142 @@ function newAgent() {
 function newAgentClose() { $("na-modal").hidden = true; closeDirBrowse(); }
 window.newAgent = newAgent; window.newAgentClose = newAgentClose;
 
+// ── Command palette (shell) ─────────────────────────────────────────────────
+// Chỉ đọc thứ shell đã có (HOME, WORKSPACES, GROUPS) — không fetch thêm gì.
+const PAL_MAX = 8;          // dòng mỗi nhóm, quá thì "N more"
+let palRows = [];           // các dòng đang hiện, theo thứ tự trên màn hình
+let palSel = -1;            // dòng đang sáng; -1 = chưa chọn (query rỗng)
+let palPrev = null;         // chỗ focus trước khi mở, để trả về khi đóng
+
+// Mở card của một agent: pane có thể chưa load (vừa tạo iframe) → để sid trên chính iframe,
+// pane đọc lúc boot; đã load thì nhắn xuống luôn. Bên nào chạy trước thì xoá nó đi.
+function palFocusAgent(s) {
+  if (s.team) return openTeam(s.workspace_id);   // phiên của đội không có card trên canvas
+  selectWorkspace(s.workspace_id);
+  const f = [...$("panes").querySelectorAll("iframe.pane")].find((x) => x.dataset.ws === s.workspace_id);
+  if (!f) return;
+  f.dataset.focus = s.id;
+  try { f.contentWindow.postMessage({ t: "focus", sid: s.id }, location.origin); } catch { /* chưa load */ }
+}
+
+function palItems() {
+  const need = homeInbox().map(({ ws, sg, t }) => sg
+    ? { g: "Needs you", icon: "bell", lead: "need", label: `Approve ${nameOf(sg.from_session)} → ${nameOf(sg.to_session)}`,
+        sub: sg.message, side: wsLabel(ws), run: () => act(`/api/signals/${sg.id}/approve`) }
+    : { g: "Needs you", icon: "x", lead: "fail", label: `Sub-agent failed: ${t.title || t.id}`,
+        sub: t.reason || "", side: wsLabel(ws), run: () => openTeam(ws) });
+  const agents = HOME.sessions.map((s) => ({ g: "Agents", dot: s.status === "running" ? "run" : "",
+    label: s.name, sub: s.status, side: wsLabel(s.workspace_id), run: () => palFocusAgent(s) }));
+  const workspaces = WORKSPACES.map((w) => ({ g: "Workspaces", icon: "folder", label: w.name || w.id,
+    sub: `${w.sessions || 0} agent${w.sessions === 1 ? "" : "s"}`,
+    side: (GROUPS.find((x) => x.id === w.group_id) || {}).name || "", run: () => selectWorkspace(w.id) }));
+  const A = (label, icon, side, run) => ({ g: "Actions", icon, label, sub: "", side, run });
+  const actions = [
+    A("New agent", "plus", "", newAgent),
+    A("Go Home", "home", "", goHome),
+    A("Images", "image", "Studio", imgOpen),
+    A("Sounds", "music", "Studio", sndOpen),
+    A("Speak text", "speak", "Studio", ttsOpen),
+    A("Library", "library", "Studio", libOpen),
+    A("MCP servers / Connections", "plug", "Settings", mcpOpen),
+    A("Media tools", "wrench", "Settings", toolsOpen),
+    A("Performance", "gauge", "Settings", perfOpen),
+    A("Removed agents", "trash", "Settings", unregOpen),
+    // auto có thể trùng đúng theme đang thấy → bấm mà không đổi gì; đi tiếp một nấc nữa.
+    A("Toggle theme", "theme", themePref(), () => {
+      const was = document.documentElement.dataset.theme;
+      cycleTheme();
+      if (document.documentElement.dataset.theme === was) cycleTheme();
+    }),
+    ...(OPEN.length === MAX_PANES ? [A("Toggle split view", "split", SPLIT ? "on" : "off", toggleSplit)] : []),
+    A("New workspace", "plus", "", () => newWorkspace()),
+  ];
+  return [...need, ...agents, ...workspaces, ...actions];
+}
+
+// 0 = nhãn bắt đầu bằng q, 1 = chuỗi con, 2 = chữ theo thứ tự (subsequence), null = không khớp.
+function palScore(it, q) {
+  if (!q) return 0;
+  const label = it.label.toLowerCase(), hay = label + " " + `${it.sub} ${it.side}`.toLowerCase();
+  if (label.startsWith(q)) return 0;
+  if (hay.includes(q)) return 1;
+  let i = 0;
+  for (const c of hay) if (c === q[i]) i++;
+  return i === q.length ? 2 : null;
+}
+
+function palRender() {
+  const q = $("pal-q").value.trim().toLowerCase();
+  const scored = palItems().map((it, i) => ({ ...it, score: palScore(it, q), i }))
+    .filter((it) => it.score !== null).sort((a, b) => a.score - b.score || a.i - b.i);
+  palRows = [];
+  let html = "";
+  for (const g of ["Needs you", "Agents", "Workspaces", "Actions"]) {
+    const all = scored.filter((it) => it.g === g);
+    if (!all.length) continue;
+    html += `<div class="pal-h${g === "Needs you" ? " need" : ""}" role="presentation">${g}</div>`;
+    for (const it of all.slice(0, PAL_MAX)) {
+      const n = palRows.push(it) - 1;
+      const lead = it.icon ? ic(it.icon) : `<span class="dot ${it.dot}"></span>`;
+      html += `<div id="pal-o${n}" class="pal-o" role="option" aria-selected="false" data-n="${n}">
+        <span class="pal-lead ${it.lead || ""}">${lead}</span><span class="pal-t">${esc(it.label)}</span>
+        ${it.sub ? `<span class="pal-s">${esc(it.sub)}</span>` : ""}
+        ${it.side ? `<span class="pal-side">${esc(it.side)}</span>` : ""}</div>`;
+    }
+    if (all.length > PAL_MAX) html += `<div class="pal-more" role="presentation">${all.length - PAL_MAX} more — keep typing</div>`;
+  }
+  $("pal-list").innerHTML = html || `<div class="pal-none">No match.</div>`;
+  // Gõ rồi thì sáng dòng khớp nhất (điểm thấp nhất, ở nhóm nào cũng được), không phải dòng đầu:
+  // gõ tên một agent mà Enter lại duyệt cái signal ở nhóm Needs you là tai nạn.
+  let best = -1;
+  if (q) palRows.forEach((it, n) => { if (best < 0 || it.score < palRows[best].score) best = n; });
+  palHi(best);
+}
+
+function palHi(n) {
+  palSel = n;
+  for (const el of $("pal-list").querySelectorAll(".pal-o"))
+    el.setAttribute("aria-selected", String(+el.dataset.n === n));
+  const el = $("pal-o" + n);
+  if (el) { $("pal-q").setAttribute("aria-activedescendant", el.id); el.scrollIntoView({ block: "nearest" }); }
+  else $("pal-q").removeAttribute("aria-activedescendant");
+}
+
+function palOpen() {
+  if (PANE) return;
+  if (!$("pal").hidden) return $("pal-q").select();
+  palPrev = document.activeElement;
+  $("pal").hidden = false;
+  $("pal-q").value = "";
+  palRender();
+  $("pal-q").focus();
+}
+
+function palClose() {
+  if ($("pal").hidden) return;
+  $("pal").hidden = true;
+  // Mở từ trong pane thì activeElement của shell là chính iframe — focus lại nó là con trỏ
+  // về đúng terminal bên trong.
+  if (palPrev && palPrev.isConnected) try { palPrev.focus(); } catch { /* không focus được */ }
+  palPrev = null;
+}
+
+function palRun(n) {
+  const it = palRows[n];
+  if (!it) return;
+  palClose();          // đóng trước: action như New agent tự đặt focus của nó
+  it.run();
+}
+window.palOpen = palOpen; window.palClose = palClose; window.palRender = palRender;
+
+// Ctrl+K / ⌘K. capture: phải chặn trước cả ô input và xterm. Pane có listener y hệt, nhắn lên.
+function palKey(e) {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "k") return false;
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+
 function toggleSplit() {
   if (OPEN.length < MAX_PANES) return;
   SPLIT = !SPLIT;
@@ -1203,6 +1340,22 @@ function focusNode(nid) {
   el.classList.add("found");
 }
 window.focusNode = focusNode;
+
+// Palette của shell chọn một agent: pane mở tab Agents, chọn + căn giữa card của nó. Card chưa
+// vẽ (pane vừa load, chưa refresh xong) → giữ sid, refreshNow thử lại sau renderCanvas.
+let paneFocusSid = null;
+function paneFocus(sid) {
+  if (!sid) return;
+  if (window.frameElement) delete window.frameElement.dataset.focus;
+  paneFocusSid = sid;
+  switchTab("agents");
+  requestAnimationFrame(paneFocusTry);   // sau cvFit của switchTab, không thì nó kéo khung nhìn đi
+}
+function paneFocusTry() {
+  if (!paneFocusSid || !$("world").querySelector(`.node[data-nid="s:${CSS.escape(paneFocusSid)}"]`)) return;
+  focusNode("s:" + paneFocusSid);
+  paneFocusSid = null;
+}
 
 // ── Minimap ─────────────────────────────────────────────────────────────────
 // Toàn cảnh canvas + ô khung nhìn. Click/kéo trong map = dời khung nhìn tới đó.
@@ -4542,6 +4695,7 @@ async function refreshNow() {
     $("team-live").textContent = crewN;
     cvRuns = runs.items;
     renderCanvas(work, signals.items);
+    if (paneFocusSid) paneFocusTry();
     renderAttn(work, signals.items);
     fillSignalForm(work);
     if (teamVisible()) teamLoad().catch(() => {});
@@ -5066,7 +5220,18 @@ if (PANE) {
     }
     else if (m.t === "theme") applyTheme(m.pref);
     else if (m.t === "tab") switchTab(m.tab);
+    else if (m.t === "focus") paneFocus(m.sid);
   });
+  // xterm nuốt phím: chặn Ctrl+K ở pha capture (terminal không nhận chữ "k") rồi nhờ shell mở palette.
+  // Rời iframe là terminal mất focus bên trong; shell đóng palette thì focus lại iframe → trả về đây.
+  let palFrom = null;
+  window.addEventListener("keydown", (e) => {
+    if (!palKey(e)) return;
+    palFrom = document.activeElement;
+    try { parent.postMessage({ t: "palette" }, location.origin); } catch { /* không có shell */ }
+  }, { capture: true });
+  window.addEventListener("focus", () => { if (palFrom?.isConnected) palFrom.focus(); palFrom = null; });
+  paneFocus(window.frameElement?.dataset.focus);   // shell gửi lúc pane chưa load
   refreshAll();
   agyLiveLoad();      // model agy thật của máy này cho select model ở panel
   // SSE CHỈ ở pane. HTTP/1.1 giới hạn 6 kết nối mỗi origin và EventSource giữ kết nối
@@ -5089,10 +5254,30 @@ if (PANE) {
     : Math.min(st.active == null ? 0 : st.active, OPEN.length - 1);
   initSplitDrag();
   if (SUBS[view]) openPage(view, qs.get("view") === view ? qs.get("tab") : SUB[view]);
-  // Pane báo lên: workspace của nó không còn → đóng tab.
+  // Pane báo lên: workspace của nó không còn → đóng tab; 'palette' = Ctrl+K bấm trong pane.
   window.addEventListener("message", (e) => {
     if (e.origin !== location.origin) return;
     if ((e.data || {}).t === "gone") closeWs(e.data.ws);
+    else if ((e.data || {}).t === "palette") palOpen();
+  });
+  window.addEventListener("keydown", (e) => { if (palKey(e)) palOpen(); }, { capture: true });
+  $("pal-kbd").textContent = /Mac|iP(hone|ad|od)/.test(navigator.platform) ? "⌘K" : "Ctrl K";
+  $("pal-q").addEventListener("keydown", (e) => {
+    const n = palRows.length;
+    if (e.key === "Escape") { e.stopPropagation(); palClose(); }
+    else if (e.key === "ArrowDown" && n) palHi(palSel < 0 ? 0 : (palSel + 1) % n);
+    else if (e.key === "ArrowUp" && n) palHi(palSel <= 0 ? n - 1 : palSel - 1);
+    else if (e.key === "Enter") palRun(palSel);
+    else return;
+    e.preventDefault();
+  });
+  $("pal-list").addEventListener("mousemove", (e) => {
+    const o = e.target.closest(".pal-o");
+    if (o && +o.dataset.n !== palSel) palHi(+o.dataset.n);
+  });
+  $("pal-list").addEventListener("click", (e) => {
+    const o = e.target.closest(".pal-o");
+    if (o) palRun(+o.dataset.n);
   });
   // Duyệt thư mục: click folder trong panel → đi sâu vào (path ở data-path, không inline).
   $("sp-dir").addEventListener("click", (ev) => {
