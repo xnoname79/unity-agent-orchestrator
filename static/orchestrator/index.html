@@ -703,6 +703,7 @@
   .team-main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; align-items: start; }
   @media (max-width: 1100px) { .team-main { grid-template-columns: minmax(0, 1fr); } }
   .team-pipe { min-width: 0; }
+  .team-more { min-height: 1px; padding: 8px 15px; text-align: center; }
   .team-lead { margin: 0 0 12px; color: var(--muted); max-width: 76ch; line-height: 1.5; }
   .team-lead b { color: var(--text); font-weight: 600; }
   .team-board { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 12px;
@@ -1683,8 +1684,8 @@
         <div class="team-head">
           <div id="team-stats" class="team-stats"></div>
           <span class="spacer"></span>
-          <select id="team-dir" class="mini" onchange="teamRender()" title="Whose sub-agents to show" hidden></select>
-          <select id="team-filter" class="mini" onchange="teamRender()" title="Which subtasks to show">
+          <select id="team-dir" class="mini" onchange="teamReset()" title="Whose sub-agents to show" hidden></select>
+          <select id="team-filter" class="mini" onchange="teamReset()" title="Which subtasks to show">
             <option value="active">Active and recent</option>
             <option value="all">All</option>
             <option value="failed">Failed</option>
@@ -1697,6 +1698,7 @@
               until a fresh verifier observes its <b>Done means</b>; the director is messaged when it
               passes or fails.</p>
             <div id="team-board" class="team-board"></div>
+            <div id="team-board-more" class="hint team-more" hidden></div>
           </section>
 
           <aside class="team-side">
@@ -1704,6 +1706,7 @@
               <h2>Why the director chose this</h2>
               <div class="hint team-sub">Decision log · newest first</div>
               <ol id="team-decisions" class="tl"></ol>
+              <div id="team-dec-more" class="hint team-more" hidden></div>
             </section>
 
             <section class="panel team-rules">
