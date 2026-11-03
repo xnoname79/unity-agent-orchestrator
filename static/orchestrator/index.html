@@ -216,32 +216,120 @@
   .day-ok { color: var(--muted); }
   .day-hit { color: var(--red); font-weight: 600; }
 
-  /* ── Home (workspace list + spawn) ────────────────────────────────────── */
-  #ws-list-view { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 26px 24px 60px; }
+  /* ── Home (việc cần người dùng + workspace + agent đang chạy) ─────────── */
+  #ws-list-view { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 28px 24px 60px; }
   #ws-list-view[hidden] { display: none; }
-  .home-wrap { max-width: 1280px; margin: 0 auto; display: grid; gap: 26px;
-    grid-template-columns: minmax(0, 1fr) 400px; align-items: start; }
-  @media (max-width: 1080px) { .home-wrap { grid-template-columns: minmax(0, 1fr); } }
-  .sec-head { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; }
-  .sec-head h2 { margin: 0; font-size: 17px; font-weight: 640; letter-spacing: -.01em; }
-  .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
-  .ws-card { position: relative; background: var(--card); border: 1px solid var(--border);
-    border-radius: var(--r-card); padding: 15px; cursor: pointer; box-shadow: var(--sh-1);
-    transition: border-color .12s, box-shadow .12s, transform .12s; }
-  .ws-card:hover { border-color: var(--accent); box-shadow: var(--sh-2); transform: translateY(-2px); }
-  .ws-card.open { border-color: var(--accent); }
-  .ws-card h3 { margin: 0 0 3px; font-size: 14.5px; font-weight: 620; }
-  .ws-card .ws-id { font-size: 10.5px; color: var(--faint); font-family: var(--mono); }
-  .ws-card .ws-meta { margin-top: 13px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
-    font-size: 11.5px; color: var(--muted); }
-  .ws-card .ws-root { margin-top: 8px; font-size: 10.5px; color: var(--faint);
-    font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ws-count { font-size: 21px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
-  .ws-card .ws-del { margin-left: auto; width: 24px; height: 24px; }
-  .ws-card .open-tag { position: absolute; top: 12px; right: 12px; font-size: 9.5px; font-weight: 700;
-    letter-spacing: .06em; color: var(--accent); }
-  .ws-card .ws-grp { margin-top: 10px; width: 100%; }
+  .home-wrap { max-width: 1080px; margin: 0 auto; }
+  .home-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 22px; }
+  .home-head h1 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: -.02em; }
+  .home-sum { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .home-sum .need { color: var(--amber-ink); font-weight: 600; }
+  .home-head .primary { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px; }
+  .home-cols { display: grid; gap: 24px; grid-template-columns: minmax(0, 1fr) 300px; align-items: start; }
+  @media (max-width: 900px) { .home-cols { grid-template-columns: minmax(0, 1fr); } }
+  .home-h { margin: 0 0 10px; font-size: 11px; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--muted); }
+  .inbox { display: grid; gap: 8px; margin-bottom: 28px; }
+  .inbox-calm { padding: 18px; border: 1px solid var(--border); border-radius: var(--r-card);
+    background: var(--card); color: var(--muted); font-size: 13px; }
+  .inbox-item { display: flex; align-items: center; gap: 12px; padding: 12px 14px; min-width: 0;
+    background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--amber);
+    border-radius: var(--r-card); box-shadow: var(--sh-1); }
+  .inbox-item.fail { border-left-color: var(--red); }
+  .inbox-item > .ic { flex: none; color: var(--amber-ink); }
+  .inbox-item.fail > .ic { color: var(--red); }
+  .inbox-txt { flex: 1; min-width: 0; }
+  .inbox-t { font-weight: 600; font-size: 13px; }
+  .inbox-d { display: flex; gap: 6px; min-width: 0; font-size: 12.5px; color: var(--muted); }
+  .inbox-msg { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .inbox-m { flex: none; white-space: nowrap; }
+  .inbox-d b { color: var(--text); font-weight: 600; }
+  .inbox-acts { flex: none; display: flex; gap: 6px; }
+  .inbox-acts button { height: 30px; padding: 0 12px; font-size: 12px; }
+  .sec-head { display: flex; align-items: center; gap: 12px; margin: 0 0 10px; }
+  .sec-head .home-h { margin: 0; }
   .sec-head .crumb { padding: 4px 10px; font-size: 11.5px; }
+  .grp-sec + .grp-sec { margin-top: 18px; }
+  .grp-h { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; }
+  .grp-h .grp-name { border: 0; background: transparent; padding: 2px 0; font-size: 13px; font-weight: 600;
+    color: var(--text); }
+  .grp-h .grp-name:hover { color: var(--accent); background: transparent; }
+  .grp-h .grp-n { color: var(--faint); font-size: 12px; margin-right: 4px; }
+  .grp-h .icon-btn { width: 24px; height: 24px; }
+  .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+  .ws-card { position: relative; display: flex; flex-direction: column; gap: 6px; min-width: 0;
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card); padding: 14px;
+    cursor: pointer; box-shadow: var(--sh-1); transition: border-color .12s, box-shadow .12s; }
+  .ws-card:hover { border-color: var(--accent); box-shadow: var(--sh-2); }
+  .ws-card.open { border-color: var(--accent); }
+  .ws-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .ws-top b { flex: 1; min-width: 0; font-size: 14px; font-weight: 620; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .ws-st { flex: none; font-size: 11.5px; color: var(--muted); }
+  .ws-st.run { color: var(--accent); font-weight: 600; }
+  .ws-st.need { color: var(--amber-ink); font-weight: 600; }
+  .ws-card .ws-root { font-size: 11px; color: var(--muted); font-family: var(--mono);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; min-height: 22px; }
+  .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--gray-soft);
+    color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip.run { background: var(--accent-soft); color: var(--accent); }
+  .chip.need { background: var(--amber-soft); color: var(--amber-ink); }
+  .ws-acts { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+  .ws-acts .icon-btn { width: 24px; height: 24px; }
+  .ws-acts .ws-grp { margin-left: auto; min-width: 0; max-width: 60%; }
+  .ws-acts .ws-id { flex: 1; min-width: 0; font-size: 10.5px; color: var(--faint); font-family: var(--mono);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-new { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 110px;
+    border: 1px dashed var(--border-strong); border-radius: var(--r-card); background: transparent;
+    color: var(--muted); font-weight: 500; }
+  .ws-new:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .home-side { display: grid; gap: 14px; }
+  .side-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card);
+    padding: 14px; box-shadow: var(--sh-1); min-width: 0; }
+  .side-card[hidden] { display: none; }
+  .work-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px; min-width: 0;
+    border: 0; background: transparent; border-radius: var(--r-ctl); text-align: left; color: var(--text); }
+  .work-row:hover { background: var(--panel2); }
+  .work-row .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+    animation: pulse 1.2s infinite; }
+  .work-row .wr-txt { flex: 1; min-width: 0; }
+  .work-row b { display: block; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .work-row .wr-ws { display: block; font-size: 11.5px; color: var(--muted); }
+  .work-row .wr-age { flex: none; font-size: 11px; color: var(--muted); font-family: var(--mono); }
+  .side-empty { font-size: 12.5px; color: var(--muted); padding: 4px 0; }
+  .today { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
+  .today .num { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .today .num.fail { color: var(--red); }
+  .today .lbl { font-size: 11.5px; color: var(--muted); }
+  /* Badge "needs you" trên mục Home của sidebar — cùng số với hộp Needs you. */
+  .sb-item { position: relative; }
+  .sb-badge { margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px;
+    background: var(--amber-ink); color: var(--accent-fg); font-size: 11px; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center; }
+  .sb-badge[hidden] { display: none; }
+  @media (max-width: 900px) {
+    .sidebar:not(:hover, :has(:focus-visible)) .sb-badge { position: absolute; top: 2px; right: 2px;
+      min-width: 16px; height: 16px; padding: 0 4px; font-size: 10px; }
+  }
+
+  /* ── New agent (modal) ─────────────────────────────────────────────────── */
+  .modal.na { width: min(720px, 100%); padding: 22px; }
+  .modal.na h3 { font-size: 18px; }
+  .na fieldset > label:first-of-type { margin-top: 6px; }
+  .na fieldset { border: 0; border-top: 1px solid var(--border); margin: 16px 0 0; padding: 14px 0 0; min-width: 0; }
+  .na legend { display: flex; align-items: center; gap: 8px; padding: 0 8px 0 0; font-weight: 620; font-size: 14px; }
+  .na-n { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+    border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 700; }
+  .na .pick-card .tag { margin-left: 6px; font-size: 10px; font-weight: 600; color: var(--accent);
+    background: var(--accent-soft); padding: 1px 6px; border-radius: 999px; }
+  .na .pick-card b { display: inline; }
+  .na details { margin-top: 12px; }
+  .na summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+  .na-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px;
+    border-top: 1px solid var(--border); }
+  .na-foot .hint { flex: 1 1 240px; margin: 0; }
+  .form-card .na-foot button { width: auto; margin-top: 0; padding: 8px 18px; }
 
   /* ── Panels / tables ──────────────────────────────────────────────────── */
   .panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card);
@@ -1013,7 +1101,8 @@
   </div>
   <span id="dry" class="pill dry" hidden>DRY-RUN</span>
   <button class="sb-item" onclick="goHome()" title="Home">
-    <svg class="ic"><use href="#i-home"/></svg><span class="lbl">Home</span></button>
+    <svg class="ic"><use href="#i-home"/></svg><span class="lbl">Home</span>
+    <span id="home-badge" class="sb-badge" hidden title="Things waiting for you"></span></button>
   <button id="studio-btn" class="sb-item" popovertarget="studio-menu" title="Make images and speech, see what you kept">
     <svg class="ic"><use href="#i-image"/></svg><span class="lbl">Studio</span></button>
   <button id="tools-btn" class="sb-item" popovertarget="settings-menu" title="Settings">
@@ -1060,63 +1149,43 @@
 </div>
 
 <main>
-  <!-- SHELL · home: workspace list + spawn form -->
+  <!-- SHELL · home: việc cần người dùng, workspace, agent đang chạy -->
   <section id="ws-list-view">
     <div class="home-wrap">
-      <div>
-        <!-- Một grid, hai tầng: chưa chọn group thì đây là danh sách group, chọn rồi thì là
-             workspace của group đó. Tiêu đề/nút/ô rỗng do renderHome() trong app.js điền. -->
-        <div class="sec-head">
-          <button id="grp-back" class="secondary crumb" onclick="openGroup('')" hidden
-            title="Back to the group list">
-            <svg class="ic sm"><use href="#i-back"/></svg> Groups</button>
-          <h2 id="home-title">Groups</h2>
-          <div class="spacer"></div>
-          <button class="secondary" onclick="homeNew()">
-            <svg class="ic sm"><use href="#i-plus"/></svg> <span id="home-new-lbl">New group</span></button>
-        </div>
-        <div id="ws-grid" class="ws-grid"></div>
-        <div id="ws-grid-empty" class="empty" hidden>No groups yet — create one to get started.</div>
+      <div class="home-head">
+        <div><h1>Home</h1><p id="home-sum" class="home-sum"></p></div>
+        <div class="spacer"></div>
+        <button class="primary" onclick="newAgent()">
+          <svg class="ic sm"><use href="#i-plus"/></svg> New agent</button>
       </div>
-      <div class="form-card">
-        <h3><svg class="ic"><use href="#i-rocket"/></svg> Spawn agent</h3>
-        <div class="hint">The orchestrator runs <code>claude -p</code> to create a new session.</div>
-        <label>Group</label>
-        <div id="sp-group-cards" class="pick-grid"></div>
-        <label>Workspace</label>
-        <div id="sp-ws-cards" class="pick-grid"></div>
-        <div class="hint">Leave Working dir empty and the agent runs in the
-          workspace's own folder.</div>
-        <label>Role name</label>
-        <input id="sp-role" placeholder="e.g. Backend Dev" oninput="spRoleSlug()">
-        <div class="hint" id="sp-role-hint"></div>
-        <label>Playbook template</label>
-        <div id="sp-template-cards" class="pick-grid"></div>
-        <div class="hint">The template is written to <code>&lt;cwd&gt;/.claude/skills/&lt;role&gt;/SKILL.md</code>
-          (plus an <code>.agents</code> copy for agy). Its <code>&lt;UPPERCASE&gt;</code> blanks are filled in by
-          the agent itself on its first run, after it has surveyed the project — more accurate than
-          typing them blind.</div>
-        <label>Working dir (cwd) — the project this agent works in</label>
-        <div class="dir-row">
-          <input id="sp-cwd" placeholder="type a folder name to search, or /path/to/project"
-            oninput="onCwdInput(this.value)">
-          <button type="button" onclick="browseDir(document.getElementById('sp-cwd').value.trim())"
-            title="Browse folders on the machine running the orchestrator">
-            <svg class="ic"><use href="#i-folder"/></svg></button>
+      <div class="home-cols">
+        <div class="home-main">
+          <h2 class="home-h">Needs you</h2>
+          <div id="inbox" class="inbox"></div>
+          <!-- Hai tầng: chưa chọn group thì mọi group (tiêu đề → card workspace), chọn rồi thì chỉ
+               group đó. Tiêu đề/nút/ô rỗng do renderHome() trong app.js điền. -->
+          <div class="sec-head">
+            <button id="grp-back" class="secondary crumb" onclick="openGroup('')" hidden
+              title="Back to every group">
+              <svg class="ic sm"><use href="#i-back"/></svg> Workspaces</button>
+            <h2 id="home-title" class="home-h">Workspaces</h2>
+            <div class="spacer"></div>
+            <button class="secondary" onclick="homeNew()">
+              <svg class="ic sm"><use href="#i-plus"/></svg> <span id="home-new-lbl">New group</span></button>
+          </div>
+          <div id="ws-grid" class="grp-list"></div>
+          <div id="ws-grid-empty" class="empty" hidden>No groups yet — create one to get started.</div>
         </div>
-        <div id="sp-dir" class="dir-browse" hidden></div>
-        <label>Model</label>
-        <div id="sp-model-tabs" class="tab-row"></div>
-        <div class="hint" id="sp-model-tabs-note"></div>
-        <div id="sp-model-cards" class="pick-grid"></div>
-        <div id="sp-model-custom" hidden>
-          <input id="sp-model" list="model-list" placeholder="custom model id / alias"
-            oninput="onModelCustomInput()">
-        </div>
-        <label>Effort (reasoning)</label>
-        <select id="sp-effort"></select>
-        <div class="spawn-actions"><button class="primary" onclick="spawnAgent()">Spawn</button></div>
-        <div id="sp-msg" class="form-msg"></div>
+        <aside class="home-side" aria-label="Working now">
+          <section class="side-card">
+            <h2 class="home-h">Working now</h2>
+            <div id="home-working"></div>
+          </section>
+          <section id="home-today-box" class="side-card" hidden>
+            <h2 class="home-h">Today</h2>
+            <div id="home-today" class="today"></div>
+          </section>
+        </aside>
       </div>
     </div>
   </section>
@@ -1401,6 +1470,63 @@
 
 <!-- MCP servers: register an HTTP MCP server for every claude session (user scope, written
      straight into ~/.claude.json). Not tied to any workspace, so it opens from the topbar. -->
+<!-- New agent. Bấm nền KHÔNG đóng: đây là form, bấm trượt ra ngoài là mất hết chữ đã gõ. -->
+<div id="na-modal" class="modal-overlay" hidden>
+  <form class="modal form-card na" role="dialog" aria-modal="true" aria-labelledby="na-title"
+    onsubmit="event.preventDefault(); spawnAgent()">
+    <h3 id="na-title">New agent
+      <span class="spacer"></span>
+      <button type="button" class="icon-btn" onclick="newAgentClose()" title="Close">
+        <svg class="ic"><use href="#i-x"/></svg></button></h3>
+    <div class="hint">Three choices. Everything else has a sensible default you can change later.</div>
+    <fieldset>
+      <legend><span class="na-n">1</span>What should it do?</legend>
+      <label for="sp-role">Name</label>
+      <input id="sp-role" placeholder="e.g. Backend Dev" oninput="spRoleSlug()" autocomplete="off">
+      <div class="hint" id="sp-role-hint"></div>
+      <label>Playbook</label>
+      <div id="sp-template-cards" class="pick-grid"></div>
+    </fieldset>
+    <fieldset>
+      <legend><span class="na-n">2</span>Where does it work?</legend>
+      <label>Group</label>
+      <div id="sp-group-cards" class="pick-grid"></div>
+      <label>Workspace</label>
+      <div id="sp-ws-cards" class="pick-grid"></div>
+      <label for="sp-cwd">Project folder</label>
+      <div class="dir-row">
+        <input id="sp-cwd" placeholder="type a folder name to search, or /path/to/project"
+          oninput="onCwdInput(this.value)" autocomplete="off">
+        <button type="button" onclick="browseDir(document.getElementById('sp-cwd').value.trim())"
+          title="Browse folders on the machine running the orchestrator">
+          <svg class="ic"><use href="#i-folder"/></svg> Browse</button>
+      </div>
+      <div id="sp-dir" class="dir-browse" hidden></div>
+    </fieldset>
+    <fieldset>
+      <legend><span class="na-n">3</span>Which model?</legend>
+      <div id="sp-model-tabs" class="tab-row"></div>
+      <div class="hint" id="sp-model-tabs-note"></div>
+      <div id="sp-model-cards" class="pick-grid"></div>
+      <div id="sp-model-custom" hidden>
+        <input id="sp-model" list="model-list" placeholder="custom model id / alias"
+          oninput="onModelCustomInput()">
+      </div>
+      <details id="sp-more">
+        <summary>More options — thinking effort</summary>
+        <label for="sp-effort">Effort (reasoning)</label>
+        <select id="sp-effort"></select>
+      </details>
+    </fieldset>
+    <div id="sp-msg" class="form-msg"></div>
+    <div class="na-foot">
+      <span class="hint">On its first run the agent reads the project and fills in its own playbook.</span>
+      <button type="button" class="secondary" onclick="newAgentClose()">Cancel</button>
+      <button type="submit" class="primary">Create agent</button>
+    </div>
+  </form>
+</div>
+
 <div id="mcp-modal" class="modal-overlay" onclick="if (event.target === this) mcpClose()" hidden>
   <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="mcp-title">
     <h3 id="mcp-title"><svg class="ic"><use href="#i-plug"/></svg> MCP servers
