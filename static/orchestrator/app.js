@@ -27,16 +27,20 @@ function applyTheme(pref) {
   document.documentElement.dataset.theme = dark ? "dark" : "light";
   const btn = $("theme-btn");
   if (btn) btn.title = `Theme: ${pref} — click to change`;
+  for (const b of document.querySelectorAll("[data-theme-pref]")) {
+    b.classList.toggle("active", b.dataset.themePref === pref);
+    b.setAttribute("aria-checked", b.dataset.themePref === pref);
+  }
   // Pane đọc localStorage lúc boot, nhưng đang chạy thì không biết shell vừa đổi → báo xuống.
   for (const f of document.querySelectorAll("iframe.pane"))
     try { f.contentWindow.postMessage({ t: "theme", pref }, location.origin); } catch { /* chưa load */ }
 }
-function cycleTheme() {
-  const next = THEMES[(THEMES.indexOf(themePref()) + 1) % THEMES.length];
-  try { localStorage.setItem("orch-theme", next); } catch { /* private mode */ }
-  applyTheme(next);
+function setTheme(pref) {
+  try { localStorage.setItem("orch-theme", pref); } catch { /* private mode */ }
+  applyTheme(pref);
 }
-window.cycleTheme = cycleTheme;
+function cycleTheme() { setTheme(THEMES[(THEMES.indexOf(themePref()) + 1) % THEMES.length]); }
+window.cycleTheme = cycleTheme; window.setTheme = setTheme;
 
 const SIGNAL_BADGE = { pending: "b-gray", approved: "b-blue", processing: "b-blue",
                        done: "b-green", failed: "b-red", denied: "b-red", blocked: "b-amber" };
@@ -376,6 +380,7 @@ window.moveWsGroup = moveWsGroup;
 function openGroup(gid) {
   CURGROUP = gid;
   ACTIVE = -1;
+  pageLeave();
   shellSave(); renderHome(); renderShellTabs(); renderPanes();
 }
 window.openGroup = openGroup;
@@ -605,6 +610,12 @@ let OPEN = [];        // workspace id đang mở
 let ACTIVE = -1;      // tab đang xem; -1 = màn Home
 let SPLIT = false;    // hiện cả 2 pane cạnh nhau
 let SPLIT_PCT = 50;   // bề rộng pane trái, %
+// Trang toàn màn của shell ("studio" | "settings"), đè lên Home/pane; "" = không có. Workspace
+// đang mở vẫn sống bên dưới (iframe chỉ bị ẩn) để quay lại không phải tải lại terminal.
+let VIEW = "";
+const SUBS = { studio: ["images", "sounds", "speech", "library"],
+               settings: ["connections", "tools", "performance", "removed", "general"] };
+const SUB = { studio: "images", settings: "connections" };
 
 function shellLoad() {
   try { return JSON.parse(localStorage.getItem("orch-shell")) || {}; } catch { return {}; }
@@ -612,13 +623,14 @@ function shellLoad() {
 function shellSave() {
   try {
     localStorage.setItem("orch-shell", JSON.stringify(
-      { open: OPEN, active: ACTIVE, split: SPLIT, pct: SPLIT_PCT, group: CURGROUP }));
+      { open: OPEN, active: ACTIVE, split: SPLIT, pct: SPLIT_PCT, group: CURGROUP, view: VIEW, sub: SUB }));
   } catch { /* private mode */ }
   // Deep-link: F5 hoặc chia sẻ URL giữ nguyên tab đang mở + group đang đứng.
   const parts = [];
   if (OPEN.length) parts.push("ws=" + OPEN.map(encodeURIComponent).join(","));
   if (SPLIT && OPEN.length) parts.push("split=1");
   if (CURGROUP) parts.push("g=" + encodeURIComponent(CURGROUP));
+  if (VIEW) parts.push("view=" + VIEW, "tab=" + SUB[VIEW]);
   history.replaceState(null, "", location.pathname + (parts.length ? "?" + parts.join("&") : ""));
 }
 
@@ -633,7 +645,7 @@ function renderShellTabs() {
     const i = OPEN.indexOf(id);
     const open = i >= 0;
     const cls = "ws-tab" + (open ? " open" : "")
-      + (open && !split && i === ACTIVE ? " active" : "") + (open && split ? " split-on" : "");
+      + (open && !split && !VIEW && i === ACTIVE ? " active" : "") + (open && split ? " split-on" : "");
     const tip = open ? `${name} — open${split ? ` in the ${i ? "right" : "left"} pane` : ""}`
                      : `${name} — click to open`;
     return `<button class="${cls}" onclick="selectWorkspace('${esc(id)}')" title="${esc(tip)}">
@@ -679,6 +691,7 @@ function setPane(i, id) {
   if (id === OPEN[1 - i]) OPEN = [OPEN[1], OPEN[0]];
   else OPEN[i] = id;        // iframe của workspace bị thay do renderPanes dọn
   ACTIVE = i;
+  pageLeave();
   shellSave(); renderHome(); renderShellTabs(); renderPanes();
 }
 window.setPane = setPane;
@@ -707,12 +720,19 @@ function renderPanes() {
   if (!box) return;
   if (ACTIVE >= OPEN.length) ACTIVE = OPEN.length - 1;
   const home = ACTIVE < 0 || !OPEN.length;
-  $("ws-list-view").hidden = !home;
-  box.hidden = home;
+  $("ws-list-view").hidden = !home || !!VIEW;
+  box.hidden = home || !!VIEW;
+  $("studio-view").hidden = VIEW !== "studio";
+  $("settings-view").hidden = VIEW !== "settings";
+  for (const b of document.querySelectorAll(".sb-item[data-view]")) {
+    const on = b.dataset.view === (VIEW || (home ? "home" : ""));
+    b.classList.toggle("active", on);
+    if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+  }
   // Workspace đã đóng → bỏ iframe (terminal bên trong bị huỷ, đúng ý người bấm ✕).
   for (const f of [...box.querySelectorAll("iframe.pane")])
     if (!OPEN.includes(f.dataset.ws)) f.remove();
-  if (home) return;
+  if (home || VIEW) return;
 
   const split = SPLIT && OPEN.length === MAX_PANES;
   const frames = OPEN.map(paneFrame);
@@ -742,7 +762,7 @@ function renderPanes() {
 
 // Bấm tab = xem MỘT workspace đó. Đang split mà bấm tab thì thoát split — nếu không,
 // tab trông bấm được nhưng bấm xong không có gì đổi, người dùng tưởng hỏng.
-function focusWs(i) { ACTIVE = i; SPLIT = false; shellSave(); renderShellTabs(); renderPanes(); }
+function focusWs(i) { pageLeave(); ACTIVE = i; SPLIT = false; shellSave(); renderShellTabs(); renderPanes(); }
 window.focusWs = focusWs;
 
 // Mở workspace thành tab. Đã mở → nhảy tới nó. Đầy chỗ → đóng tab hiện hành trước
@@ -753,6 +773,7 @@ function selectWorkspace(id) {
   if (w && w.group_id) CURGROUP = w.group_id;
   const i = OPEN.indexOf(id);
   if (i >= 0) return focusWs(i);
+  pageLeave();
   if (OPEN.length >= MAX_PANES) {
     ACTIVE = Math.max(0, ACTIVE);
     OPEN[ACTIVE] = id;        // iframe cũ do renderPanes dọn
@@ -775,10 +796,72 @@ window.closeWs = closeWs;
 function goHome() {
   if (PANE) return;         // trong pane, nút brand không tồn tại
   ACTIVE = -1;
+  pageLeave();
   shellSave(); renderShellTabs(); renderPanes();
   refreshAll();
 }
 window.goHome = goHome;
+
+// Mở tab/mục của từng trang: tải dữ liệu lúc nó hiện ra (như lúc modal cũ mở), không trước.
+const PAGE_ENTER = {
+  images: () => { $("img-prompt").focus(); imgLoad().catch((e) => showMsg("img-msg", "Error: " + e, false)); },
+  sounds: () => { $("snd-q").focus(); sndLoad(true).catch((e) => showMsg("snd-msg", "Error: " + e, false)); },
+  speech: () => {
+    $("tts-msg").textContent = "";
+    $("tts-text").focus();
+    ttsLoad().catch((e) => showMsg("tts-msg", "Error: " + e, false));
+  },
+  library: () => { libKey = ""; libLoad().catch((e) => showMsg("lib-msg", "Error: " + e, false)); libAgents(); },
+  connections: () => {
+    $("mcp-msg").textContent = "";
+    $("mcp-list").innerHTML = `<div class="hint">Loading…</div>`;
+    mcpLoad(true).catch((e) => showMsg("mcp-msg", "Error: " + e, false));
+  },
+  tools: () => {
+    $("tools-msg").textContent = "";
+    $("tools-list").innerHTML = `<div class="hint">Loading…</div>`;
+    toolsLoad().catch((e) => showMsg("tools-msg", "Error: " + e, false));
+  },
+  performance: () => { showMsg("perf-msg", "Measuring…", true); perfLoad(); },
+  removed: () => { showMsg("unreg-msg", "Looking…", true); unregLoad(); },
+  general: () => {},   // nút theme đã được applyTheme() đánh dấu
+};
+// Rời tab/mục: dừng thứ chạy ngầm của nó (poll Performance/Speech, tiếng đang phát) và xoá token
+// gõ dở — đúng việc các hàm *Close của modal cũ làm.
+const PAGE_LEAVE = {
+  speech: () => clearTimeout(ttsPoll),
+  performance: () => clearTimeout(perfT),
+  connections: () => { $("mcp-token").value = ""; },
+};
+function pageLeave() {
+  if (!VIEW) return;
+  const sub = SUB[VIEW];
+  $(VIEW + "-view").querySelector(`.page-sec[data-sub="${sub}"]`).querySelectorAll("audio").forEach((a) => a.pause());
+  PAGE_LEAVE[sub]?.();
+  VIEW = "";
+}
+
+function openPage(view, sub) {
+  if (PANE || !SUBS[view]) return;
+  sub = [sub, SUB[view]].find((x) => SUBS[view].includes(x)) || SUBS[view][0];
+  pageLeave();
+  VIEW = view;
+  SUB[view] = sub;
+  const page = $(view + "-view");
+  for (const el of page.querySelectorAll("[data-sub]")) {
+    const on = el.dataset.sub === sub;
+    if (el.classList.contains("page-sec")) el.hidden = !on;
+    else { el.classList.toggle("active", on); el.setAttribute("aria-selected", on); }
+  }
+  shellSave(); renderShellTabs(); renderPanes();
+  PAGE_ENTER[sub]();
+  if (view === "studio" && sub !== "library") libLoad().catch(() => {});   // số trên tab Library
+}
+window.openPage = openPage;
+
+// Rời trang, về lại chỗ bên dưới (workspace đang mở, hoặc Home).
+function pageClose() { pageLeave(); shellSave(); renderShellTabs(); renderPanes(); }
+window.toolsClose = pageClose;
 
 // Workspace đang mở = gần như chắc chắn là chỗ người dùng muốn thêm agent → chọn sẵn.
 function newAgent() {
@@ -3143,8 +3226,11 @@ function toolsMark(missing) {
   const b = $("tools-btn");
   if (!b) return;                     // pane không có sidebar
   b.classList.toggle("has-dot", missing > 0);
-  b.title = missing ? `Settings — ${missing} media tool${missing > 1 ? "s" : ""} missing` : "Settings";
-  $("tools-item").innerHTML = `${ic("wrench")} Media tools${missing ? ` (${missing} missing)` : ""}`;
+  const what = missing ? `${missing} media tool${missing > 1 ? "s" : ""} missing` : "";
+  b.title = what ? `Settings — ${what}` : "Settings";
+  $("tools-item").classList.toggle("has-dot", missing > 0);
+  $("tools-item").title = what;
+  $("tools-n").textContent = missing ? `${missing} missing` : "";
 }
 
 async function toolsLoad() {
@@ -3159,16 +3245,8 @@ function toolsBadge() {
   api("/api/tools").then((r) => toolsMark(r.missing)).catch(() => {});
 }
 
-function toolsOpen() {
-  $("tools-modal").hidden = false;
-  $("tools-msg").textContent = "";
-  $("tools-list").innerHTML = `<div class="hint">Loading…</div>`;
-  toolsLoad().catch((e) => showMsg("tools-msg", "Error: " + e, false));
-}
+function toolsOpen() { openPage("settings", "tools"); }
 window.toolsOpen = toolsOpen;
-
-function toolsClose() { $("tools-modal").hidden = true; }
-window.toolsClose = toolsClose;
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 function toast(title, text, onClick) {
@@ -3260,31 +3338,11 @@ async function mcpLoad(check) {
   return list;
 }
 
-function mcpOpen() {
-  $("mcp-modal").hidden = false;
-  $("mcp-msg").textContent = "";
-  $("mcp-list").innerHTML = `<div class="hint">Loading…</div>`;
-  mcpLoad(true).catch((e) => showMsg("mcp-msg", "Error: " + e, false));
-}
+function mcpOpen() { openPage("settings", "connections"); }
 window.mcpOpen = mcpOpen;
 
-function mcpClose() {
-  $("mcp-modal").hidden = true;
-  $("mcp-token").value = "";   // đừng để token gõ dở nằm lại trong DOM sau khi đóng
-}
-window.mcpClose = mcpClose;
-
 document.addEventListener("keydown", (e) => {
-  // Editor nằm trên Sounds: Esc chỉ hỏi bỏ bản nháp, không đóng luôn Sounds bên dưới.
   if (e.key === "Escape" && !$("sed-modal").hidden) return sedDiscard();
-  if (e.key === "Escape" && !$("tts-modal").hidden) return ttsClose();
-  if (e.key === "Escape" && !$("perf-modal").hidden) return perfClose();
-  if (e.key === "Escape" && !$("unreg-modal").hidden) return unregClose();
-  if (e.key === "Escape" && libIsOpen()) libClose();
-  if (e.key === "Escape" && !$("mcp-modal").hidden) mcpClose();
-  if (e.key === "Escape" && !$("img-modal").hidden) imgClose();
-  if (e.key === "Escape" && !$("snd-modal").hidden) sndClose();
-  if (e.key === "Escape" && !$("tools-modal").hidden) toolsClose();
   if (e.key === "Escape" && !$("na-modal").hidden) newAgentClose();
   if (e.key === "Escape" && !$("td-modal").hidden) teamDelegateClose();
   if (e.key === "Escape" && !$("sg-modal").hidden) sigClose();
@@ -3408,26 +3466,8 @@ async function imgLoad() {
   imgPaint();
 }
 
-function imgOpen() {
-  $("img-modal").hidden = false;
-  $("img-prompt").focus();
-  imgLoad().catch((e) => showMsg("img-msg", "Error: " + e, false));
-}
+function imgOpen() { openPage("studio", "images"); }
 window.imgOpen = imgOpen;
-
-// Menu ở top layer: đặt nó cạnh phải nút sidebar mỗi lần mở.
-for (const m of document.querySelectorAll(".menu[popover]"))
-  m.addEventListener("beforetoggle", (e) => {
-    if (e.newState !== "open") return;
-    const r = document.querySelector(`.sb-item[popovertarget="${m.id}"]`).getBoundingClientRect();
-    m.style.top = Math.max(8, Math.min(r.top, innerHeight - 200)) + "px";
-    m.style.left = r.right + 6 + "px";
-  });
-// Bấm vào workspace (iframe) không tới được trang này nên trình duyệt không tự đóng menu; trang
-// mất focus thì đóng theo.
-addEventListener("blur", () => {
-  for (const m of document.querySelectorAll(".menu:popover-open")) m.hidePopover();
-});
 
 // ── Performance (Tools) ──────────────────────────────────────────────────────
 // Hỏi /api/perf mỗi 2 s khi bảng đang mở (CPU là độ chênh giữa hai lần hỏi). Lời khuyên viết
@@ -3448,27 +3488,18 @@ function perfPageStats() {
            heap: performance.memory?.usedJSHeapSize || 0 };   // chỉ Chrome/Edge có performance.memory
 }
 
-function perfOpen() {
-  $("perf-modal").hidden = false;
-  showMsg("perf-msg", "Measuring…", true);
-  perfLoad();
-}
+const perfOn = () => VIEW === "settings" && SUB.settings === "performance";
+function perfOpen() { openPage("settings", "performance"); }
 window.perfOpen = perfOpen;
-
-function perfClose() {
-  $("perf-modal").hidden = true;
-  clearTimeout(perfT);
-}
-window.perfClose = perfClose;
 
 async function perfLoad() {
   clearTimeout(perfT);
-  if ($("perf-modal").hidden) return;
+  if (!perfOn()) return;
   try {
     perfPaint(await api("/api/perf"), perfPageStats());
     $("perf-msg").textContent = "";
   } catch (e) { showMsg("perf-msg", mcpErr(e), false); }
-  if (!$("perf-modal").hidden) perfT = setTimeout(perfLoad, document.hidden ? 10000 : 2000);
+  if (perfOn()) perfT = setTimeout(perfLoad, document.hidden ? 10000 : 2000);
 }
 
 function perfPaint(d, page) {
@@ -3512,17 +3543,8 @@ const unregName = (r) => r.name || r.id.slice(0, 8);
 const unregFree = () => unregRows.filter((r) => !r.in_use.length && !r.running);
 const fmtSize = (b) => b < 1048576 ? Math.max(1, Math.round(b / 1024)) + " KB" : fmtMB(b);
 
-function unregOpen() {
-  $("unreg-modal").hidden = false;
-  showMsg("unreg-msg", "Looking…", true);
-  unregLoad();
-}
+function unregOpen() { openPage("settings", "removed"); }
 window.unregOpen = unregOpen;
-
-function unregClose() {
-  $("unreg-modal").hidden = true;
-}
-window.unregClose = unregClose;
 
 async function unregLoad() {
   try { unregRows = (await api("/api/unregistered")).agents || []; }
@@ -3571,11 +3593,6 @@ async function unregDelete(i) {
   else showMsg("unreg-msg", `Deleted ${n} agent${n === 1 ? "" : "s"}.`, true);
 }
 window.unregDelete = unregDelete;
-
-function imgClose() {
-  $("img-modal").hidden = true;
-}
-window.imgClose = imgClose;
 
 function imgToggleRef(name) {
   if (imgRefs.includes(name)) imgRefs = imgRefs.filter((n) => n !== name);
@@ -3706,11 +3723,7 @@ async function sndLoad(withStatus) {
   sndPaintLib(r.items);
 }
 
-function sndOpen() {
-  $("snd-modal").hidden = false;
-  $("snd-q").focus();
-  sndLoad(true).catch((e) => showMsg("snd-msg", "Error: " + e, false));
-}
+function sndOpen() { openPage("studio", "sounds"); }
 window.sndOpen = sndOpen;
 
 // Cache version phía server đọc lại khi file yt-dlp đổi, nên chỉ cần hỏi lại.
@@ -3721,9 +3734,6 @@ async function sndRecheck() {
   } catch (e) { showMsg("snd-msg", "Error: " + e, false); }
 }
 window.sndRecheck = sndRecheck;
-
-function sndClose() { $("snd-modal").hidden = true; }
-window.sndClose = sndClose;
 
 async function sndSearch() {
   const query = $("snd-q").value.trim();
@@ -3941,11 +3951,12 @@ window.sedDiscard = sedDiscard;
 // Agent đọc đúng thư viện này qua /library/mcp: search_media, inspect_media.
 let libKey = "";      // như sndLibKey: poll chỉ vẽ lại khi danh sách đổi, kẻo <audio> đang phát bị cắt
 
-const libIsOpen = () => $("lib-drawer").classList.contains("open");
+const libIsOpen = () => VIEW === "studio" && SUB.studio === "library";
 
 async function libLoad() {
   const [imgs, snd] = await Promise.all([api("/api/images"), api("/api/sounds")]);
   $("lib-n-snd").textContent = snd.items.length ? `(${snd.items.length})` : "";
+  $("lib-n").textContent = snd.items.length + imgs.length || "";
   $("lib-n-img").textContent = imgs.length ? `(${imgs.length})` : "";
   const key = [...snd.items, ...imgs].map((i) => i.name).join("|");
   if (key === libKey) return;
@@ -3954,13 +3965,7 @@ async function libLoad() {
   $("lib-img").innerHTML = imgRows(imgs, false);
 }
 
-function libOpen() {
-  $("lib-drawer").classList.add("open");
-  $("lib-overlay").classList.add("open");
-  libKey = "";
-  libLoad().catch((e) => showMsg("lib-msg", "Error: " + e, false));
-  libAgents();
-}
+function libOpen() { openPage("studio", "library"); }
 
 // CLI nào đã có /library/mcp — đọc từ danh sách của modal MCP, không gọi thử server.
 async function libAgents() {
@@ -3984,14 +3989,7 @@ async function libConnect() {
 window.libConnect = libConnect;
 window.libOpen = libOpen;
 
-function libClose() {
-  $("lib-drawer").classList.remove("open");
-  $("lib-overlay").classList.remove("open");
-  $("lib-drawer").querySelectorAll("audio").forEach((a) => a.pause());
-}
-window.libClose = libClose;
-
-// Agent vẽ ảnh (qua /v1/images) lúc drawer đang mở → hiện ra trong vòng 5 giây.
+// Agent vẽ ảnh (qua /v1/images) lúc tab Library đang mở → hiện ra trong vòng 5 giây.
 setInterval(() => { if (libIsOpen()) libLoad().catch(() => {}); }, 5000);
 
 function libPick() {
@@ -4058,27 +4056,15 @@ function ttsPaint(st) {
     $("tts-voice").value = st.default;
   }
   clearTimeout(ttsPoll);
-  if (!$("tts-modal").hidden && (d.state === "downloading" || d.state === "unpacking")) {
+  if (VIEW === "studio" && SUB.studio === "speech" && (d.state === "downloading" || d.state === "unpacking")) {
     ttsPoll = setTimeout(() => ttsLoad().catch(() => {}), 1000);
   }
 }
 
 async function ttsLoad() { ttsPaint(await api("/api/tts")); }
 
-function ttsOpen() {
-  $("tts-modal").hidden = false;
-  $("tts-msg").textContent = "";
-  $("tts-text").focus();
-  ttsLoad().catch((e) => showMsg("tts-msg", "Error: " + e, false));
-}
+function ttsOpen() { openPage("studio", "speech"); }
 window.ttsOpen = ttsOpen;
-
-function ttsClose() {
-  $("tts-modal").hidden = true;
-  $("tts-audio").pause();
-  clearTimeout(ttsPoll);
-}
-window.ttsClose = ttsClose;
 
 async function ttsDownload() {
   try { ttsPaint(await api("/api/tts/download", "POST", {})); }
@@ -5095,10 +5081,14 @@ if (PANE) {
   CURGROUP = qs.get("g") || st.group || "";
   SPLIT = qs.has("split") ? qs.get("split") === "1" : !!st.split;
   SPLIT_PCT = st.pct || 50;
+  // URL có ws= mà không có view= là link tới một workspace — trang đã lưu không được đè lên nó.
+  const view = qs.has("view") ? qs.get("view") : fromUrl.length ? "" : st.view;
+  Object.assign(SUB, st.sub);
   ACTIVE = !OPEN.length ? -1
     : fromUrl.length ? 0
     : Math.min(st.active == null ? 0 : st.active, OPEN.length - 1);
   initSplitDrag();
+  if (SUBS[view]) openPage(view, qs.get("view") === view ? qs.get("tab") : SUB[view]);
   // Pane báo lên: workspace của nó không còn → đóng tab.
   window.addEventListener("message", (e) => {
     if (e.origin !== location.origin) return;
