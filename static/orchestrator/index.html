@@ -80,7 +80,7 @@
     display: flex; font: 13px/1.5 var(--font); }
   /* Pane mode (?pane=1): document chạy TRONG iframe của shell → không có chrome riêng,
      không có màn Home, không có pane lồng pane. */
-  .pane .sidebar, .pane #ws-list-view, .pane #panes { display: none; }
+  .pane .sidebar, .pane #ws-list-view, .pane #panes, .pane .page { display: none; }
   main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 
   /* Icon sprite: <svg class="ic"><use href="#i-play"/></svg> */
@@ -188,14 +188,6 @@
     border-radius: var(--r-ctl); padding: 6px 10px; }
   :where(input, select, textarea):not(.xterm-helper-textarea):hover { border-color: var(--border-strong); }
   input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
-  /* Menu popover → trình duyệt tự đóng khi bấm ra ngoài hay Esc (bấm vào iframe workspace thì
-     app.js đóng theo blur). top/left đặt theo nút lúc mở (app.js): popover nằm ở top layer. */
-  .menu { margin: 0; inset: auto; padding: 4px; min-width: 190px; background: var(--card);
-    color: var(--text); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--sh-2); }
-  .menu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 10px;
-    border: 0; background: transparent; color: var(--text); text-align: left; font-size: 13px; }
-  .menu button:hover, .menu button:focus-visible { background: var(--panel2); }
-  .menu button .ic { color: var(--muted); }
   .pill { font-size: 11px; font-weight: 500; padding: 2px 9px; border-radius: 999px;
     border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
   .pill.live { color: var(--green); border-color: transparent; background: var(--green-soft); }
@@ -509,6 +501,37 @@
   select.mini:hover, input.mini:hover { border-color: var(--border-strong); }
   input.model-in { width: 160px; }
 
+  /* ── Studio / Settings (trang toàn màn của shell, như Home) ───────────── */
+  .sb-item.active { background: var(--accent-soft); color: var(--text); font-weight: 600; }
+  .page { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 28px 24px 60px; }
+  .page[hidden], .page-sec[hidden] { display: none; }
+  .page-wrap { max-width: 1180px; margin: 0 auto; }
+  .page-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin-bottom: 20px; }
+  .page-head h1 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: -.02em; }
+  .page-note { font-size: 12px; color: var(--muted); }
+  #lib-n { color: var(--muted); }
+  .page-col { max-width: 760px; margin: 0 auto; }
+  .page .form-card > label:first-child { margin-top: 0; }
+  /* Images: soạn bên trái, kết quả bên phải; hẹp thì xếp chồng. */
+  .st-images { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 20px; align-items: start; }
+  .st-images .img-grid { margin-top: 0; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+  @media (max-width: 1000px) { .st-images { grid-template-columns: minmax(0, 1fr); } }
+  .set-cols { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 28px; align-items: start; }
+  @media (max-width: 760px) { .set-cols { grid-template-columns: minmax(0, 1fr); } }
+  .set-nav { display: flex; flex-direction: column; gap: 2px; }
+  .set-nav button { display: flex; align-items: center; gap: 9px; height: 36px; padding: 0 10px;
+    border: 0; background: transparent; color: var(--muted); text-align: left; font-weight: 500; }
+  .set-nav button:hover { background: var(--panel2); color: var(--text); }
+  .set-nav button.active { background: var(--accent-soft); color: var(--text); font-weight: 600; }
+  /* Chấm thiếu tool bắt buộc — cùng nghĩa với chấm trên nút Settings ở sidebar. */
+  .set-nav button.has-dot::after { content: ""; margin-left: auto; width: 7px; height: 7px;
+    border-radius: 50%; background: var(--red); }
+  .set-body { min-width: 0; max-width: 820px; }
+  .set-body .form-card h3 { font-size: 16px; font-weight: 650; margin-bottom: 6px; }
+  .tools-n { font-size: 12px; font-weight: 600; color: var(--red); }
+  .tools-list { margin-top: 12px; }
+  #theme-pick { display: inline-flex; }
+
   /* ── Pane (một workspace) ─────────────────────────────────────────────── */
   #panes { flex: 1; min-height: 0; display: flex; }
   #panes[hidden] { display: none; }
@@ -618,7 +641,6 @@
   /* Activity: danh sách bên trái; mở một run thì #drawer được dời vào đây làm cột phải. */
   #tab-history { flex: 1; min-height: 0; width: 100%; display: flex; }
   #tab-history[hidden] { display: none; }
-
 
   /* ── Team: đội sub-agent của director ─────────────────────────────────── */
   #tab-team { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 20px; }
@@ -755,8 +777,6 @@
   .page-form .two { display: flex; gap: 8px; flex-wrap: wrap; }
   .page-form .two > * { flex: 1; min-width: 130px; }
   .page-form .two > button, .page-form .two > .hint { flex: 0 0 auto; min-width: 0; }
-
-
 
   /* Toast góc dưới, tự tắt. */
   #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: grid; gap: 8px;
@@ -1212,12 +1232,13 @@
     <span id="conn" class="pill dead">offline</span>
   </div>
   <span id="dry" class="pill dry" hidden>DRY-RUN</span>
-  <button class="sb-item" onclick="goHome()" title="Home">
+  <button class="sb-item" data-view="home" onclick="goHome()" title="Home">
     <svg class="ic"><use href="#i-home"/></svg><span class="lbl">Home</span>
     <span id="home-badge" class="sb-badge" hidden title="Things waiting for you"></span></button>
-  <button id="studio-btn" class="sb-item" popovertarget="studio-menu" title="Make images and speech, see what you kept">
+  <button id="studio-btn" class="sb-item" data-view="studio" onclick="openPage('studio')"
+    title="Make images, sounds and speech, see what you kept">
     <svg class="ic"><use href="#i-image"/></svg><span class="lbl">Studio</span></button>
-  <button id="tools-btn" class="sb-item" popovertarget="settings-menu" title="Settings">
+  <button id="tools-btn" class="sb-item" data-view="settings" onclick="openPage('settings')" title="Settings">
     <svg class="ic"><use href="#i-settings"/></svg><span class="lbl">Settings</span></button>
   <div class="sb-sec">Workspaces
     <button class="icon-btn" onclick="newWorkspace()" title="New workspace">
@@ -1236,30 +1257,6 @@
     </div>
   </div>
 </nav>
-<!-- popovertargetaction="hide": chọn xong thì menu tự đóng, khỏi viết JS. -->
-<div id="studio-menu" class="menu" popover>
-  <button popovertarget="studio-menu" popovertargetaction="hide" onclick="imgOpen()">
-    <svg class="ic"><use href="#i-image"/></svg> Images</button>
-  <button popovertarget="studio-menu" popovertargetaction="hide" onclick="ttsOpen()"
-    title="Turn English text into speech with a natural voice, on this machine">
-    <svg class="ic"><use href="#i-speak"/></svg> Speak text</button>
-  <button popovertarget="studio-menu" popovertargetaction="hide" onclick="libOpen()"
-    title="Images and sounds you have kept">
-    <svg class="ic"><use href="#i-library"/></svg> Library</button>
-</div>
-<div id="settings-menu" class="menu" popover>
-  <button popovertarget="settings-menu" popovertargetaction="hide" onclick="mcpOpen()">
-    <svg class="ic"><use href="#i-plug"/></svg> MCP servers</button>
-  <button id="tools-item" popovertarget="settings-menu" popovertargetaction="hide" onclick="toolsOpen()">
-    <svg class="ic"><use href="#i-wrench"/></svg> Media tools</button>
-  <button popovertarget="settings-menu" popovertargetaction="hide" onclick="perfOpen()"
-    title="See what is using this computer's CPU and memory">
-    <svg class="ic"><use href="#i-gauge"/></svg> Performance</button>
-  <button popovertarget="settings-menu" popovertargetaction="hide" onclick="unregOpen()"
-    title="Agents you unregistered that still leave runs and transcripts behind">
-    <svg class="ic"><use href="#i-trash"/></svg> Unregistered agents</button>
-</div>
-
 <main>
   <!-- SHELL · home: việc cần người dùng, workspace, agent đang chạy -->
   <section id="ws-list-view">
@@ -1304,6 +1301,236 @@
 
   <!-- SHELL · panes: 1-2 iframe, mỗi cái là một workspace -->
   <div id="panes" hidden></div>
+
+  <!-- SHELL · Studio / Settings: trang toàn màn như Home, thay cho menu popover + modal cũ.
+       Tab/mục nào đang mở do openPage() trong app.js quyết (data-sub). Mỗi tab/mục giữ id của
+       modal cũ (img-modal, lib-drawer…): check_*.py và chỗ gọi bên ngoài vẫn tìm theo id đó. -->
+  <section id="studio-view" class="page" hidden>
+    <div class="page-wrap">
+      <div class="page-head">
+        <h1>Studio</h1>
+        <div class="tabs" role="tablist" aria-label="Studio tools">
+          <button class="tab" role="tab" data-sub="images" onclick="imgOpen()">Images</button>
+          <button class="tab" role="tab" data-sub="sounds" onclick="sndOpen()"
+            title="Find a video and pull its sound out">Sounds</button>
+          <button class="tab" role="tab" data-sub="speech" onclick="ttsOpen()"
+            title="Turn English text into speech with a natural voice, on this machine">Speech</button>
+          <button class="tab" role="tab" data-sub="library" onclick="libOpen()"
+            title="Images and sounds you have kept">Library<span id="lib-n" class="tab-count"></span></button>
+        </div>
+        <span class="spacer"></span>
+        <span class="page-note">Agents can use everything you keep here.</span>
+      </div>
+
+      <!-- Images: tool generate_image của agy, vẽ bằng tài khoản Google đang login ở agy. -->
+      <div id="img-modal" class="page-sec st-images" data-sub="images" role="tabpanel">
+        <div class="form-card">
+          <label for="img-prompt">Describe the image</label>
+          <textarea id="img-prompt" rows="4"
+            placeholder="e.g. a red apple on a wooden table, soft morning light"></textarea>
+          <label for="img-ratio">Shape</label>
+          <select id="img-ratio">
+            <option value="1:1">Square · 1:1</option>
+            <option value="4:3">Landscape · 4:3</option>
+            <option value="3:2">Landscape · 3:2</option>
+            <option value="16:9">Wide · 16:9</option>
+            <option value="3:4">Portrait · 3:4</option>
+            <option value="2:3">Portrait · 2:3</option>
+            <option value="9:16">Tall · 9:16</option>
+          </select>
+          <label>Reference images · up to 3</label>
+          <div id="img-refs" class="img-refs"></div>
+          <div class="hint">The new image edits, combines or follows these — keep the same character
+            across pictures, or change one detail of an image. Pick them in the gallery with
+            <b>Reference</b>, or add your own.</div>
+          <input id="img-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden
+            onchange="imgUpload(this)">
+          <div class="spawn-actions ai-actions">
+            <button class="secondary" onclick="imgPick()">Add image…</button>
+            <button id="img-go" class="primary" onclick="imgGenerate()">Generate</button>
+          </div>
+          <div id="img-msg" class="form-msg"></div>
+          <div class="hint">Drawn by the Antigravity CLI (<code>agy</code>) on the Google account it is
+            signed in with — no API key, usually in under a minute.</div>
+        </div>
+        <section aria-labelledby="img-recent">
+          <h2 id="img-recent" class="home-h">Recent</h2>
+          <div id="img-grid" class="img-grid"></div>
+        </section>
+      </div>
+
+      <!-- Sounds: tìm video, tách tiếng bằng yt-dlp. -->
+      <div id="snd-modal" class="page-sec page-col form-card" data-sub="sounds" role="tabpanel" hidden>
+        <div class="hint">Find a video, pull its sound out, keep it. Runs <code>yt-dlp</code> and
+          <code>ffmpeg</code> on the machine the orchestrator runs on. Check a sound's licence before
+          you ship it.</div>
+        <div id="snd-status" class="snd-status"></div>
+        <label for="snd-q">What should it sound like?</label>
+        <div class="snd-search">
+          <input id="snd-q" placeholder="e.g. rain on a tin roof, 8-bit victory jingle"
+            onkeydown="if (event.key === 'Enter') sndSearch()">
+          <button id="snd-go" class="primary" onclick="sndSearch()">Search</button>
+        </div>
+        <div class="snd-opts">
+          <label title="Adds &quot;AI generated&quot; to the search"><input type="checkbox"
+            id="snd-ai" checked> AI-generated only</label>
+          <label>Save as <select id="snd-fmt">
+            <option value="mp3">mp3</option><option value="wav">wav</option>
+            <option value="m4a">m4a</option><option value="opus">opus</option>
+            <option value="flac">flac</option></select></label>
+          <label title="Leave out videos longer than this">Up to <select id="snd-len">
+            <option value="5">5 min</option><option value="10">10 min</option>
+            <option value="20">20 min</option><option value="30">30 min</option>
+            <option value="60" selected>60 min</option></select></label>
+        </div>
+        <div id="snd-msg" class="form-msg"></div>
+        <div id="snd-results" class="snd-list"></div>
+        <label>Library</label>
+        <div id="snd-lib" class="snd-list"></div>
+      </div>
+
+      <!-- Đọc thành tiếng (Kokoro, chạy trên máy này). Lần đầu phải tải giọng (350 MB) — nút
+           Download nằm ngay trong tab. -->
+      <div id="tts-modal" class="page-sec page-col form-card" data-sub="speech" role="tabpanel" hidden>
+        <div class="hint">English text to natural speech, made on this machine with Kokoro
+          (Apache-2.0) — nothing is sent anywhere. Speech goes to a temp folder and is cleared when
+          the computer restarts.</div>
+        <div id="tts-status" class="snd-status"></div>
+        <label for="tts-text">What should it say?</label>
+        <textarea id="tts-text" rows="5" maxlength="3000"
+          placeholder="e.g. Could you tell me the way to the station, please?"></textarea>
+        <div class="snd-opts">
+          <label>Voice <select id="tts-voice"></select></label>
+          <label title="Slower is easier to follow when you are learning">Speed <select id="tts-speed">
+            <option value="0.7">slow</option><option value="0.85">a little slow</option>
+            <option value="1" selected>normal</option><option value="1.15">a little fast</option>
+            <option value="1.3">fast</option></select></label>
+        </div>
+        <div class="spawn-actions ai-actions">
+          <button id="tts-go" class="primary" onclick="ttsSpeak()">Speak</button>
+        </div>
+        <div id="tts-msg" class="form-msg"></div>
+        <audio id="tts-audio" controls hidden></audio>
+      </div>
+
+      <!-- Library: mọi thứ người dùng đã giữ lại (ảnh, tiếng) ở một chỗ. -->
+      <div id="lib-drawer" class="page-sec page-col form-card" data-sub="library" role="tabpanel" hidden>
+        <div id="lib-agents" class="hint"></div>
+        <div id="lib-msg" class="form-msg"></div>
+        <section>
+          <div class="lib-head"><h4>Sounds <span id="lib-n-snd" class="hint"></span></h4>
+            <span class="spacer"></span>
+            <button class="secondary" onclick="libPick()"
+              title="Add an mp3 from this computer — you can cut it before it is kept">Upload mp3</button>
+            <input id="lib-file" type="file" accept=".mp3,audio/mpeg" hidden onchange="libUpload(this)"></div>
+          <div id="lib-snd" class="snd-list"></div>
+        </section>
+        <section>
+          <div class="lib-head"><h4>Images <span id="lib-n-img" class="hint"></span></h4></div>
+          <div id="lib-img" class="img-grid"></div>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <section id="settings-view" class="page" hidden>
+    <div class="page-wrap">
+      <div class="page-head"><h1>Settings</h1></div>
+      <div class="set-cols">
+        <nav class="set-nav" aria-label="Settings sections">
+          <button data-sub="connections" onclick="mcpOpen()">
+            <svg class="ic"><use href="#i-plug"/></svg> Connections</button>
+          <button id="tools-item" data-sub="tools" onclick="toolsOpen()">
+            <svg class="ic"><use href="#i-wrench"/></svg> Media tools</button>
+          <button data-sub="performance" onclick="perfOpen()"
+            title="See what is using this computer's CPU and memory">
+            <svg class="ic"><use href="#i-gauge"/></svg> Performance</button>
+          <button data-sub="removed" onclick="unregOpen()"
+            title="Agents you unregistered that still leave runs and transcripts behind">
+            <svg class="ic"><use href="#i-trash"/></svg> Removed agents</button>
+          <button data-sub="general" onclick="openPage('settings', 'general')">
+            <svg class="ic"><use href="#i-theme"/></svg> General</button>
+        </nav>
+        <div class="set-body">
+          <!-- MCP servers: đăng ký server MCP HTTP cho MỌI session (scope user, ghi thẳng vào
+               ~/.claude.json). Không thuộc workspace nào. -->
+          <section id="mcp-modal" class="page-sec form-card" data-sub="connections" aria-labelledby="mcp-title">
+            <h3 id="mcp-title">Connections</h3>
+            <div class="hint">Tool servers registered for <b>every</b> session on this machine, in every
+              CLI installed here (<span id="mcp-clis">claude</span>) — the same user scope
+              <code>claude mcp add</code> / <code>agy mcp add</code> write to,
+              but without putting your token on a command line.</div>
+            <label>Built into the orchestrator</label>
+            <div id="mcp-builtins" class="mcp-list"></div>
+            <label>Your servers</label>
+            <div id="mcp-list" class="mcp-list"></div>
+            <label>Add a server</label>
+            <input id="mcp-name" placeholder="name, e.g. story-studio" autocomplete="off" spellcheck="false">
+            <input id="mcp-url" placeholder="https://host/mcp" autocomplete="off" spellcheck="false">
+            <input id="mcp-token" type="password" autocomplete="off" spellcheck="false"
+              placeholder="bearer token — leave empty if the server needs none">
+            <div class="hint">The server is contacted with <code>tools/list</code> before anything is
+              written. A server that refuses leaves every config untouched.</div>
+            <div class="spawn-actions ai-actions">
+              <button class="secondary" onclick="mcpTest()">Test</button>
+              <button class="primary" onclick="mcpAdd()">Add</button>
+            </div>
+            <div id="mcp-msg" class="form-msg"></div>
+          </section>
+
+          <!-- Tools: ffmpeg & co. có trên PATH của tiến trình orchestrator chưa. -->
+          <section id="tools-modal" class="page-sec form-card" data-sub="tools" aria-labelledby="tools-title" hidden>
+            <h3 id="tools-title">Media tools <span id="tools-n" class="tools-n"></span>
+              <span class="spacer"></span>
+              <button class="secondary" onclick="toolsOpen()">Re-check</button></h3>
+            <div class="hint">Agents edit video and audio by running these commands in their own terminal,
+              so they have to be installed on the machine running the orchestrator — nothing here ships
+              with it. Install what is missing, then press <b>Re-check</b>.</div>
+            <div id="tools-list" class="tools-list"></div>
+            <div id="tools-msg" class="form-msg"></div>
+          </section>
+
+          <!-- Performance: CPU/RAM của máy, của server và từng tiến trình agent — máy chậm thì biết vì đâu. -->
+          <section id="perf-modal" class="page-sec form-card" data-sub="performance" aria-labelledby="perf-title" hidden>
+            <h3 id="perf-title">Performance</h3>
+            <div id="perf-tips" class="perf-tips" aria-live="polite"></div>
+            <div id="perf-sum" class="perf-sum"></div>
+            <table class="perf-table">
+              <thead><tr><th>Agent</th><th>What</th><th>CPU</th><th>Memory</th><th>Running for</th></tr></thead>
+              <tbody id="perf-rows"></tbody>
+            </table>
+            <div id="perf-msg" class="form-msg"></div>
+          </section>
+
+          <!-- Agent đã gỡ mà runs/signals/transcript còn nằm lại — xoá hẳn ở đây. -->
+          <section id="unreg-modal" class="page-sec form-card" data-sub="removed" aria-labelledby="unreg-title" hidden>
+            <h3 id="unreg-title">Removed agents
+              <span class="spacer"></span>
+              <button id="unreg-all" class="danger" onclick="unregDelete()" hidden>Delete all</button></h3>
+            <div class="hint">Unregister keeps an agent's runs, signals and transcript. Deleting here removes
+              them for good. Signals it sent, its role SKILL file in the project folder and what you typed
+              in the CLI's own history file stay.</div>
+            <table class="perf-table unreg-table">
+              <thead><tr><th>Agent</th><th>Last active</th><th>Runs</th><th>Transcript</th><th></th></tr></thead>
+              <tbody id="unreg-rows"></tbody>
+            </table>
+            <div id="unreg-msg" class="form-msg" aria-live="polite"></div>
+          </section>
+
+          <section id="gen-sec" class="page-sec form-card" data-sub="general" aria-labelledby="gen-title" hidden>
+            <h3 id="gen-title">General</h3>
+            <label>Theme</label>
+            <div id="theme-pick" class="tabs" role="radiogroup" aria-label="Theme">
+              <button class="tab" role="radio" data-theme-pref="auto" onclick="setTheme('auto')"
+                title="Follow this computer's setting">Auto</button>
+              <button class="tab" role="radio" data-theme-pref="light" onclick="setTheme('light')">Light</button>
+              <button class="tab" role="radio" data-theme-pref="dark" onclick="setTheme('dark')">Dark</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <!-- PANE · một workspace (chỉ hiện khi ?pane=1) -->
   <div id="ws-detail-view" hidden>
@@ -1512,35 +1739,6 @@
   <div id="dr-body" class="drawer-body"></div>
 </aside>
 
-<!-- Library: mọi thứ người dùng đã giữ lại (ảnh, tiếng) ở một chỗ. Dùng lại khung drawer của
-     transcript; modal (z 30) như Edit sound vẫn nổi lên trên nó. -->
-<div id="lib-overlay" class="drawer-overlay" onclick="libClose()"></div>
-<aside id="lib-drawer" class="drawer" aria-labelledby="lib-title">
-  <div class="drawer-head">
-    <h3 id="lib-title">Library</h3>
-    <div class="spacer"></div>
-    <button class="secondary" onclick="libClose()">Close</button>
-  </div>
-  <div class="drawer-body">
-    <div id="lib-agents" class="hint"></div>
-    <div id="lib-msg" class="form-msg"></div>
-    <section>
-      <div class="lib-head"><h4>Sounds <span id="lib-n-snd" class="hint"></span></h4>
-        <span class="spacer"></span>
-        <button class="secondary" onclick="libPick()"
-          title="Add an mp3 from this computer — you can cut it before it is kept">Upload mp3</button>
-        <input id="lib-file" type="file" accept=".mp3,audio/mpeg" hidden onchange="libUpload(this)"></div>
-      <div id="lib-snd" class="snd-list"></div>
-    </section>
-    <section>
-      <div class="lib-head"><h4>Images <span id="lib-n-img" class="hint"></span></h4></div>
-      <div id="lib-img" class="img-grid"></div>
-    </section>
-  </div>
-</aside>
-
-<!-- MCP servers: register an HTTP MCP server for every claude session (user scope, written
-     straight into ~/.claude.json). Not tied to any workspace, so it opens from the topbar. -->
 <!-- New agent. Bấm nền KHÔNG đóng: đây là form, bấm trượt ra ngoài là mất hết chữ đã gõ. -->
 <div id="na-modal" class="modal-overlay" hidden>
   <form class="modal form-card na" role="dialog" aria-modal="true" aria-labelledby="na-title"
@@ -1660,91 +1858,6 @@
   </form>
 </div>
 
-<div id="mcp-modal" class="modal-overlay" onclick="if (event.target === this) mcpClose()" hidden>
-  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="mcp-title">
-    <h3 id="mcp-title"><svg class="ic"><use href="#i-plug"/></svg> MCP servers
-      <span class="spacer"></span>
-      <button class="icon-btn" onclick="mcpClose()" title="Close">
-        <svg class="ic"><use href="#i-x"/></svg></button></h3>
-    <div class="hint">Registered for <b>every</b> session on this machine, in every CLI installed
-      here (<span id="mcp-clis">claude</span>) — the same user scope
-      <code>claude mcp add</code> / <code>agy mcp add</code> write to,
-      but without putting your token on a command line.</div>
-    <label>Built into the orchestrator</label>
-    <div id="mcp-builtins" class="mcp-list"></div>
-    <label>Your servers</label>
-    <div id="mcp-list" class="mcp-list"></div>
-    <label>Add a server</label>
-    <input id="mcp-name" placeholder="name, e.g. story-studio" autocomplete="off" spellcheck="false">
-    <input id="mcp-url" placeholder="https://host/mcp" autocomplete="off" spellcheck="false">
-    <input id="mcp-token" type="password" autocomplete="off" spellcheck="false"
-      placeholder="bearer token — leave empty if the server needs none">
-    <div class="hint">The server is contacted with <code>tools/list</code> before anything is
-      written. A server that refuses leaves every config untouched.</div>
-    <div class="spawn-actions ai-actions">
-      <button class="secondary" onclick="mcpTest()">Test</button>
-      <button class="primary" onclick="mcpAdd()">Add</button>
-    </div>
-    <div id="mcp-msg" class="form-msg"></div>
-  </div>
-</div>
-
-<!-- Tools: ffmpeg & co. có trên PATH của tiến trình orchestrator chưa. Không thuộc workspace
-     nào nên mở từ topbar, như MCP. -->
-<div id="tools-modal" class="modal-overlay" onclick="if (event.target === this) toolsClose()" hidden>
-  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="tools-title">
-    <h3 id="tools-title"><svg class="ic"><use href="#i-wrench"/></svg> Media tools
-      <span class="spacer"></span>
-      <button class="icon-btn" onclick="toolsClose()" title="Close">
-        <svg class="ic"><use href="#i-x"/></svg></button></h3>
-    <div class="hint">Agents edit video and audio by running these commands in their own terminal,
-      so they have to be installed on the machine running the orchestrator — nothing here ships
-      with it. Install what is missing, then press <b>Re-check</b>.</div>
-    <div id="tools-list"></div>
-    <div class="spawn-actions ai-actions">
-      <button class="secondary" onclick="toolsOpen()">Re-check</button>
-    </div>
-    <div id="tools-msg" class="form-msg"></div>
-  </div>
-</div>
-
-<!-- Sounds: tìm video, tách tiếng bằng yt-dlp. Mở từ dòng yt-dlp trong Media tools — chỉ hiện
-     nút khi yt-dlp đã cài, nên không chiếm một nút topbar riêng. -->
-<div id="snd-modal" class="modal-overlay" onclick="if (event.target === this) sndClose()" hidden>
-  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="snd-title">
-    <h3 id="snd-title"><svg class="ic"><use href="#i-music"/></svg> Sounds
-      <span class="spacer"></span>
-      <button class="icon-btn" onclick="sndClose()" title="Close">
-        <svg class="ic"><use href="#i-x"/></svg></button></h3>
-    <div class="hint">Find a video, pull its sound out, keep it. Runs <code>yt-dlp</code> and
-      <code>ffmpeg</code> on the machine the orchestrator runs on. Check a sound's licence before
-      you ship it.</div>
-    <div id="snd-status" class="snd-status"></div>
-    <label for="snd-q">What should it sound like?</label>
-    <div class="snd-search">
-      <input id="snd-q" placeholder="e.g. rain on a tin roof, 8-bit victory jingle"
-        onkeydown="if (event.key === 'Enter') sndSearch()">
-      <button id="snd-go" class="primary" onclick="sndSearch()">Search</button>
-    </div>
-    <div class="snd-opts">
-      <label title="Adds &quot;AI generated&quot; to the search"><input type="checkbox"
-        id="snd-ai" checked> AI-generated only</label>
-      <label>Save as <select id="snd-fmt">
-        <option value="mp3">mp3</option><option value="wav">wav</option>
-        <option value="m4a">m4a</option><option value="opus">opus</option>
-        <option value="flac">flac</option></select></label>
-      <label title="Leave out videos longer than this">Up to <select id="snd-len">
-        <option value="5">5 min</option><option value="10">10 min</option>
-        <option value="20">20 min</option><option value="30">30 min</option>
-        <option value="60" selected>60 min</option></select></label>
-    </div>
-    <div id="snd-msg" class="form-msg"></div>
-    <div id="snd-results" class="snd-list"></div>
-    <label>Library</label>
-    <div id="snd-lib" class="snd-list"></div>
-  </div>
-</div>
-
 <!-- Editor của Sounds: bản nháp vừa tách → chọn đoạn giữ lại → mới vào thư viện. KHÔNG đóng khi
      bấm ra ngoài: một cú click trượt là mất bản nháp phải tách lại. -->
 <div id="sed-modal" class="modal-overlay" hidden>
@@ -1770,111 +1883,6 @@
       <button id="sed-save" class="primary" onclick="sedSave()">Save to library</button>
     </div>
     <audio id="sed-audio" preload="auto"></audio>
-  </div>
-</div>
-
-<!-- Đọc thành tiếng (Kokoro, chạy trên máy này). Mở từ Library; kết quả là một tiếng trong thư
-     viện. Lần đầu phải tải giọng (350 MB) — nút Download nằm ngay trong modal. -->
-<!-- Performance: CPU/RAM của máy, của server và từng tiến trình agent — máy chậm thì biết vì đâu. -->
-<div id="perf-modal" class="modal-overlay" onclick="if (event.target === this) perfClose()" hidden>
-  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="perf-title">
-    <h3 id="perf-title"><svg class="ic"><use href="#i-gauge"/></svg> Performance
-      <span class="spacer"></span>
-      <button class="icon-btn" onclick="perfClose()" title="Close">
-        <svg class="ic"><use href="#i-x"/></svg></button></h3>
-    <div id="perf-tips" class="perf-tips" aria-live="polite"></div>
-    <div id="perf-sum" class="perf-sum"></div>
-    <table class="perf-table">
-      <thead><tr><th>Agent</th><th>What</th><th>CPU</th><th>Memory</th><th>Running for</th></tr></thead>
-      <tbody id="perf-rows"></tbody>
-    </table>
-    <div id="perf-msg" class="form-msg"></div>
-  </div>
-</div>
-
-<!-- Unregistered agents: agent đã gỡ mà runs/signals/transcript còn nằm lại — xoá hẳn ở đây. -->
-<div id="unreg-modal" class="modal-overlay" onclick="if (event.target === this) unregClose()" hidden>
-  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="unreg-title">
-    <h3 id="unreg-title"><svg class="ic"><use href="#i-trash"/></svg> Unregistered agents
-      <span class="spacer"></span>
-      <button id="unreg-all" class="danger" onclick="unregDelete()" hidden>Delete all</button>
-      <button class="icon-btn" onclick="unregClose()" title="Close">
-        <svg class="ic"><use href="#i-x"/></svg></button></h3>
-    <div class="hint">Unregister keeps an agent's runs, signals and transcript. Deleting here removes
-      them for good. Signals it sent, its role SKILL file in the project folder and what you typed
-      in the CLI's own history file stay.</div>
-    <table class="perf-table unreg-table">
-      <thead><tr><th>Agent</th><th>Last active</th><th>Runs</th><th>Transcript</th><th></th></tr></thead>
-      <tbody id="unreg-rows"></tbody>
-    </table>
-    <div id="unreg-msg" class="form-msg" aria-live="polite"></div>
-  </div>
-</div>
-
-<div id="tts-modal" class="modal-overlay" onclick="if (event.target === this) ttsClose()" hidden>
-  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="tts-title">
-    <h3 id="tts-title"><svg class="ic"><use href="#i-speak"/></svg> Speak text
-      <span class="spacer"></span>
-      <button class="icon-btn" onclick="ttsClose()" title="Close">
-        <svg class="ic"><use href="#i-x"/></svg></button></h3>
-    <div class="hint">English text to natural speech, made on this machine with Kokoro
-      (Apache-2.0) — nothing is sent anywhere. Speech goes to a temp folder and is cleared when
-      the computer restarts.</div>
-    <div id="tts-status" class="snd-status"></div>
-    <label for="tts-text">What should it say?</label>
-    <textarea id="tts-text" rows="5" maxlength="3000"
-      placeholder="e.g. Could you tell me the way to the station, please?"></textarea>
-    <div class="snd-opts">
-      <label>Voice <select id="tts-voice"></select></label>
-      <label title="Slower is easier to follow when you are learning">Speed <select id="tts-speed">
-        <option value="0.7">slow</option><option value="0.85">a little slow</option>
-        <option value="1" selected>normal</option><option value="1.15">a little fast</option>
-        <option value="1.3">fast</option></select></label>
-    </div>
-    <div class="spawn-actions ai-actions">
-      <button id="tts-go" class="primary" onclick="ttsSpeak()">Speak</button>
-    </div>
-    <div id="tts-msg" class="form-msg"></div>
-    <audio id="tts-audio" controls hidden></audio>
-  </div>
-</div>
-
-<!-- Images: tool generate_image của agy, vẽ bằng tài khoản Google đang login ở agy. Không gắn
-     với workspace nào nên mở từ topbar, như MCP. -->
-<div id="img-modal" class="modal-overlay" onclick="if (event.target === this) imgClose()" hidden>
-  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="img-title">
-    <h3 id="img-title"><svg class="ic"><use href="#i-image"/></svg> Images
-      <span class="spacer"></span>
-      <button class="icon-btn" onclick="imgClose()" title="Close">
-        <svg class="ic"><use href="#i-x"/></svg></button></h3>
-    <div class="hint">Drawn by the Antigravity CLI (<code>agy</code>) on the Google account it is
-      signed in with — no API key, usually in under a minute.</div>
-    <label>Describe the image</label>
-    <textarea id="img-prompt" rows="3"
-      placeholder="e.g. a red apple on a wooden table, soft morning light"></textarea>
-    <label for="img-ratio">Shape</label>
-    <select id="img-ratio">
-      <option value="1:1">Square · 1:1</option>
-      <option value="4:3">Landscape · 4:3</option>
-      <option value="3:2">Landscape · 3:2</option>
-      <option value="16:9">Wide · 16:9</option>
-      <option value="3:4">Portrait · 3:4</option>
-      <option value="2:3">Portrait · 2:3</option>
-      <option value="9:16">Tall · 9:16</option>
-    </select>
-    <label>Reference images · up to 3</label>
-    <div id="img-refs" class="img-refs"></div>
-    <div class="hint">The new image edits, combines or follows these — keep the same character
-      across pictures, or change one detail of an image. Pick them in the gallery with
-      <b>Reference</b>, or add your own.</div>
-    <input id="img-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden
-      onchange="imgUpload(this)">
-    <div class="spawn-actions ai-actions">
-      <button class="secondary" onclick="imgPick()">Add image…</button>
-      <button id="img-go" class="primary" onclick="imgGenerate()">Generate</button>
-    </div>
-    <div id="img-msg" class="form-msg"></div>
-    <div id="img-grid" class="img-grid"></div>
   </div>
 </div>
 
