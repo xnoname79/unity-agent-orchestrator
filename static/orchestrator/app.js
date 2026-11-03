@@ -2274,21 +2274,21 @@ function renderAttn(sessions, signals) {
   const box = $("attn");
   const nameOf = (ref) => (sessions.find((x) => x.id === ref || x.name === ref) || {}).name || ref || "you";
   const sigs = waitingApproval(signals);
-  const needs = needsYou(signals);
-  const who = sessions.filter((x) => needs.has(x.id));
-  const n = sigs.length + who.length;
+  // "Needs you" của một agent CHÍNH LÀ signal chờ duyệt gửi tới nó — đếm signal thôi, không đếm đôi.
+  const n = sigs.length;
   box.hidden = !n;
   if (!n) { box.innerHTML = ""; return; }
   box.innerHTML = `<span class="attn-n">${ic("bell", "sm")} ${n} need${n === 1 ? "s" : ""} you</span>`
-    + sigs.map((sg) => `<span class="attn-item" data-sig="${sg.id}">
+    + sigs.map((sg) => {
+      const to = sessions.find((x) => x.id === sg.to_session || x.name === sg.to_session);
+      return `<span class="attn-item" data-sig="${sg.id}">
         <b>${esc(nameOf(sg.from_session))} → ${esc(nameOf(sg.to_session))}:</b>
         <span class="attn-msg" title="${esc(sg.message)}">${esc(sg.message)}</span>
         <span class="attn-age">· ${ago(sg.created_at)}</span>
         <button class="attn-ok" onclick="act('/api/signals/${sg.id}/approve')">Approve</button>
-        <button class="secondary" onclick="act('/api/signals/${sg.id}/deny')">Deny</button></span>`).join("")
-    + who.map((x) => `<span class="attn-item">
-        <b>${esc(x.name)}</b> needs you
-        <button class="attn-show" onclick="switchTab('agents'); focusNode('s:${esc(x.id)}')">Show</button></span>`).join("");
+        <button class="secondary" onclick="act('/api/signals/${sg.id}/deny')">Deny</button>
+        ${to ? `<button class="attn-show" onclick="switchTab('agents'); focusNode('s:${esc(to.id)}')">Show</button>` : ""}</span>`;
+    }).join("");
 }
 
 function renderCanvas(sessions, signals) {
