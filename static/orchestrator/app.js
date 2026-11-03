@@ -3274,6 +3274,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("snd-modal").hidden) sndClose();
   if (e.key === "Escape" && !$("tools-modal").hidden) toolsClose();
   if (e.key === "Escape" && !$("na-modal").hidden) newAgentClose();
+  if (e.key === "Escape" && !$("td-modal").hidden) teamDelegateClose();
 });
 
 // Nút trong danh sách: tên đi qua data-attribute, không qua inline onclick.
@@ -4576,49 +4577,66 @@ async function teamLoad() {
 }
 
 // Ô nào đang gõ / select nào đang mở thì KHÔNG dựng lại: SSE refresh liên tục, dựng lại là mất chữ.
+// Modal Delegate nằm ngoài #tab-team nhưng select người nhận của nó cũng do teamForms() dựng.
 const teamEditing = () => {
   const a = document.activeElement;
-  return a && $("tab-team").contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+  return a && ($("tab-team").contains(a) || $("td-modal").contains(a)) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
 };
+
+// Cột của bảng theo trạng thái. cancelled chỉ hiện khi lọc "All", nằm chung cột Failed.
+const TB_COLS = [["building", "Building", ["queued", "running", "fixing"]], ["verifying", "Verifying", ["verifying"]],
+                 ["passed", "Passed", ["passed"]], ["failed", "Failed", ["failed", "cancelled"]]];
 
 function teamRender() {
   if (!TEAM) return;
+  if (!teamEditing()) teamForms();
   const subs = TEAM.subtasks.filter((s) => s.kind !== "reflect");
   const day = (s) => secsSince(s.ended_at || s.updated_at) < 86400;
   const n = (f) => subs.filter(f).length;
   $("team-stats").innerHTML = [
-    ["live", n((s) => ["queued", "running", "fixing"].includes(s.status)), "Working"],
-    ["live", n((s) => s.status === "verifying"), "Verifying"],
-    ["ok", n((s) => s.status === "passed" && day(s)), "Passed · 24 h"],
-    ["bad", n((s) => s.status === "failed" && day(s)), "Failed · 24 h"],
-    ["warn", n((s) => s.attempts > 0 && day(s)), "Sent back to fix · 24 h"],
-  ].map(([c, v, l]) => `<div class="team-stat ${v ? c : ""}"><b>${v}</b><span>${l}</span></div>`).join("");
+    ["live", n((s) => ["queued", "running", "fixing"].includes(s.status)), "working"],
+    ["live", n((s) => s.status === "verifying"), "verifying"],
+    ["ok", n((s) => s.status === "passed" && day(s)), "passed · 24 h"],
+    ["bad", n((s) => s.status === "failed" && day(s)), "failed · 24 h"],
+    ["warn", n((s) => s.attempts > 0 && day(s)), "sent back to fix · 24 h"],
+  ].map(([c, v, l]) => `<span class="team-stat ${v ? c : ""}"><b>${v}</b>${l}</span>`).join("");
 
   const f = $("team-filter").value;
-  const show = subs.filter((s) => f === "all" ? true : f === "failed" ? s.status === "failed"
-    : ST_ACTIVE.includes(s.status) || secsSince(s.ended_at || s.updated_at) < 6 * 3600);
+  const dir = $("team-dir").hidden ? "" : $("team-dir").value;
+  const show = subs.filter((s) => (!dir || s.director_id === dir) && (f === "all" ? true
+    : f === "failed" ? s.status === "failed"
+    : s.status !== "cancelled" && (ST_ACTIVE.includes(s.status) || secsSince(s.ended_at || s.updated_at) < 6 * 3600)));
   teamView = show;
-  const byDir = {};
-  show.forEach((s, i) => (byDir[s.director_id] = byDir[s.director_id] || []).push([s, i]));
-  const dirs = TEAM.directors.filter((d) => byDir[d.id]);
-  const orphan = Object.keys(byDir).filter((id) => !TEAM.directors.some((d) => d.id === id));
-  $("team-lanes").innerHTML = [...dirs.map((d) => teamLane(d, byDir[d.id])),
-    ...orphan.map((id) => teamLane({ id, name: "removed agent", status: "stopped", active: 0 }, byDir[id]))].join("")
-    || `<div class="empty">Nothing delegated ${f === "active" ? "recently" : "yet"}. Spawn an agent with the
-        <b>director</b> template and ask it for work — it splits the job and delegates here — or use
-        <b>Delegate</b> below.</div>`;
+  keepOpen($("team-board"), () => {
+    $("team-board").innerHTML = TB_COLS.map(([k, label, sts]) => {
+      const cards = show.map((s, i) => [s, i]).filter(([s]) => sts.includes(s.status));
+      return `<div class="tb-col"><div class="tb-head"><span class="tb-dot ${k}"></span>${label}
+          <span class="n">${cards.length}</span></div>
+        ${cards.map(([s, i]) => stCard(s, i)).join("") || `<div class="tb-empty">${
+          k === "building" && !subs.length ? "Nothing delegated yet. Ask a <b>director</b> agent for work, or use <b>Delegate a task</b>." : "None"}</div>`}</div>`;
+    }).join("");
+  });
 
-  if (!teamEditing()) teamForms();
-  $("team-decisions").innerHTML = TEAM.decisions.map((d) => `<tr>
-      <td title="${esc(d.ts)}">${esc(shortDateTime(d.ts).slice(5, 16))}</td>
-      <td>${esc(d.session_name || "?")}${d.subtask_id ? ` <span class="hint">${esc(d.subtask_id)}</span>` : ""}</td>
-      <td>${esc(d.decision)}</td>
-      <td>${esc(d.reason)}${d.evidence ? `<details><summary>evidence</summary><pre class="tm-pre">${esc(d.evidence)}</pre></details>` : ""}</td>
-    </tr>`).join("") || `<tr><td colspan="4" class="hint">No decisions logged yet. Directors and sub-agents log them with record_decision.</td></tr>`;
+  keepOpen($("team-decisions"), () => {
+    $("team-decisions").innerHTML = TEAM.decisions.map((d) => `<li data-st="d${d.id}">
+        <div class="when" title="${esc(d.ts)}">${esc(shortDateTime(d.ts).slice(5, 16))} · ${esc(d.session_name || "?")}${d.subtask_id ? ` · ${esc(d.subtask_id)}` : ""}</div>
+        <b>${esc(d.decision)}</b>
+        ${d.reason ? `<div class="why">${esc(d.reason)}</div>` : ""}
+        ${d.evidence ? `<details><summary>Evidence</summary><pre class="tm-pre">${esc(d.evidence)}</pre></details>` : ""}
+      </li>`).join("") || `<li class="hint">No decisions logged yet. Directors and sub-agents log them with record_decision.</li>`;
+  });
   $("tg-edges").innerHTML = TEAM.edges.map((e, i) => `<span class="tg-edge">${esc(e.from_role)} → ${esc(e.to_role)}
       <button title="Remove this edge" onclick="teamEdgeDel(${i})">${ic("x", "sm")}</button></span>`).join("")
     || `<span class="hint">No edges. ${TEAM.graph_mode === "enforced" ? "Enforced with no edges: agents cannot signal each other." : "Open: any agent may signal any other."}</span>`;
-  $("team-proposals").innerHTML = TEAM.proposals.map((p, i) => `<div class="tp">
+  const ne = TEAM.edges.length;
+  $("trs-graph").textContent = `${TEAM.graph_mode === "enforced" ? "Enforced" : "Open"} · ${ne} link${ne === 1 ? "" : "s"}`;
+  $("trs-models").textContent = TEAM_ROLES.map(([r]) => `${{ implement: "Builder", investigate: "Investigator", verify: "Verifier" }[r]} ${
+    TEAM.models[r] ? modelLabel(TEAM.models[r]) : "Claude"}`).join(" · ");
+  const np = TEAM.proposals.filter((p) => p.status === "pending").length;
+  $("trs-props").textContent = np ? `${np} suggestion${np === 1 ? "" : "s"} to review` : "Reflect on failed runs";
+  $("trs-props").classList.toggle("warn", !!np);
+  keepOpen($("team-proposals"), () => {
+    $("team-proposals").innerHTML = TEAM.proposals.map((p, i) => `<div class="tp" data-st="p${p.id}">
       <div class="st-top">${badge(p.status, { pending: "b-amber", approved: "b-green", rejected: "b-gray" }[p.status])}
         <b title="${esc(p.path)}">${esc(p.target.replace(/^role:.*/, "role SKILL").replace("playbook:", "playbook · "))}</b>
         <span class="hint">${esc(shortDateTime(p.created_at).slice(5, 16))}</span></div>
@@ -4627,14 +4645,7 @@ function teamRender() {
       ${p.status === "pending" ? `<div class="st-acts"><button class="primary" onclick="teamDecide(${i}, true)">Approve and write</button>
         <button class="secondary" onclick="teamDecide(${i}, false)">Reject</button></div>` : ""}
     </div>`).join("") || `<span class="hint">No proposals yet.</span>`;
-}
-
-function teamLane(d, rows) {
-  return `<div><div class="team-lane-head">
-      <span class="status-dot dot-${esc(d.status)}"></span><b>${esc(d.name)}</b>
-      ${d.model ? `<span class="eng-chip">${esc(d.model)}</span>` : ""}
-      <span class="hint">${d.active} active · up to ${TEAM.max_active} at once${d.cwd ? " · " + esc(d.cwd) : ""}</span>
-    </div><div class="team-cards">${rows.map(([s, i]) => stCard(s, i)).join("")}</div></div>`;
+  });
 }
 
 function stStages(s) {
@@ -4647,49 +4658,69 @@ function stStages(s) {
   return ST_STAGES.map((_, j) => j < at ? "done" : j === at ? "now" : "");
 }
 
+// Vài dòng đầu cho ô tóm tắt trên card; `lệnh` trong backtick hiện mono.
+const stLines = (t, k) => String(t || "").split("\n").map((l) => l.trim()).filter(Boolean).slice(0, k)
+  .map((l) => esc(l).replace(/`([^`]+)`/g, "<code>$1</code>")).join("<br>");
+
 // sc = nơi card nằm: "t" tab Team (teamView), "i" panel của director (inspView). Nút gọi theo
 // (vị trí, nơi) để hai danh sách khác thứ tự không bấm nhầm việc của nhau.
 function stCard(s, i, sc = "t") {
   const v = s.verdict || {};
   const live = ST_ACTIVE.includes(s.status);
+  const gone = s.discarded || s.status === "cancelled";
   const stages = stStages(s);
-  const label = (j) => j === 1 && s.status === "fixing" ? `Fix ${s.attempts}/${s.max_attempts}` : ST_STAGES[j];
   const lastLine = s.last ? `${EV_ICON[s.last.kind] || "·"} <span class="s" title="${esc(s.last.summary)}">${esc(s.last.summary)}</span>`
     : `<span class="s">${live ? "starting…" : esc(s.reason || (s.status === "passed" ? "verified" : s.status))}</span>`;
-  const since = live ? s.created_at : "";
-  return `<div class="st-card s-${esc(s.status)}" data-st="${esc(s.id)}">
-    <div class="st-top">${badge(esc(s.status), ST_BADGE[s.status])}
-      <span class="eng-chip">${esc(s.kind === "handoff" ? "handoff" : s.playbook)}</span>
-      <b title="${esc(s.title || s.brief)}">${esc(s.title || s.brief.split("\n")[0] || s.id)}</b>
-      <span class="hint st-age" data-since="${esc(since)}">${since ? fmtAge(secsSince(since)) : ""}</span></div>
-    <div class="st-pipe">${stages.map((c, j) => `<span class="${c}">${label(j)}</span>`).join("")}</div>
-    <div class="st-live" id="${sc}stl-${i}">${lastLine}</div>
-    <div class="st-meta">
-      <span title="Builder session">${esc(s.session_name || "—")}${s.model ? " · " + esc(s.model) : ""}</span>
-      ${s.verifier_name ? `<span title="Current verifier session">✓ ${esc(s.verifier_name)}</span>` : ""}
-      ${s.branch ? `<span title="${esc(s.worktree)}"><code>${esc(s.branch)}</code>${s.discarded ? " (discarded)" : ""}</span>`
-        : s.kind === "subagent" && s.playbook !== "investigate" ? `<span title="The director's folder is not a git repo, so this sub-agent shared it">no worktree</span>` : ""}
-      <span>${s.runs} run${s.runs === 1 ? "" : "s"} · ${(s.tokens || 0).toLocaleString()} tokens</span>
-      ${s.attempts ? `<span>${s.attempts}/${s.max_attempts} checks failed</span>` : ""}
-    </div>
-    <details><summary>Brief and Done means</summary><pre>${esc(s.brief)}</pre>
-      ${s.done_when ? `<pre>Done means:\n${esc(s.done_when)}</pre>` : ""}</details>
-    ${v.verdict ? `<div class="st-verdict ${v.verdict === "PASS" ? "pass" : "fail"}">
-        <b>${v.verdict === "PASS" ? "Verified" : "Verifier: FAIL"}</b>${v.sha ? ` at <code>${esc(v.sha.slice(0, 10))}</code>` : ""}
-        <details><summary>${v.verdict === "PASS" ? "evidence" : "findings and evidence"}</summary>
-          <pre>${esc([v.findings, v.evidence].filter(Boolean).join("\n\n— evidence —\n"))}</pre></details></div>` : ""}
-    ${s.report ? `<details><summary>Builder's report</summary><pre>${esc(s.report)}</pre></details>` : ""}
-    <div class="st-acts">
-      ${s.session_id ? `<button class="secondary" onclick="teamRun(${i}, 'b', '${sc}')" title="Open the builder's latest run">Builder run</button>` : ""}
-      ${s.verifier_id ? `<button class="secondary" onclick="teamRun(${i}, 'v', '${sc}')" title="Open the verifier's latest run">Verifier run</button>` : ""}
-      ${s.branch && !s.discarded ? `<button class="secondary" onclick="teamDiff(${i}, '${sc}')">Diff</button>` : ""}
-      ${s.status === "passed" && s.branch && !s.discarded ? `<button onclick="teamCopyMerge(${i}, '${sc}')" title="Copy the merge command">Copy merge</button>` : ""}
-      ${live ? `<button class="danger" onclick="teamCancel(${i}, '${sc}')">Cancel</button>` : ""}
-      ${!live && s.kind !== "reflect" && s.status !== "cancelled" && !s.discarded ? `<button onclick="teamReverify(${i}, '${sc}')"
-          title="Run one more independent check — e.g. after you fixed something by hand">Verify again</button>` : ""}
-      ${!live && s.worktree && !s.discarded ? `<button class="secondary" onclick="teamDiscard(${i}, '${sc}')"
-          title="Remove the worktree and delete its branch">Discard</button>` : ""}
-    </div></div>`;
+  const since = live ? s.created_at : s.ended_at || s.updated_at;
+  const where = s.branch ? `<span class="st-br" title="${esc(s.worktree)}">${esc(s.branch)}${s.discarded ? " · discarded" : ""}</span>`
+    : s.playbook === "investigate" || s.kind === "reflect" ? `<span class="st-br">read-only</span>`
+    : s.kind === "subagent" ? `<span class="st-br" title="The director's folder is not a git repo, so this sub-agent shared it">no worktree</span>` : "";
+  const multi = sc === "i" || !$("team-dir").hidden;
+  const attempt = live ? `Attempt ${s.attempts + 1} of ${s.max_attempts}`
+    : s.status === "failed" ? `${s.attempts} of ${s.max_attempts} attempts used`
+    : s.status === "passed" ? `Passed on attempt ${s.attempts + 1}` : "";
+  const btn = (cls, fn, label, tip) => `<button class="${cls}" onclick="${fn}"${tip ? ` title="${tip}"` : ""}>${label}</button>`;
+  const canDiff = s.branch && !s.discarded;
+  const canReverify = !live && s.kind !== "reflect" && !gone;
+  const primary = live ? btn("danger", `teamCancel(${i}, '${sc}')`, "Cancel")
+    : s.status === "passed" && canDiff ? btn("secondary", `teamDiff(${i}, '${sc}')`, "Diff")
+    : s.status === "failed" && canReverify ? btn("", `teamReverify(${i}, '${sc}')`, "Verify again",
+      "Run one more independent check — e.g. after you fixed something by hand") : "";
+  const sec = [
+    s.session_id && btn("st-sec", `teamRun(${i}, 'b', '${sc}')`, "Builder run", "Open the builder's latest run"),
+    s.verifier_id && btn("st-sec", `teamRun(${i}, 'v', '${sc}')`, "Verifier run", "Open the verifier's latest run"),
+    canDiff && !(s.status === "passed") && btn("st-sec", `teamDiff(${i}, '${sc}')`, "Diff"),
+    s.status === "passed" && canDiff && btn("st-sec", `teamCopyMerge(${i}, '${sc}')`, "Copy merge", "Copy the merge command"),
+    canReverify && s.status !== "failed" && btn("st-sec", `teamReverify(${i}, '${sc}')`, "Verify again",
+      "Run one more independent check — e.g. after you fixed something by hand"),
+    !live && s.worktree && !s.discarded && btn("st-sec", `teamDiscard(${i}, '${sc}')`, "Discard", "Remove the worktree and delete its branch"),
+  ].filter(Boolean).join("");
+  return `<article class="st-card s-${esc(s.status)}" data-st="${esc(s.id)}">
+    <div class="st-top">${sc === "i" ? badge(esc(s.status), ST_BADGE[s.status]) : ""}
+      <span class="st-chip">${esc(s.kind === "handoff" ? "handoff" : s.playbook)}</span>
+      ${multi && sc !== "i" && s.director_name ? `<span class="st-who" title="Reports to">${esc(s.director_name)}</span>` : ""}
+      ${where}</div>
+    <div class="st-title">${esc(s.title || s.brief.split("\n")[0] || s.id)}</div>
+    ${live || s.status === "cancelled" ? `<div class="st-live" id="${sc}stl-${i}">${lastLine}</div>` : ""}
+    ${live ? `<div class="st-prog" title="${ST_STAGES.map((l, j) => l + (stages[j] === "now" ? " (now)" : "")).join(" → ")}">${
+      stages.map((c) => `<span class="${c}"></span>`).join("")}</div>` : ""}
+    ${s.status === "verifying" && s.done_when ? `<div class="st-box"><div>Done means</div><p>${stLines(s.done_when, 2)}</p></div>` : ""}
+    ${s.status === "failed" && (v.findings || v.evidence || s.reason) ? `<div class="st-box bad"><div>${v.verdict ? "Verifier found" : "Stopped"}</div>
+        <p>${stLines(v.findings || v.evidence || s.reason, 3)}</p></div>` : ""}
+    ${s.status === "passed" && v.verdict === "PASS" ? `<div class="st-ok">Verified${v.sha ? ` at <code>${esc(v.sha.slice(0, 7))}</code>` : ""}</div>
+        <div class="st-note">Director notified${canDiff ? " · waiting to merge" : ""}</div>` : ""}
+    <div class="st-meta"><span>${s.status === "cancelled" && sc !== "i" ? badge("cancelled", "b-gray") : attempt}</span>
+      <span class="st-age" data-since="${esc(since)}"${live ? ` title="Running for"` : ` data-ago="1" title="Finished"`}>${since ? fmtAge(secsSince(since)) + (live ? "" : " ago") : ""}</span></div>
+    <div class="st-acts">${primary}<details><summary>Details</summary><div>
+      ${sec ? `<div class="st-acts">${sec}</div>` : ""}
+      <div class="hint">${esc(s.session_name || "—")}${s.model ? " · " + esc(s.model) : ""}${s.verifier_name ? ` · verifier ${esc(s.verifier_name)}` : ""}
+        · ${s.runs} run${s.runs === 1 ? "" : "s"} · ${(s.tokens || 0).toLocaleString()} tokens${s.worktree ? ` · ${esc(s.worktree)}` : ""}</div>
+      <pre>${esc(s.brief)}</pre>
+      ${s.done_when ? `<pre>Done means:\n${esc(s.done_when)}</pre>` : ""}
+      ${v.verdict ? `<pre>Verifier: ${esc(v.verdict)}${v.sha ? " at " + esc(v.sha.slice(0, 10)) : ""}\n\n${
+        esc([v.findings, v.evidence].filter(Boolean).join("\n\n— evidence —\n"))}</pre>` : ""}
+      ${s.report ? `<pre>Builder's report:\n${esc(s.report)}</pre>` : ""}
+    </div></details></div></article>`;
 }
 
 function diffHtml(text) {
@@ -4707,6 +4738,13 @@ function teamForms() {
   const was = keep("td-director");
   $("td-director").innerHTML = dirOpts || `<option value="">No agents in this workspace</option>`;
   if (was) $("td-director").value = was;
+  // Lọc theo director chỉ có nghĩa khi hơn một người đang giao việc.
+  const givers = [...new Set(TEAM.subtasks.filter((s) => s.kind !== "reflect").map((s) => s.director_id))];
+  const wd = keep("team-dir");
+  $("team-dir").hidden = givers.length < 2;
+  $("team-dir").innerHTML = `<option value="">All directors</option>` + givers.map((id) =>
+    `<option value="${esc(id)}">${esc((TEAM.directors.find((d) => d.id === id) || {}).name || "removed agent")}</option>`).join("");
+  $("team-dir").value = givers.includes(wd) ? wd : "";
   const names = TEAM.directors.map((d) => d.name);
   for (const id of ["tg-from", "tg-to"]) {
     const w = keep(id);
@@ -4750,7 +4788,7 @@ function teamLive(ev) {
 
 setInterval(() => {
   document.querySelectorAll("#tab-team:not([hidden]) .st-age[data-since], #insp-team .st-age[data-since]").forEach((el) => {
-    if (el.dataset.since) el.textContent = fmtAge(secsSince(el.dataset.since));
+    if (el.dataset.since) el.textContent = fmtAge(secsSince(el.dataset.since)) + (el.dataset.ago ? " ago" : "");
   });
 }, 5000);
 
@@ -4831,10 +4869,22 @@ async function teamDelegate() {
   const r = await teamDo("/api/team/spawn", body, "td-msg");
   if (r) {
     ["td-title", "td-brief", "td-done"].forEach((id) => { $(id).value = ""; });
-    showMsg("td-msg", `Queued ${r.id}.`, true);
+    teamDelegateClose();
+    toast("Delegated", `${body.title || "Task"} queued as ${r.id}.`);
   }
 }
 window.teamDelegate = teamDelegate;
+
+function teamDelegateOpen() {
+  if (TEAM) teamForms();
+  const dir = $("team-dir").hidden ? "" : $("team-dir").value;
+  if (dir && TEAM && TEAM.directors.some((d) => d.id === dir)) $("td-director").value = dir;
+  $("td-msg").textContent = "";
+  $("td-modal").hidden = false;
+  $("td-title").focus();
+}
+function teamDelegateClose() { $("td-modal").hidden = true; }
+window.teamDelegateOpen = teamDelegateOpen; window.teamDelegateClose = teamDelegateClose;
 
 function teamModel(role, value) {
   teamDo("/api/team/models", { workspace_id: currentWS, roles: { [role]: value } });

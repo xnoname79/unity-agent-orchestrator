@@ -628,64 +628,129 @@
   #tab-team { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 20px; }
   #tab-team[hidden] { display: none; }
   .tab-count { margin-left: 2px; font-size: 11px; font-weight: 600; color: var(--accent); }
-  .team-lead { padding: 10px 15px 0; line-height: 1.5; }
-  .team-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
-  .team-stat { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-card);
-    padding: 11px 14px; box-shadow: var(--sh-1); }
-  .team-stat b { display: block; font-size: 22px; line-height: 1.1; font-variant-numeric: tabular-nums; }
-  .team-stat span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .team-wrap { width: 100%; max-width: 1480px; margin: 0 auto; display: grid; gap: 16px; min-width: 0; }
+  .team-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+  .team-head > button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; }
+  .team-stats { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+  .team-stat { display: inline-flex; align-items: baseline; gap: 5px; font-size: 12px; color: var(--muted);
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
+  .team-stat b { font-variant-numeric: tabular-nums; color: var(--text); }
   .team-stat.live b { color: var(--blue); } .team-stat.ok b { color: var(--green); }
-  .team-stat.bad b { color: var(--red); } .team-stat.warn b { color: var(--amber); }
-  .team-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; }
-  .team-lanes { display: grid; gap: 14px; padding: 12px 15px 15px; }
-  .team-lane-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin-bottom: 8px; }
-  .team-lane-head .hint { margin: 0; }
-  .team-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px;
-    align-items: start; }
-  .st-card { border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--panel2);
-    padding: 10px 12px; display: grid; gap: 7px; font-size: 12px; min-width: 0; }
-  .st-card.s-running, .st-card.s-verifying, .st-card.s-fixing { border-color: var(--blue); }
-  .st-card.s-passed { border-color: var(--green); } .st-card.s-failed { border-color: var(--red); }
+  .team-stat.bad b { color: var(--red); } .team-stat.warn b { color: var(--amber-ink); }
+  /* Bảng + cột phải; dưới ~1100px cột phải xuống dưới. min-width:0 cả chuỗi: bảng cuộn NGANG
+     trong chính nó, không đẩy cả trang ra. */
+  .team-main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; align-items: start; }
+  @media (max-width: 1100px) { .team-main { grid-template-columns: minmax(0, 1fr); } }
+  .team-pipe { min-width: 0; }
+  .team-lead { margin: 0 0 12px; color: var(--muted); max-width: 76ch; line-height: 1.5; }
+  .team-lead b { color: var(--text); font-weight: 600; }
+  .team-board { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 12px;
+    overflow-x: auto; padding-bottom: 4px; }
+  .tb-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .tb-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .tb-head .n { color: var(--muted); font-weight: 450; font-variant-numeric: tabular-nums; }
+  .tb-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--blue); }
+  .tb-dot.verifying { animation: dot-ring 1.8s infinite; }
+  .tb-dot.passed { background: var(--green); } .tb-dot.failed { background: var(--red); }
+  .tb-empty { border: 1px dashed var(--border); border-radius: var(--r-card); padding: 14px 12px;
+    color: var(--muted); font-size: 12px; text-align: center; }
+  .st-card { border: 1px solid var(--border); border-radius: var(--r-card); background: var(--card);
+    padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; font-size: 12px; min-width: 0;
+    box-shadow: var(--sh-1); }
+  .st-card.s-verifying { border-color: color-mix(in srgb, var(--blue) 45%, var(--border)); }
+  .st-card.s-passed { border-color: color-mix(in srgb, var(--green) 45%, var(--border)); }
+  .st-card.s-failed { border-color: color-mix(in srgb, var(--red) 50%, var(--border)); }
+  .st-card.s-cancelled { opacity: .8; }
   .st-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
-  .st-top b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .st-pipe { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
-  .st-pipe span { font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint);
-    border-top: 3px solid var(--border); padding-top: 3px; }
-  .st-pipe span.done { color: var(--muted); border-top-color: var(--green); }
-  .st-pipe span.now { color: var(--blue); border-top-color: var(--blue); font-weight: 700; }
-  .st-pipe span.bad { color: var(--red); border-top-color: var(--red); font-weight: 700; }
+  .st-chip { font-size: 10.5px; color: var(--muted); background: var(--panel2); border-radius: 5px;
+    padding: 1px 6px; flex: none; }
+  /* Hẹp thì nhánh co trước, tên director co sau. */
+  .st-who { font-size: 11px; color: var(--muted); flex: 0 1 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .st-br { margin-left: auto; flex: 0 6 auto; font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .st-title { font-weight: 600; font-size: 13.5px; line-height: 1.35; overflow-wrap: anywhere; }
   .st-live { display: flex; gap: 6px; align-items: baseline; color: var(--muted); min-width: 0; }
   .st-live .s { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .st-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--faint); font-size: 11px; }
-  .st-meta code { font-size: 10.5px; }
-  .st-card details summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+  .st-prog { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin: 4px 0 2px; }
+  .st-prog span { height: 3px; border-radius: 2px; background: var(--border); }
+  .st-prog span.done { background: var(--green); } .st-prog span.now { background: var(--blue); }
+  .st-meta { display: flex; gap: 8px; color: var(--muted); font-size: 11px; }
+  .st-meta .st-age { margin: 0 0 0 auto; }
+  .st-box { background: var(--bg); border-radius: var(--r-ctl); padding: 7px 9px; color: var(--text);
+    overflow-wrap: anywhere; }
+  .st-box > div:first-child { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 2px; }
+  .st-box p { margin: 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .st-box.bad { background: var(--red-soft); }
+  /* Đỏ thuần trên nền đỏ nhạt của theme sáng chỉ ~4.2:1 — pha chữ cho đủ 4.5:1 (như --amber-ink). */
+  .st-box.bad > div:first-child { color: color-mix(in srgb, var(--red) 80%, var(--text)); }
+  .st-box code { font-size: 11px; color: inherit; }
+  .st-ok { color: var(--green); }
+  .st-ok code { color: inherit; }
+  .st-note { color: var(--muted); font-size: 11px; }
+  .st-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 4px; }
+  .st-acts button { font-size: 11.5px; padding: 4px 11px; }
+  .st-acts button.st-sec { border-color: transparent; background: transparent; color: var(--muted); padding: 4px 6px; }
+  .st-acts button.st-sec:hover { color: var(--text); background: var(--panel2); }
+  .st-card details summary { cursor: pointer; color: var(--muted); font-size: 11.5px; }
+  /* Details nằm cạnh nút chính; mở ra thì chiếm hết hàng — nút phụ ở đầu phần mở. */
+  .st-acts > details { flex: 1 1 auto; min-width: 0; }
+  .st-acts > details[open] { flex-basis: 100%; }
+  .st-acts .st-acts { margin: 0; }
+  .st-card details > div { display: grid; gap: 4px; margin-top: 6px; }
   .st-card details pre, .team-props pre, .tm-pre { margin: 6px 0 0; white-space: pre-wrap; font-size: 11px;
     line-height: 1.5; max-height: 220px; overflow: auto; background: var(--bg); border: 1px solid var(--border);
     border-radius: var(--r-ctl); padding: 7px 9px; }
-  .st-verdict { border-radius: var(--r-ctl); padding: 6px 8px; font-size: 11.5px; }
-  .st-verdict.pass { background: var(--green-soft); color: var(--green); }
-  .st-verdict.fail { background: var(--red-soft); color: var(--red); }
-  .st-acts { display: flex; flex-wrap: wrap; gap: 6px; }
-  .st-acts button { font-size: 11px; padding: 3px 9px; }
+  .st-card details .hint { margin: 6px 0 0; font-size: 11px; }
+  /* Đường dẫn worktree / lệnh dài không có chỗ ngắt: không bẻ thì cả card phình ra đè cột bên. */
+  .st-card details .hint, .st-card details pre { overflow-wrap: anywhere; }
+  .team-side { display: grid; gap: 16px; min-width: 0; }
+  .team-sub { padding: 8px 15px 0; margin: 0; }
+  .tl { list-style: none; margin: 10px 15px 15px; padding: 0 0 0 14px; border-left: 2px solid var(--border);
+    display: grid; gap: 14px; }
+  .tl li { position: relative; min-width: 0; overflow-wrap: anywhere; }
+  .tl li::before { content: ""; position: absolute; left: -19px; top: 6px; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--border-strong); }
+  .tl .when { font-size: 11px; color: var(--muted); }
+  .tl b { display: block; font-weight: 600; }
+  .tl .why { font-size: 12px; color: var(--muted); }
+  .tl details summary { cursor: pointer; font-size: 11px; color: var(--muted); }
+  .tl .hint { margin: 0; }
+  .team-rules .rule { border-bottom: 1px solid var(--border); }
+  .team-rules .rule:last-child { border-bottom: none; }
+  .rule > summary { list-style: none; display: flex; align-items: center; gap: 10px; min-height: 48px;
+    padding: 8px 15px; cursor: pointer; }
+  .rule > summary::-webkit-details-marker { display: none; }
+  .rule > summary > span { flex: 1; min-width: 0; }
+  .rule > summary .hint { display: block; margin: 0; font-size: 12px; }
+  .rule > summary .hint.warn { color: var(--amber-ink); font-weight: 600; }
+  .rule > summary::after { content: ""; width: 7px; height: 7px; flex: none; border: solid var(--muted);
+    border-width: 0 2px 2px 0; transform: rotate(-45deg); transition: transform .15s; }
+  .rule[open] > summary::after { transform: rotate(45deg); }
+  .rule > .page-form { padding-top: 0; }
   .tg-edges { display: flex; flex-wrap: wrap; gap: 6px; min-height: 24px; }
   .tg-edge { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; padding: 2px 4px 2px 9px;
     border: 1px solid var(--border); border-radius: 999px; background: var(--panel2); }
   .tg-edge button { padding: 0 4px; border: none; background: none; color: var(--muted); }
   .team-props { display: grid; gap: 10px; }
-  .tp { border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 8px 10px; display: grid; gap: 6px; }
+  .tp { border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 8px 10px; display: grid; gap: 6px; min-width: 0; }
+  .tp .st-top b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tp .st-acts { margin: 0; }
+  .modal.td { width: min(620px, 100%); }
+  .td-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 560px) { .td-two { grid-template-columns: 1fr; } }
   .df-add { color: var(--green); background: var(--green-soft); display: block; }
   .df-del { color: var(--red); background: var(--red-soft); display: block; }
   .df-hunk { color: var(--blue); display: block; }
   /* Đội trong panel của director (300px): card xếp dọc, chữ meta xuống dòng thay vì tràn. */
   .insp-team { display: grid; gap: 8px; min-width: 0; }
-  .insp-team .st-card { padding: 8px; gap: 6px; }
-  .insp-team .st-acts button { padding: 2px 7px; }
+  .insp-team .st-card { padding: 10px; gap: 5px; box-shadow: none; }
+  .insp-team .st-acts button { padding: 3px 8px; }
   #insp-team > button { justify-self: start; }
   .crew-badge { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 5px; flex: none;
     background: var(--blue-soft); color: var(--blue); border: none; cursor: pointer; }
 
   /* Khung + form dùng chung của các tab dạng trang (Team). */
-  .page-wrap { width: 100%; max-width: 1180px; margin: 0 auto; display: grid; gap: 16px; }
   .page-form { display: grid; gap: 8px; padding: 12px 15px; }
   .page-form input, .page-form textarea, .page-form select { background: var(--bg);
     border: 1px solid var(--border); color: var(--text); border-radius: var(--r-ctl);
@@ -1293,96 +1358,75 @@
     <!-- Đội của director (pstack): sub-agent làm việc trong worktree riêng, verifier độc lập kiểm
          hợp đồng "Done means" trước khi việc được tính là xong. Toàn bộ do renderTeam() dựng. -->
     <div id="tab-team" hidden>
-      <div class="page-wrap">
-        <div id="team-stats" class="team-stats"></div>
-        <section class="panel">
-          <h2>Sub-agents
-            <span class="spacer"></span>
-            <select id="team-filter" class="mini" onchange="teamRender()" title="Which subtasks to show">
-              <option value="active">Active and recent</option>
-              <option value="all">All</option>
-              <option value="failed">Failed</option>
-            </select></h2>
-          <div class="hint team-lead">Each sub-agent works in its own git worktree. Nothing counts as
-            done until a fresh verifier — a different session, by default on a different CLI —
-            observes the <b>Done means</b> contract. The director is messaged when it passes or fails.</div>
-          <div id="team-lanes" class="team-lanes"></div>
-        </section>
-
-        <div class="team-cols">
-          <section class="panel">
-            <h2>Delegate</h2>
-            <div class="page-form">
-              <div class="two">
-                <select id="td-director" title="Who the result is reported to"></select>
-                <select id="td-playbook" title="How the sub-agent works">
-                  <option value="feature">feature · own worktree</option>
-                  <option value="bugfix">bug fix · reproduce first</option>
-                  <option value="refactor">refactor · behaviour kept</option>
-                  <option value="investigate">investigate · read-only</option>
-                </select>
-              </div>
-              <input id="td-title" placeholder="Short title (shown on the card)">
-              <textarea id="td-brief" placeholder="Brief: the goal, the relevant files, constraints, what must not change. The sub-agent cannot see your chat."></textarea>
-              <textarea id="td-done" placeholder="Done means: what a verifier can observe — a command and its expected output, a flow in the running app, a value read back."></textarea>
-              <div class="two">
-                <button class="primary" onclick="teamDelegate()">Delegate</button>
-                <span id="td-msg" class="hint"></span>
-              </div>
-            </div>
-          </section>
-
-          <section class="panel">
-            <h2>Models <span class="hint" style="margin:0">per role, this workspace</span></h2>
-            <div id="team-models" class="page-form"></div>
-          </section>
+      <div class="team-wrap">
+        <div class="team-head">
+          <div id="team-stats" class="team-stats"></div>
+          <span class="spacer"></span>
+          <select id="team-dir" class="mini" onchange="teamRender()" title="Whose sub-agents to show" hidden></select>
+          <select id="team-filter" class="mini" onchange="teamRender()" title="Which subtasks to show">
+            <option value="active">Active and recent</option>
+            <option value="all">All</option>
+            <option value="failed">Failed</option>
+          </select>
+          <button class="primary" onclick="teamDelegateOpen()"><svg class="ic sm"><use href="#i-plus"/></svg> Delegate a task</button>
         </div>
-
-        <section class="panel">
-          <h2>Decision log <span class="hint" style="margin:0">record_decision · newest first</span></h2>
-          <div class="table-scroll"><table>
-            <thead><tr><th>When</th><th>Who</th><th>Decision</th><th>Why</th></tr></thead>
-            <tbody id="team-decisions"></tbody>
-          </table></div>
-        </section>
-
-        <div class="team-cols">
-          <section class="panel">
-            <h2>Handoff graph
-              <span class="spacer"></span>
-              <select id="tg-mode" class="mini" onchange="teamGraphMode(this.value)"
-                title="Open: edges are documentation. Enforced: an agent may only signal agents it has an edge to.">
-                <option value="open">Open</option>
-                <option value="enforced">Enforced</option>
-              </select></h2>
-            <div class="page-form">
-              <div id="tg-edges" class="tg-edges"></div>
-              <div class="two">
-                <select id="tg-from" title="Sender"></select>
-                <select id="tg-to" title="Receiver"></select>
-                <button onclick="teamEdgeAdd()">Add edge</button>
-              </div>
-              <div class="two">
-                <button class="secondary" onclick="teamEdgeLearn()"
-                  title="Add an edge for every agent pair that actually signalled each other recently">Learn from recent signals</button>
-                <span id="tg-msg" class="hint"></span>
-              </div>
-            </div>
+        <div class="team-main">
+          <section aria-label="Sub-agent pipeline" class="team-pipe">
+            <p class="team-lead">Each sub-agent works in its own git worktree. Nothing counts as done
+              until a fresh verifier observes its <b>Done means</b>; the director is messaged when it
+              passes or fails.</p>
+            <div id="team-board" class="team-board"></div>
           </section>
 
-          <section class="panel">
-            <h2>Playbook improvements</h2>
-            <div class="page-form">
-              <div class="hint">Reflect reads failed runs and verifier findings, then proposes a
-                change. Nothing is written until you approve it.</div>
-              <div class="two">
-                <select id="tr-target" title="What to improve"></select>
-                <button onclick="teamReflect()">Reflect</button>
-              </div>
-              <span id="tr-msg" class="hint"></span>
-              <div id="team-proposals" class="team-props"></div>
-            </div>
-          </section>
+          <aside class="team-side">
+            <section class="panel">
+              <h2>Why the director chose this</h2>
+              <div class="hint team-sub">Decision log · newest first</div>
+              <ol id="team-decisions" class="tl"></ol>
+            </section>
+
+            <section class="panel team-rules">
+              <h2>Team rules</h2>
+              <details class="rule">
+                <summary><span>Who may message whom<span id="trs-graph" class="hint"></span></span></summary>
+                <div class="page-form">
+                  <select id="tg-mode" onchange="teamGraphMode(this.value)"
+                    title="Open: edges are documentation. Enforced: an agent may only signal agents it has an edge to.">
+                    <option value="open">Open — edges are documentation</option>
+                    <option value="enforced">Enforced — only these edges may signal</option>
+                  </select>
+                  <div id="tg-edges" class="tg-edges"></div>
+                  <div class="two">
+                    <select id="tg-from" title="Sender"></select>
+                    <select id="tg-to" title="Receiver"></select>
+                    <button onclick="teamEdgeAdd()">Add edge</button>
+                  </div>
+                  <div class="two">
+                    <button class="secondary" onclick="teamEdgeLearn()"
+                      title="Add an edge for every agent pair that actually signalled each other recently">Learn from recent signals</button>
+                    <span id="tg-msg" class="hint"></span>
+                  </div>
+                </div>
+              </details>
+              <details class="rule">
+                <summary><span>Models per role<span id="trs-models" class="hint"></span></span></summary>
+                <div id="team-models" class="page-form"></div>
+              </details>
+              <details class="rule">
+                <summary><span>Improve playbooks<span id="trs-props" class="hint"></span></span></summary>
+                <div class="page-form">
+                  <div class="hint">Reflect reads failed runs and verifier findings, then proposes a
+                    change. Nothing is written until you approve it.</div>
+                  <div class="two">
+                    <select id="tr-target" title="What to improve"></select>
+                    <button onclick="teamReflect()">Reflect</button>
+                  </div>
+                  <span id="tr-msg" class="hint"></span>
+                  <div id="team-proposals" class="team-props"></div>
+                </div>
+              </details>
+            </section>
+          </aside>
         </div>
       </div>
     </div>
@@ -1523,6 +1567,42 @@
       <span class="hint">On its first run the agent reads the project and fills in its own playbook.</span>
       <button type="button" class="secondary" onclick="newAgentClose()">Cancel</button>
       <button type="submit" class="primary">Create agent</button>
+    </div>
+  </form>
+</div>
+
+<!-- Delegate: giao việc cho một sub-agent. Như New agent, bấm nền KHÔNG đóng (mất chữ đã gõ). -->
+<div id="td-modal" class="modal-overlay" hidden>
+  <form class="modal form-card na td" role="dialog" aria-modal="true" aria-labelledby="td-title-h"
+    onsubmit="event.preventDefault(); teamDelegate()">
+    <h3 id="td-title-h">Delegate a task
+      <span class="spacer"></span>
+      <button type="button" class="icon-btn" onclick="teamDelegateClose()" title="Close">
+        <svg class="ic"><use href="#i-x"/></svg></button></h3>
+    <div class="hint">A sub-agent does it in its own worktree; a fresh verifier checks <b>Done means</b>
+      before the result goes back. The sub-agent cannot see your chat — the brief is all it knows.</div>
+    <div class="td-two">
+      <div><label for="td-director">Report the result to</label>
+        <select id="td-director"></select></div>
+      <div><label for="td-playbook">Playbook</label>
+        <select id="td-playbook">
+          <option value="feature">feature · own worktree</option>
+          <option value="bugfix">bug fix · reproduce first</option>
+          <option value="refactor">refactor · behaviour kept</option>
+          <option value="investigate">investigate · read-only</option>
+        </select></div>
+    </div>
+    <label for="td-title">Title</label>
+    <input id="td-title" placeholder="Short title (shown on the card)" autocomplete="off">
+    <label for="td-brief">Brief</label>
+    <textarea id="td-brief" rows="5" placeholder="The goal, the relevant files, constraints, what must not change."></textarea>
+    <label for="td-done">Done means</label>
+    <textarea id="td-done" rows="3" placeholder="What a verifier can observe — a command and its expected output, a flow in the running app, a value read back."></textarea>
+    <div id="td-msg" class="form-msg"></div>
+    <div class="na-foot">
+      <span class="spacer"></span>
+      <button type="button" class="secondary" onclick="teamDelegateClose()">Cancel</button>
+      <button type="submit" class="primary">Delegate</button>
     </div>
   </form>
 </div>
