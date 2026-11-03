@@ -746,16 +746,27 @@ function initSplitDrag() {
 }
 
 // Detail view: tiêu đề + nút suspend/activate của workspace đang xem.
+let paneGroupsAsked = false;
 function renderWsBanner() {
   const w = WORKSPACES.find((x) => x.id === currentWS);
   if (!currentWS || !w) { $("ws-banner-actions").innerHTML = ""; return; }
-  $("ws-detail-title").innerHTML =
-    `${esc(w.name || w.id)} ` +
-    `${badge(w.status, w.status === "active" ? "b-green" : "b-amber")}`;
+  // Pane không nạp group mỗi lượt refresh (xem refreshNow) — chỉ cần tên, nạp một lần.
+  if (PANE && !paneGroupsAsked) {
+    paneGroupsAsked = true;
+    api("/api/groups").then((g) => { GROUPS = g; renderWsBanner(); }).catch(() => {});
+  }
+  const g = GROUPS.find((x) => x.id === w.group_id);
+  $("ws-detail-title").innerHTML = (g ? `<span class="pb-grp">${esc(g.name)} /</span> ` : "")
+    + `<b>${esc(w.name || w.id)}</b>`;
+  $("ws-detail-path").textContent = w.root_dir || "";
+  $("ws-detail-path").title = w.root_dir || "";
+  $("ws-detail-path").hidden = !w.root_dir;
   const suspend = w.status === "active"
     ? `<button class="warn" onclick="act('/api/workspaces/${encodeURIComponent(w.id)}/suspend')">Suspend</button>`
     : `<button onclick="act('/api/workspaces/${encodeURIComponent(w.id)}/activate')">Activate</button>`;
-  $("ws-banner-actions").innerHTML = w.id === "default" ? "" : suspend;
+  $("ws-banner-actions").innerHTML =
+    `<span class="pill ${w.status === "active" ? "live" : "dry"}">${esc(w.status)}</span>`
+    + (w.id === "default" ? "" : suspend);
 }
 
 // Query suffix để scope API theo workspace đang lọc.
@@ -1179,6 +1190,12 @@ const CLI_ICON = { claude: "🅒", agy: "🅖" };
 // Lệch với backend là UI hiện sai nút (vd mời xóa vĩnh viễn một session Claude rồi ăn 400).
 // 'codex' vẫn được nhận ra: card Codex cũ (engine đã bỏ) phải hiện đúng là codex để người dùng
 // biết đổi model, chứ không giả làm claude.
+// Tên đọc được của model (Sonnet 5.5) thay cho id; id lạ thì hiện nguyên id.
+function modelLabel(model) {
+  for (const t of MODEL_TABS) { const m = t.models.find((x) => x.id === model); if (m) return t.engine === "agy" ? "Gemini " + m.name : m.name; }
+  return model || "auto";
+}
+
 function engineOfModel(model) {
   const m = (model || "").trim().toLowerCase();
   if (m === "codex" || m.startsWith("codex:")) return "codex";
@@ -1713,11 +1730,12 @@ function agentCard(s, needsYou) {
     const head = `<div class="node-head">
       <span class="status-dot dot-${esc(s.status)}"></span>
       <b title="${esc(s.name)} — double-click to rename">${esc(s.name)}</b>
-      ${needsYou ? `<span class="needs-badge">NEEDS YOU</span>` : ""}
-      ${crewBadge(s)}
+      ${needsYou ? `<span class="needs-badge">needs you</span>` : ""}
+      ${crewBadge(s) || (s.subtasks?.total ? `<span class="role-badge" title="Delegates work to sub-agents">director</span>` : "")}
       <span class="spacer"></span>
       ${adopt}
       ${sidSel}
+      <span class="node-meta">${esc(modelLabel(s.model))} · ${esc(s.effort || DEFAULT_EFFORT)}</span>
     </div>`;
     const lock = busy
       ? `<div class="term-lock">⏳ An automatic run is in progress (handling a report from another agent)…<br>
@@ -1907,6 +1925,16 @@ async function deleteCliSession(sid, cli, id) {
 }
 window.deleteCliSession = deleteCliSession;
 
+// Tab đang mở trong inspector. Biến module chứ không đọc từ DOM: renderInspector chạy lại mỗi lượt
+// refresh, đọc lại DOM là lần nào cũng về Overview.
+let inspTabSel = "overview";
+const INSP_TABS = ["overview", "work", "settings"];
+function inspTab(name) {
+  inspTabSel = INSP_TABS.includes(name) ? name : "overview";
+  renderInspector();
+}
+window.inspTab = inspTab;
+
 function renderInspector() {
   const box = $("inspector");
   if (!box) return;
@@ -1916,6 +1944,13 @@ function renderInspector() {
   $("insp-dot").className = "status-dot dot-" + esc(s.status);
   $("insp-name").textContent = s.name;
   $("insp-name").title = s.name;
+  $("insp-path").textContent = s.cwd || "no working folder";
+  $("insp-path").title = s.cwd || "";
+  $("insp-msg").placeholder = `Message ${s.name}…`;
+  for (const t of INSP_TABS) {
+    $("insp-tab-" + t).classList.toggle("on", t === inspTabSel);
+    $("insp-tab-" + t).setAttribute("aria-selected", t === inspTabSel);
+  }
 
   const id = encodeURIComponent(s.id);
   const engine = engineOfModel(s.model);
@@ -1925,43 +1960,55 @@ function renderInspector() {
     + effortOptsFor(s.model).map((e) =>
         `<option value="${e}"${e === (s.effort || "") ? " selected" : ""}>${e || "default (" + DEFAULT_EFFORT + ")"}</option>`).join("")
     + `</select>`;
+  const pct = s.daily_limit ? Math.min(100, Math.round(100 * s.used_today / s.daily_limit)) : 0;
   const limit = s.daily_limit
-    ? `<span class="${s.daily_blocked ? "day-hit" : "day-ok"} num">${s.used_today}/${s.daily_limit}</span>`
+    ? `<div class="insp-bar-head"><span>Runs today</span>
+         <span class="${s.daily_blocked ? "day-hit" : "day-ok"} num">${s.used_today} / ${s.daily_limit}</span></div>
+       <div class="insp-bar${s.daily_blocked ? " hit" : ""}"><div style="width:${pct}%"></div></div>`
       + (s.daily_blocked
-          ? ` <button class="warn" onclick="allowMore('${id}','${esc(s.name)}')">Allow +${DAILY_STEP}</button>` : "")
-    : `<span>no limit</span>`;
+          ? `<button class="warn" onclick="allowMore('${id}','${esc(s.name)}')">Allow +${DAILY_STEP}</button>` : "")
+    : `<div class="insp-bar-head"><span>Runs today</span><span class="num">${s.used_today || 0} · no limit</span></div>`;
+  // Run đang chạy của agent này, nếu nó nằm trong trang đầu audit log (dữ liệu đã có sẵn).
+  const run = s.status === "running" && cvRuns.find((r) => r.session_id === s.id && r.status === "running");
+  // Tiêu đề = tin nhắn của signal đang xử lý (prompt của run mở đầu bằng khung vai, đọc không ra).
+  const sig = run && (cvLast.signals || []).find((sg) => sg.id === run.signal_id);
+  const title = sig ? sig.message.split("\n")[0] : run ? (run.prompt || "").split("\n")[0] || "Run #" + run.id : "";
+  const now = s.status !== "running" ? "" : `<div class="insp-now">
+      <div class="insp-now-h">Working now <span>${run ? fmtAge(secsSince(run.started_at)) : ""}</span></div>
+      <div class="insp-now-t" title="${esc(title)}">${esc(title || "A run is in progress")}</div>
+      ${run ? `<button class="secondary" onclick="openRun(${run.id})">${ic("doc", "sm")} Watch run #${run.id}</button>` : ""}
+    </div>`;
 
-  keepOpen($("insp-body"), () => { $("insp-body").innerHTML = `
+  const tabs = {
+    overview: () => `
     <div class="insp-sec">
-      <div class="insp-row">
+      <div class="insp-row chips">
         ${engine === "codex"
           ? `<span class="eng-chip" title="Codex support was removed. Pick a Claude or Gemini model below, or unregister this agent.">codex · removed</span>`
           : `<span class="eng-chip eng-${esc(engine)}">${esc(engine)}</span>`}
         ${badge(s.status, { running: "b-blue", paused: "b-amber", stopped: "b-red" }[s.status] || "b-gray")}
       </div>
       <div class="insp-kv"><span>Session</span><span class="mono" title="${esc(s.id)}">${esc(s.id)}</span></div>
-      <div class="insp-kv"><span>Folder</span><span class="mono" title="${esc(s.cwd || "")}">${esc(s.cwd || "—")}</span></div>
       <div class="insp-kv"><span>Tools</span><span title="${esc(tools.join(", ") || "every tool allowed")}">${tools.length ? tools.length + " allowed" : "all tools"}</span></div>
-      <div class="insp-kv"><span>Today</span>${limit}</div>
     </div>
+    ${now}
+    <div class="insp-sec">
+      <h4>Brain</h4>
+      <div class="insp-brain">
+        <label>Model ${modelSel(s, id)}</label>
+        <label>Effort ${effortSel}</label>
+      </div>
+    </div>
+    <div class="insp-sec">${limit}</div>
 ${pairBudget(s)}
-${inspTeamSec(s)}
-
+${inspTeamSec(s)}`,
+    work: () => `
     <div class="insp-sec">
-      <h4>Model</h4>
-      ${modelSel(s, id)}
-      ${effortSel}
-    </div>
-
-    ${wsMove(s)}
-
-    <div class="insp-sec">
-      <h4>Work</h4>
+      <h4>Runs</h4>
       <div class="insp-row">
         <button class="secondary" onclick="openSessionRun('${esc(s.id)}')">${ic("doc", "sm")} Latest run</button>
       </div>
     </div>
-
     <div class="insp-sec">
       <h4>Context</h4>
       <div class="insp-row">
@@ -1970,10 +2017,10 @@ ${inspTeamSec(s)}
         <button class="secondary" onclick="editSkill('${id}','${esc(s.name)}')"
           title="Edit this role's SKILL (upserts into .claude/skills in the project cwd)">${ic("book", "sm")} SKILL</button>
       </div>
-    </div>
-
+    </div>`,
+    settings: () => `
+    ${wsMove(s)}
     ${sessCleanup(s, CLI_ICON[engine] ? engine : "claude")}
-
     <div class="insp-sec insp-danger">
       <h4>Danger zone</h4>
       <button class="danger" onclick="if(confirm('Remove session ${esc(s.name)} from the orchestrator?\\n\\nRuns, signals and audit records are kept.'))act('/api/sessions/${id}/unregister')">
@@ -1981,14 +2028,38 @@ ${inspTeamSec(s)}
       <div class="hint">There is no permanent delete: the transcript belongs to the CLI that
         owns the session, so the orchestrator cannot wipe it. Unregister drops the session here
         and keeps its runs, signals and audit records.</div>
-    </div>`; });
+    </div>`,
+  };
+  keepOpen($("insp-body"), () => { $("insp-body").innerHTML = tabs[inspTabSel](); });
 }
+
+// Composer cuối inspector: cùng API với form Send signal ở tab Activity, người gửi là người dùng.
+async function inspSend(e) {
+  e.preventDefault();
+  const s = (cvLast.sessions || []).find((x) => x.id === selSid);
+  const msg = $("insp-msg").value.trim();
+  if (!s || !msg) return;
+  $("insp-send").disabled = true;
+  try {
+    await api("/api/signals", "POST", { to_session: s.id, message: msg, from_role: "human",
+                                        workspace_id: currentWS || undefined });
+    $("insp-msg").value = "";
+    toast("Sent", `Message queued for ${s.name}.`);
+    await refreshAll();
+  } catch (err) {
+    let m = String(err);
+    try { const j = JSON.parse(err); if (j && j.error) m = j.error; } catch (_) { /* không phải JSON */ }
+    toast("Could not send", m);
+  } finally { $("insp-send").disabled = false; }
+}
+window.inspSend = inspSend;
 
 // ── Zone (cwd) + orchestrator + chat ────────────────────────────────────────
 let cvPairOf = {};    // nid card editor → el card terminal của nó (xem snapPairs)
 let cvGroups = [];    // [{cwd, els:[nodeEl]}] — rebuild mỗi render; drag group đọc từ đây
 let cvNodeEls = {};   // session_id → node element (để vẽ edge)
 let cvEdges = [];     // [{from, to, cls}] resolve từ signal list
+let cvRuns = [];      // trang đầu của audit log — "Working now" ở inspector đọc run đang chạy từ đây
 let cvLast = { sessions: [], signals: [] };  // data mới nhất (re-render cục bộ không cần fetch)
 
 // Chỉ dùng cho <marker> đầu mũi tên. Đọc token thay vì hex cứng: dây vẽ bằng CSS
@@ -2189,16 +2260,44 @@ function redrawEdges() {
   redrawMinimap();   // gọi ở đây = mọi lần node đổi vị trí/kích thước/số lượng đều bắt được
 }
 
+// Signal pending chờ duyệt → card đích sáng "NEEDS YOU" (kiểu nodeterm). Strip chú ý dùng
+// chung hàm này để hai nơi không bao giờ đếm lệch nhau.
+const waitingApproval = (signals) => (signals || []).filter((s) => s.requires_approval && s.status === "pending");
+const needsYou = (signals) => new Set(waitingApproval(signals).map((s) => s.to_session));
+
+const ago = (iso) => { const t = secsSince(iso);
+  return t < 60 ? "now" : t < 3600 ? Math.floor(t / 60) + "m" : t < 86400 ? Math.floor(t / 3600) + "h" : Math.floor(t / 86400) + "d"; };
+
+// Strip ngay dưới pane bar: mọi thứ đang đợi người dùng, khỏi phải lục tab Activity.
+// Signal chỉ lấy từ trang đầu của queue (cùng dữ liệu với badge trên card).
+function renderAttn(sessions, signals) {
+  const box = $("attn");
+  const nameOf = (ref) => (sessions.find((x) => x.id === ref || x.name === ref) || {}).name || ref || "you";
+  const sigs = waitingApproval(signals);
+  const needs = needsYou(signals);
+  const who = sessions.filter((x) => needs.has(x.id));
+  const n = sigs.length + who.length;
+  box.hidden = !n;
+  if (!n) { box.innerHTML = ""; return; }
+  box.innerHTML = `<span class="attn-n">${ic("bell", "sm")} ${n} need${n === 1 ? "s" : ""} you</span>`
+    + sigs.map((sg) => `<span class="attn-item" data-sig="${sg.id}">
+        <b>${esc(nameOf(sg.from_session))} → ${esc(nameOf(sg.to_session))}:</b>
+        <span class="attn-msg" title="${esc(sg.message)}">${esc(sg.message)}</span>
+        <span class="attn-age">· ${ago(sg.created_at)}</span>
+        <button class="attn-ok" onclick="act('/api/signals/${sg.id}/approve')">Approve</button>
+        <button class="secondary" onclick="act('/api/signals/${sg.id}/deny')">Deny</button></span>`).join("")
+    + who.map((x) => `<span class="attn-item">
+        <b>${esc(x.name)}</b> needs you
+        <button class="attn-show" onclick="switchTab('agents'); focusNode('s:${esc(x.id)}')">Show</button></span>`).join("");
+}
+
 function renderCanvas(sessions, signals) {
   cvLast = { sessions, signals };
   if (cvInteracting) { cvPending = cvLast; return; }  // đừng phá thao tác kéo
   const world = $("world");
   $("cv-empty").hidden = sessions.length > 0;
 
-  // Signal pending chờ duyệt → card đích sáng "NEEDS YOU" (kiểu nodeterm).
-  const needs = new Set((signals || [])
-    .filter((s) => s.requires_approval && s.status === "pending")
-    .map((s) => s.to_session));
+  const needs = needsYou(signals);
 
   const st = cvLoad();
   const pos = st.pos || {};
@@ -4107,9 +4206,10 @@ function switchTab(name) {
   $("tab-agents").hidden = name !== "agents";
   $("tab-history").hidden = name !== "history";
   $("tab-team").hidden = name !== "team";
-  $("tab-btn-agents").classList.toggle("active", name === "agents");
-  $("tab-btn-history").classList.toggle("active", name === "history");
-  $("tab-btn-team").classList.toggle("active", name === "team");
+  for (const t of TABS) {
+    $("tab-btn-" + t).classList.toggle("active", name === t);
+    $("tab-btn-" + t).setAttribute("aria-selected", name === t);
+  }
   if (name === "team") teamLoad().catch((e) => console.error(e));
   // Key theo workspace: hai pane mở cùng lúc dùng chung một key thì đổi tab ở pane này
   // lật luôn pane kia.
@@ -4251,7 +4351,9 @@ async function refreshNow() {
     const crewN = Object.values(CREW).reduce((a, b) => a + b, 0);
     $("team-live").hidden = !crewN;
     $("team-live").textContent = crewN;
+    cvRuns = runs.items;
     renderCanvas(work, signals.items);
+    renderAttn(work, signals.items);
     fillSignalForm(work);
     if (teamVisible()) teamLoad().catch(() => {});
     sigHasMore = signals.has_more; renderSignals(signals.items);
@@ -4342,6 +4444,7 @@ function keepOpen(box, rebuild) {
 }
 
 function inspShowTeam(sid) {
+  inspTabSel = "overview";
   selectNode(sid);
   requestAnimationFrame(() => { const el = $("insp-team"); if (el) el.scrollIntoView({ block: "start", behavior: "smooth" }); });
 }

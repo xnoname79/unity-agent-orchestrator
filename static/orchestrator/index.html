@@ -51,6 +51,8 @@
     --sh-3: 0 14px 40px rgba(18,22,30,.16);
     --ring: 0 0 0 3px rgba(79,95,224,.28);
     --r-card: 12px; --r-ctl: 8px;
+    /* Amber đủ đậm cho CHỮ (≥4.5:1) ở cả hai theme — amber thuần trên nền amber nhạt của theme sáng chỉ ~3.6:1. */
+    --amber-ink: color-mix(in srgb, var(--amber) 75%, var(--text));
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
@@ -441,25 +443,47 @@
   #ws-detail-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   #ws-detail-view[hidden] { display: none; }
   /* Thanh công cụ đầu pane: tên workspace + tabs Agents/History + suspend */
-  .pane-bar { display: flex; align-items: center; gap: 10px; padding: 0 10px; height: 40px; flex: none;
-    background: var(--panel); border-bottom: 1px solid var(--border); }
+  .pane-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 8px 20px;
+    min-height: 58px; flex: none; background: var(--bg); border-bottom: 1px solid var(--border); }
   .pane-bar[hidden] { display: none; }
-  #ws-detail-title { font-size: 13px; font-weight: 620; white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; display: flex; align-items: center; gap: 8px; min-width: 0; }
-  #ws-banner-actions { display: flex; gap: 6px; }
-  #ws-banner-actions button { padding: 3px 10px; font-size: 11.5px; }
+  .pb-title { display: flex; flex-direction: column; min-width: 0; max-width: 40%; }
+  #ws-detail-title { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #ws-detail-title b { font-weight: 650; }
+  .pb-grp { color: var(--muted); font-weight: 400; }
+  .pb-path { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .pb-path[hidden] { display: none; }
+  #ws-banner-actions { display: flex; align-items: center; gap: 8px; }
+  #ws-banner-actions button { height: 34px; padding: 0 14px; }
+  /* Strip chú ý: tông amber, chỉ hiện khi có việc đợi người dùng. */
+  .attn { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; padding: 9px 20px; flex: none;
+    background: var(--amber-soft); border-bottom: 1px solid var(--amber); font-size: 12.5px; }
+  .attn[hidden] { display: none; }
+  .attn-n { display: inline-flex; align-items: center; gap: 7px; color: var(--amber-ink); font-weight: 650; }
+  .attn-item { display: inline-flex; align-items: center; gap: 8px; min-width: 0; color: var(--text); }
+  .attn-item b { font-weight: 600; white-space: nowrap; }
+  .attn-msg { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attn-age { color: var(--muted); white-space: nowrap; }
+  .attn-item button { height: 28px; padding: 0 12px; font-size: 12px; }
+  .attn-item + .attn-item { border-left: 1px solid var(--border-strong); padding-left: 18px; }
+  button.attn-ok { background: var(--amber-ink); border-color: var(--amber-ink); color: var(--accent-fg); font-weight: 650; }
+  button.attn-ok:hover { filter: brightness(1.08); border-color: var(--amber-ink); }
+  button.attn-show { background: transparent; border-color: var(--amber-ink); color: var(--amber-ink); font-weight: 600; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .node-head .cli-adopt { flex: none; padding: 1px 7px; font-size: 10.5px; border-radius: 6px; }
   .sk-path { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; color: var(--faint); }
   .sk-path.on { color: var(--text); font-weight: 600; }
   .sk-path .mono { font-family: var(--mono); word-break: break-all; }
-  .win-bar { display: flex; align-items: center; gap: 6px; padding: 5px 10px; flex: none;
-    overflow-x: auto; scrollbar-width: thin; background: var(--panel);
+  .win-bar { display: flex; align-items: center; gap: 6px; padding: 7px 20px; flex: none;
+    overflow-x: auto; scrollbar-width: thin; background: var(--bg);
     border-bottom: 1px solid var(--border); }
   .win-bar[hidden] { display: none; }
   .win-chip { display: inline-flex; align-items: center; gap: 6px; flex: none; white-space: nowrap;
-    padding: 3px 10px; font-size: 12px; color: var(--muted); }
+    height: 28px; padding: 0 11px; font-size: 12px; color: var(--muted); background: var(--card);
+    border-radius: 999px; }
   .win-chip:hover { color: var(--text); }
-  .cv-find { flex: none; width: 190px; }
+  input.cv-find { flex: none; width: 210px; height: 30px; border-radius: var(--r-ctl); background: var(--card);
+    font-size: 12px; padding: 0 10px; }
   .win-chips { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .win-sep { flex: none; width: 1px; align-self: stretch; margin: 2px 3px; background: var(--border); }
   /* Canvas vừa nhảy tới card khác → không nháy thì không biết cái nào vừa được tìm ra.
@@ -498,12 +522,12 @@
   .find-row.ed:hover, .find-row.ed.on { background: var(--amber-soft); color: var(--amber); }
   .find-row.ed:hover .find-name, .find-row.ed.on .find-name { color: var(--amber); }
   .find-none { padding: 9px; font-size: 11.5px; color: var(--faint); }
-  .tabs { display: flex; gap: 2px; background: var(--panel2); border: 1px solid var(--border);
-    border-radius: 9px; padding: 3px; flex: none; }
-  .tabs .tab { padding: 3px 13px; font-size: 12px; background: transparent; border: none;
-    border-radius: 6px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .tabs { display: flex; gap: 2px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 3px; flex: none; }
+  .tabs .tab { padding: 5px 14px; font-size: 13px; background: transparent; border: none;
+    border-radius: 7px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
   .tabs .tab:hover { color: var(--text); }
-  .tabs .tab.active { color: var(--text); background: var(--panel); box-shadow: var(--sh-1); font-weight: 600; }
+  .tabs .tab.active { color: var(--text); background: var(--panel2); box-shadow: var(--sh-1); font-weight: 600; }
 
   #tab-agents { flex: 1; min-height: 0; display: flex; }
   #tab-agents[hidden] { display: none; }
@@ -515,8 +539,7 @@
   /* ── Team: đội sub-agent của director ─────────────────────────────────── */
   #tab-team { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 20px; }
   #tab-team[hidden] { display: none; }
-  .tab-count { margin-left: 6px; font-size: 10px; font-weight: 700; padding: 1px 6px;
-    border-radius: 999px; background: var(--blue-soft); color: var(--blue); }
+  .tab-count { margin-left: 2px; font-size: 11px; font-weight: 600; color: var(--accent); }
   .team-lead { padding: 10px 15px 0; line-height: 1.5; }
   .team-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
   .team-stat { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-card);
@@ -570,7 +593,7 @@
   .insp-team .st-card { padding: 8px; gap: 6px; }
   .insp-team .st-acts button { padding: 2px 7px; }
   #insp-team > button { justify-self: start; }
-  .crew-badge { font-size: 9.5px; font-weight: 700; padding: 2px 6px; border-radius: 5px; flex: none;
+  .crew-badge { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 5px; flex: none;
     background: var(--blue-soft); color: var(--blue); border: none; cursor: pointer; }
 
   /* Khung + form dùng chung của các tab dạng trang (Team). */
@@ -589,6 +612,8 @@
   /* Toast góc dưới, tự tắt. */
   #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: grid; gap: 8px;
     max-width: min(360px, calc(100vw - 32px)); }
+  /* Inspector mở → toast nhường chỗ cho ô soạn tin ở đáy panel. */
+  body:has(#inspector:not([hidden])) #toasts { bottom: 84px; }
   .toast { background: var(--card); border: 1px solid var(--amber); border-left: 4px solid var(--amber);
     border-radius: var(--r-ctl); box-shadow: var(--sh-3); padding: 10px 12px; font-size: 12.5px;
     line-height: 1.55; display: grid; gap: 4px; cursor: pointer; }
@@ -609,17 +634,23 @@
   .world { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
   .node { position: absolute; }
   .cv-overlay { position: absolute; z-index: 3; }
-  .cv-toolbar { right: 14px; bottom: 14px; display: flex; align-items: center; gap: 1px;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 3px;
+  .cv-toolbar { right: 14px; bottom: 14px; display: flex; align-items: center; gap: 2px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 3px;
     box-shadow: var(--sh-2); }
-  #cv-zoom { font-size: 10.5px; color: var(--muted); min-width: 40px; text-align: center;
+  .cv-toolbar .icon-btn { width: 30px; height: 30px; }
+  #cv-zoom { font-family: var(--mono); font-size: 11.5px; color: var(--muted); min-width: 46px; text-align: center;
     font-variant-numeric: tabular-nums; }
   .cv-sep { width: 1px; height: 16px; background: var(--border); margin: 0 3px; }
-  .cv-help { right: 14px; top: 14px; width: 28px; height: 28px; padding: 0; border-radius: 50%;
-    background: var(--panel); border: 1px solid var(--border); color: var(--muted); box-shadow: var(--sh-2);
+  .cv-help { right: 14px; top: 14px; width: 30px; height: 30px; padding: 0; border-radius: 8px;
+    background: var(--card); border: 1px solid var(--border); color: var(--muted); box-shadow: var(--sh-2);
     display: flex; align-items: center; justify-content: center; }
   .cv-help:hover { color: var(--text); }
-  .cv-hint { right: 14px; top: 50px; max-width: 380px; background: var(--panel);
+  .cv-legend { right: 52px; top: 14px; display: flex; align-items: center; gap: 6px; height: 30px;
+    padding: 0 10px; font-size: 11.5px; color: var(--muted); background: var(--card);
+    border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--sh-2); pointer-events: none; }
+  .lg-run { width: 14px; height: 2px; background: var(--edge-run); }
+  .lg-wait { width: 14px; border-top: 2px dashed var(--edge-wait); margin-left: 8px; }
+  .cv-hint { right: 14px; top: 52px; max-width: 380px; background: var(--card);
     border: 1px solid var(--border); border-radius: var(--r-card); padding: 12px 14px; font-size: 11.5px;
     color: var(--muted); line-height: 1.75; box-shadow: var(--sh-3); }
   .cv-hint b { color: var(--text); }
@@ -627,7 +658,7 @@
     color: var(--muted); font-style: italic; pointer-events: none; }
   .cv-empty[hidden] { display: none; }
   /* Minimap: toàn cảnh + khung nhìn. Ngồi TRÊN thanh zoom (thanh cao ~34 + đáy 14). */
-  .cv-minimap { right: 14px; bottom: 56px; background: var(--panel); border: 1px solid var(--border);
+  .cv-minimap { right: 14px; bottom: 60px; background: var(--card); border: 1px solid var(--border);
     border-radius: 10px; box-shadow: var(--sh-2); cursor: crosshair; touch-action: none; }
   /* [hidden] không có tác dụng với phần tử SVG — UA stylesheet chỉ áp cho HTML. */
   .cv-minimap[hidden] { display: none; }
@@ -661,30 +692,36 @@
   /* ── Node card ────────────────────────────────────────────────────────── */
   /* Card chỉ mang DANH TÍNH + TRẠNG THÁI. Mọi thao tác nằm ở hover toolbar (4 nút hay dùng)
      hoặc inspector bên phải (phần còn lại) — nhồi hết vào card thì 5 agent = 45 control. */
-  .agent-card { position: relative; width: 244px; background: var(--panel);
-    border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--sh-1);
+  .agent-card { position: relative; width: 244px; background: var(--card);
+    border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--sh-2);
     font-size: 12px; overflow: hidden; cursor: pointer;
     transition: border-color .12s, box-shadow .12s; }
-  .agent-card:hover { box-shadow: var(--sh-2); }
-  .node.sel .agent-card { border-color: var(--accent); box-shadow: var(--ring), var(--sh-2); }
-  .agent-card.st-running { border-color: var(--blue); }
+  .agent-card:hover { box-shadow: var(--sh-3); }
+  /* Đang chạy chỉ báo bằng chấm nhấp nháy; viền accent dành riêng cho card đang chọn. */
   .agent-card.st-paused, .agent-card.needs-you { border-color: var(--amber); }
+  .node.sel .agent-card { border-color: var(--accent); box-shadow: var(--ring), var(--sh-2); }
   .agent-card.st-stopped { opacity: .68; }
-  .node-head { display: flex; align-items: center; gap: 7px; padding: 9px 10px; cursor: grab;
-    user-select: none; }
-  .node-head b { font-size: 12.5px; font-weight: 620; overflow: hidden; text-overflow: ellipsis;
+  .node-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 10px 12px 9px;
+    cursor: grab; user-select: none; border-bottom: 1px solid var(--border); }
+  .node-head b { font-size: 13.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; }
+  .node-meta { flex-basis: 100%; padding-left: 16px; font-family: var(--mono); font-size: 11px;
+    color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .role-badge { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 5px; flex: none;
+    background: var(--accent-soft); color: var(--accent); }
   /* Ô chọn phiên nằm trên header: co lại được để tên vai không bị đẩy đi, nhưng ưu tiên rộng
      vì thứ cần đọc là câu đã gõ trong phiên đó, không phải id. */
   .node-head .sid-sel { flex: 0 1 auto; min-width: 90px; max-width: 340px; margin-left: auto;
     overflow: hidden; text-overflow: ellipsis; }
-  .status-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--gray); }
-  .dot-running { background: var(--blue); animation: pulse 1.2s infinite; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--gray); }
+  .dot-running { background: var(--accent); animation: dot-ring 1.8s infinite; }
+  @keyframes dot-ring {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); }
+    70%, 100% { box-shadow: 0 0 0 6px transparent; } }
   .dot-paused { background: var(--amber); }
   .dot-stopped { background: var(--red); }
-  .needs-badge { font-size: 8.5px; font-weight: 700; letter-spacing: .05em; color: var(--amber);
-    background: var(--amber-soft); border-radius: 4px; padding: 2px 5px; animation: pulse 1.2s infinite;
-    flex: none; }
+  .needs-badge { font-size: 10.5px; font-weight: 650; color: var(--accent-fg); background: var(--amber-ink);
+    border-radius: 5px; padding: 1px 6px; flex: none; }
   .eng-chip { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
     padding: 2px 6px; border-radius: 5px; background: var(--gray-soft); color: var(--muted); flex: none; }
   .eng-claude { background: var(--amber-soft); color: var(--amber); }
@@ -693,11 +730,11 @@
   /* Zone: khung bo quanh các agent chung cwd */
   .group-zone { border: 1px solid var(--zone-line); border-radius: 16px; background: var(--zone-fill);
     pointer-events: none; }
-  .zone-head { pointer-events: auto; cursor: grab; user-select: none; padding: 8px 12px;
+  .zone-head { pointer-events: auto; cursor: grab; user-select: none; padding: 10px 14px;
     display: flex; flex-direction: column; gap: 5px; }
-  .zone-title { display: flex; align-items: center; gap: 8px; overflow: hidden; color: var(--muted); }
-  .zone-title b { font-size: 12.5px; color: var(--text); }
-  .g-count { font-size: 10.5px; color: var(--muted); flex: none; }
+  .zone-title { display: flex; align-items: center; gap: 8px; overflow: hidden; color: var(--muted); font-size: 12px; }
+  .zone-title b { font-size: 13px; font-weight: 600; color: var(--text); }
+  .g-count { font-size: 12px; color: var(--muted); flex: none; }
   .g-path { font-family: var(--mono); font-size: 10px; color: var(--faint);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Khung CẶP: terminal + card editor của cùng một session. Viền nét đứt để phân biệt với zone
@@ -722,8 +759,8 @@
   /* Edges */
   svg.edges { position: absolute; top: 0; left: 0; width: 10px; height: 10px;
     overflow: visible; pointer-events: none; }
-  .edge { stroke-width: 1.6; fill: none; }
-  .edge-wait { stroke: var(--edge-wait); }
+  .edge { stroke-width: 2; fill: none; }
+  .edge-wait { stroke: var(--edge-wait); stroke-dasharray: 4 4; }
   /* steps(5): nét vẫn chạy nhưng vẽ lại 5 lần/giây thay vì mỗi khung hình (stroke-dashoffset không
      chạy trên compositor — mỗi khung là một lượt repaint ở main thread, ở mỗi pane đang hiện). */
   .edge-run { stroke: var(--edge-run); stroke-dasharray: 6 5; animation: edgeflow 1s steps(5) infinite; }
@@ -803,19 +840,45 @@
   .fld-note { padding: 6px 10px; color: var(--faint); font-size: 11px; line-height: 1.6; }
 
   /* ── Inspector (bên phải canvas) ──────────────────────────────────────── */
-  .inspector { flex: none; width: 300px; background: var(--panel); border-left: 1px solid var(--border);
+  .inspector { flex: none; width: 340px; background: var(--panel); border-left: 1px solid var(--border);
     display: flex; flex-direction: column; min-height: 0; }
   .inspector[hidden] { display: none; }
-  .insp-head { display: flex; align-items: center; gap: 8px; padding: 11px 12px;
-    border-bottom: 1px solid var(--border); }
-  .insp-head b { font-size: 13px; font-weight: 620; overflow: hidden; text-overflow: ellipsis;
+  .insp-head { display: flex; align-items: center; gap: 10px; padding: 14px 14px 6px 16px; }
+  .insp-id { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .insp-name-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .insp-head b { font-size: 16px; font-weight: 650; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; }
+  .insp-head .status-dot { width: 9px; height: 9px; }
+  .insp-tabs { display: flex; gap: 4px; padding: 4px 16px 0; border-bottom: 1px solid var(--border); flex: none; }
+  .insp-tabs button { height: 36px; padding: 0 10px; border: 0; border-bottom: 2px solid transparent;
+    border-radius: 0; background: transparent; color: var(--muted); }
+  .insp-tabs button:hover { color: var(--text); }
+  .insp-tabs button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  .insp-now { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card);
+    padding: 12px 14px; display: grid; gap: 6px; min-width: 0; }
+  .insp-now-h { display: flex; font-size: 11px; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--accent); }
+  .insp-now-h span { margin-left: auto; font-family: var(--mono); letter-spacing: 0; color: var(--muted); }
+  .insp-now-t { font-size: 13.5px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .insp-now button { justify-self: start; }
+  .insp-brain { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .insp-brain label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); min-width: 0; }
+  .insp-bar-head { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  .insp-bar-head .num { font-family: var(--mono); }
+  .insp-bar { height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; }
+  .insp-bar > div { height: 100%; border-radius: 3px; background: var(--green); }
+  .insp-bar.hit > div { background: var(--red); }
+  .insp-sec > button.warn { justify-self: start; }
+  .insp-compose { display: flex; gap: 8px; padding: 12px 16px 16px; border-top: 1px solid var(--border); flex: none; }
+  .insp-compose input { flex: 1; min-width: 0; height: 40px; border-radius: 10px; background: var(--card); padding: 0 12px; }
+  .insp-compose .icon-btn.primary { width: 40px; height: 40px; border-radius: 10px; background: var(--accent);
+    color: var(--accent-fg); }
   /* minmax(0,1fr) + min-width:0 khắp nơi: grid/flex mặc định lấy content-width làm sàn,
      một session id dài là đủ đẩy cả panel tràn ngang và sinh scrollbar cho cả trang. */
-  .insp-body { flex: 1; overflow-y: auto; padding: 12px; display: grid; gap: 16px;
+  .insp-body { flex: 1; overflow-y: auto; padding: 16px; display: grid; gap: 18px;
     grid-template-columns: minmax(0, 1fr); align-content: start; }
   .insp-sec { display: grid; gap: 7px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
-  .insp-sec > h4 { margin: 0; font-size: 10px; font-weight: 700; letter-spacing: .07em;
+  .insp-sec > h4 { margin: 0; font-size: 11px; font-weight: 600; letter-spacing: .06em;
     text-transform: uppercase; color: var(--faint); }
   .insp-kv { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted);
     min-width: 0; }
@@ -844,8 +907,8 @@
   .sess-row .icon-btn { flex: none; }
   .insp-row button { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center;
     gap: 6px; padding: 6px 8px; font-size: 11.5px; white-space: nowrap; overflow: hidden; }
-  .insp-body input, .insp-body select { width: 100%; background: var(--bg); border: 1px solid var(--border);
-    color: var(--text); border-radius: var(--r-ctl); padding: 6px 9px; font: inherit; font-size: 12px; }
+  .insp-body input, .insp-body select { width: 100%; background: var(--card); border: 1px solid var(--border-strong);
+    color: var(--text); border-radius: var(--r-ctl); padding: 0 8px; height: 34px; font: inherit; font-size: 12.5px; }
   .insp-danger { border-top: 1px solid var(--border); padding-top: 14px; }
   .insp-empty { padding: 28px 16px; text-align: center; color: var(--muted); font-size: 12px;
     line-height: 1.7; }
@@ -938,6 +1001,7 @@
   <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M15.5 3.5a5 5 0 0 0-6.2 6.2L3.9 15a2 2 0 0 0 0 2.8l2.3 2.3a2 2 0 0 0 2.8 0l5.3-5.4a5 5 0 0 0 6.2-6.2l-3 3-2.8-2.8z"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 11l8-6 8 6v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/></symbol>
   <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9z"/><path d="M10.5 20a1.7 1.7 0 0 0 3 0"/></symbol>
   <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></symbol>
 </defs></svg>
 
@@ -1063,19 +1127,24 @@
   <!-- PANE · một workspace (chỉ hiện khi ?pane=1) -->
   <div id="ws-detail-view" hidden>
     <div id="hdr-ws" class="pane-bar" hidden>
-      <span id="ws-detail-title"></span>
-      <span id="ws-banner-actions"></span>
-      <div class="spacer"></div>
-      <div class="tabs">
-        <button id="tab-btn-agents" class="tab active" onclick="switchTab('agents')">
-          <svg class="ic sm"><use href="#i-map"/></svg> Agents</button>
-        <button id="tab-btn-team" class="tab" onclick="switchTab('team')"
-          title="Sub-agents your directors delegated to, their verification, and the team's rules">
-          <svg class="ic sm"><use href="#i-rocket"/></svg> Team<span id="team-live" class="tab-count" hidden></span></button>
-        <button id="tab-btn-history" class="tab" onclick="switchTab('history')">
-          <svg class="ic sm"><use href="#i-clock"/></svg> History</button>
+      <div class="pb-title">
+        <div id="ws-detail-title"></div>
+        <span id="ws-detail-path" class="pb-path"></span>
       </div>
+      <div class="tabs" role="tablist" aria-label="Workspace views">
+        <button id="tab-btn-agents" class="tab active" role="tab" onclick="switchTab('agents')">Canvas</button>
+        <button id="tab-btn-team" class="tab" role="tab" onclick="switchTab('team')"
+          title="Sub-agents your directors delegated to, their verification, and the team's rules">
+          Team<span id="team-live" class="tab-count" hidden></span></button>
+        <button id="tab-btn-history" class="tab" role="tab" onclick="switchTab('history')"
+          title="Signal queue and run history">Activity</button>
+      </div>
+      <div class="spacer"></div>
+      <span id="ws-banner-actions"></span>
     </div>
+
+    <!-- Việc đang chờ người dùng: signal cần duyệt + agent bị "needs you". Ẩn khi rỗng (renderAttn). -->
+    <div id="attn" class="attn" role="region" aria-label="Needs your attention" hidden></div>
 
     <!-- Mọi cửa sổ của workspace, một hàng ngang: bấm = ghim/bỏ ghim. Nằm NGOÀI #tab-agents vì
          trong đó là flex ngang (canvas + inspector); ở đây nó là một hàng của cột #ws-detail-view. -->
@@ -1109,6 +1178,8 @@
           <button class="icon-btn" onclick="cvFit()" title="Fit every agent into view">
             <svg class="ic"><use href="#i-fit"/></svg></button>
         </div>
+        <div class="cv-overlay cv-legend" aria-label="Arrow legend">
+          <span class="lg-run"></span>working<span class="lg-wait"></span>queued</div>
         <button class="cv-overlay cv-help" title="Canvas help"
           onclick="const h = document.getElementById('cv-hint'); h.hidden = !h.hidden">
           <svg class="ic"><use href="#i-help"/></svg></button>
@@ -1118,21 +1189,35 @@
           drag a card header = move that agent · drag a folder header = move the whole group.<br>
           <b>Click a card</b> to select it — everything about that agent opens in the panel on the
           right. Hover a card for its quick actions.<br>
-          <b>Arrows</b> = tasks currently in flight between agents: amber waiting · blue running.
+          <b>Arrows</b> = tasks currently in flight between agents: amber dashed = queued · moving accent dashes = working.
           Finished or failed ones disappear — see the History tab.
         </div>
       </div>
       <aside id="inspector" class="inspector" hidden>
         <div class="insp-head">
           <span id="insp-dot" class="status-dot"></span>
-          <b id="insp-name"></b>
-          <button class="icon-btn" onclick="renameCard()" title="Rename this agent">
-            <svg class="ic"><use href="#i-edit"/></svg></button>
-          <div class="spacer"></div>
-          <button class="icon-btn" onclick="selectNode(null)" title="Close">
+          <div class="insp-id">
+            <div class="insp-name-row"><b id="insp-name"></b>
+              <button class="icon-btn" onclick="renameCard()" title="Rename this agent">
+                <svg class="ic sm"><use href="#i-edit"/></svg></button></div>
+            <span id="insp-path" class="pb-path"></span>
+          </div>
+          <button class="icon-btn" onclick="selectNode(null)" title="Close" aria-label="Close panel">
             <svg class="ic"><use href="#i-x"/></svg></button>
         </div>
+        <div class="insp-tabs" role="tablist" aria-label="Agent details">
+          <button id="insp-tab-overview" role="tab" onclick="inspTab('overview')">Overview</button>
+          <button id="insp-tab-work" role="tab" onclick="inspTab('work')">Work</button>
+          <button id="insp-tab-settings" role="tab" onclick="inspTab('settings')">Settings</button>
+        </div>
         <div id="insp-body" class="insp-body"></div>
+        <!-- Ngoài #insp-body: body dựng lại mỗi lần refresh, chữ đang gõ ở đây không được mất. -->
+        <form class="insp-compose" onsubmit="inspSend(event)">
+          <label for="insp-msg" class="sr-only">Message this agent</label>
+          <input id="insp-msg" autocomplete="off" placeholder="Message…">
+          <button id="insp-send" class="primary icon-btn" type="submit" title="Send" aria-label="Send message">
+            <svg class="ic"><use href="#i-send"/></svg></button>
+        </form>
       </aside>
     </div>
 
