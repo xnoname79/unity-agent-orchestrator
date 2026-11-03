@@ -4696,7 +4696,7 @@ function stCard(s, i, sc = "t") {
     !live && s.worktree && !s.discarded && btn("st-sec", `teamDiscard(${i}, '${sc}')`, "Discard", "Remove the worktree and delete its branch"),
   ].filter(Boolean).join("");
   return `<article class="st-card s-${esc(s.status)}" data-st="${esc(s.id)}">
-    <div class="st-top">${sc === "i" ? badge(esc(s.status), ST_BADGE[s.status]) : s.status === "cancelled" ? badge("cancelled", "b-gray") : ""}
+    <div class="st-top">${sc === "i" ? badge(esc(s.status), ST_BADGE[s.status]) : ""}
       <span class="st-chip">${esc(s.kind === "handoff" ? "handoff" : s.playbook)}</span>
       ${multi && sc !== "i" && s.director_name ? `<span class="st-who" title="Reports to">${esc(s.director_name)}</span>` : ""}
       ${where}</div>
@@ -4709,7 +4709,7 @@ function stCard(s, i, sc = "t") {
         <p>${stLines(v.findings || v.evidence || s.reason, 3)}</p></div>` : ""}
     ${s.status === "passed" && v.verdict === "PASS" ? `<div class="st-ok">Verified${v.sha ? ` at <code>${esc(v.sha.slice(0, 7))}</code>` : ""}</div>
         <div class="st-note">Director notified${canDiff ? " · waiting to merge" : ""}</div>` : ""}
-    <div class="st-meta"><span>${attempt}</span>
+    <div class="st-meta"><span>${s.status === "cancelled" && sc !== "i" ? badge("cancelled", "b-gray") : attempt}</span>
       <span class="st-age" data-since="${esc(since)}"${live ? ` title="Running for"` : ` data-ago="1" title="Finished"`}>${since ? fmtAge(secsSince(since)) + (live ? "" : " ago") : ""}</span></div>
     <div class="st-acts">${primary}<details><summary>Details</summary><div>
       ${sec ? `<div class="st-acts">${sec}</div>` : ""}

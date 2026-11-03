@@ -655,7 +655,8 @@
   .tb-empty { border: 1px dashed var(--border); border-radius: var(--r-card); padding: 14px 12px;
     color: var(--muted); font-size: 12px; text-align: center; }
   .st-card { border: 1px solid var(--border); border-radius: var(--r-card); background: var(--card);
-    padding: 12px; display: grid; gap: 6px; font-size: 12px; min-width: 0; box-shadow: var(--sh-1); }
+    padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; font-size: 12px; min-width: 0;
+    box-shadow: var(--sh-1); }
   .st-card.s-verifying { border-color: color-mix(in srgb, var(--blue) 45%, var(--border)); }
   .st-card.s-passed { border-color: color-mix(in srgb, var(--green) 45%, var(--border)); }
   .st-card.s-failed { border-color: color-mix(in srgb, var(--red) 50%, var(--border)); }
@@ -663,8 +664,9 @@
   .st-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .st-chip { font-size: 10.5px; color: var(--muted); background: var(--panel2); border-radius: 5px;
     padding: 1px 6px; flex: none; }
-  .st-who { font-size: 11px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .st-br { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 0;
+  /* Hẹp thì nhánh co trước, tên director co sau. */
+  .st-who { font-size: 11px; color: var(--muted); flex: 0 1 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .st-br { margin-left: auto; flex: 0 6 auto; font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .st-title { font-weight: 600; font-size: 13.5px; line-height: 1.35; overflow-wrap: anywhere; }
   .st-live { display: flex; gap: 6px; align-items: baseline; color: var(--muted); min-width: 0; }
@@ -692,7 +694,7 @@
   .st-acts button.st-sec:hover { color: var(--text); background: var(--panel2); }
   .st-card details summary { cursor: pointer; color: var(--muted); font-size: 11.5px; }
   /* Details nằm cạnh nút chính; mở ra thì chiếm hết hàng — nút phụ ở đầu phần mở. */
-  .st-acts > details { flex: 1 1 auto; }
+  .st-acts > details { flex: 1 1 auto; min-width: 0; }
   .st-acts > details[open] { flex-basis: 100%; }
   .st-acts .st-acts { margin: 0; }
   .st-card details > div { display: grid; gap: 4px; margin-top: 6px; }
@@ -700,6 +702,8 @@
     line-height: 1.5; max-height: 220px; overflow: auto; background: var(--bg); border: 1px solid var(--border);
     border-radius: var(--r-ctl); padding: 7px 9px; }
   .st-card details .hint { margin: 6px 0 0; font-size: 11px; }
+  /* Đường dẫn worktree / lệnh dài không có chỗ ngắt: không bẻ thì cả card phình ra đè cột bên. */
+  .st-card details .hint, .st-card details pre { overflow-wrap: anywhere; }
   .team-side { display: grid; gap: 16px; min-width: 0; }
   .team-sub { padding: 8px 15px 0; margin: 0; }
   .tl { list-style: none; margin: 10px 15px 15px; padding: 0 0 0 14px; border-left: 2px solid var(--border);
