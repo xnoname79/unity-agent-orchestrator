@@ -345,8 +345,7 @@
   tr:last-child td { border-bottom: none; }
   tbody tr:hover td { background: var(--panel2); }
   td.msg { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
-  tr.more-row td { text-align: center; padding: 10px 15px; }
-  tr.more-row:hover td { background: transparent; }
+  .more-row { text-align: center; padding: 12px 0 4px; }
   .more-btn { font-size: 11.5px; padding: 4px 14px; color: var(--accent); }
   .more-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
   .more-count, .more-done { font-size: 10.5px; color: var(--faint); margin-left: 10px; }
@@ -356,9 +355,6 @@
   code.cwd { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; vertical-align: bottom; cursor: help; }
   .cwd-none { color: var(--faint); }
-  tr.run-row { cursor: pointer; }
-  tr.run-row:hover td { background: var(--panel2); }
-  tr.run-row.live td:first-child::before { content: "● "; color: var(--blue); animation: pulse 1.2s infinite; }
   @keyframes pulse { 50% { opacity: .3; } }
 
   /* ── Forms ────────────────────────────────────────────────────────────── */
@@ -619,8 +615,8 @@
 
   #tab-agents { flex: 1; min-height: 0; display: flex; }
   #tab-agents[hidden] { display: none; }
-  #tab-history { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 20px;
-    display: grid; gap: 16px; align-content: start; }
+  /* Activity: danh sách bên trái; mở một run thì #drawer được dời vào đây làm cột phải. */
+  #tab-history { flex: 1; min-height: 0; width: 100%; display: flex; }
   #tab-history[hidden] { display: none; }
 
 
@@ -771,14 +767,48 @@
     border-radius: var(--r-ctl); box-shadow: var(--sh-3); padding: 10px 12px; font-size: 12.5px;
     line-height: 1.55; display: grid; gap: 4px; cursor: pointer; }
   .toast b { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--amber); }
-  .hist-wrap { width: 100%; max-width: 1100px; margin: 0 auto; display: grid; gap: 16px; }
-  .sg-form { display: flex; gap: 8px; align-items: center; padding: 12px 15px; flex-wrap: wrap; }
-  .sg-form select, .sg-form input { background: var(--bg); border: 1px solid var(--border);
-    color: var(--text); border-radius: var(--r-ctl); padding: 6px 9px; font: inherit; font-size: 12.5px; }
-  .sg-form select { min-width: 160px; }
-  .sg-form input#sg-msg { flex: 1; min-width: 240px; }
-  .sg-chk { display: inline-flex; gap: 5px; align-items: center; font-size: 11.5px;
-    color: var(--muted); white-space: nowrap; }
+  .act-main { flex: 1; min-width: 0; overflow: auto; padding: 20px 24px; }
+  .act-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 14px; }
+  .act-head h2 { margin: 0; font-size: 20px; font-weight: 650; }
+  .act-head .hint { margin: 0; }
+  .act-head .spacer { flex: 1; }
+  .act-head > button { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; }
+  .act-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; }
+  .act-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .act-chips button { border-radius: 999px; padding: 5px 12px; font-size: 12.5px; color: var(--muted); background: transparent; }
+  .act-chips button.wait { color: var(--amber-ink); }
+  .act-chips button[aria-pressed="true"] { background: var(--text); border-color: var(--text); color: var(--bg); font-weight: 600; }
+  #act-q { margin-left: auto; width: 180px; max-width: 100%; background: var(--card); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--r-ctl); padding: 6px 10px; font: inherit; font-size: 12.5px; }
+  .act-group { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 6px; }
+  .act-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--r-card);
+    overflow: hidden; margin-bottom: 20px; background: var(--card); }
+  .act-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 10px 14px; width: 100%;
+    border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent;
+    color: var(--text); text-align: left; font: inherit; }
+  .act-row:last-child { border-bottom: 0; }
+  button.act-row { cursor: pointer; }
+  button.act-row:hover { background: var(--panel2); border-color: var(--border); }
+  .act-row.wait { background: var(--amber-soft); }
+  .act-row.sel { background: var(--panel2); box-shadow: inset 3px 0 0 var(--accent); }
+  .act-t { flex: none; width: 58px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .act-who { flex: none; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .act-msg { flex: 1; min-width: 160px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .act-meta { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .act-st { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--muted); }
+  .act-st.amber { color: var(--amber-ink); } .act-st.blue { color: var(--accent); }
+  .act-st.green { color: var(--green); } .act-st.red { color: var(--red); }
+  .act-live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s infinite; }
+  .act-row .actions button { padding: 4px 11px; }
+  .act-empty { padding: 40px 16px; text-align: center; color: var(--muted); }
+  .act-empty b { display: block; color: var(--text); font-size: 14px; margin-bottom: 4px; }
+  .modal.sg { width: min(520px, 100%); }
+  .sg-more { margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+  .sg-more summary { cursor: pointer; }
+  .form-card .sg-chk { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; font-size: 12.5px;
+    font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text); }
+  .form-card .sg-chk input { width: auto; }
 
   /* ── Canvas ───────────────────────────────────────────────────────────── */
   .canvas { position: relative; flex: 1; min-width: 0; overflow: hidden; cursor: grab; touch-action: none;
@@ -1074,6 +1104,16 @@
     box-shadow: var(--sh-3);
     transform: translateX(100%); transition: transform .18s ease; display: flex; flex-direction: column; }
   .drawer.open { transform: translateX(0); }
+  /* Drawer đóng nằm ngay ngoài mép phải: bóng của nó vẫn hắt vào thành một dải tối ở theme sáng. */
+  .drawer:not(.open) { box-shadow: none; }
+  /* Drawer dời vào tab Activity: ≥1100px thành cột phải chia chỗ với danh sách; hẹp hơn vẫn là
+     drawer phủ lên như cũ (rule fixed ở trên giữ nguyên). */
+  @media (min-width: 1100px) {
+    #tab-history > .drawer { position: static; transform: none; transition: none; box-shadow: none;
+      flex: 0 0 min(460px, 42%); height: auto; display: none; }
+    #tab-history > .drawer.open { display: flex; }
+    body:has(#tab-history:not([hidden]) > .drawer.open) #drawer-overlay { display: none; }
+  }
   .drawer-head { display: flex; align-items: center; gap: 10px; padding: 12px 15px;
     border-bottom: 1px solid var(--border); }
   .drawer-head h3 { margin: 0; font-size: 13.5px; }
@@ -1105,10 +1145,17 @@
   .ev.open .tr { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
   .ev .tr.pend { font-style: italic; border-top-style: dotted; }
   .ev .tr.err { color: var(--red); }
-  .ev.thinking { border-left-color: var(--amber); } .ev.thinking .s { color: var(--amber); font-style: italic; }
+  .ev.thinking { border-left-color: var(--amber); } .ev.thinking .s { color: var(--amber-ink); font-style: italic; }
+  .ev.thinking:not(.open) .s { display: none; }
+  .ev.thinking:not(.open) .k::after { content: " · click to show"; font-weight: 500; text-transform: none; letter-spacing: 0; }
+  .ev { cursor: default; } .ev.thinking, .ev.tool_use, .ev.tool_result { cursor: pointer; }
   .ev.tool_use { border-left-color: var(--blue); } .ev.tool_use .s { font-family: var(--mono); font-size: 11.5px; }
+  .ev-tool { font-family: var(--font); font-size: 10.5px; font-weight: 600; color: var(--accent);
+    background: var(--accent-soft); border-radius: 5px; padding: 1px 6px; }
+  .ev-arg { color: var(--muted); }
   .ev.tool_result { border-left-color: var(--gray); } .ev.tool_result .s { color: var(--muted); font-size: 11.5px; }
-  .ev.text { border-left-color: var(--green); }
+  .ev.text { background: transparent; border-color: transparent; padding-left: 4px; }
+  .ev.text .s { font-size: 13px; line-height: 1.6; }
   .ev.system, .ev.result { border-left-color: var(--border); opacity: .85; }
   .ev.system .s, .ev.result .s { color: var(--muted); font-size: 11.5px; }
   .ev.error { border-left-color: var(--red); } .ev.error .s { color: var(--red); }
@@ -1432,41 +1479,21 @@
     </div>
 
     <div id="tab-history" hidden>
-      <div class="hist-wrap">
-        <section class="panel">
-          <h2>Send signal</h2>
-          <div class="sg-form">
-            <select id="sg-to"></select>
-            <input id="sg-msg" placeholder="Message (plain string or any JSON)">
-            <label class="sg-chk" title="Signal waits for Approve in the queue before it runs"><input type="checkbox" id="sg-approval"> approval</label>
-            <label class="sg-chk" title="Do not call the real CLI — exercises the pipeline only"><input type="checkbox" id="sg-dry"> dry-run</label>
-            <button class="primary" onclick="sendSignal()">Send</button>
-          </div>
-        </section>
-
-        <section class="panel">
-          <h2>Signal queue</h2>
-          <div class="table-scroll">
-            <table>
-              <thead><tr><th>#</th><th>From → To</th><th>Message</th><th>Approval</th><th>Status</th><th>Actions</th></tr></thead>
-              <tbody id="signals"></tbody>
-            </table>
-          </div>
-          <div id="signals-empty" class="empty" hidden>No signals yet.</div>
-        </section>
-
-        <section class="panel">
-          <h2>Audit log (runs)</h2>
-          <div class="table-scroll">
-            <table>
-              <thead><tr><th>#</th><th>Session</th><th>Signal</th><th>Status</th><th>Tokens</th><th>Time</th></tr></thead>
-              <tbody id="runs"></tbody>
-            </table>
-          </div>
-          <div id="runs-empty" class="empty" hidden>No runs yet.</div>
-          <div class="hint" style="padding:0 15px 12px">Click a run to view its transcript (thinking · tool · text) in real time.</div>
-        </section>
-      </div>
+      <section class="act-main" aria-label="Activity">
+        <div class="act-head">
+          <h2>Activity</h2>
+          <span class="hint">every message between agents and every run, in one list</span>
+          <span class="spacer"></span>
+          <button class="secondary" onclick="sigOpen()"><svg class="ic"><use href="#i-send"/></svg> Send a message</button>
+        </div>
+        <div class="act-filters">
+          <div id="act-chips" class="act-chips" role="group" aria-label="Filter activity"></div>
+          <input id="act-q" type="search" placeholder="Filter by agent" aria-label="Filter by agent"
+            oninput="renderActivity()">
+        </div>
+        <div id="activity"></div>
+        <div id="activity-empty" class="act-empty" hidden></div>
+      </section>
     </div>
   </div><!-- /ws-detail-view -->
 </main>
@@ -1572,6 +1599,32 @@
 </div>
 
 <!-- Delegate: giao việc cho một sub-agent. Như New agent, bấm nền KHÔNG đóng (mất chữ đã gõ). -->
+<!-- Backdrop KHÔNG đóng: tin đang gõ dở mất vì một cú click trượt ra ngoài. Esc / Cancel đóng. -->
+<div id="sg-modal" class="modal-overlay" hidden>
+  <form class="modal form-card na sg" role="dialog" aria-modal="true" aria-labelledby="sg-title"
+    onsubmit="event.preventDefault(); sendSignal()">
+    <h3 id="sg-title">Send a message
+      <span class="spacer"></span>
+      <button type="button" class="icon-btn" onclick="sigClose()" title="Close">
+        <svg class="ic"><use href="#i-x"/></svg></button></h3>
+    <label for="sg-to">To</label>
+    <select id="sg-to"></select>
+    <label for="sg-msg">Message</label>
+    <textarea id="sg-msg" rows="4" placeholder="Plain text or any JSON"></textarea>
+    <details class="sg-more">
+      <summary>More options</summary>
+      <label class="sg-chk" title="Waits for Approve in the Activity list before it runs"><input type="checkbox" id="sg-approval"> Requires approval</label>
+      <label class="sg-chk" title="Do not call the real CLI — exercises the pipeline only"><input type="checkbox" id="sg-dry"> Dry-run</label>
+    </details>
+    <div id="sg-err" class="form-msg"></div>
+    <div class="na-foot">
+      <span class="spacer"></span>
+      <button type="button" class="secondary" onclick="sigClose()">Cancel</button>
+      <button type="submit" class="primary">Send</button>
+    </div>
+  </form>
+</div>
+
 <div id="td-modal" class="modal-overlay" hidden>
   <form class="modal form-card na td" role="dialog" aria-modal="true" aria-labelledby="td-title-h"
     onsubmit="event.preventDefault(); teamDelegate()">

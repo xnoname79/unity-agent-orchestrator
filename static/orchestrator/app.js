@@ -89,10 +89,12 @@ let sigShown = PAGE;    // signal queue: số record đang hiển thị (tăng d
 let runsShown = PAGE;   // audit log: số record đang hiển thị
 let sigHasMore = false, runsHasMore = false;  // còn record cũ hơn để bấm + không
 
-// Bấm "+" ở một bảng → hiển thị thêm PAGE record cũ (load-more, nối tiếp).
+// "Show older" ở tab Activity → nạp thêm PAGE record cũ của nguồn nào còn (load-more, nối tiếp).
 function showMore(which) {
-  if (which === "signals") sigShown += PAGE;
-  else if (which === "runs") runsShown += PAGE;
+  if (which === "activity") {
+    if (sigHasMore) sigShown += PAGE;
+    if (runsHasMore) runsShown += PAGE;
+  }
   refreshAll();
 }
 window.showMore = showMore;
@@ -1731,7 +1733,7 @@ function attachTerms() {
   for (const key of Object.keys(cvTerms)) if (!seen.has(key)) destroyTerm(key);
 }
 
-// Form gửi signal thủ công (tab History): chọn role, bật requires_approval / dry_run.
+// Modal "Send a message" (tab Activity): chọn role, bật requires_approval / dry_run.
 function fillSignalForm(sessions) {
   const sel = $("sg-to");
   if (!sel) return;
@@ -1744,7 +1746,7 @@ function fillSignalForm(sessions) {
 async function sendSignal() {
   const to = $("sg-to").value;
   const msg = $("sg-msg").value.trim();
-  if (!to || !msg) { alert("Pick a target role and type a message."); return; }
+  if (!to || !msg) return showMsg("sg-err", "Pick an agent and type a message.", false);
   try {
     await api("/api/signals", "POST", {
       to_role: to, message: msg, from_role: "human",
@@ -1753,10 +1755,20 @@ async function sendSignal() {
       dry_run: $("sg-dry").checked ? 1 : 0,
     });
     $("sg-msg").value = "";
+    sigClose();
+    toast("Message sent", `to ${to}`);
     await refreshAll();
-  } catch (e) { console.error(e); alert("Could not send signal: " + e); }
+  } catch (e) { console.error(e); showMsg("sg-err", "Could not send: " + e, false); }
 }
 window.sendSignal = sendSignal;
+
+function sigOpen() {
+  $("sg-err").textContent = "";
+  $("sg-modal").hidden = false;
+  $("sg-msg").focus();
+}
+function sigClose() { $("sg-modal").hidden = true; }
+window.sigOpen = sigOpen; window.sigClose = sigClose;
 
 // 1 card agent. needsYou = có signal chờ duyệt tới nó.
 // MỌI card đều là card terminal: terminal nhúng thẳng trong card, action buttons xếp dọc ở cột
@@ -3275,6 +3287,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("tools-modal").hidden) toolsClose();
   if (e.key === "Escape" && !$("na-modal").hidden) newAgentClose();
   if (e.key === "Escape" && !$("td-modal").hidden) teamDelegateClose();
+  if (e.key === "Escape" && !$("sg-modal").hidden) sigClose();
 });
 
 // Nút trong danh sách: tên đi qua data-attribute, không qua inline onclick.
@@ -4142,61 +4155,120 @@ async function spawnAgent() {
 
 window.spawnAgent = spawnAgent;
 
-// Hàng "load more" ở cuối bảng: nút + hiển thị thêm PAGE record cũ. Ẩn khi đã hết.
-function moreRow(which, cols, hasMore, shown) {
-  if (!hasMore) {
-    // Chỉ hiện dòng "đã hết" khi đang xem nhiều hơn 1 trang (đỡ rối khi ít record).
-    if (shown <= PAGE) return "";
-    return `<tr class="more-row"><td colspan="${cols}"><span class="more-done">— end —</span></td></tr>`;
+// ── Activity: signal + run trên MỘT timeline ────────────────────────────────
+let actSignals = [], actRuns = [], actSessions = [];
+let actChip = (() => { try { return localStorage.getItem("orch-act-chip") || "all"; } catch { return "all"; } })();
+const ACT_CHIPS = [["all", "All"], ["wait", "Waiting for approval"], ["running", "Running"], ["failed", "Failed"]];
+const RERUNNABLE = ["failed", "denied", "blocked"];
+// Trạng thái hiển thị: [nhãn, màu, khoá lọc]. "Now" = mọi thứ còn đang đi.
+const SIG_ST = { approved: ["queued", "blue"], processing: ["processing", "blue"], done: ["delivered", "green"],
+                 failed: ["failed", "red", "failed"], denied: ["denied", "red"], blocked: ["blocked", "amber"] };
+const tsOf = (iso) => new Date(String(iso || "").replace(" ", "T")).getTime() || 0;
+const fmtDur = (s) => s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+const fmtTok = (n) => n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k tok` : `${n || 0} tok`;
+
+function actItems() {
+  const nameOf = (ref) => ref === "human" || !ref ? "you"
+    : (actSessions.find((x) => x.id === ref || x.name === ref) || {}).name || ref;
+  const sigById = Object.fromEntries(actSignals.map((s) => [s.id, s]));
+  const sigs = actSignals.map((s) => {
+    const wait = !!(s.requires_approval && s.status === "pending");
+    const [label, color, key] = wait ? ["waiting for you", "amber", "wait"]
+      : SIG_ST[s.status] || ["queued", "gray"];
+    return { kind: "sig", s, ts: tsOf(s.created_at), time: s.created_at, wait, label, color, key,
+             now: ["pending", "approved", "processing"].includes(s.status),
+             who: `${nameOf(s.from_session)} → ${nameOf(s.to_session)}`, msg: s.message };
+  });
+  const runs = actRuns.map((r) => {
+    const sg = sigById[r.signal_id];
+    const agent = nameOf(r.session_id);
+    const live = r.status === "running";
+    const [label, color] = live ? ["running", "blue"] : r.status === "ok" ? ["done", "green"] : ["failed", "red"];
+    return { kind: "run", r, ts: tsOf(r.started_at), time: r.started_at, label, color, now: live,
+             key: live ? "running" : r.status === "error" ? "failed" : "",
+             who: `Run #${r.id} · ${agent}`, agent,
+             // Prompt mở đầu bằng khung vai, đọc không ra — ưu tiên tin nhắn của signal sinh ra run.
+             msg: sg ? sg.message : (r.prompt || "").split("\n").find((l) => l && !l.startsWith("[")) || r.prompt || "" };
+  });
+  // Hai nguồn phân trang riêng: ẩn record cũ hơn mốc mà nguồn kia chưa nạp tới, kẻo timeline thủng lỗ.
+  const cut = Math.max(sigHasMore && sigs.length ? Math.min(...sigs.map((x) => x.ts)) : 0,
+                       runsHasMore && runs.length ? Math.min(...runs.map((x) => x.ts)) : 0);
+  return [...sigs, ...runs].filter((x) => x.ts >= cut).sort((a, b) => b.ts - a.ts);
+}
+
+function actRow(x) {
+  const sel = x.kind === "run" && x.r.id === openRunId && $("drawer").parentElement === $("tab-history");
+  const t = `<span class="act-t">${esc(shortTime(x.time).slice(0, 5))}</span>`;
+  const who = `<span class="act-who" title="${esc(x.who)}">${esc(x.who)}</span>`;
+  const msg = `<span class="act-msg" title="${esc(x.msg)}">${esc(x.msg)}</span>`;
+  const st = `<span class="act-st ${x.color}"${x.kind === "sig" && x.s.reason ? ` title="${esc(x.s.reason)}"` : ""}>${
+    x.label === "running" ? '<span class="act-live"></span>' : ""}${esc(x.label)}${
+    x.label === "running" ? " " + fmtAge(secsSince(x.time)) : ""}</span>`;
+  if (x.kind === "run") {
+    const r = x.r;
+    const meta = r.status === "running" ? ""
+      : `<span class="act-meta">${fmtTok(r.tokens)}${r.ended_at ? " · " + fmtDur(Math.max(0, Math.round((tsOf(r.ended_at) - tsOf(r.started_at)) / 1000))) : ""}</span>`;
+    return `<button class="act-row run${sel ? " sel" : ""}" data-run="${r.id}" onclick="actRun(${r.id})">${t}${who}${msg}${meta}${st}</button>`;
   }
-  return `<tr class="more-row"><td colspan="${cols}">
-    <button class="more-btn" onclick="showMore('${which}')">+ ${PAGE} older</button>
-    <span class="more-count">showing ${shown}</span></td></tr>`;
+  const s = x.s;
+  let actions = "";
+  if (x.wait) {
+    actions = `<button class="primary" onclick="act('/api/signals/${s.id}/approve')">Approve</button>
+       <button class="danger" onclick="act('/api/signals/${s.id}/deny')">Deny</button>`;
+  } else {
+    if (RERUNNABLE.includes(s.status))
+      actions += `<button onclick="act('/api/signals/${s.id}/rerun')">↻ Re-run</button>`;
+    if (s.status === "failed")
+      actions += `<button class="danger" onclick="deleteSignal(${s.id})">Delete</button>`;
+  }
+  const oneWay = s.expects_reply === 0 ? badge("one-way", "b-gray", "No reply expected: the receiver does the work and stops — a report, or a request sent with expect_reply=False") : "";
+  return `<div class="act-row sig${x.wait ? " wait" : ""}" data-sig="${s.id}">${t}${who}${oneWay}${msg}${st}${
+    actions ? `<div class="actions">${actions}</div>` : ""}</div>`;
 }
 
-function renderSignals(list) {
-  const tb = $("signals");
-  $("signals-empty").hidden = list.length > 0;
-  const RERUNNABLE = ["failed", "denied", "blocked"];
-  tb.innerHTML = list.map((s) => {
-    const needsApproval = s.requires_approval && s.status === "pending";
-    let actions = "";
-    if (needsApproval) {
-      actions = `<button onclick="act('/api/signals/${s.id}/approve')">Approve</button>
-         <button class="danger" onclick="act('/api/signals/${s.id}/deny')">Deny</button>`;
-    } else {
-      if (RERUNNABLE.includes(s.status))
-        actions += `<button onclick="act('/api/signals/${s.id}/rerun')">↻ Re-run</button>`;
-      if (s.status === "failed")
-        actions += `<button class="danger" onclick="deleteSignal(${s.id})">🗑 Delete</button>`;
-    }
-    return `<tr>
-      <td>${s.id}</td>
-      <td><code>${esc(s.from_session || "—")} → ${esc(s.to_session)}</code>
-        ${s.expects_reply === 0 ? badge("one-way", "b-gray", "No reply expected: the receiver does the work and stops — a report, or a request sent with expect_reply=False") : ""}</td>
-      <td class="msg" title="${esc(s.message)}">${esc(s.message)}</td>
-      <td>${s.requires_approval ? badge("required", "b-amber") : "—"}</td>
-      <td>${badge(s.status, SIGNAL_BADGE[s.status], s.reason)}</td>
-      <td><div class="actions">${actions}</div></td>
-    </tr>`;
-  }).join("") + moreRow("signals", 6, sigHasMore, sigShown);
+function renderActivity() {
+  const all = actItems();
+  const n = (k) => all.filter((x) => x.key === k).length;
+  $("act-chips").innerHTML = ACT_CHIPS.map(([k, label]) => {
+    const c = k === "wait" || k === "running" ? ` · ${n(k)}` : "";
+    return `<button class="${k}" aria-pressed="${actChip === k}" onclick="actSetChip('${k}')">${label}${c}</button>`;
+  }).join("");
+  const q = $("act-q").value.trim().toLowerCase();
+  const list = all.filter((x) => (actChip === "all" || x.key === actChip) && (!q || x.who.toLowerCase().includes(q)));
+  const group = (title, xs) => xs.length
+    ? `<div class="act-group">${title}</div><div class="act-list">${xs.map(actRow).join("")}</div>` : "";
+  const more = sigHasMore || runsHasMore
+    ? `<div class="more-row"><button class="more-btn" onclick="showMore('activity')">Show older</button>
+        <span class="more-count">showing ${all.length}</span></div>` : "";
+  $("activity").innerHTML = group("Now", list.filter((x) => x.now)) + group("Earlier", list.filter((x) => !x.now)) + more;
+  const empty = $("activity-empty");
+  empty.hidden = list.length > 0;
+  empty.innerHTML = all.length
+    ? "Nothing here matches this filter."
+    : `<b>No activity yet.</b>Send a message to an agent and its run shows up here.`;
 }
+window.renderActivity = renderActivity;
 
-function renderRuns(list) {
-  const tb = $("runs");
-  $("runs-empty").hidden = list.length > 0;
-  tb.innerHTML = list.map((r) => {
-    const live = r.status === "running" ? " live" : "";
-    return `<tr class="run-row${live}" onclick="openRun(${r.id})">
-      <td>${r.id}</td>
-      <td><code>${esc(r.session_id)}</code></td>
-      <td>${r.signal_id ?? "—"}</td>
-      <td>${badge(r.status, RUN_BADGE[r.status])}</td>
-      <td>${r.tokens || 0}</td>
-      <td><code>${shortTime(r.ended_at || r.started_at)}</code></td>
-    </tr>`;
-  }).join("") + moreRow("runs", 6, runsHasMore, runsShown);
+function actSetChip(k) {
+  actChip = k;
+  try { localStorage.setItem("orch-act-chip", k); } catch { /* private mode */ }
+  renderActivity();
 }
+window.actSetChip = actSetChip;
+
+// Mở transcript của run thành cột phải ngay trong tab (dời #drawer vào đây; closeDrawer trả lại).
+async function actRun(id) {
+  const x = actRuns.find((r) => r.id === id);
+  $("tab-history").appendChild($("drawer"));
+  const p = openRun(id);
+  for (const el of $("activity").querySelectorAll(".act-row.run"))
+    el.classList.toggle("sel", +el.dataset.run === id);
+  await p;
+  if (!x || openRunId !== id) return;
+  $("dr-title").textContent = `Run #${id} · ${(actSessions.find((s) => s.id === x.session_id) || {}).name || x.session_id}`;
+  $("dr-badge").innerHTML = badge(x.status, RUN_BADGE[x.status]);
+}
+window.actRun = actRun;
 
 // ── Transcript drawer ────────────────────────────────────────────────────────
 
@@ -4221,9 +4293,15 @@ function evRow(e) {
         <span class="rep" ${n > 1 ? "" : "hidden"}>×${n}</span>
         <span class="t">${shortTime(e.ts)}</span>
       </div>
-      <div class="s">${esc(e.summary)}</div>${tr}
+      <div class="s">${kind === "tool_use" ? toolSum(e.summary) : esc(e.summary)}</div>${tr}
     </div>
   </div>`;
+}
+
+// Summary tool_use có dạng "Name(args)" (xem parse ở service) → chip tên + tham số mono.
+function toolSum(sum) {
+  const m = /^([\w.:-]+)\(([\s\S]*)\)$/.exec(sum || "");
+  return m ? `<span class="ev-tool">${esc(m[1])}</span> <span class="ev-arg">${esc(m[2])}</span>` : esc(sum);
 }
 
 // Ghép tool_result vào tool_use đứng ngay trước nó → 1 card gọi + kết quả.
@@ -4280,6 +4358,10 @@ function closeDrawer() {
   $("dr-body").innerHTML = "";   // run dài có thể để lại hàng nghìn dòng, mở lần sau dựng lại
   $("drawer").classList.remove("open");
   $("drawer-overlay").classList.remove("open");
+  if ($("drawer").parentElement !== document.body) {
+    document.body.insertBefore($("drawer"), $("drawer-overlay").nextSibling);
+    for (const el of document.querySelectorAll(".act-row.sel")) el.classList.remove("sel");
+  }
 }
 window.closeDrawer = closeDrawer;
 
@@ -4320,6 +4402,8 @@ function switchTab(name) {
     $("tab-btn-" + t).setAttribute("aria-selected", name === t);
   }
   if (name === "team") teamLoad().catch((e) => console.error(e));
+  // Transcript đang là cột của Activity: rời tab thì đóng, kẻo drawer kẹt trong tab bị ẩn.
+  if (name !== "history" && $("drawer").parentElement === $("tab-history")) closeDrawer();
   // Key theo workspace: hai pane mở cùng lúc dùng chung một key thì đổi tab ở pane này
   // lật luôn pane kia.
   try { localStorage.setItem("orch-tab." + currentWS, name); } catch { /* private mode */ }
@@ -4475,8 +4559,9 @@ async function refreshNow() {
     renderAttn(work, signals.items);
     fillSignalForm(work);
     if (teamVisible()) teamLoad().catch(() => {});
-    sigHasMore = signals.has_more; renderSignals(signals.items);
-    runsHasMore = runs.has_more; renderRuns(runs.items);
+    sigHasMore = signals.has_more; runsHasMore = runs.has_more;
+    actSignals = signals.items; actRuns = runs.items; actSessions = sessions;
+    renderActivity();
   } catch (e) { console.error(e); if (!PANE) setConn(false); }
 }
 
