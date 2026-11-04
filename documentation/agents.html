@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agents · Agent Orchestrator</title>
+<meta name="description" content="Workspaces, the canvas, terminal cards, models and effort, agent-to-agent handoffs, and the command palette.">
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site-head">
+  <div class="site-head-in">
+    <a class="brand" href="index.html"><img src="images/logo.png" alt="Agent Orchestrator logo" width="24" height="24">Agent Orchestrator</a>
+    <nav class="site-nav" aria-label="Guide">
+      <a href="index.html">Overview</a>
+      <a href="getting-started.html">Getting started</a>
+      <a href="agents.html" aria-current="page">Agents</a>
+      <a href="team.html">Team</a>
+      <a href="control.html">Staying in control</a>
+      <a href="settings.html">Settings</a>
+      <a href="changelog.html">Changelog</a>
+    </nav>
+  </div>
+</header>
+<main>
+<h1>Agents</h1>
+<p class="lead">Where your agents live, how you work with them, and how they pass work to each other.</p>
+
+<h2 id="workspaces">Workspaces and groups</h2>
+<p>A <em>workspace</em> is a set of agents that can message each other. Agents in different workspaces cannot, unless
+you move one across. A <em>group</em> is only a label that keeps workspaces tidy, such as "work" and "hobby".</p>
+<ul>
+  <li><strong>Create:</strong> <span class="ui">New workspace</span> and <span class="ui">New group</span> are on
+    <span class="ui">Home</span>. The <span class="ui">Workspaces</span> heading in the sidebar has a plus button too.</li>
+  <li><strong>Open:</strong> click a workspace in the sidebar or on <span class="ui">Home</span>.</li>
+  <li><strong>Side by side:</strong> open two workspaces, then press the split button at the bottom of the sidebar (its
+    tooltip reads <span class="ui">Side-by-side (needs 2 open workspaces)</span>). At most two are open at once;
+    opening a third replaces the one you are viewing.</li>
+  <li><strong>Rename or delete:</strong> use the pencil and trash buttons on a card on <span class="ui">Home</span>.
+    Deleting a workspace unregisters its agents. It keeps runs, messages and records, and leaves the folder on disk alone.
+    Deleting a group only moves its workspaces back to the default group.</li>
+</ul>
+
+<h2 id="canvas">The canvas</h2>
+<p>The <span class="ui">Canvas</span> tab of a workspace shows every agent as a card.</p>
+<figure>
+  <img src="images/canvas.png" width="1440" height="900" alt="The canvas of the acme-shop workspace. A director card and a QA reviewer card sit in a shared frame with a dashed amber arrow between them. The director is selected and its panel is open on the right.">
+  <figcaption>Two agents in the same project folder share a frame. The dashed arrow is a queued message.</figcaption>
+</figure>
+<ul>
+  <li><strong>Move around:</strong> drag the background to pan, and scroll to zoom. <kbd>Shift</kbd> + scroll zooms even
+    when the pointer is over a terminal.</li>
+  <li><strong>Arrange:</strong> drag a card's header to move it, and drag its bottom-right corner to resize it. Drag a
+    folder frame's header to move the whole group.</li>
+  <li><strong>Jump to a card:</strong> the row above the canvas has one button per card; click it to jump there. The
+    <span class="ui">Fit every agent into view</span> button brings everything back.</li>
+  <li><strong>Read the arrows:</strong> they show messages in flight. Amber dashes mean <span class="ui">queued</span>,
+    moving dashes mean <span class="ui">working</span>. Finished ones disappear and stay in
+    <a href="control.html#activity">Activity</a>. The canvas help text calls that tab "History"; it is the same tab.</li>
+</ul>
+<p>Sub-agents and verifiers do not get cards. They appear in the director's panel and on the
+<a href="team.html#team-tab">Team tab</a>.</p>
+
+<h2 id="cards">Terminal cards</h2>
+<p>Each card holds a live terminal running the agent's CLI, in its project folder. Type in it as you would anywhere else.</p>
+<p>The header shows the status dot, the name, and the model and effort. The dropdown on the right chooses which past
+session of this folder the card resumes. The strip on the left has:</p>
+<ul>
+  <li><span class="ui">Pause</span> or <span class="ui">Resume</span>, and the stop button while a job runs. See
+    <a href="control.html#stop">how to stop things</a>.</li>
+  <li>A folder button, which opens a card for browsing the project's files
+    (<span class="ui">Browse this project's folder on the canvas</span>).</li>
+  <li>A dropdown for the CLI in this terminal, <code>claude</code> or <code>agy</code>. A CLI other than the agent's own
+    opens a new session in the same folder.</li>
+  <li>The reload button, which restarts the terminal.</li>
+</ul>
+<div class="note"><p><strong>Why a terminal locks.</strong> When another agent or a background message gives this agent
+work, the terminal closes so that two processes do not write to one conversation. The card shows
+<span class="ui">An automatic run is in progress</span>. When it finishes, press reload to carry on.</p></div>
+
+<h3 id="panel">The agent panel</h3>
+<p>Click a card to open its panel on the right. Double-click a card's name, or use the pencil in the panel, to rename
+it; the old name keeps working for agents that remember it.</p>
+<ul>
+  <li><span class="ui">Overview</span>: engine and status, <span class="ui">Model</span> and <span class="ui">Effort</span>,
+    <span class="ui">Runs today</span>, and for a director its <span class="ui">Team</span> with live sub-agent cards.</li>
+  <li><span class="ui">Work</span>: <span class="ui">Latest run</span>, and under <span class="ui">Context</span> the
+    <span class="ui">View</span> and <span class="ui">SKILL</span> buttons. SKILL is the agent's playbook file, which you
+    can edit here.</li>
+  <li><span class="ui">Settings</span>: move the agent to another workspace, list and delete old sessions in its folder,
+    and <span class="ui">Unregister</span> it.</li>
+</ul>
+<p>The box at the bottom sends the agent a message as a background run.</p>
+
+<h2 id="new-agent">New agent</h2>
+<p><span class="ui">New agent</span> is in the sidebar, on <span class="ui">Home</span>, and in the command palette. It
+asks for three things: see <a href="getting-started.html#director">Start a director</a> for a walk-through.</p>
+<ul>
+  <li><strong>Name:</strong> how other agents address this one. It must be unique in the workspace.</li>
+  <li><strong>Playbook:</strong> <span class="ui">director</span> leads a team of sub-agents. <span class="ui">agent</span>
+    is a general role that hands work to named colleagues. On its first run, the agent fills in the project details itself.</li>
+  <li><strong>Project folder:</strong> where it works. Several agents can share one.</li>
+</ul>
+
+<h3 id="models">Models and effort</h3>
+<p>The model decides which CLI runs the agent.</p>
+<ul>
+  <li><span class="ui">Claude</span> tab: an alias such as <code>opus</code> always means the latest version. A full id
+    such as <code>claude-opus-5-5</code> stays on exactly that version.</li>
+  <li><span class="ui">Gemini</span> tab: the list comes from <code>agy models</code> on your machine, so new models show
+    up on their own. If that command cannot be read, you get a built-in list.</li>
+  <li><span class="ui">Custom…</span> lets you type any other model id.</li>
+</ul>
+<p><em>Effort</em> is how hard the model thinks before answering. Higher costs more and takes longer. It is under
+<span class="ui">Effort (reasoning)</span> in the dialog, and the dialog only offers levels that model accepts: up to
+<code>max</code> on Claude and up to <code>high</code> on Gemini. Some Gemini models carry a fixed level in their
+name. The default is <code>high</code>. You can change both later in the agent's <span class="ui">Overview</span>.</p>
+
+<h2 id="handoffs">Agent-to-agent handoffs</h2>
+<p>Agents hand work to each other with the <code>send_signal</code> tool from the
+<a href="getting-started.html#connect"><code>signal</code> server</a>. The orchestrator delivers the message as a new run for the receiver.</p>
+<ul>
+  <li><strong>One at a time.</strong> An agent handles one prompt at a time. Further messages wait in a queue.</li>
+  <li><strong>Logged.</strong> Every message and run is in <a href="control.html#activity">Activity</a>.</li>
+  <li><strong>Capped.</strong> Two agents cannot bounce messages back and forth forever. See
+    <a href="control.html#guard-rails">guard rails</a>.</li>
+  <li><strong>Reports.</strong> A receiver reports back to the agent that sent the work.</li>
+  <li><strong>Checked handoffs.</strong> An agent can attach a <span class="ui">Done means</span> to a message. A verifier
+    then checks the receiver's work before the sender hears back, as with sub-agents. These appear on the
+    <span class="ui">Team</span> tab, marked <code>handoff</code>.</li>
+</ul>
+<p>You can message an agent too: use the box in its panel, or <span class="ui">Send a message</span> in
+<a href="control.html#activity">Activity</a>.</p>
+
+<h2 id="palette">Command palette</h2>
+<p>Press <kbd>Ctrl</kbd> <kbd>K</kbd> (<kbd>⌘</kbd> <kbd>K</kbd> on a Mac), or click
+<span class="ui">Search or run…</span> at the top of the sidebar. It works even with the cursor inside a terminal.</p>
+<figure>
+  <img src="images/palette.png" width="1440" height="900" alt="The command palette over Home. It lists items that need you, then agents and workspaces, with a search box on top and keyboard hints at the bottom.">
+  <figcaption>The palette lists what needs you first, then agents, workspaces and actions.</figcaption>
+</figure>
+<ul>
+  <li><strong>Needs you:</strong> choosing an approval row <em>approves the message right away</em>. A failed sub-agent
+    opens its Team tab.</li>
+  <li><strong>Agents</strong> and <strong>Workspaces:</strong> jump there. Sub-agents are listed too, and open the Team tab.</li>
+  <li><strong>Actions:</strong> <span class="ui">New agent</span>, <span class="ui">Go Home</span>,
+    <span class="ui">Performance</span>, <span class="ui">Toggle theme</span>, <span class="ui">New workspace</span> and more.</li>
+</ul>
+<p>Use <kbd>↑</kbd> <kbd>↓</kbd> to move, <kbd>↵</kbd> to open and <kbd>esc</kbd> to close. Typing narrows the list and highlights the best match.</p>
+</main>
+<footer class="site-foot"><a href="https://github.com/xnoname79/unity-agent-orchestrator">Source on GitHub</a> · MIT license</footer>
+</body>
+</html>

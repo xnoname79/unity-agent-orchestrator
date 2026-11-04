@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Changelog · Agent Orchestrator</title>
+<meta name="description" content="What changed in each release of Agent Orchestrator.">
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site-head">
+  <div class="site-head-in">
+    <a class="brand" href="index.html"><img src="images/logo.png" alt="Agent Orchestrator logo" width="24" height="24">Agent Orchestrator</a>
+    <nav class="site-nav" aria-label="Guide">
+      <a href="index.html">Overview</a>
+      <a href="getting-started.html">Getting started</a>
+      <a href="agents.html">Agents</a>
+      <a href="team.html">Team</a>
+      <a href="control.html">Staying in control</a>
+      <a href="settings.html">Settings</a>
+      <a href="changelog.html" aria-current="page">Changelog</a>
+    </nav>
+  </div>
+</header>
+<main>
+<h1>Changelog</h1>
+<p class="lead">What changed in each release, newest first.</p>
+
+<!-- One section per release, newest first. The id is exactly the git tag, for example
+     id="v2026.11.20", because the release notes link to it and check_docs.py refuses a tag
+     without its section. Heading: version and date. Short bullets, what changed first. -->
+
+<section id="unreleased" class="release">
+  <h2>Unreleased</h2>
+  <p>Changes since <code>v2026.08.12-1</code>.</p>
+
+  <h3>New</h3>
+  <ul>
+    <li>Director and sub-agents: one agent splits the work, others build it in their own git worktrees.</li>
+    <li>Independent verifier: work counts as done only after a fresh agent observes its Done means.</li>
+    <li>Four sub-agent playbooks: feature, bugfix, refactor, investigate.</li>
+    <li>Team tab: a pipeline board, the director's decision log, who may message whom, models per role.</li>
+    <li>Reflect: turns failed runs into a playbook change you approve.</li>
+    <li>Antigravity (Gemini) CLI support, with models read from <code>agy models</code>.</li>
+    <li>Home inbox: approvals and failed sub-agents across all workspaces.</li>
+    <li>Command palette: <kbd>Ctrl</kbd> <kbd>K</kbd> or <kbd>⌘</kbd> <kbd>K</kbd> to jump anywhere or run an action.</li>
+    <li>Groups above workspaces; rename or delete a workspace in one step.</li>
+    <li>Settings › Performance: what is using your CPU and memory, in plain words.</li>
+    <li>Settings › Removed agents: delete leftover runs and transcripts for good.</li>
+    <li>Settings › Media tools: shows which media commands agents can use on this machine.</li>
+    <li>Tool servers register for every installed CLI, without a token on the command line.</li>
+    <li>Folder card: browse a project's files on the canvas.</li>
+    <li>Pick which past CLI session a card resumes, and delete old ones.</li>
+    <li>Rename an agent; its old name keeps working.</li>
+    <li><kbd>Shift</kbd> + scroll zooms the canvas, even over a terminal.</li>
+    <li>A row of chips above the canvas jumps to any card.</li>
+  </ul>
+
+  <h3>Changed</h3>
+  <ul>
+    <li>New dashboard design: left sidebar, new fonts, Settings as a full page.</li>
+    <li>Activity is one timeline of messages and runs, with live transcripts.</li>
+    <li>Agent details moved into a tabbed panel: Overview, Work, Settings.</li>
+    <li>New agent is a three-step dialog.</li>
+    <li>Every card is a terminal card.</li>
+    <li>Safer defaults: the server listens on your machine only, and CORS is off.</li>
+    <li>Requests from other websites are refused.</li>
+    <li>Claude model lists updated to the current models.</li>
+    <li>Agents are told to signal only after their own turn is finished.</li>
+    <li>Team tab loads 10 cards and decisions at a time as you scroll.</li>
+  </ul>
+
+  <h3>Removed</h3>
+  <ul>
+    <li>Codex CLI support.</li>
+    <li>VS Code cards. Use the folder card instead.</li>
+    <li>The API key setting: this is a local app, reachable from your own machine by default.</li>
+    <li>The prebuilt Linux download. Linux runs from source.</li>
+    <li>Unity tooling and the <code>asset_fetch</code> tool server.</li>
+    <li>The Compact context and Signal buttons in the agent panel. Messages go through the box at the bottom of the panel.</li>
+  </ul>
+
+  <h3>Fixed</h3>
+  <ul>
+    <li>A report no longer triggers a report back.</li>
+    <li>A slash command in a message reaches the CLI as a command, not as text.</li>
+    <li>The dashboard no longer slows down after hours of work.</li>
+    <li>Ctrl-C stops the server cleanly instead of hanging.</li>
+    <li>Selecting text in a card picks the right line at any zoom.</li>
+    <li>A card whose transcript was deleted opens again instead of dying.</li>
+    <li>Changing a card's model to another CLI is no longer refused.</li>
+    <li>Icons from Nerd Fonts no longer show as empty boxes in terminals.</li>
+    <li><code>CLAUDE_CONFIG_DIR</code> is respected when finding transcripts.</li>
+    <li>The dashboard can no longer serve a stale version to some workspaces.</li>
+    <li>Windows: CLI transcripts are matched to a folder by its real path.</li>
+  </ul>
+</section>
+
+<p>Older releases are on <a href="https://github.com/xnoname79/unity-agent-orchestrator/releases">GitHub Releases</a>.</p>
+</main>
+<footer class="site-foot"><a href="https://github.com/xnoname79/unity-agent-orchestrator">Source on GitHub</a> · MIT license</footer>
+</body>
+</html>

@@ -150,6 +150,7 @@ jobs:
           files: out/*
           generate_release_notes: true
           body: |
+            Changelog: https://xnoname79.github.io/unity-agent-orchestrator/changelog.html#${{ github.ref_name }}
             ## Download
 
             | Machine | File |
