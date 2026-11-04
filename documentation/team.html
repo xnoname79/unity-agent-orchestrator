@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Team · Agent Orchestrator</title>
+<meta name="description" content="Delegation, the four playbooks, the verifier, the Team tab board, the decision log, and Reflect.">
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site-head">
+  <div class="site-head-in">
+    <a class="brand" href="index.html"><img src="images/logo.png" alt="Agent Orchestrator logo" width="24" height="24">Agent Orchestrator</a>
+    <nav class="site-nav" aria-label="Guide">
+      <a href="index.html">Overview</a>
+      <a href="getting-started.html">Getting started</a>
+      <a href="agents.html">Agents</a>
+      <a href="team.html" aria-current="page">Team</a>
+      <a href="control.html">Staying in control</a>
+      <a href="settings.html">Settings</a>
+      <a href="changelog.html">Changelog</a>
+    </nav>
+  </div>
+</header>
+<main>
+<h1>Team</h1>
+<p class="lead">How a director splits work, who checks it, and where you watch it happen.</p>
+
+<h2 id="delegation">Delegation</h2>
+<p>A <span class="ui">director</span> agent does not do the hands-on work. For each unit it starts a sub-agent and gives it:</p>
+<ul>
+  <li>a <strong>playbook</strong>, the kind of work (see below);</li>
+  <li>a <strong>brief</strong>, which must stand on its own, because a sub-agent cannot see your chat;</li>
+  <li>a <span class="ui">Done means</span>, what a verifier can observe: a command and its expected output, a flow in the
+    running app, or a value read back.</li>
+</ul>
+<p>Each director can have 4 active sub-agents at once (<code>ORCH_SUBAGENTS_MAX</code>). Past that, it is told to wait for
+one to finish or to cancel one.</p>
+<p>You can delegate by hand as well. On the <span class="ui">Team</span> tab, press <span class="ui">Delegate a task</span>
+and fill in <span class="ui">Report the result to</span>, <span class="ui">Playbook</span>, <span class="ui">Title</span>,
+<span class="ui">Brief</span> and <span class="ui">Done means</span>. Brief and Done means are required.</p>
+
+<h2 id="playbooks">The four playbooks</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Playbook</th><th>What it does</th><th>Where</th></tr></thead>
+  <tbody>
+    <tr><td><code>feature</code></td><td>Builds one feature and proves it works on the real interface.</td><td>Own worktree and branch</td></tr>
+    <tr><td><code>bugfix</code></td><td>Reproduces the bug first, finds the root cause with evidence, then fixes it and checks the same reproduction.</td><td>Own worktree and branch</td></tr>
+    <tr><td><code>refactor</code></td><td>Records current behaviour first, then changes structure in small steps that keep that record the same.</td><td>Own worktree and branch</td></tr>
+    <tr><td><code>investigate</code></td><td>Answers a question with evidence from the code and its history. Read-only.</td><td>The director's folder</td></tr>
+  </tbody>
+</table></div>
+<p>A <em>worktree</em> is a separate copy of your project on its own branch, named <code>orch/&lt;id&gt;</code>. If the
+director's folder is not a git repository, a sub-agent has no worktree and shares that folder; its card says
+<span class="ui">no worktree</span>.</p>
+
+<h2 id="verifier">The verifier</h2>
+<p>When a sub-agent ends its turn, the orchestrator starts a brand-new agent, the <em>verifier</em>, to check the
+<span class="ui">Done means</span>. No agent grades its own work.</p>
+<ul>
+  <li><strong>It observes.</strong> It runs the command or drives the flow itself. The builder's report counts as a claim, not as proof.</li>
+  <li><strong>It may not edit.</strong> If files change while it runs, its verdict is thrown away.</li>
+  <li><strong>Each verdict is tied to a commit.</strong> A pass reads <span class="ui">Verified</span> at that commit.</li>
+  <li><strong>Fail goes back.</strong> The findings return to the same sub-agent to fix, then a new verifier checks again.</li>
+  <li><strong>It stops at a limit.</strong> After 3 failed verifications (<code>ORCH_SUBTASK_MAX_ATTEMPTS</code>) the work is
+    marked failed, the director is told, and it shows up on <a href="control.html#home">Home</a>.</li>
+</ul>
+<p>Every pass or fail goes back to the director as a message. It does not need to keep asking.</p>
+
+<h2 id="team-tab">The Team tab</h2>
+<figure>
+  <img src="images/team.png" width="1440" height="900" alt="The Team tab. A row of counts sits on top, with a filter and a Delegate a task button. Below are four columns of sub-agent cards, and on the right the decision log and the team rules.">
+  <figcaption>The board on the left, the decision log and team rules on the right.</figcaption>
+</figure>
+<p>The row on top counts what is working and verifying now, plus what passed, failed, and was sent back to fix in the
+last 24 hours. The filter switches between <span class="ui">Active and recent</span>, <span class="ui">All</span> and
+<span class="ui">Failed</span>. With two or more directors, another filter appears (<span class="ui">All directors</span>).
+Scrolling loads more, 10 at a time.</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Column</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><span class="ui">Building</span></td><td>Waiting to start, working, or fixing after a failed check.</td></tr>
+    <tr><td><span class="ui">Verifying</span></td><td>A verifier is checking. The card shows the <span class="ui">Done means</span>.</td></tr>
+    <tr><td><span class="ui">Passed</span></td><td>Verified. The card shows the commit and that the director was told.</td></tr>
+    <tr><td><span class="ui">Failed</span></td><td>Out of attempts or stopped, with what the verifier found. Cancelled work is listed here too, under the <span class="ui">All</span> filter.</td></tr>
+  </tbody>
+</table></div>
+<p>Buttons on a card depend on its stage:</p>
+<ul>
+  <li><span class="ui">Cancel</span>: stops work in progress. A running step is killed and the director is told.</li>
+  <li><span class="ui">Diff</span>: the branch's changes.</li>
+  <li><span class="ui">Verify again</span>: one more independent check, for example after you fixed something by hand.</li>
+  <li><span class="ui">Details</span>: the brief, the Done means, the verdict and the builder's report, plus
+    <span class="ui">Builder run</span>, <span class="ui">Verifier run</span> and, when it applies,
+    <span class="ui">Copy merge</span> (copies the merge command) and <span class="ui">Discard</span>
+    (removes the worktree and deletes the branch; commits that were not merged are lost).</li>
+</ul>
+<p>The director's own panel on the canvas shows the same cards for its team. Its button
+<span class="ui">Whole team &amp; settings</span> leads here.</p>
+
+<h2 id="decisions">Decision log</h2>
+<p><span class="ui">Why the director chose this</span> is a list, newest first, of the decisions the director and
+sub-agents recorded: what they chose, why, and sometimes <span class="ui">Evidence</span> you can expand. Decisions about one
+sub-agent show its task id. Read it when you want to know why the work was split a certain way, or why a failure was dropped.</p>
+
+<h2 id="rules">Team rules</h2>
+<ul>
+  <li><span class="ui">Who may message whom</span>: <span class="ui">Open — edges are documentation</span> lets any agent
+    signal any other. <span class="ui">Enforced — only these edges may signal</span> allows only the sender and receiver
+    pairs you listed. Add them with <span class="ui">Add edge</span>, or with
+    <span class="ui">Learn from recent signals</span>. People and sub-agent results always get through.</li>
+  <li><span class="ui">Models per role</span>: which model runs builders, investigators and verifiers. Without a choice,
+    sub-agents run on Claude, using the director's model if it runs Claude. Gemini is used only if you pick it here.</li>
+</ul>
+
+<h2 id="reflect">Reflect</h2>
+<p><span class="ui">Reflect</span> turns past failures into a better playbook. Nothing is written until you approve it.</p>
+<ol>
+  <li>Open <span class="ui">Improve playbooks</span> under <span class="ui">Team rules</span>.</li>
+  <li>Choose what to improve: a director's own role SKILL, or a playbook for this repository.</li>
+  <li>Press <span class="ui">Reflect</span>. A read-only agent reads failed runs and verifier findings, then proposes a change.
+    If nothing has gone wrong for that playbook yet, the app says so and nothing runs.</li>
+  <li>Read the reasoning and the diff, then press <span class="ui">Approve and write</span> or <span class="ui">Reject</span>.</li>
+</ol>
+<figure>
+  <img src="images/reflect.png" width="1440" height="900" alt="The Team rules panel with Improve playbooks open. A pending proposal for the bugfix playbook shows its reasoning, a diff adding one line, and Approve and write and Reject buttons.">
+  <figcaption>A proposal waiting for you. An approved playbook change is saved in that repository under <code>.orch/playbooks/</code>.</figcaption>
+</figure>
+</main>
+<footer class="site-foot"><a href="https://github.com/xnoname79/unity-agent-orchestrator">Source on GitHub</a> · MIT license</footer>
+</body>
+</html>

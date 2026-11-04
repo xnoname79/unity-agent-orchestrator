@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings · Agent Orchestrator</title>
+<meta name="description" content="Settings sections, .env variables, the security warning, keeping the server running, updating, and troubleshooting.">
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site-head">
+  <div class="site-head-in">
+    <a class="brand" href="index.html"><img src="images/logo.png" alt="Agent Orchestrator logo" width="24" height="24">Agent Orchestrator</a>
+    <nav class="site-nav" aria-label="Guide">
+      <a href="index.html">Overview</a>
+      <a href="getting-started.html">Getting started</a>
+      <a href="agents.html">Agents</a>
+      <a href="team.html">Team</a>
+      <a href="control.html">Staying in control</a>
+      <a href="settings.html" aria-current="page">Settings</a>
+      <a href="changelog.html">Changelog</a>
+    </nav>
+  </div>
+</header>
+<main>
+<h1>Settings</h1>
+<p class="lead">What is on the Settings page, how to configure the server, and what to do when something goes wrong.</p>
+
+<h2 id="sections">Settings sections</h2>
+<p>Open <span class="ui">Settings</span> in the sidebar.</p>
+
+<h3 id="connections">Connections</h3>
+<p>Tool servers (MCP servers) for every agent on this machine, in every CLI installed here.</p>
+<ul>
+  <li><span class="ui">Built into the orchestrator</span>: <code>signal</code>, which you
+    <a href="getting-started.html#connect">connect once</a>.</li>
+  <li><span class="ui">Your servers</span>: servers you added. <span class="ui">Check</span> tests one. A small tag shows which CLI has it.</li>
+  <li><span class="ui">Add a server</span>: enter a name, an address and an optional token. <span class="ui">Test</span> tries it
+    without saving. <span class="ui">Add</span> tests first and writes nothing if the server refuses.</li>
+</ul>
+
+<h3 id="media-tools">Media tools</h3>
+<p>Agents can edit video and audio by running commands such as <code>ffmpeg</code> in their own terminal. This page shows
+which of those commands are installed on the machine: ffmpeg, ffprobe and ImageMagick are the main ones; yt-dlp, SoX and
+ExifTool are optional. Nothing here ships with the app. If a main one is missing, a red dot appears on
+<span class="ui">Settings</span>. Install it, then press <span class="ui">Re-check</span>. You can ignore this page if your agents do not touch media.</p>
+
+<h3 id="performance">Performance</h3>
+<p>CPU and memory for the computer, the orchestrator and this page, plus a table of each agent's processes. It also gives
+plain advice, such as closing terminals you are not using. Each open terminal is a whole CLI program, so they add up.</p>
+
+<h3 id="removed-agents">Removed agents</h3>
+<p><span class="ui">Unregister</span> takes an agent off the canvas but keeps its runs, messages and transcript. This page
+deletes those for good, one at a time or with <span class="ui">Delete all</span>. What the agent sent, its playbook file
+in the project folder, and what you typed in the CLI's own history stay.</p>
+
+<h3 id="general">General</h3>
+<p>The theme: <span class="ui">Auto</span> follows your computer, or choose <span class="ui">Light</span> or
+<span class="ui">Dark</span>. The theme button at the bottom of the sidebar cycles through them.</p>
+
+<h2 id="env">The <code>.env</code> file</h2>
+<p>Put settings in a file named <code>.env</code> next to <code>session_orchestrator.py</code> (or next to
+<code>agent-orch.exe</code>), one <code>NAME=value</code> per line, then restart the server.</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Variable</th><th>Default</th><th>When to set it</th></tr></thead>
+  <tbody>
+    <tr><td><code>ORCH_PORT</code></td><td><code>8992</code></td><td>Port 8992 is taken.</td></tr>
+    <tr><td><code>CLAUDE_BIN</code></td><td><code>claude</code></td><td>The app cannot find your Claude Code CLI.</td></tr>
+    <tr><td><code>ORCH_AGY_BIN</code></td><td><code>agy</code></td><td>The app cannot find your Antigravity CLI.</td></tr>
+    <tr><td><code>ORCH_HOST</code></td><td><code>127.0.0.1</code></td><td>Only to reach it from another machine. Read the warning below.</td></tr>
+    <tr><td><code>ORCH_CORS_ORIGINS</code></td><td>empty (off)</td><td>Only for a web app of your own that calls the API from a browser.</td></tr>
+    <tr><td><code>ORCH_SUBAGENTS_MAX</code></td><td><code>4</code></td><td>Active sub-agents per director.</td></tr>
+    <tr><td><code>ORCH_SUBTASK_MAX_ATTEMPTS</code></td><td><code>3</code></td><td>Failed verifications before a sub-agent's work is marked failed.</td></tr>
+    <tr><td><code>ORCH_MAX_CONCURRENT</code></td><td><code>3</code></td><td>Background runs at the same time.</td></tr>
+    <tr><td><code>ORCH_DEFAULT_EFFORT</code></td><td><code>high</code></td><td>Effort for agents that do not set one.</td></tr>
+    <tr><td><code>ORCH_PAIR_SIGNAL_CAP</code></td><td><code>2</code></td><td>Messages two agents may exchange per task.</td></tr>
+    <tr><td><code>ORCH_PAIR_SIGNAL_WINDOW_MIN</code></td><td><code>60</code></td><td>Minutes of silence before that count resets.</td></tr>
+    <tr><td><code>ORCH_MAX_RUNS_PER_DAY</code></td><td><code>0</code> (off)</td><td>Daily run limit per agent.</td></tr>
+    <tr><td><code>ORCH_DAILY_ALLOW_STEP</code></td><td><code>10</code></td><td>Runs added each time you press <span class="ui">Allow +</span>.</td></tr>
+    <tr><td><code>ORCH_MAX_RUNS_PER_SESSION</code></td><td><code>0</code> (off)</td><td>Total run limit per agent.</td></tr>
+    <tr><td><code>ORCH_SESSION_TOKEN_BUDGET</code></td><td><code>0</code> (off)</td><td>Total token limit per agent.</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="security">Security warning</h2>
+<div class="note warn">
+  <p><strong>Agents run shell commands with permissions bypassed, and there is no API key.</strong>
+  Anyone who can reach the dashboard can make your agents do anything on your computer.
+  <code>ORCH_HOST=0.0.0.0</code> hands that to everyone on your network.</p>
+</div>
+<p>By default the server listens on your own machine only and refuses requests from other websites. It prints a warning
+at startup if you open it up. Run it as your own user, never as root, and give agents only projects you are happy for them to change.</p>
+
+<h2 id="keep-running">Keep it running</h2>
+<p>This is optional. Replace the paths with where you unzipped or cloned it.</p>
+<details>
+  <summary>Windows: Task Scheduler</summary>
+  <pre><code>$exe = "$HOME\agent-orch-windows-x64\agent-orch.exe"
+Register-ScheduledTask -TaskName "AgentOrchestrator" `
+  -Action  (New-ScheduledTaskAction -Execute $exe -WorkingDirectory (Split-Path $exe)) `
+  -Trigger (New-ScheduledTaskTrigger -AtLogOn) `
+  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable `
+               -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1))</code></pre>
+  <p>Remove it with <code>Unregister-ScheduledTask -TaskName "AgentOrchestrator"</code>.</p>
+</details>
+<details>
+  <summary>macOS: launchd</summary>
+  <pre><code>cat &gt; ~/Library/LaunchAgents/com.agent-orch.plist &lt;&lt;PLIST
+&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1.0"&gt;&lt;dict&gt;
+  &lt;key&gt;Label&lt;/key&gt;&lt;string&gt;com.agent-orch&lt;/string&gt;
+  &lt;key&gt;ProgramArguments&lt;/key&gt;&lt;array&gt;
+    &lt;string&gt;$HOME/unity-agent-orchestrator/.venv/bin/python&lt;/string&gt;
+    &lt;string&gt;$HOME/unity-agent-orchestrator/session_orchestrator.py&lt;/string&gt;
+    &lt;string&gt;serve&lt;/string&gt;
+  &lt;/array&gt;
+  &lt;key&gt;WorkingDirectory&lt;/key&gt;&lt;string&gt;$HOME/unity-agent-orchestrator&lt;/string&gt;
+  &lt;key&gt;RunAtLoad&lt;/key&gt;&lt;true/&gt;
+  &lt;key&gt;KeepAlive&lt;/key&gt;&lt;true/&gt;
+  &lt;key&gt;StandardOutPath&lt;/key&gt;&lt;string&gt;$HOME/Library/Logs/agent-orch.log&lt;/string&gt;
+  &lt;key&gt;StandardErrorPath&lt;/key&gt;&lt;string&gt;$HOME/Library/Logs/agent-orch.err&lt;/string&gt;
+&lt;/dict&gt;&lt;/plist&gt;
+PLIST
+
+launchctl load -w ~/Library/LaunchAgents/com.agent-orch.plist</code></pre>
+  <p>Stop it with <code>launchctl unload -w ~/Library/LaunchAgents/com.agent-orch.plist</code>.</p>
+</details>
+<details>
+  <summary>Linux: systemd user service</summary>
+  <pre><code>mkdir -p ~/.config/systemd/user
+cat &gt; ~/.config/systemd/user/orchestrator.service &lt;&lt;'UNIT'
+[Unit]
+Description=Agent Orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/unity-agent-orchestrator
+ExecStart=%h/unity-agent-orchestrator/.venv/bin/python %h/unity-agent-orchestrator/session_orchestrator.py serve
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target
+UNIT
+
+systemctl --user daemon-reload
+systemctl --user enable --now orchestrator
+loginctl enable-linger "$USER"     # start at boot, not only when you log in</code></pre>
+  <p>Logs: <code>journalctl --user -u orchestrator -f</code>.</p>
+</details>
+
+<h2 id="update">Updating</h2>
+<ul>
+  <li><strong>From source:</strong> run <code>git pull</code>, then <code>pip install -r requirements.txt</code>, then restart.</li>
+  <li><strong>Prebuilt:</strong> download the new zip and replace the folder, keeping your <code>.env</code>.</li>
+</ul>
+<p>See what changed in the <a href="changelog.html">changelog</a>.</p>
+
+<h2 id="troubleshooting">Troubleshooting</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>What you see</th><th>What to do</th></tr></thead>
+  <tbody>
+    <tr><td>The dashboard does not open, or the server says the port is in use</td><td>Set <code>ORCH_PORT</code> in <code>.env</code> and open that port instead.</td></tr>
+    <tr><td>Windows SmartScreen flags the download</td><td>The builds are not code-signed. Compare the hash with <code>SHA256SUMS.txt</code> from the release, then run <code>Unblock-File</code> on the zip.</td></tr>
+    <tr><td>macOS: the install fails on a Python version</td><td>Use Homebrew's <code>python3.12</code>, as in <a href="getting-started.html#macos">the macOS steps</a>.</td></tr>
+    <tr><td>An agent cannot find <code>send_signal</code> or <code>spawn_subagent</code></td><td>Press <span class="ui">Connect</span> next to <code>signal</code> in <a href="#connections">Connections</a>, then press reload on the card.</td></tr>
+    <tr><td>A CLI is not found</td><td>Set <code>CLAUDE_BIN</code> or <code>ORCH_AGY_BIN</code> to its full path. Also check you are logged in to that CLI.</td></tr>
+    <tr><td>A terminal shows <span class="ui">disconnected — press 🔄 to reload</span></td><td>Press the reload button on the card's left edge.</td></tr>
+    <tr><td>A card shows <span class="ui">The automatic run finished</span></td><td>That is normal. Press reload to load the new context and keep chatting.</td></tr>
+    <tr><td><span class="ui">Create agent</span> says <span class="ui">Pick a model</span> or <span class="ui">Pick a workspace</span></td><td>Each field is required. <span class="ui">New workspace</span> on <span class="ui">Home</span> makes one if you have none.</td></tr>
+    <tr><td>A sub-agent card says <span class="ui">no worktree</span></td><td>The director's folder is not a git repository, so the sub-agent shared it. Run <code>git init</code> and make a first commit, or point the director at a repository.</td></tr>
+    <tr><td>A message sits there and nothing runs</td><td>Check whether the agent is paused, the workspace is suspended, or it is waiting for approval. See <a href="control.html#stop">how to stop things</a>.</td></tr>
+    <tr><td>A message shows <code>blocked</code></td><td>A run or token limit was reached. Press <span class="ui">Allow +</span> in the agent's panel if it is the daily limit, or raise the limit in <code>.env</code>.</td></tr>
+    <tr><td>Reflect fails with <code>a read-only sub-agent changed files</code></td><td>This can happen in a repository where no sub-agent has run yet, because Reflect's own helper file counts as a change. Run any sub-agent once in that repository, then try again.</td></tr>
+    <tr><td>The computer feels slow</td><td>Open <a href="#performance">Performance</a>. It names what is using the machine.</td></tr>
+  </tbody>
+</table></div>
+<p>The server's health and API docs are at <code>/health</code> and <code>/docs</code> on the dashboard's address. If you are still stuck,
+<a href="https://github.com/xnoname79/unity-agent-orchestrator/issues/new">report a bug</a>.</p>
+</main>
+<footer class="site-foot"><a href="https://github.com/xnoname79/unity-agent-orchestrator">Source on GitHub</a> · MIT license</footer>
+</body>
+</html>

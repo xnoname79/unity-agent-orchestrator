@@ -1,0 +1,123 @@
+/* Tokens copied from the :root block in static/orchestrator/index.html, so the guide looks like the app. */
+@font-face { font-family: "Geist"; src: url("fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Geist Mono"; src: url("fonts/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900; font-display: swap; }
+
+:root {
+  color-scheme: light dark;
+  --font: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --bg: #f7f8fa; --panel: #ffffff; --panel2: #f1f3f6;
+  --border: #e3e6eb; --border-strong: #cdd2da;
+  --text: #12161e; --muted: #5a6372;
+  --accent: #4f5fe0; --accent-fg: #ffffff; --accent-soft: rgba(79,95,224,.10);
+  --amber: #a86a00; --amber-soft: rgba(168,106,0,.12);
+  --red: #c8402d; --red-soft: rgba(200,64,45,.11);
+  --green: #12805c; --green-soft: rgba(18,128,92,.12);
+  --sh-1: 0 1px 2px rgba(18,22,30,.06);
+  --r-card: 12px; --r-ctl: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b0d11; --panel: #101318; --panel2: #1a1f27;
+    --border: #242a33; --border-strong: #313844;
+    --text: #e8ebf0; --muted: #a3abb7;
+    --accent: #8c9eff; --accent-fg: #0b0d11; --accent-soft: rgba(140,158,255,.14);
+    --amber: #f5b94f; --amber-soft: rgba(245,185,79,.14);
+    --red: #ff8a78; --red-soft: rgba(255,138,120,.14);
+    --green: #5ed3a5; --green-soft: rgba(94,211,165,.13);
+    --sh-1: 0 1px 2px rgba(0,0,0,.5);
+  }
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.65 var(--font); -webkit-text-size-adjust: 100%; overflow-wrap: break-word; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+.site-head { background: var(--panel); border-bottom: 1px solid var(--border); }
+.site-head-in { max-width: 1040px; margin: 0 auto; padding: 12px 20px; display: flex; flex-wrap: wrap;
+  align-items: center; gap: 8px 24px; }
+.brand { display: inline-flex; align-items: center; gap: 9px; color: var(--text); font-weight: 650;
+  text-decoration: none; white-space: nowrap; }
+.brand img { width: 24px; height: 24px; display: block; }
+.site-nav { display: flex; flex-wrap: wrap; gap: 2px 4px; }
+.site-nav a { padding: 4px 10px; border-radius: var(--r-ctl); color: var(--muted); font-size: 14.5px;
+  font-weight: 500; text-decoration: none; white-space: nowrap; }
+.site-nav a:hover { background: var(--panel2); color: var(--text); }
+.site-nav a[aria-current="page"] { background: var(--accent-soft); color: var(--text); font-weight: 600; }
+
+main { max-width: 860px; margin: 0 auto; padding: 32px 20px 56px; }
+h1 { margin: 0 0 8px; font-size: 34px; line-height: 1.2; font-weight: 650; letter-spacing: -.02em; }
+h2 { margin: 44px 0 10px; padding-top: 4px; font-size: 24px; line-height: 1.3; font-weight: 650;
+  letter-spacing: -.01em; }
+h3 { margin: 28px 0 6px; font-size: 18px; line-height: 1.35; font-weight: 650; }
+p, ul, ol, table, pre, figure, details, .note { margin: 0 0 14px; }
+ul, ol { padding-left: 24px; }
+li { margin-bottom: 6px; }
+.lead { font-size: 19px; line-height: 1.55; color: var(--muted); }
+
+/* A label as it appears in the dashboard. check_docs.py checks each one against the app's source. */
+.ui { font-weight: 600; padding: 0 5px; border-radius: 5px; background: var(--panel2);
+  border: 1px solid var(--border); font-size: .94em; }
+code, pre, kbd { font-family: var(--mono); font-size: .88em; }
+code { padding: 1px 4px; border-radius: 4px; background: var(--panel2); }
+kbd { padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 5px; }
+pre { padding: 12px 14px; overflow-x: auto; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--r-ctl); line-height: 1.5; }
+pre code { padding: 0; background: none; font-size: inherit; }
+
+figure { margin: 20px 0 24px; }
+figure img { display: block; width: 100%; height: auto; border: 1px solid var(--border-strong);
+  border-radius: var(--r-card); box-shadow: var(--sh-1); }
+figcaption { margin-top: 8px; font-size: 14px; color: var(--muted); }
+
+.table-wrap { overflow-x: auto; margin: 0 0 14px; }
+table { width: 100%; margin: 0; border-collapse: collapse; font-size: 15px; }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+th { font-weight: 600; white-space: nowrap; }
+
+.note { padding: 12px 14px; border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: var(--r-ctl); background: var(--panel); }
+.note p:last-child { margin-bottom: 0; }
+.warn { border-left-color: var(--red); background: var(--red-soft); }
+
+details { padding: 10px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+summary { cursor: pointer; font-weight: 600; }
+details[open] summary { margin-bottom: 10px; }
+details pre { margin-bottom: 8px; }
+
+.steps { counter-reset: step; list-style: none; padding: 0; }
+.steps > li { counter-increment: step; position: relative; padding-left: 40px; margin-bottom: 14px; }
+.steps > li::before { content: counter(step); position: absolute; left: 0; top: 1px; width: 26px; height: 26px;
+  display: grid; place-items: center; border-radius: 50%; background: var(--accent-soft); color: var(--accent);
+  font-size: 14px; font-weight: 650; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 0 0 18px; }
+.card { display: block; padding: 14px 16px; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--r-card); color: var(--text); text-decoration: none; }
+.card:hover { border-color: var(--accent); }
+.card b { display: block; margin-bottom: 2px; font-weight: 650; }
+.card span { display: block; color: var(--muted); font-size: 14.5px; line-height: 1.5; }
+
+.button { display: inline-block; padding: 9px 18px; border-radius: 10px; background: var(--accent);
+  color: var(--accent-fg); font-weight: 600; text-decoration: none; }
+
+.release { padding: 2px 0 8px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+.release h2 { margin-top: 24px; }
+.release ul { margin-bottom: 10px; }
+.release li { margin-bottom: 3px; }
+
+.site-foot { border-top: 1px solid var(--border); padding: 18px 20px 28px; text-align: center;
+  color: var(--muted); font-size: 14px; }
+
+@media (max-width: 600px) {
+  body { font-size: 15.5px; }
+  h1 { font-size: 28px; }
+  h2 { font-size: 21px; margin-top: 36px; }
+  main { padding: 22px 16px 44px; }
+  .site-head-in { padding: 10px 16px; }
+  .lead { font-size: 17px; }
+}

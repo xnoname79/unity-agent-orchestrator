@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Staying in control · Agent Orchestrator</title>
+<meta name="description" content="The Home inbox, approvals, the Activity timeline, guard rails, and how to stop an agent.">
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site-head">
+  <div class="site-head-in">
+    <a class="brand" href="index.html"><img src="images/logo.png" alt="Agent Orchestrator logo" width="24" height="24">Agent Orchestrator</a>
+    <nav class="site-nav" aria-label="Guide">
+      <a href="index.html">Overview</a>
+      <a href="getting-started.html">Getting started</a>
+      <a href="agents.html">Agents</a>
+      <a href="team.html">Team</a>
+      <a href="control.html" aria-current="page">Staying in control</a>
+      <a href="settings.html">Settings</a>
+      <a href="changelog.html">Changelog</a>
+    </nav>
+  </div>
+</header>
+<main>
+<h1>Staying in control</h1>
+<p class="lead">See what needs you, read what agents did, and stop them when you need to.</p>
+
+<h2 id="home">Home inbox</h2>
+<figure>
+  <img src="images/home.png" width="1440" height="900" alt="The Home page. Needs you lists a message waiting for approval with Deny and Approve buttons, and failed sub-agents with an Open in Team button. Below are workspace cards. On the right, Working now lists running agents and Today counts runs, verified and failed work.">
+  <figcaption><span class="ui">Home</span>, across every workspace.</figcaption>
+</figure>
+<p><span class="ui">Needs you</span> collects two kinds of item from all workspaces. The number in the sidebar counts them.</p>
+<ul>
+  <li><span class="ui">Approve a message</span>: an agent's message is waiting. Press <span class="ui">Approve</span> or
+    <span class="ui">Deny</span> right there.</li>
+  <li><span class="ui">Sub-agent failed</span>: <span class="ui">Open in Team</span> takes you to the card. The item leaves the list while
+    <span class="ui">Verify again</span> runs and comes back if that check fails. It is gone for good once a check passes
+    or you press <span class="ui">Discard</span> on that card. A failed Reflect has no card, so its item stays in the list.</li>
+</ul>
+<p>Other messages from agents do not appear here. A director tells you things in its own terminal, so keep an eye on it.</p>
+<p>The side column shows <span class="ui">Working now</span>, which agents are running, and <span class="ui">Today</span>,
+the counts of runs, verified work and failed work. Below the inbox, each workspace card says
+<code>needs you</code>, how many are running, or <code>idle</code>.</p>
+
+<h2 id="approvals">Approvals</h2>
+<p>A message needs approval when its sender asks for it: an agent marks a message as sensitive, or you tick
+<span class="ui">Requires approval</span> under <span class="ui">More options</span> in <span class="ui">Send a message</span>.
+It then waits. It does not run until someone approves it.</p>
+<p>You can answer in several places:</p>
+<ul>
+  <li>on <span class="ui">Home</span>, under <span class="ui">Needs you</span>;</li>
+  <li>in the amber strip across the top of the workspace, where <span class="ui">Show</span> also jumps to the receiving agent's card;</li>
+  <li>in <span class="ui">Activity</span>, under <span class="ui">Waiting for approval</span>;</li>
+  <li>in the <a href="agents.html#palette">command palette</a>, where choosing the row approves it.</li>
+</ul>
+<p>A receiving card wears a <code>needs you</code> badge in the meantime. A denied message stays in Activity and can be run later with <span class="ui">↻ Re-run</span>.</p>
+
+<h2 id="activity">Activity</h2>
+<p>The <span class="ui">Activity</span> tab of a workspace is one list of every message between agents and every run.
+Items still in motion are under <span class="ui">Now</span>, the rest under <span class="ui">Earlier</span>.</p>
+<figure>
+  <img src="images/activity.png" width="1440" height="900" alt="The Activity tab. Filter buttons sit above a timeline of runs and messages, each with its time, who it involves, and its status. A run is open on the right, showing its transcript step by step.">
+  <figcaption>Click a run to read its transcript. A run still going keeps updating.</figcaption>
+</figure>
+<ul>
+  <li><strong>Filter:</strong> <span class="ui">All</span>, <span class="ui">Waiting for approval</span>,
+    <span class="ui">Running</span>, <span class="ui">Failed</span>, or the <span class="ui">Filter by agent</span> box.</li>
+  <li><strong>Read a run:</strong> click it. The transcript shows thinking, tool calls with their results, and text. The row shows tokens used and how long it took.</li>
+  <li><strong>Messages:</strong> <span class="ui">↻ Re-run</span> appears on failed, denied or blocked ones, and <span class="ui">Delete</span> on failed ones. <span class="ui">one-way</span> means no reply is expected.</li>
+  <li><strong>Send a message:</strong> <span class="ui">Send a message</span> lets you pick an agent and write to it. Plain text or JSON both work.</li>
+  <li><strong>Older items:</strong> <span class="ui">Show older</span> loads more.</li>
+</ul>
+<div class="note"><p>Some automatic messages the orchestrator sends agents are currently written in Vietnamese, such as the
+<code>[BOOTSTRAP SKILL …]</code> one on an agent's first run. You do not need to act on them.</p></div>
+
+<h2 id="guard-rails">Guard rails</h2>
+<p>All of these run without you doing anything, unless a default says "off". Variables go in your
+<a href="settings.html#env"><code>.env</code> file</a>.</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Guard</th><th>What it does</th><th>Set with</th></tr></thead>
+  <tbody>
+    <tr><td>Ping-pong cap</td><td>Two agents may exchange 2 messages per task; further sends are refused, and the agent is told to report to you. The count resets when you give either one new work, or after 60 minutes of silence. See <span class="ui">Signal budget</span> in the agent's panel.</td><td><code>ORCH_PAIR_SIGNAL_CAP</code>, <code>ORCH_PAIR_SIGNAL_WINDOW_MIN</code></td></tr>
+    <tr><td>One prompt per agent</td><td>Queues messages, so a conversation is never written by two runs at once.</td><td>Always on</td></tr>
+    <tr><td>Runs at once</td><td>At most 3 background runs at the same time across the app.</td><td><code>ORCH_MAX_CONCURRENT</code></td></tr>
+    <tr><td>Daily run limit</td><td>Off by default. Once reached, messages to that agent are <code>blocked</code>. <span class="ui">Allow +</span> in its panel adds 10 more runs for today and puts those messages back in the queue.</td><td><code>ORCH_MAX_RUNS_PER_DAY</code>, <code>ORCH_DAILY_ALLOW_STEP</code></td></tr>
+    <tr><td>Lifetime limits</td><td>Off by default. A total number of runs or tokens per agent; beyond it, messages are <code>blocked</code>.</td><td><code>ORCH_MAX_RUNS_PER_SESSION</code>, <code>ORCH_SESSION_TOKEN_BUDGET</code></td></tr>
+    <tr><td>Fix attempts</td><td>Failed verifications before a sub-agent's work is marked failed: 3.</td><td><code>ORCH_SUBTASK_MAX_ATTEMPTS</code></td></tr>
+    <tr><td>Who may message whom</td><td>Optional allow-list per workspace.</td><td><a href="team.html#rules">Team rules</a></td></tr>
+    <tr><td>Your machine only</td><td>Listens on <code>127.0.0.1</code> and refuses requests from other websites. Read the <a href="settings.html#security">security warning</a> before changing this.</td><td><code>ORCH_HOST</code></td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="stop">Kill switch: how to stop things</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Control</th><th>Where</th><th>What happens</th></tr></thead>
+  <tbody>
+    <tr><td>Stop button</td><td>Left strip of a card, only while a job is running. Its tooltip reads <span class="ui">Kill the running job (stops a runaway)</span>.</td><td>After you confirm, the run is killed, marked failed, and not retried.</td></tr>
+    <tr><td><span class="ui">Pause</span> / <span class="ui">Resume</span></td><td>Left strip of a card</td><td>While paused, messages to that agent wait. Resume runs them.</td></tr>
+    <tr><td><span class="ui">Suspend</span> / <span class="ui">Activate</span></td><td>Top right of a workspace</td><td>While suspended, messages in that workspace wait and no new agents can be created. A job already running is not killed; use the stop button for that. Activate runs what waited.</td></tr>
+    <tr><td><span class="ui">Cancel</span></td><td>A card on the <a href="team.html#team-tab">Team</a> tab</td><td>Stops one sub-agent's work and tells the director.</td></tr>
+  </tbody>
+</table></div>
+</main>
+<footer class="site-foot"><a href="https://github.com/xnoname79/unity-agent-orchestrator">Source on GitHub</a> · MIT license</footer>
+</body>
+</html>

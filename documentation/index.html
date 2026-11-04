@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Orchestrator: run a team of coding agents on your own machine</title>
+<meta name="description" content="User guide for Agent Orchestrator: install it, start a director, and stay in charge of a team of coding agents.">
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site-head">
+  <div class="site-head-in">
+    <a class="brand" href="index.html"><img src="images/logo.png" alt="Agent Orchestrator logo" width="24" height="24">Agent Orchestrator</a>
+    <nav class="site-nav" aria-label="Guide">
+      <a href="index.html" aria-current="page">Overview</a>
+      <a href="getting-started.html">Getting started</a>
+      <a href="agents.html">Agents</a>
+      <a href="team.html">Team</a>
+      <a href="control.html">Staying in control</a>
+      <a href="settings.html">Settings</a>
+      <a href="changelog.html">Changelog</a>
+    </nav>
+  </div>
+</header>
+<main>
+<h1>Agent Orchestrator</h1>
+<p class="lead">Run a team of coding agents on your own computer and stay in charge of it. You talk to one
+agent. It splits the job, others do the work, and nothing counts as done until an independent check has
+seen it work.</p>
+<p><a class="button" href="getting-started.html">Get started</a></p>
+
+<figure>
+  <img src="images/canvas.png" width="1440" height="900" alt="The dashboard open on a workspace called acme-shop. Two terminal cards sit side by side on the canvas, a director and a QA reviewer, with a dashed arrow between them. The panel on the right shows the director's model, effort and its running sub-agents with progress bars.">
+  <figcaption>A workspace: live agent terminals on a canvas, and the director's team in the panel on the right.</figcaption>
+</figure>
+
+<p>It drives the coding tools you already have: the <a href="https://code.claude.com/docs/en/quickstart#native-install-recommended">Claude Code</a>
+and <a href="https://antigravity.google/docs/cli/reference">Antigravity (Gemini)</a> command-line programs, called
+<em>CLIs</em> in this guide. Each one keeps its own login and subscription. The orchestrator is the dashboard and
+the rules around them.</p>
+
+<h2 id="how-it-works">How it works</h2>
+<ol class="steps">
+  <li><strong>Director.</strong> You start a director agent for your project and tell it what you want. It is the one
+    agent you talk to.</li>
+  <li><strong>Sub-agents.</strong> The director splits the job into units and hands each one to a sub-agent. Code is
+    written in a <em>git worktree</em>: a separate copy of your project on its own branch, so your own files are not
+    touched while the work happens.</li>
+  <li><strong>Verifier.</strong> When a sub-agent says it is finished, a <em>verifier</em> checks the work. This is a
+    brand-new agent that did not build it. It runs the check the director wrote down, called <em>Done means</em>. A
+    failure goes back to the builder with the findings. A pass tells the director which branch to merge.</li>
+  <li><strong>You.</strong> You step in only when needed. Messages waiting for approval and failed work land in one
+    inbox.</li>
+</ol>
+
+<h2 id="tour">What the app has</h2>
+<div class="cards">
+  <a class="card" href="control.html#home"><b>Home</b><span>What needs you, who is working, and every workspace.</span></a>
+  <a class="card" href="agents.html#canvas"><b>Canvas</b><span>Each agent is a live terminal card you can move, resize and type into.</span></a>
+  <a class="card" href="team.html#team-tab"><b>Team</b><span>Sub-agents by stage, the director's decision log, and the team's rules.</span></a>
+  <a class="card" href="control.html#activity"><b>Activity</b><span>Every message and run in one timeline, with live transcripts.</span></a>
+  <a class="card" href="agents.html#palette"><b>Command palette</b><span>Press <kbd>Ctrl</kbd> <kbd>K</kbd> to jump to any agent or run any action.</span></a>
+  <a class="card" href="settings.html"><b>Settings</b><span>Connections, performance, removed agents, and the theme.</span></a>
+</div>
+
+<figure>
+  <img src="images/team.png" width="1440" height="900" alt="The Team tab. Sub-agent cards sit in four columns: Building, Verifying, Passed and Failed. To the right, the decision log explains why the director made each choice.">
+  <figcaption>The <span class="ui">Team</span> tab: every sub-agent's stage, and why the director chose what it chose.</figcaption>
+</figure>
+
+<h2 id="next">Where to go next</h2>
+<ul>
+  <li><a href="getting-started.html">Getting started</a>: install it and run your first director task.</li>
+  <li><a href="agents.html">Agents</a>: workspaces, the canvas, models, and how agents hand work to each other.</li>
+  <li><a href="team.html">Team</a>: delegation, the playbooks, the verifier, and Reflect.</li>
+  <li><a href="control.html">Staying in control</a>: the inbox, approvals, limits, and how to stop things.</li>
+  <li><a href="settings.html">Settings</a>: configuration, the security warning, updates, and troubleshooting.</li>
+  <li><a href="changelog.html">Changelog</a>: what changed in each release.</li>
+</ul>
+</main>
+<footer class="site-foot"><a href="https://github.com/xnoname79/unity-agent-orchestrator">Source on GitHub</a> · MIT license</footer>
+</body>
+</html>

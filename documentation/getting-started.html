@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting started · Agent Orchestrator</title>
+<meta name="description" content="Install Agent Orchestrator, connect the signal tool server, start a director and give it a first task.">
+<link rel="icon" href="images/logo.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site-head">
+  <div class="site-head-in">
+    <a class="brand" href="index.html"><img src="images/logo.png" alt="Agent Orchestrator logo" width="24" height="24">Agent Orchestrator</a>
+    <nav class="site-nav" aria-label="Guide">
+      <a href="index.html">Overview</a>
+      <a href="getting-started.html" aria-current="page">Getting started</a>
+      <a href="agents.html">Agents</a>
+      <a href="team.html">Team</a>
+      <a href="control.html">Staying in control</a>
+      <a href="settings.html">Settings</a>
+      <a href="changelog.html">Changelog</a>
+    </nav>
+  </div>
+</header>
+<main>
+<h1>Getting started</h1>
+<p class="lead">Install the app, connect its tools, start a director, give it a task, and review the result.</p>
+
+<h2 id="before">Before you start</h2>
+<p>You need at least one of these CLIs (command-line programs), installed and logged in:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>CLI</th><th>Command</th><th>Install</th></tr></thead>
+  <tbody>
+    <tr><td>Claude Code</td><td><code>claude</code></td><td><a href="https://code.claude.com/docs/en/quickstart#native-install-recommended">Install guide</a></td></tr>
+    <tr><td>Antigravity (Gemini)</td><td><code>agy</code></td><td><a href="https://antigravity.google/docs/cli/reference">CLI reference</a></td></tr>
+  </tbody>
+</table></div>
+<p>Sub-agents run on Claude unless you choose otherwise, so install Claude Code if you plan to use a director. Your
+project should be a git repository, because sub-agents need git to work on their own copy.</p>
+
+<h2 id="install">1. Install the orchestrator</h2>
+
+<h3 id="windows-prebuilt">Windows, prebuilt</h3>
+<p>Download <code>agent-orch-windows-x64.zip</code> from
+<a href="https://github.com/xnoname79/unity-agent-orchestrator/releases">Releases</a>. Unblock it <em>before</em> you unzip,
+or SmartScreen flags every file inside:</p>
+<pre><code>Unblock-File agent-orch-windows-x64.zip</code></pre>
+<p>Unzip it and run <code>agent-orch.exe</code> inside the folder. Keep the folder together. The console window that opens
+is the server: close it to stop.</p>
+
+<h3 id="windows-source">Windows, from source</h3>
+<p>In PowerShell, with Python 3.12 (<code>winget install Python.Python.3.12</code>) and Git (<code>winget install Git.Git</code>):</p>
+<pre><code>git clone https://github.com/xnoname79/unity-agent-orchestrator.git
+cd unity-agent-orchestrator
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python session_orchestrator.py serve</code></pre>
+
+<h3 id="macos">macOS</h3>
+<p>The <code>python3</code> built into macOS is 3.9, which is too old. Use Homebrew's:</p>
+<pre><code>brew install python@3.12 git
+git clone https://github.com/xnoname79/unity-agent-orchestrator.git
+cd unity-agent-orchestrator
+python3.12 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r requirements.txt
+python session_orchestrator.py serve</code></pre>
+
+<h3 id="linux">Linux (Debian, Ubuntu; Python 3.10 or newer)</h3>
+<pre><code>sudo apt install python3 python3-venv git
+git clone https://github.com/xnoname79/unity-agent-orchestrator.git
+cd unity-agent-orchestrator
+python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r requirements.txt
+python session_orchestrator.py serve</code></pre>
+
+<p>Then open <code>http://localhost:8992</code> in your browser. You land on <span class="ui">Home</span>.</p>
+
+<h2 id="connect">2. Connect <code>signal</code></h2>
+<p><code>signal</code> is the tool server built into the orchestrator. Agents use it to message each other, and the
+director uses it to delegate work. It speaks <em>MCP</em> (Model Context Protocol), the standard way a CLI gets extra tools.</p>
+<ol>
+  <li>In the left sidebar, click <span class="ui">Settings</span>. <span class="ui">Connections</span> opens first.</li>
+  <li>Next to <code>signal</code>, press <span class="ui">Connect</span>.</li>
+</ol>
+<figure>
+  <img src="images/connections.png" width="1440" height="900" alt="Settings open on Connections. The signal row reads not connected and has a Connect button. Below it is a form to add another server, filled in with a sample name and address.">
+  <figcaption><span class="ui">Connections</span>, before pressing <span class="ui">Connect</span>. The sample server in the form below is optional.</figcaption>
+</figure>
+<p>The orchestrator tests the server first, then registers it with every CLI installed on this machine. The row now
+shows how many tools it has, with <span class="ui">Check</span> and <span class="ui">Remove</span> buttons. Agents
+already running pick it up after a restart.</p>
+<details>
+  <summary>Or connect by hand, once per CLI</summary>
+  <pre><code>claude mcp add --transport http --scope user signal http://127.0.0.1:8992/signal/mcp
+agy mcp add signal http://127.0.0.1:8992/signal/mcp</code></pre>
+</details>
+
+<h2 id="workspace">3. Create a workspace</h2>
+<p>A <em>workspace</em> holds a set of agents that can message each other. The first group of workspaces is named
+<span class="ui">Workspaces</span>; you can rename it with its pencil button.</p>
+<ol>
+  <li>On <span class="ui">Home</span>, click the <span class="ui">New workspace</span> tile.</li>
+  <li>Type a name, for example <code>acme-shop</code>. A box confirms the workspace's id and its own folder.</li>
+</ol>
+<p>The workspace opens. It is empty until you add an agent.</p>
+
+<h2 id="director">4. Start a director</h2>
+<p>Press <span class="ui">New agent</span> and make three choices:</p>
+<figure>
+  <img src="images/new-agent.png" width="1440" height="900" alt="The New agent dialog, filled in: name Director, playbook director, group Work, workspace acme-shop, project folder acme-shop, model Opus.">
+  <figcaption>The <span class="ui">New agent</span> dialog, filled in for a first director.</figcaption>
+</figure>
+<ol class="steps">
+  <li><strong><span class="ui">What should it do?</span></strong> Type a <span class="ui">Name</span> such as
+    <code>Director</code>. It is turned into a folder-style name, <code>director</code>. Under
+    <span class="ui">Playbook</span>, choose <span class="ui">director</span>. A <em>playbook</em> is the written
+    instructions the agent follows.</li>
+  <li><strong><span class="ui">Where does it work?</span></strong> Pick the <span class="ui">Group</span> and
+    <span class="ui">Workspace</span>. Then set the <span class="ui">Project folder</span> to your git project: type a
+    path, or press <span class="ui">Browse</span>. It starts filled with the workspace's own empty folder, so
+    <strong>change it</strong>.</li>
+  <li><strong><span class="ui">Which model?</span></strong> Choose a tab, <span class="ui">Claude</span> or
+    <span class="ui">Gemini</span>, then a model. The effort is under
+    <span class="ui">More options — thinking effort</span>; the default is fine for a first run.</li>
+</ol>
+<p>Press <span class="ui">Create agent</span>. The director appears as a terminal card on the canvas.</p>
+<div class="note">
+  <p><strong>Its first run is automatic.</strong> The agent reads your project and fills in its own playbook. While
+  that happens, the card shows <span class="ui">An automatic run is in progress</span> instead of a terminal. When
+  the card says <span class="ui">The automatic run finished</span>, press the reload button on the card's left edge
+  (its tooltip reads <span class="ui">Reload the session/terminal (restarts the selected CLI)</span>).</p>
+</div>
+
+<h2 id="task">5. Give it a first task</h2>
+<p>Type into the director's terminal, as you would in the CLI. Start with something small:</p>
+<pre><code>Add a coupon code field to checkout. A valid code reduces the total, and an
+invalid code shows an error.</code></pre>
+<p>You can also click the card and use the <span class="ui">Message…</span> box at the bottom of the panel on the
+right. That sends the task as a background run, so the terminal locks until the run ends, then you press reload again.</p>
+<p>The director reads the code, writes a brief and a <span class="ui">Done means</span> for each unit, and starts
+sub-agents. A small badge such as <code>2 sub-agents</code> appears on its card, and a number appears on the
+<span class="ui">Team</span> tab.</p>
+
+<h2 id="review">6. Review the result</h2>
+<ol>
+  <li>Open the <span class="ui">Team</span> tab. Each sub-agent is a card that moves through
+    <span class="ui">Building</span>, <span class="ui">Verifying</span>, then <span class="ui">Passed</span> or
+    <span class="ui">Failed</span>.</li>
+  <li>On a passed card, press <span class="ui">Diff</span> to read the change. Open <span class="ui">Details</span> for
+    the brief, the verifier's evidence, and the builder's report.</li>
+  <li>Go back to the director. Its playbook tells it to read the diff, merge the branch, run the project's checks, and
+    report what changed with the evidence. It does not push unless you ask.</li>
+</ol>
+<p>A failed sub-agent also shows up on <span class="ui">Home</span> under <span class="ui">Needs you</span>. See
+<a href="team.html#verifier">how the verifier decides</a> and <a href="control.html#home">the inbox</a>.</p>
+</main>
+<footer class="site-foot"><a href="https://github.com/xnoname79/unity-agent-orchestrator">Source on GitHub</a> · MIT license</footer>
+</body>
+</html>

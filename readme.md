@@ -11,7 +11,7 @@ its own login and subscription.
 
 ![Workspace canvas: the director, its agents, and what waits on you](images/screenshot-canvas.png)
 
-[Download](../../releases) · [Report a bug](../../issues/new)
+[Download](../../releases) · [Report a bug](../../issues/new) · [Documentation](https://xnoname79.github.io/unity-agent-orchestrator/)
 
 ## How it works
 
