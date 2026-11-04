@@ -611,12 +611,11 @@ let OPEN = [];        // workspace id đang mở
 let ACTIVE = -1;      // tab đang xem; -1 = màn Home
 let SPLIT = false;    // hiện cả 2 pane cạnh nhau
 let SPLIT_PCT = 50;   // bề rộng pane trái, %
-// Trang toàn màn của shell ("studio" | "settings"), đè lên Home/pane; "" = không có. Workspace
+// Trang toàn màn của shell ("settings"), đè lên Home/pane; "" = không có. Workspace
 // đang mở vẫn sống bên dưới (iframe chỉ bị ẩn) để quay lại không phải tải lại terminal.
 let VIEW = "";
-const SUBS = { studio: ["images", "sounds", "speech", "library"],
-               settings: ["connections", "tools", "performance", "removed", "general"] };
-const SUB = { studio: "images", settings: "connections" };
+const SUBS = { settings: ["connections", "tools", "performance", "removed", "general"] };
+const SUB = { settings: "connections" };
 
 function shellLoad() {
   try { return JSON.parse(localStorage.getItem("orch-shell")) || {}; } catch { return {}; }
@@ -723,7 +722,6 @@ function renderPanes() {
   const home = ACTIVE < 0 || !OPEN.length;
   $("ws-list-view").hidden = !home || !!VIEW;
   box.hidden = home || !!VIEW;
-  $("studio-view").hidden = VIEW !== "studio";
   $("settings-view").hidden = VIEW !== "settings";
   for (const b of document.querySelectorAll(".sb-item[data-view]")) {
     const on = b.dataset.view === (VIEW || (home ? "home" : ""));
@@ -805,14 +803,6 @@ window.goHome = goHome;
 
 // Mở tab/mục của từng trang: tải dữ liệu lúc nó hiện ra (như lúc modal cũ mở), không trước.
 const PAGE_ENTER = {
-  images: () => { $("img-prompt").focus(); imgLoad().catch((e) => showMsg("img-msg", "Error: " + e, false)); },
-  sounds: () => { $("snd-q").focus(); sndLoad(true).catch((e) => showMsg("snd-msg", "Error: " + e, false)); },
-  speech: () => {
-    $("tts-msg").textContent = "";
-    $("tts-text").focus();
-    ttsLoad().catch((e) => showMsg("tts-msg", "Error: " + e, false));
-  },
-  library: () => { libKey = ""; libLoad().catch((e) => showMsg("lib-msg", "Error: " + e, false)); libAgents(); },
   connections: () => {
     $("mcp-msg").textContent = "";
     $("mcp-list").innerHTML = `<div class="hint">Loading…</div>`;
@@ -827,17 +817,14 @@ const PAGE_ENTER = {
   removed: () => { showMsg("unreg-msg", "Looking…", true); unregLoad(); },
   general: () => {},   // nút theme đã được applyTheme() đánh dấu
 };
-// Rời tab/mục: dừng thứ chạy ngầm của nó (poll Performance/Speech, tiếng đang phát) và xoá token
-// gõ dở — đúng việc các hàm *Close của modal cũ làm.
+// Rời tab/mục: dừng poll Performance và xoá token gõ dở — đúng việc các hàm *Close của modal cũ làm.
 const PAGE_LEAVE = {
-  speech: () => clearTimeout(ttsPoll),
   performance: () => clearTimeout(perfT),
   connections: () => { $("mcp-token").value = ""; },
 };
 function pageLeave() {
   if (!VIEW) return;
   const sub = SUB[VIEW];
-  $(VIEW + "-view").querySelector(`.page-sec[data-sub="${sub}"]`).querySelectorAll("audio").forEach((a) => a.pause());
   PAGE_LEAVE[sub]?.();
   VIEW = "";
 }
@@ -856,13 +843,9 @@ function openPage(view, sub) {
   }
   shellSave(); renderShellTabs(); renderPanes();
   PAGE_ENTER[sub]();
-  if (view === "studio" && sub !== "library") libLoad().catch(() => {});   // số trên tab Library
 }
 window.openPage = openPage;
 
-// Rời trang, về lại chỗ bên dưới (workspace đang mở, hoặc Home).
-function pageClose() { pageLeave(); shellSave(); renderShellTabs(); renderPanes(); }
-window.toolsClose = pageClose;
 
 // Workspace đang mở = gần như chắc chắn là chỗ người dùng muốn thêm agent → chọn sẵn.
 function newAgent() {
@@ -910,10 +893,6 @@ function palItems() {
   const actions = [
     A("New agent", "plus", "", newAgent),
     A("Go Home", "home", "", goHome),
-    A("Images", "image", "Studio", imgOpen),
-    A("Sounds", "music", "Studio", sndOpen),
-    A("Speak text", "speak", "Studio", ttsOpen),
-    A("Library", "library", "Studio", libOpen),
     A("MCP servers / Connections", "plug", "Settings", mcpOpen),
     A("Media tools", "wrench", "Settings", toolsOpen),
     A("Performance", "gauge", "Settings", perfOpen),
@@ -1138,13 +1117,13 @@ function renderWinBar() {
   const list = winList();
   bar.hidden = $("tab-agents").hidden;
   if (!list.length) {
-    chips.innerHTML = `<span class="win-sep"></span><span class="win-empty">No windows yet — spawn an
+    chips.innerHTML = `<span class="win-empty">No windows yet — spawn an
       agent (${ic("terminal", "sm")}) or open an editor, and it shows up here.</span>`;
     return;
   }
-  // Vạch ngăn trước mỗi nhóm (trừ nhóm đầu, đã có vạch tách khỏi nhãn bar): trong nhóm các chip
-  // dính nhau, giữa hai nhóm có đường kẻ — nhìn phát biết chip nào đi với chip nào.
-  chips.innerHTML = `<span class="win-sep"></span>` + list.map((w, i) =>
+  // Vạch ngăn trước mỗi nhóm (trừ nhóm đầu): trong nhóm các chip dính nhau, giữa hai nhóm có đường
+  // kẻ — nhìn phát biết chip nào đi với chip nào.
+  chips.innerHTML = list.map((w, i) =>
     (w.head && i ? `<span class="win-sep"></span>` : "") +
     `<button class="win-chip${w.ed ? " ed" : ""}"
       onclick="focusNode('${esc(w.nid)}')"
@@ -1152,90 +1131,6 @@ function renderWinBar() {
       ${w.icon}<span>${esc(w.name)}</span></button>`).join("");
 }
 window.renderWinBar = renderWinBar;
-
-// ── Tìm một card rồi đưa nó vào giữa khung nhìn ──────────────────────────────
-// Workspace đông card thì cuộn canvas đi tìm bằng mắt là việc tệ nhất. Dropdown TỰ DỰNG chứ
-// không <datalist> nữa: datalist chỉ bày được hai dòng chữ trần — không nhóm được terminal với
-// editor của cùng một session, không tô được màu, và mỗi trình duyệt vẽ một kiểu.
-// Nguồn dòng là CHÍNH winList() của thanh cửa sổ, nên thứ tự nhóm, nhãn và màu luôn khớp thanh
-// trên — sửa một chỗ là cả hai đi theo, không có bản sao nào để lệch.
-// Chỉ dựng lại lúc focus/gõ/bấm phím, KHÔNG theo SSE refresh: dựng lại giữa lúc dropdown đang mở
-// là nó nhảy dưới tay người đang chọn.
-let findRows = [];   // dòng đang hiện SAU khi lọc — findKey chạy theo đúng mảng này
-let findCur = -1;    // con trỏ bàn phím, -1 = chưa chọn dòng nào
-
-// Popup dùng position:fixed nên phải tự tính toạ độ: nó nằm ngoài #win-bar (thanh đó
-// overflow-x:auto, popup nằm trong sẽ bị cắt cụt ngay dưới mép).
-function findPos() {
-  const inp = $("cv-find"), pop = $("cv-find-pop");
-  if (!inp || !pop) return;
-  const r = inp.getBoundingClientRect();
-  pop.style.left = r.left + "px";
-  pop.style.top = (r.bottom + 4) + "px";
-}
-
-function renderFindPop() {
-  const pop = $("cv-find-pop"), inp = $("cv-find");
-  if (!pop || !inp) return;
-  const q = (inp.value || "").trim().toLowerCase();
-  findRows = winList().filter((w) =>
-    !q || (w.name + " " + w.sub + " " + w.kind).toLowerCase().includes(q));
-  if (findCur >= findRows.length) findCur = findRows.length - 1;
-  // Vạch ngăn trước mỗi nhóm y như thanh cửa sổ: dòng terminal mở nhóm, editor của nó dính
-  // ngay dưới. Sau khi lọc mà dòng đầu là editor thì không có vạch — đúng, nó không mở nhóm nào.
-  pop.innerHTML = findRows.length
-    ? findRows.map((w, i) =>
-        `<button class="find-row${w.ed ? " ed" : ""}${i === findCur ? " on" : ""}${
-          w.head && i ? " grp" : ""}" onmousedown="findPick(${i})"
-          title="${esc(w.kind)}${w.sub ? " · " + esc(w.sub) : ""}">
-          ${w.icon}<span class="find-name">${esc(w.name)}</span>
-          <span class="find-sub">${esc(w.kind)}${w.sub ? " · " + esc(w.sub) : ""}</span>
-        </button>`).join("")
-    : `<div class="find-none">No card matches that.</div>`;
-  pop.hidden = false;
-}
-
-function findOpen() { findCur = -1; findPos(); renderFindPop(); }
-window.findOpen = findOpen;
-
-function findFilter() { findCur = -1; renderFindPop(); }
-window.findFilter = findFilter;
-
-function findClose() {
-  const pop = $("cv-find-pop");
-  if (pop) pop.hidden = true;
-  findCur = -1;
-}
-window.findClose = findClose;
-
-// Bấm trong popup KHÔNG được làm ô tìm mất focus: mất focus là onblur đóng popup, và thao tác
-// kéo thanh cuộn của chính nó sẽ tự huỷ giữa chừng.
-function findHold(e) { e.preventDefault(); }
-window.findHold = findHold;
-
-function findPick(i) {
-  const w = findRows[i];
-  if (!w) return;
-  const inp = $("cv-find");
-  findClose();
-  if (inp) { inp.value = ""; inp.blur(); }
-  focusNode(w.nid);
-}
-window.findPick = findPick;
-
-function findKey(e) {
-  if (e.key === "Escape") { findClose(); e.target.blur(); return; }
-  if (e.key === "Enter") { e.preventDefault(); findPick(findCur < 0 ? 0 : findCur); return; }
-  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-  e.preventDefault();
-  if (!findRows.length) return;
-  const n = findRows.length;
-  findCur = (findCur + (e.key === "ArrowDown" ? 1 : -1) + n) % n;
-  renderFindPop();
-  const row = $("cv-find-pop").children[findCur];
-  if (row) row.scrollIntoView({ block: "nearest" });
-}
-window.findKey = findKey;
 
 // Đưa node vào giữa khung nhìn + chọn nó. Giữ nguyên mức zoom: người dùng đặt zoom nào là cố ý,
 // tự phóng to giúp chỉ làm họ mất chỗ.
@@ -3216,9 +3111,7 @@ function toolRows(list) {
       <div class="head"><span class="nm">${esc(t.name)}</span>
         ${badge(ok ? "ready" : t.required ? "missing" : "not installed", cls)}
         ${t.required ? "" : `<span class="cli-tag">optional</span>`}
-        <span class="meta" title="${esc(t.path)}">${esc(t.path || t.command)}</span>
-        ${t.name === "yt-dlp" && ok ? `<button class="secondary" onclick="toolsClose(); sndOpen()"
-          title="Search videos and pull their sound out">Open Sounds</button>` : ""}</div>
+        <span class="meta" title="${esc(t.path)}">${esc(t.path || t.command)}</span></div>
       <div class="what">${esc(t.what)}${t.note ? " — " + esc(t.note) : ""}</div>
       ${fix}</div>`;
   }).join("");
@@ -3344,7 +3237,6 @@ function mcpOpen() { openPage("settings", "connections"); }
 window.mcpOpen = mcpOpen;
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("sed-modal").hidden) return sedDiscard();
   if (e.key === "Escape" && !$("na-modal").hidden) newAgentClose();
   if (e.key === "Escape" && !$("td-modal").hidden) teamDelegateClose();
   if (e.key === "Escape" && !$("sg-modal").hidden) sigClose();
@@ -3422,54 +3314,6 @@ async function mcpAdd() {
   } catch (e) { showMsg("mcp-msg", mcpErr(e), false); }
 }
 window.mcpAdd = mcpAdd;
-
-// ── Images ───────────────────────────────────────────────────────────────────
-// Vẽ bằng tool generate_image của agy. Một lần vẽ dưới một phút và request CHỜ tới khi xong —
-// nút khoá suốt lúc đó để một cú bấm đúp không thành hai lần ăn quota.
-const IMG_REFS_MAX = 3;   // = IMAGE_REFS_MAX ở server: giới hạn của chính tool (ImagePaths)
-let imgList = [];         // thư viện lần tải gần nhất — bấm Reference vẽ lại từ đây, khỏi gọi server
-let imgRefs = [];         // tên ảnh đang chọn làm ảnh mẫu cho lần vẽ tới
-
-const imgUrl = (name) => "/api/images/" + encodeURIComponent(name);
-
-// pick=false: không có nút Reference (Library chỉ xem/xoá, ảnh mẫu chọn trong modal Images).
-function imgRows(list, pick = true) {
-  if (!list.length) return `<div class="hint">No images yet.</div>`;
-  return list.map((i) => {
-    const on = pick && imgRefs.includes(i.name);
-    const cap = i.prompt || (i.uploaded ? "Uploaded · " + i.uploaded : "");
-    const tip = i.drawn ? `${cap}\n\nDrawn from (${i.writer}): ${i.drawn}` : cap;
-    // Tên file đi qua data-attribute, không qua inline onclick — cùng lối như danh sách MCP.
-    return `<figure class="img-item${on ? " ref" : ""}">
-      <a href="${imgUrl(i.name)}" target="_blank" rel="noopener" title="Open full size">
-        <img src="${imgUrl(i.name)}" alt="${esc(cap)}" loading="lazy"></a>
-      <div class="img-foot"><span title="${esc(tip)}">${esc(cap)}</span>
-        ${pick ? `<button class="secondary${on ? " on" : ""}" data-img-ref="${esc(i.name)}"
-          title="Use this image as a reference for the next one">${on ? "Selected" : "Reference"}</button>` : ""}</div>
-      <button class="icon-btn" data-img-rm="${esc(i.name)}" title="Delete">
-        <svg class="ic sm"><use href="#i-trash"/></svg></button>
-    </figure>`;
-  }).join("");
-}
-
-function imgPaint() {
-  $("img-grid").innerHTML = imgRows(imgList);
-  $("img-refs").innerHTML = imgRefs.length ? imgRefs.map((n) => `<span class="img-ref">
-      <img src="${imgUrl(n)}" alt="">
-      <button class="icon-btn" data-img-ref="${esc(n)}" title="Remove from references">
-        <svg class="ic sm"><use href="#i-x"/></svg></button></span>`).join("")
-    : `<span class="hint">None — drawn from the description alone.</span>`;
-}
-
-async function imgLoad() {
-  imgList = await api("/api/images");
-  // Ảnh mẫu đã bị xoá (tab khác, xoá tay) thì bỏ khỏi lựa chọn — server sẽ từ chối nó.
-  imgRefs = imgRefs.filter((n) => imgList.some((i) => i.name === n));
-  imgPaint();
-}
-
-function imgOpen() { openPage("studio", "images"); }
-window.imgOpen = imgOpen;
 
 // ── Performance (Tools) ──────────────────────────────────────────────────────
 // Hỏi /api/perf mỗi 2 s khi bảng đang mở (CPU là độ chênh giữa hai lần hỏi). Lời khuyên viết
@@ -3595,511 +3439,6 @@ async function unregDelete(i) {
   else showMsg("unreg-msg", `Deleted ${n} agent${n === 1 ? "" : "s"}.`, true);
 }
 window.unregDelete = unregDelete;
-
-function imgToggleRef(name) {
-  if (imgRefs.includes(name)) imgRefs = imgRefs.filter((n) => n !== name);
-  else if (imgRefs.length >= IMG_REFS_MAX) {
-    return showMsg("img-msg", `Up to ${IMG_REFS_MAX} reference images.`, false);
-  } else imgRefs.push(name);
-  imgPaint();
-}
-
-function imgPick() {
-  $("img-file").click();
-}
-window.imgPick = imgPick;
-
-// Ảnh tải lên vào thư viện rồi thành ảnh mẫu luôn — tải lên chỉ để làm việc đó.
-async function imgUpload(input) {
-  const files = [...input.files];
-  input.value = "";   // chọn lại đúng file đó lần nữa vẫn phải bắn onchange
-  for (const f of files) {
-    if (imgRefs.length >= IMG_REFS_MAX) {
-      showMsg("img-msg", `Up to ${IMG_REFS_MAX} reference images — the rest were not added.`, false);
-      break;
-    }
-    try {
-      const r = await fetch("/api/images/upload?name=" + encodeURIComponent(f.name),
-                            { method: "POST", body: f });
-      if (!r.ok) throw await r.text();
-      imgRefs.push((await r.json()).name);
-    } catch (e) { showMsg("img-msg", `${f.name}: ${mcpErr(e)}`, false); }
-  }
-  await imgLoad().catch((e) => showMsg("img-msg", "Error: " + e, false));
-}
-window.imgUpload = imgUpload;
-
-async function imgGenerate() {
-  const prompt = $("img-prompt").value.trim();
-  if (!prompt) return showMsg("img-msg", "Describe the image first.", false);
-  $("img-go").disabled = true;
-  showMsg("img-msg", "Drawing… usually under a minute.", true);
-  try {
-    // Không gửi writer: dialog luôn vẽ đúng lời người dùng. API OpenAI vẫn nhận writer qua model.
-    const made = await api("/api/images", "POST", { prompt, ratio: $("img-ratio").value, refs: imgRefs });
-    showMsg("img-msg", made.length > 1 ? `Done — ${made.length} images.` : "Done.", true);
-    await imgLoad();
-  } catch (e) { showMsg("img-msg", mcpErr(e), false); }
-  finally { $("img-go").disabled = false; }
-}
-window.imgGenerate = imgGenerate;
-
-async function imgClick(ev) {
-  const btn = ev.target.closest("button[data-img-ref], button[data-img-rm]");
-  if (!btn) return;
-  if (btn.dataset.imgRef) return imgToggleRef(btn.dataset.imgRef);
-  if (!confirm("Delete this image?")) return;
-  try {
-    await api(imgUrl(btn.dataset.imgRm), "DELETE");
-    await imgLoad();
-  } catch (e) { showMsg("img-msg", mcpErr(e), false); }
-}
-$("img-grid").addEventListener("click", imgClick);
-$("img-refs").addEventListener("click", imgClick);
-
-// ── Sounds ───────────────────────────────────────────────────────────────────
-// Tìm video, tách tiếng bằng yt-dlp, cắt trong editor rồi mới vào thư viện. Agent không tách
-// tiếng; nó đọc thư viện qua /library/mcp (xem Library).
-let sndResults = [];
-let sndLibKey = "";      // tên các file đang vẽ — chỉ vẽ lại khi đổi, kẻo <audio> đang phát bị cắt
-const sndUrl = (name) => "/api/sounds/" + encodeURIComponent(name);
-const sndDur = (s) => s == null ? "" : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
-
-function sndStatus(st) {
-  const fix = (cmd, site, more = "") => `<div class="tool-fix">${cmd ? `<code>${esc(cmd)}</code>` : ""}
-    <a href="${esc(site)}" target="_blank" rel="noopener">${cmd ? "other ways" : "how to install"}</a>${more}</div>`;
-  // Đường dẫn: máy có thể có nhiều yt-dlp (conda, pip, bản release) — nâng nhầm bản là vẫn "cũ".
-  const recheck = `<button class="secondary snd-recheck" onclick="sndRecheck()"
-    title="Look at yt-dlp and ffmpeg again, e.g. after you upgrade">Re-check</button>`;
-  const at = st.ytdlp ? ` <span class="hint">at <code>${esc(st.ytdlp)}</code></span>` : "";
-  const out = [];
-  if (!st.ytdlp) out.push(`<div>${badge("missing", "b-red")} <b>yt-dlp</b> is not installed —
-    search and extract need it.</div>${fix(st.install, st.site, recheck)}`);
-  else if (st.stale) out.push(`<div>${badge("old", "b-amber")} <b>yt-dlp ${esc(st.version)}</b>${at} is
-    ${st.age_days} days old. Sites change often and old versions stop working — upgrade it:</div>
-    ${fix(st.upgrade, st.site, recheck)}`);
-  else out.push(`<div>${badge("ready", "b-green")} <b>yt-dlp ${esc(st.version)}</b>${at} ${recheck}</div>`);
-  if (!st.ffmpeg) out.push(`<div>${badge("missing", "b-red")} <b>ffmpeg</b> is needed to pull the
-    sound out of a video.</div>${fix(st.ffmpeg_install, "https://ffmpeg.org/download.html")}`);
-  out.push(`<div class="hint">Saved to <code>${esc(st.dir)}</code> · videos up to
-    ${st.max_minutes} minutes.</div>`);
-  $("snd-status").innerHTML = out.join("");
-  $("snd-go").disabled = !st.ytdlp;
-}
-
-function sndPaintResults() {
-  $("snd-results").innerHTML = sndResults.map((r) => `<div class="snd-row">
-      ${r.thumb ? `<img src="${esc(r.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}
-      <div class="snd-meta"><a href="${esc(r.url)}" target="_blank" rel="noopener" title="${esc(r.title)}">${esc(r.title)}</a>
-        <span class="hint">${esc([r.channel, sndDur(r.duration),
-          r.views != null ? r.views.toLocaleString() + " views" : "",
-          r.too_long ? "too long to extract" : ""].filter(Boolean).join(" · "))}</span></div>
-      <button class="secondary" data-snd-url="${esc(r.url)}"${r.too_long ? " disabled" : ""}
-        title="${r.too_long ? "Longer than the limit — cannot extract" : "Pull the sound out into the library"}">Extract audio</button>
-    </div>`).join("");
-}
-
-function sndPaintLib(list) {
-  const key = list.map((i) => i.name).join("|");
-  if (key === sndLibKey) return;
-  sndLibKey = key;
-  $("snd-lib").innerHTML = sndLibHtml(list);
-}
-
-function sndLibHtml(list) {
-  return list.length ? list.map((i) => `<div class="snd-row">
-      <div class="snd-meta"><a href="${esc(i.source || sndUrl(i.name))}" target="_blank" rel="noopener"
-          title="${esc(i.title)}">${esc(i.title || i.name)}</a>
-        <span class="hint">${esc([i.channel, sndDur(i.duration), i.format,
-          i.by && i.by !== "user" ? "by " + i.by : "", i.license].filter(Boolean).join(" · "))}</span>
-        <audio controls preload="none" src="${sndUrl(i.name)}"></audio></div>
-      <a class="snd-dl" href="${sndUrl(i.name)}?download=1" download title="Save to this computer">Download</a>
-      <button class="icon-btn" data-snd-rm="${esc(i.name)}" title="Delete">
-        <svg class="ic sm"><use href="#i-trash"/></svg></button>
-    </div>`).join("") : `<div class="hint">Nothing yet — extract a sound and it lands here.</div>`;
-}
-
-async function sndLoad(withStatus) {
-  const r = await api("/api/sounds");
-  if (withStatus) sndStatus(r.status);
-  sndPaintLib(r.items);
-}
-
-function sndOpen() { openPage("studio", "sounds"); }
-window.sndOpen = sndOpen;
-
-// Cache version phía server đọc lại khi file yt-dlp đổi, nên chỉ cần hỏi lại.
-async function sndRecheck() {
-  try {
-    await sndLoad(true);
-    showMsg("snd-msg", "Checked just now.", true);
-  } catch (e) { showMsg("snd-msg", "Error: " + e, false); }
-}
-window.sndRecheck = sndRecheck;
-
-async function sndSearch() {
-  const query = $("snd-q").value.trim();
-  if (!query) return showMsg("snd-msg", "Type what it should sound like.", false);
-  $("snd-go").disabled = true;
-  showMsg("snd-msg", "Searching…", true);
-  try {
-    const r = await api("/api/sounds/search", "POST", { query, ai_only: $("snd-ai").checked, limit: 12,
-      max_minutes: +$("snd-len").value });
-    sndResults = r.results;
-    sndPaintResults();
-    const len = +$("snd-len").value;
-    showMsg("snd-msg", r.results.length ? `${r.results.length} videos for “${r.query}”.`
-      : len < 60 ? `Nothing up to ${len} min for “${r.query}” — try a longer length.`
-      : `Nothing found for “${r.query}”.`, true);
-  } catch (e) { showMsg("snd-msg", mcpErr(e), false); }
-  finally { $("snd-go").disabled = false; }
-}
-window.sndSearch = sndSearch;
-
-async function sndClick(ev) {
-  const btn = ev.target.closest("button[data-snd-url], button[data-snd-rm]");
-  if (!btn) return;
-  if (btn.dataset.sndRm) {
-    if (!confirm("Delete this sound?")) return;
-    try { await api(sndUrl(btn.dataset.sndRm), "DELETE"); await sndLoad(false); }
-    catch (e) { showMsg("snd-msg", mcpErr(e), false); }
-    return;
-  }
-  btn.disabled = true;
-  btn.textContent = "Extracting…";
-  showMsg("snd-msg", "Pulling the sound out… usually under a minute.", true);
-  try {
-    const s = await api("/api/sounds", "POST",
-      { url: btn.dataset.sndUrl, format: $("snd-fmt").value, draft: true });
-    showMsg("snd-msg", `Extracted “${s.title || s.name}” — pick the part to keep.`, true);
-    sedOpen(s);
-  } catch (e) { showMsg("snd-msg", mcpErr(e), false); }
-  finally { btn.disabled = false; btn.textContent = "Extract audio"; }
-}
-$("snd-results").addEventListener("click", sndClick);
-$("snd-lib").addEventListener("click", sndClick);
-
-// ── Sound editor ─────────────────────────────────────────────────────────────
-// Bản nháp vừa tách (drafts/, chưa vào thư viện) → chọn đoạn giữ lại → Save mới vào thư viện.
-// Đỉnh sóng tính ở server (sound_peaks); ở đây chỉ vẽ và giữ đoạn chọn [a, b] tính bằng giây.
-let sed = null;          // { name, dur, peaks, a, b, drag }
-const SED_MIN = 0.05;    // đoạn ngắn nhất được giữ, khớp với sound_keep
-
-const sedUrl = () => "/api/sounds/drafts/" + encodeURIComponent(sed.name);
-const sedFmt = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, "0")}`;
-function sedParse(v) {                // "65.5", "1:05.5" → 65.5
-  const p = String(v).trim().split(":");
-  if (!p[0] || p.length > 2) return NaN;
-  return p.length === 2 ? Number(p[0]) * 60 + Number(p[1]) : Number(p[0]);
-}
-
-async function sedOpen(d) {
-  const me = sed = { name: d.name, dur: 0, peaks: [], a: 0, b: 0, drag: null };
-  $("sed-name").textContent = d.title || d.name;
-  $("sed-modal").hidden = false;
-  $("sed-audio").src = sedUrl();
-  showMsg("sed-msg", "Reading the sound wave…", true);
-  sedSync();
-  try {
-    const r = await api(sedUrl() + "/peaks");
-    if (sed !== me) return;           // đã Discard trong lúc chờ
-    Object.assign(sed, { dur: r.duration, peaks: r.peaks, b: r.duration });
-    $("sed-msg").textContent = "";
-    sedSync();
-  } catch (e) { if (sed === me) showMsg("sed-msg", mcpErr(e), false); }
-}
-
-function sedSync() {
-  $("sed-start").value = sedFmt(sed.a);
-  $("sed-end").value = sedFmt(sed.b);
-  $("sed-len").textContent = sed.dur ? `keeps ${sedFmt(sed.b - sed.a)} of ${sedFmt(sed.dur)}` : "";
-  $("sed-save").disabled = !sed.dur;
-  sedDraw();
-}
-
-function sedDraw() {
-  const c = $("sed-wave"), dpr = window.devicePixelRatio || 1;
-  const w = c.clientWidth, h = c.clientHeight;
-  c.width = w * dpr;
-  c.height = h * dpr;
-  const g = c.getContext("2d");
-  g.scale(dpr, dpr);
-  const css = getComputedStyle(document.documentElement);
-  const accent = css.getPropertyValue("--accent").trim(), dim = css.getPropertyValue("--faint").trim();
-  const x = (t) => sed.dur ? t / sed.dur * w : 0;
-  const xa = x(sed.a), xb = x(sed.b), n = sed.peaks.length;
-  g.fillStyle = accent;
-  g.globalAlpha = 0.14;
-  g.fillRect(xa, 0, xb - xa, h);
-  g.globalAlpha = 1;
-  for (let px = 0; px < w && n; px++) {
-    // Một cột pixel = đỉnh lớn nhất của các bucket rơi vào nó.
-    const i0 = Math.floor(px / w * n), i1 = Math.max(i0 + 1, Math.floor((px + 1) / w * n));
-    let p = 0;
-    for (let i = i0; i < i1 && i < n; i++) p = Math.max(p, sed.peaks[i]);
-    const y = Math.max(0.5, p * (h / 2 - 4));
-    g.fillStyle = px >= xa && px <= xb ? accent : dim;
-    g.fillRect(px, h / 2 - y, 1, y * 2);
-  }
-  if (!sed.dur) return;
-  g.fillStyle = accent;
-  g.fillRect(xa - 1, 0, 2, h);
-  g.fillRect(xb - 1, 0, 2, h);
-  const au = $("sed-audio");
-  if (!au.paused) {
-    g.fillStyle = css.getPropertyValue("--text").trim();
-    g.fillRect(x(au.currentTime), 0, 1, h);
-  }
-}
-
-// Kéo trên sóng: gần mép (6px) → kéo mép đó; chỗ khác → vẽ đoạn mới từ điểm bấm.
-function sedAt(ev) {
-  const r = $("sed-wave").getBoundingClientRect(), px = ev.clientX - r.left;
-  const near = (t) => Math.abs(t / sed.dur * r.width - px) <= 6;
-  return { t: Math.min(sed.dur, Math.max(0, px / r.width * sed.dur)),
-           edge: near(sed.a) ? "a" : near(sed.b) ? "b" : null };
-}
-$("sed-wave").addEventListener("pointerdown", (ev) => {
-  if (!sed?.dur) return;
-  const { t, edge } = sedAt(ev);
-  sed.drag = edge || { from: t };
-  ev.currentTarget.setPointerCapture(ev.pointerId);
-});
-$("sed-wave").addEventListener("pointermove", (ev) => {
-  if (!sed?.dur) return;
-  const { t, edge } = sedAt(ev);
-  if (!sed.drag) { ev.currentTarget.style.cursor = edge ? "ew-resize" : ""; return; }
-  if (sed.drag === "a") sed.a = Math.min(t, sed.b - SED_MIN);
-  else if (sed.drag === "b") sed.b = Math.max(t, sed.a + SED_MIN);
-  else {
-    const a = Math.min(sed.drag.from, t), b = Math.max(sed.drag.from, t);
-    if (b - a < SED_MIN) return;      // một cú click không xoá đoạn đang chọn
-    Object.assign(sed, { a, b });
-  }
-  sedSync();
-});
-for (const evName of ["pointerup", "pointercancel"]) {
-  $("sed-wave").addEventListener(evName, () => { if (sed) sed.drag = null; });
-}
-window.addEventListener("resize", () => { if (sed) sedDraw(); });
-
-function sedTyped() {
-  const a = Math.max(0, sedParse($("sed-start").value));
-  const b = Math.min(sed.dur, sedParse($("sed-end").value));
-  if (b - a >= SED_MIN) {
-    Object.assign(sed, { a, b });
-    $("sed-msg").textContent = "";
-  } else showMsg("sed-msg", "Start must come before End — seconds (65.5) or m:ss (1:05.5).", false);
-  sedSync();
-}
-window.sedTyped = sedTyped;
-
-function sedAll() {
-  Object.assign(sed, { a: 0, b: sed.dur });
-  sedSync();
-}
-window.sedAll = sedAll;
-
-function sedPlay() {
-  const au = $("sed-audio");
-  if (!au.paused) return au.pause();
-  au.currentTime = sed.a;
-  au.play().catch((e) => showMsg("sed-msg", "Cannot play: " + e.message, false));
-}
-window.sedPlay = sedPlay;
-
-function sedTick() {
-  const au = $("sed-audio");
-  if (au.paused || !sed) return;
-  if (au.currentTime >= sed.b) return au.pause();
-  sedDraw();
-  requestAnimationFrame(sedTick);
-}
-$("sed-audio").addEventListener("play", () => { $("sed-play").textContent = "Stop"; sedTick(); });
-$("sed-audio").addEventListener("pause", () => {
-  $("sed-play").textContent = "Play selection";
-  if (sed) sedDraw();
-});
-
-// Chọn hết = giữ nguyên file (server không mã hoá lại); mép sát đầu/cuối coi như đầu/cuối.
-async function sedSave() {
-  const body = { start: sed.a <= 0.01 ? 0 : sed.a, end: sed.b >= sed.dur - 0.01 ? null : sed.b };
-  $("sed-save").disabled = true;
-  showMsg("sed-msg", "Saving…", true);
-  try {
-    const s = await api(sedUrl() + "/keep", "POST", body);
-    sedHide();
-    // Editor mở từ Sounds (tách) hoặc từ Library (tải lên): báo và làm mới đúng chỗ đó.
-    const fromLib = libIsOpen();
-    showMsg(fromLib ? "lib-msg" : "snd-msg", `Saved “${s.title || s.name}” to the library.`, true);
-    await (fromLib ? libLoad() : sndLoad(false));
-  } catch (e) {
-    showMsg("sed-msg", mcpErr(e), false);
-    $("sed-save").disabled = false;
-  }
-}
-window.sedSave = sedSave;
-
-async function sedDiscard() {
-  if (!sed || !confirm("Discard this sound? It is not in the library yet.")) return;
-  await api(sedUrl(), "DELETE").catch(() => {});
-  sedHide();
-}
-window.sedDiscard = sedDiscard;
-
-// ── Library ──────────────────────────────────────────────────────────────────
-// Mọi thứ đã giữ lại ở một chỗ: tiếng (thư viện Sounds) và ảnh (thư viện Images). Cùng API,
-// cùng markup với hai modal kia — ở đây chỉ gom lại, thêm tải mp3 lên (qua editor để cắt).
-// Agent đọc đúng thư viện này qua /library/mcp: search_media, inspect_media.
-let libKey = "";      // như sndLibKey: poll chỉ vẽ lại khi danh sách đổi, kẻo <audio> đang phát bị cắt
-
-const libIsOpen = () => VIEW === "studio" && SUB.studio === "library";
-
-async function libLoad() {
-  const [imgs, snd] = await Promise.all([api("/api/images"), api("/api/sounds")]);
-  $("lib-n-snd").textContent = snd.items.length ? `(${snd.items.length})` : "";
-  $("lib-n").textContent = snd.items.length + imgs.length || "";
-  $("lib-n-img").textContent = imgs.length ? `(${imgs.length})` : "";
-  const key = [...snd.items, ...imgs].map((i) => i.name).join("|");
-  if (key === libKey) return;
-  libKey = key;
-  $("lib-snd").innerHTML = sndLibHtml(snd.items);
-  $("lib-img").innerHTML = imgRows(imgs, false);
-}
-
-function libOpen() { openPage("studio", "library"); }
-
-// CLI nào đã có /library/mcp — đọc từ danh sách của modal MCP, không gọi thử server.
-async function libAgents() {
-  const m = await api("/api/mcp").catch(() => ({ servers: [] }));
-  const s = (m.servers || []).find((x) => (x.url || "").split("?")[0].replace(/\/+$/, "").endsWith("/library/mcp"));
-  $("lib-agents").innerHTML = s && s.clis.length
-    ? `Agents can search and inspect this library (${esc(s.clis.join(", "))}):
-        <code>search_media</code>, <code>inspect_media</code>.`
-    : `Agents cannot see this library yet.
-        <button class="secondary" onclick="libConnect()">Give agents these tools</button>`;
-}
-
-// Đăng ký /library/mcp cho MỌI CLI đang cài, qua đúng đường của modal MCP (kiểm trước, ghi sau).
-async function libConnect() {
-  try {
-    await api("/api/mcp/connect", "POST", { builtin: "library" });
-    showMsg("lib-msg", "Done — agents started after this can search and inspect the library.", true);
-    await libAgents();
-  } catch (e) { showMsg("lib-msg", mcpErr(e), false); }
-}
-window.libConnect = libConnect;
-window.libOpen = libOpen;
-
-// Agent vẽ ảnh (qua /v1/images) lúc tab Library đang mở → hiện ra trong vòng 5 giây.
-setInterval(() => { if (libIsOpen()) libLoad().catch(() => {}); }, 5000);
-
-function libPick() {
-  $("lib-file").click();
-}
-window.libPick = libPick;
-
-// Byte thô như ảnh tải lên: server ghi thẳng ra đĩa từng mẩu, không cần multipart.
-async function libUpload(input) {
-  const f = input.files[0];
-  input.value = "";   // chọn lại đúng file đó lần nữa vẫn phải bắn onchange
-  if (!f) return;
-  showMsg("lib-msg", `Uploading ${f.name}…`, true);
-  try {
-    const r = await fetch("/api/sounds/upload?name=" + encodeURIComponent(f.name),
-                          { method: "POST", body: f });
-    if (!r.ok) throw await r.text();
-    $("lib-msg").textContent = "";
-    sedOpen(await r.json());
-  } catch (e) { showMsg("lib-msg", `${f.name}: ${mcpErr(e)}`, false); }
-}
-window.libUpload = libUpload;
-
-$("lib-drawer").addEventListener("click", async (ev) => {
-  const btn = ev.target.closest("button[data-img-rm], button[data-snd-rm]");
-  if (!btn) return;
-  const img = btn.dataset.imgRm;
-  if (!confirm(img ? "Delete this image?" : "Delete this sound?")) return;
-  try {
-    await api(img ? imgUrl(img) : sndUrl(btn.dataset.sndRm), "DELETE");
-    await libLoad();
-  } catch (e) { showMsg("lib-msg", mcpErr(e), false); }
-});
-
-// ── Speak text (Kokoro) ──────────────────────────────────────────────────────
-// Đọc ở server (sherpa-onnx), file nằm ở thư mục temp, không vào thư viện. Lần đầu phải tải giọng:
-// modal hỏi /api/tts mỗi giây trong lúc tải để hiện tiến độ.
-let ttsPoll = 0;
-
-function ttsPaint(st) {
-  const mb = (n) => Math.round(n / 1048576);
-  const d = st.download || {};
-  let html;
-  if (!st.engine) {
-    html = `<div>${badge("missing", "b-red")} <b>sherpa-onnx</b> is not installed.</div>
-      <div class="tool-fix"><code>${esc(st.install)}</code></div>`;
-  } else if (d.state === "downloading" || d.state === "unpacking") {
-    html = `<div>${badge(d.state, "b-blue")} Kokoro voice — ${d.state === "unpacking" ? "unpacking…"
-      : `${mb(d.done)} of ${mb(d.total)} MB`}</div>`;
-  } else if (!st.ready) {
-    html = `<div>${d.state === "failed" ? badge("failed", "b-red") + ` ${esc(d.error)}<br>` : ""}
-      The Kokoro voice is downloaded once (${mb(d.total)} MB).
-      <button class="secondary" onclick="ttsDownload()">Download</button></div>`;
-  } else {
-    html = `<div>${badge("ready", "b-green")} Kokoro · ${st.voices.length} English voices</div>`;
-  }
-  $("tts-status").innerHTML = html;
-  $("tts-go").disabled = !(st.engine && st.ready);
-  if (!$("tts-voice").options.length) {
-    const group = (p, label) => `<optgroup label="${label}">${st.voices.filter((v) => v.id.startsWith(p))
-      .map((v) => `<option value="${esc(v.id)}">${esc(v.label.split(" · ")[0])}</option>`).join("")}</optgroup>`;
-    $("tts-voice").innerHTML = group("af", "US female") + group("am", "US male")
-      + group("bf", "UK female") + group("bm", "UK male");
-    $("tts-voice").value = st.default;
-  }
-  clearTimeout(ttsPoll);
-  if (VIEW === "studio" && SUB.studio === "speech" && (d.state === "downloading" || d.state === "unpacking")) {
-    ttsPoll = setTimeout(() => ttsLoad().catch(() => {}), 1000);
-  }
-}
-
-async function ttsLoad() { ttsPaint(await api("/api/tts")); }
-
-function ttsOpen() { openPage("studio", "speech"); }
-window.ttsOpen = ttsOpen;
-
-async function ttsDownload() {
-  try { ttsPaint(await api("/api/tts/download", "POST", {})); }
-  catch (e) { showMsg("tts-msg", mcpErr(e), false); }
-}
-window.ttsDownload = ttsDownload;
-
-async function ttsSpeak() {
-  const text = $("tts-text").value.trim();
-  if (!text) return showMsg("tts-msg", "Type what it should say.", false);
-  $("tts-go").disabled = true;
-  showMsg("tts-msg", "Speaking… about as long as the speech itself.", true);
-  try {
-    const s = await api("/api/tts/speak", "POST",
-      { text, voice: $("tts-voice").value, speed: +$("tts-speed").value });
-    const au = $("tts-audio");
-    au.hidden = false;
-    au.src = "/api/tts/files/" + encodeURIComponent(s.name);
-    au.play().catch(() => {});
-    showMsg("tts-msg", `${s.duration}s of speech — saved to ${s.path}, cleared on restart.`, true);
-  } catch (e) { showMsg("tts-msg", mcpErr(e), false); }
-  finally { $("tts-go").disabled = false; }
-}
-window.ttsSpeak = ttsSpeak;
-
-function sedHide() {
-  const au = $("sed-audio");
-  au.pause();
-  au.removeAttribute("src");
-  au.load();
-  $("sed-modal").hidden = true;
-  sed = null;
-}
 
 async function spawnAgent() {
   // Tên vai và template là HAI thứ khác nhau: template chỉ là playbook NGUỒN (nhiều agent dùng
@@ -5160,6 +4499,8 @@ if (PANE) {
     : fromUrl.length ? 0
     : Math.min(st.active == null ? 0 : st.active, OPEN.length - 1);
   initSplitDrag();
+  // Trang đã bỏ (?view=studio, state cũ đã lưu) → về Home, không lộ ra workspace bên dưới nó.
+  if (view && !SUBS[view]) { ACTIVE = -1; shellSave(); }
   if (SUBS[view]) openPage(view, qs.get("view") === view ? qs.get("tab") : SUB[view]);
   // Pane báo lên: workspace của nó không còn → đóng tab; 'palette' = Ctrl+K bấm trong pane.
   window.addEventListener("message", (e) => {

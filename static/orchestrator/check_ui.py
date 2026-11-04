@@ -53,8 +53,8 @@ check("every $(\"id\") exists in index.html", js_ids - html_ids - js_made,
       "referenced by app.js but no such element")
 
 # 2 · Mọi hàm gọi trong handler inline (onclick/onchange/oninput/onfocus/onmousedown…) phải
-# được gán vào window ở app.js. KHÔNG chỉ onclick: ô tìm card chạy bằng oninput/onfocus, ô chọn
-# phiên bằng onchange/onmousedown — sót attribute nào là loại đó không được kiểm, và một cái tên
+# được gán vào window ở app.js. KHÔNG chỉ onclick: ô chọn
+# phiên chạy bằng onchange/onmousedown — sót attribute nào là loại đó không được kiểm, và một cái tên
 # gõ sai ở đó im lặng y hệt onclick (element vẫn hiện, gõ vào thì không có gì xảy ra).
 # KHÔNG neo ^: app.js gán nhiều hàm trên cùng một dòng.
 exported = set(re.findall(r"\bwindow\.(\w+)\s*=", JS))
@@ -283,7 +283,24 @@ gaps = set(re.findall(r'pinWindow|unpinWindow|applyPin|pinnedNid|rzw|\.pinned\b|
 if not re.search(r'''class="win-chip[^>]*onclick="focusNode\('\$\{esc\(w\.nid\)\}'\)"''', JS):
     gaps.add("the window-bar chip's onclick must be focusNode(w.nid)")
 check("window chips jump to the card, window pinning stays gone", gaps,
-      "a chip goes through focusNode like the find box; no second navigation or pin state")
+      "a chip goes through focusNode; no second navigation or pin state")
+
+# 17 · Ô tìm card và Studio đã bỏ hẳn. Sót mảnh nào là hỏng im lặng: một nút bấm không có gì xảy
+# ra, hoặc một lời gọi tới route server không còn. Thứ còn lại: focusNode + chip, lối vào trang
+# chỉ còn Settings. (?<![-\w]): "story-studio" trong placeholder là tên server ví dụ, không phải tính năng.
+pat = (r'cv-find|find-pop|find-row|\b(?:findOpen|findFilter|findClose|findHold|findPick|findKey|findPos'
+       r'|renderFindPop)\b|(?<![-\w])studio-(?:btn|view)\b|openPage\([\'"]studio'
+       r'|\b(?:img|snd|sed|tts|lib)(?:[A-Z]\w*)\b|id="(?:img|snd|sed|tts|lib)-[\w-]+"'
+       r'|/api/(?:images|sounds|tts)|/v1/images|\bi-(?:music|speak|library|image)\b')
+gaps = set(re.findall(pat, JS + HTML))
+if "window.focusNode = focusNode" not in JS or 'id="win-chips"' not in HTML:
+    gaps.add("focusNode and the window-bar chips stay: chips, Show and the palette use them")
+if 'const SUBS = { settings: [' not in JS:
+    gaps.add("Settings must be the only full-screen page: SUBS is what openPage trusts")
+if "if (view && !SUBS[view]) { ACTIVE = -1; shellSave(); }" not in JS:
+    gaps.add("a stale ?view=studio or stored shell state must land on Home")
+check("the find box and Studio stay gone", gaps,
+      "both were removed on purpose; plugins will bring such features back, not leftovers")
 
 if fails:
     print("\n" + "\n\n".join(fails))

@@ -18,7 +18,9 @@ wrong quietly are all about that secret and that file:
     drop them;
   - tools/list answers over plain JSON on some servers and SSE frames on others. Counting only
     one shape reports "0 tools" for a server that actually works;
-  - a stdio server has no URL to probe. Reporting it as unreachable would be a lie.
+  - a stdio server has no URL to probe. Reporting it as unreachable would be a lie;
+  - the library and voice servers are gone, so what the orchestrator once registered must leave
+    the CLI configs (every agent would show them as failed), and a user's own `library` must not.
 
 Runs the real app in-process over ASGI against a throwaway config file and a fake MCP server.
 
@@ -28,9 +30,13 @@ import asyncio
 import json
 import logging
 import os
+import socket
+import subprocess
 import sys
 import tempfile
 import threading
+import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -184,10 +190,10 @@ async def main():
               str(names["signal"]))
         built = {b["name"]: b for b in top["builtins"]}
         check("every server the orchestrator mounts is offered, connected or not",
-              set(built) == {"signal", "library", "voice"}, str(sorted(built)))
+              set(built) == {"signal"}, str(sorted(built)))
         check("with a URL the CLIs on this machine can reach, not the browser's address",
-              built["library"]["url"] == f"http://127.0.0.1:{so.ORCH_PORT}/library/mcp",
-              built["library"]["url"])
+              built["signal"]["url"] == f"http://127.0.0.1:{so.ORCH_PORT}/signal/mcp",
+              built["signal"]["url"])
         check("a stdio server is listed but not checkable",
               names["local-tool"]["checkable"] is False
               and names["local-tool"]["type"] == "stdio", str(names.get("local-tool")))
@@ -243,25 +249,28 @@ async def main():
         check("and agy's own servers survived", "signal" in agy, str(sorted(agy)))
         # ── server nội bộ: một nút Connect ───────────────────────────────────
         probed, real_probe = [], so._mcp_probe
+        kept = all_cfgs()
 
         async def fake_probe(url, token):
             probed.append(url)
             return "connected", 4, ""
         so._mcp_probe = fake_probe
         try:
-            r = await c.post("/api/mcp/connect", json={"builtin": "library",
+            r = await c.post("/api/mcp/connect", json={"builtin": "signal",
                                                        "url": "http://evil.example/mcp"})
             bad = await c.post("/api/mcp/connect", json={"builtin": "nope"})
         finally:
             so._mcp_probe = real_probe
-        want = f"http://127.0.0.1:{so.ORCH_PORT}/library/mcp"
+        want = f"http://127.0.0.1:{so.ORCH_PORT}/signal/mcp"
         check("Connect on a built-in writes the server's own URL, whatever the request says",
               r.status_code == 200 and probed == [want]
-              and json.loads(cfg_now())["mcpServers"]["library"]["url"] == want, r.text[:160])
+              and json.loads(cfg_now())["mcpServers"]["signal"]["url"] == want, r.text[:160])
         check("an unknown built-in is refused", bad.status_code == 400, bad.text[:90])
-        r = await c.post("/api/mcp/disconnect", json={"name": "library"})
+        r = await c.post("/api/mcp/disconnect", json={"name": "signal"})
         check("and Remove takes it out like any other server",
-              r.json()["removed"] and "library" not in json.loads(cfg_now())["mcpServers"], r.text)
+              r.json()["removed"] and "signal" not in json.loads(cfg_now())["mcpServers"], r.text)
+        CFG.write_text(kept[0], encoding="utf-8")   # signal là "server có sẵn" của các bước sau
+        AGY.write_text(kept[2], encoding="utf-8")
 
         await c.post("/api/mcp/connect", json={"name": NAME, "url": URL, "token": TOKEN})
         row = {s["name"]: s for s in (await c.get("/api/mcp")).json()["servers"]}[NAME]
@@ -307,7 +316,68 @@ async def main():
     check("a body with no tools counts zero", so._count_tools("not json at all") == 0)
 
 
+def servers(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))["mcpServers"]
+
+
+def test_stale_registrations():
+    """library/voice đã bỏ: `serve` phải gỡ mục cũ của CHÍNH nó, không đụng server trùng tên của người
+    dùng. Chạy `serve` thật — hàm dọn mà không được gọi lúc start thì cũng như không có."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    home = {"library": f"http://localhost:{port}/library/mcp",
+            "voice": f"http://127.0.0.1:{port}/voice/mcp",
+            "library-x": f"http://localhost:{port}/library/mcp"}
+    CFG.write_text(json.dumps({"mcpServers": {n: {"type": "http", "url": u} for n, u in home.items()},
+                               "someOtherKey": {"keep": "me"}}), encoding="utf-8")
+    AGY.write_text(json.dumps({"mcpServers": {
+        "library": {"disabled": False, "serverUrl": "https://example.com/mcp"},
+        "voice": {"disabled": False, "serverUrl": f"http://127.0.0.1:{port}/voice/mcp"}}}),
+        encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, str(HERE / "session_orchestrator.py"), "serve"], cwd=str(HERE),
+                            env={**os.environ, "ORCH_PORT": str(port), "ORCH_HOST": "127.0.0.1"},
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(80):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1)
+                break
+            except OSError:
+                time.sleep(0.25)
+        else:
+            check("the server came up for the stale-registration test", False, "no /health")
+    finally:
+        proc.terminate()
+        proc.wait(timeout=15)
+    left = servers(CFG)
+    check("serve removes the library and voice it registered itself in claude's config",
+          "library" not in left and "voice" not in left, str(sorted(left)))
+    check("a server with another name stays, whatever its URL",
+          left.get("library-x", {}).get("url") == home["library-x"], str(sorted(left)))
+    check("and so does the rest of the file",
+          json.loads(cfg_now()).get("someOtherKey") == {"keep": "me"}, cfg_now()[:120])
+    left = servers(AGY)
+    check("a foreign `library` survives in agy's config while its own `voice` goes",
+          left.get("library", {}).get("serverUrl") == "https://example.com/mcp" and "voice" not in left,
+          str(left))
+
+    # Những mục gần giống: sai port, sai host, sai path, URL hỏng. Cái nào cũng không phải của mình.
+    near = {"library": f"http://localhost:{so.ORCH_PORT + 1}/library/mcp",
+            "voice": "http://localhost:notaport/voice/mcp"}
+    near2 = {"library": f"http://127.0.0.1:{so.ORCH_PORT}/voice/mcp",
+             "voice": f"http://example.com:{so.ORCH_PORT}/voice/mcp"}
+    CFG.write_text(json.dumps({"mcpServers": {n: {"type": "http", "url": u} for n, u in near.items()}}),
+                   encoding="utf-8")
+    AGY.write_text(json.dumps({"mcpServers": {n: {"serverUrl": u} for n, u in near2.items()}}), encoding="utf-8")
+    before = all_cfgs()
+    so._forget_removed_builtins()
+    check("wrong port, wrong path, wrong host and a broken URL are all left alone, not a byte rewritten",
+          all_cfgs() == before, str(all_cfgs()[0])[:200])
+
+
 asyncio.run(main())
+test_stale_registrations()
 srv.shutdown()
 db.unlink(missing_ok=True)
 

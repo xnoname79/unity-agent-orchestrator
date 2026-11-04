@@ -478,20 +478,6 @@
   .tool-fix { margin-top: 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .tool-fix code { user-select: all; background: var(--panel2); border: 1px solid var(--border);
     border-radius: 6px; padding: 3px 7px; font-size: 11.5px; }
-  /* Thư viện của modal Images. min-width:0 cùng lý do như .mcp-row: chú thích dài phải co lại,
-     không được đẩy khung rộng ra. */
-  .img-grid { margin-top: 12px; display: grid; gap: 8px;
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
-  .img-item { margin: 0; position: relative; min-width: 0; overflow: hidden; background: var(--bg);
-    border: 1px solid var(--border); border-radius: var(--r-ctl); }
-  .img-item img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
-  .img-item.ref { border-color: var(--accent); }
-  .img-item .icon-btn { position: absolute; top: 5px; right: 5px; background: var(--panel); }
-  .img-foot { display: flex; align-items: center; gap: 6px; padding: 5px 7px; }
-  .img-foot span { flex: 1; min-width: 0; font-size: 11px; color: var(--muted);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .img-foot button { flex: none; padding: 2px 7px; font-size: 10.5px; }
-  .img-foot button.on { color: var(--accent); border-color: var(--accent); }
   .perf-tips, .perf-sum { display: grid; gap: 6px; margin-bottom: 12px; font-size: 12.5px; }
   .perf-sum b { display: inline-block; min-width: 92px; }
   .perf-table th, .perf-table td { padding: 6px 8px; font-size: 12px; }
@@ -500,65 +486,19 @@
   .unreg-table td:first-child { width: 100%; max-width: 0; }
   .unreg-table td:first-child .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .unreg-table td:nth-child(n+2) { font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .snd-status { display: grid; gap: 6px; margin-bottom: 4px; font-size: 11.5px; }
-  .snd-status .tool-fix { margin: 0; }
-  .snd-recheck { font-size: 11px; padding: 2px 8px; margin-left: 4px; }
-  .snd-search { display: flex; gap: 8px; }
-  .snd-search input { flex: 1; min-width: 0; }
-  .snd-opts { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
-  /* .form-card label là nhãn mục (block, chữ hoa) và input/select rộng 100% — ở hàng tuỳ chọn này
-     chúng phải là ô tick và ô chọn nhỏ nằm ngang. */
-  .form-card .snd-opts label { display: inline-flex; align-items: center; gap: 6px; margin: 0;
-    font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted); }
-  .form-card .snd-opts input, .form-card .snd-opts select { width: auto; }
-  .form-card .snd-opts select { padding: 4px 8px; }
-  .snd-list { display: grid; gap: 6px; margin-top: 8px; }
-  .snd-row { display: flex; align-items: center; gap: 10px; padding: 7px 9px; min-width: 0;
-    background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-card); }
-  .snd-row img { flex: none; width: 96px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px;
-    background: var(--panel2); }
-  .snd-meta { flex: 1; min-width: 0; display: grid; gap: 3px; }
-  .snd-meta a { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; }
-  .snd-meta .hint { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .snd-meta audio { width: 100%; height: 30px; }
-  .snd-row > button, .snd-row > a { flex: none; }
-  .snd-dl { font-size: 11.5px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 6px;
-    color: var(--text); text-decoration: none; }
-  .snd-dl:hover { border-color: var(--accent); color: var(--accent); }
-  @media (max-width: 560px) { .snd-row { flex-wrap: wrap; } .snd-row img { width: 72px; } }
-  #sed-wave { display: block; width: 100%; height: 128px; margin-top: 10px; border-radius: 6px;
-    border: 1px solid var(--border); background: var(--bg); cursor: crosshair; touch-action: none; }
-  .sed-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
-  .form-card .sed-row label { display: inline-flex; align-items: center; gap: 6px; margin: 0;
-    text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--muted); }
-  .form-card .sed-row input { width: 92px; padding: 4px 8px; font-variant-numeric: tabular-nums; }
-  .img-refs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 22px; }
-  .img-ref { position: relative; width: 56px; height: 56px; overflow: hidden;
-    border: 1px solid var(--border); border-radius: var(--r-ctl); }
-  .img-ref img { display: block; width: 100%; height: 100%; object-fit: cover; }
-  .img-ref .icon-btn { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px;
-    background: var(--panel); }
   select.mini, input.mini { background: var(--bg); border: 1px solid var(--border); color: var(--text);
     border-radius: 6px; padding: 4px 7px; font: inherit; font-size: 11.5px; }
   select.mini:hover, input.mini:hover { border-color: var(--border-strong); }
   input.model-in { width: 160px; }
 
-  /* ── Studio / Settings (trang toàn màn của shell, như Home) ───────────── */
+  /* ── Settings (trang toàn màn của shell, như Home) ───────────── */
   .sb-item.active { background: var(--accent-soft); color: var(--text); font-weight: 600; }
   .page { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 28px 24px 60px; }
   .page[hidden], .page-sec[hidden] { display: none; }
   .page-wrap { max-width: 1180px; margin: 0 auto; }
   .page-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin-bottom: 20px; }
   .page-head h1 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: -.02em; }
-  .page-note { font-size: 12px; color: var(--muted); }
-  #lib-n { color: var(--muted); }
-  .page-col { max-width: 760px; margin: 0 auto; }
   .page .form-card > label:first-child { margin-top: 0; }
-  /* Images: soạn bên trái, kết quả bên phải; hẹp thì xếp chồng. */
-  .st-images { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 20px; align-items: start; }
-  .st-images .img-grid { margin-top: 0; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
-  @media (max-width: 1000px) { .st-images { grid-template-columns: minmax(0, 1fr); } }
   .set-cols { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 28px; align-items: start; }
   @media (max-width: 760px) { .set-cols { grid-template-columns: minmax(0, 1fr); } }
   .set-nav { display: flex; flex-direction: column; gap: 2px; }
@@ -632,8 +572,6 @@
     height: 28px; padding: 0 11px; font-size: 12px; color: var(--muted); background: var(--card);
     border-radius: 999px; }
   .win-chip:hover { color: var(--text); }
-  input.cv-find { flex: none; width: 210px; height: 30px; border-radius: var(--r-ctl); background: var(--card);
-    font-size: 12px; padding: 0 10px; }
   .win-chips { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .win-sep { flex: none; width: 1px; align-self: stretch; margin: 2px 3px; background: var(--border); }
   /* Canvas vừa nhảy tới card khác → không nháy thì không biết cái nào vừa được tìm ra.
@@ -648,27 +586,6 @@
      Đặt SAU .win-chip:hover: cùng specificity, thắng nhờ thứ tự. */
   .win-chip.ed { color: var(--amber); }
   .win-chip.ed:hover { color: var(--amber); background: var(--amber-soft); }
-  /* Dropdown ô tìm: mỗi dòng là một card bấm được, không phải chữ trần của <datalist>.
-     Màu đi theo đúng quy ước của thanh cửa sổ — terminal xanh accent, editor cam. */
-  .find-pop { position: fixed; z-index: 60; width: 320px; max-height: 340px; overflow-y: auto;
-    padding: 4px; background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; box-shadow: var(--sh-2); }
-  .find-pop[hidden] { display: none; }
-  .find-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 8px;
-    font-size: 12px; color: var(--muted); background: transparent; border: none;
-    border-radius: 7px; text-align: left; }
-  /* Vạch mở nhóm: dòng terminal và editor của cùng session dính nhau, giữa hai nhóm có đường kẻ. */
-  .find-row.grp { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px;
-    border-radius: 0 0 7px 7px; }
-  .find-row .find-name { font-weight: 600; color: var(--text); }
-  .find-row .find-sub { margin-left: auto; font-size: 10.5px; color: var(--faint);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
-  .find-row:hover, .find-row.on { background: var(--accent-soft); color: var(--accent); }
-  .find-row:hover .find-name, .find-row.on .find-name { color: var(--accent); }
-  .find-row.ed, .find-row.ed .find-name { color: var(--amber); }
-  .find-row.ed:hover, .find-row.ed.on { background: var(--amber-soft); color: var(--amber); }
-  .find-row.ed:hover .find-name, .find-row.ed.on .find-name { color: var(--amber); }
-  .find-none { padding: 9px; font-size: 11.5px; color: var(--faint); }
   .tabs { display: flex; gap: 2px; background: var(--card); border: 1px solid var(--border);
     border-radius: 10px; padding: 3px; flex: none; }
   .tabs .tab { padding: 5px 14px; font-size: 13px; background: transparent; border: none;
@@ -1165,11 +1082,6 @@
   .drawer-head h3 { margin: 0; font-size: 13.5px; }
   .drawer-head .spacer { flex: 1; }
   .drawer-body { flex: 1; overflow-y: auto; padding: 12px 15px; background: var(--bg); }
-  .lib-head { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; }
-  .lib-head h4 { margin: 0; font-size: 12.5px; }
-  .lib-head .spacer { flex: 1; }
-  #lib-drawer .img-grid { margin-top: 8px; }
-  #lib-drawer section + section { margin-top: 20px; }
   /* Danh sách cửa sổ trong drawer */
   .ev { display: flex; gap: 9px; padding: 7px 10px; margin: 5px 0; background: var(--panel);
     border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: var(--r-ctl); }
@@ -1240,10 +1152,6 @@
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5 17.5 10.5"/></symbol>
   <symbol id="i-window" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01"/></symbol>
-  <symbol id="i-library" viewBox="0 0 24 24"><path d="M4 4v16M8 8v12M12 6v14M16 6l4 14"/></symbol>
-  <symbol id="i-speak" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L12 18V6L7.5 9.5z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
-  <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
-  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9.5" r="1.5"/><path d="m20 15.5-4.5-4.5L6 20"/></symbol>
   <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M15.5 3.5a5 5 0 0 0-6.2 6.2L3.9 15a2 2 0 0 0 0 2.8l2.3 2.3a2 2 0 0 0 2.8 0l5.3-5.4a5 5 0 0 0 6.2-6.2l-3 3-2.8-2.8z"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 11l8-6 8 6v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/></symbol>
   <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></symbol>
@@ -1265,9 +1173,6 @@
   <button class="sb-item" data-view="home" onclick="goHome()" title="Home">
     <svg class="ic"><use href="#i-home"/></svg><span class="lbl">Home</span>
     <span id="home-badge" class="sb-badge" hidden title="Things waiting for you"></span></button>
-  <button id="studio-btn" class="sb-item" data-view="studio" onclick="openPage('studio')"
-    title="Make images, sounds and speech, see what you kept">
-    <svg class="ic"><use href="#i-image"/></svg><span class="lbl">Studio</span></button>
   <button id="tools-btn" class="sb-item" data-view="settings" onclick="openPage('settings')" title="Settings">
     <svg class="ic"><use href="#i-settings"/></svg><span class="lbl">Settings</span></button>
   <div class="sb-sec">Workspaces
@@ -1332,137 +1237,8 @@
   <!-- SHELL · panes: 1-2 iframe, mỗi cái là một workspace -->
   <div id="panes" hidden></div>
 
-  <!-- SHELL · Studio / Settings: trang toàn màn như Home, thay cho menu popover + modal cũ.
-       Tab/mục nào đang mở do openPage() trong app.js quyết (data-sub). Mỗi tab/mục giữ id của
-       modal cũ (img-modal, lib-drawer…): check_*.py và chỗ gọi bên ngoài vẫn tìm theo id đó. -->
-  <section id="studio-view" class="page" hidden>
-    <div class="page-wrap">
-      <div class="page-head">
-        <h1>Studio</h1>
-        <div class="tabs" role="tablist" aria-label="Studio tools">
-          <button class="tab" role="tab" data-sub="images" onclick="imgOpen()">Images</button>
-          <button class="tab" role="tab" data-sub="sounds" onclick="sndOpen()"
-            title="Find a video and pull its sound out">Sounds</button>
-          <button class="tab" role="tab" data-sub="speech" onclick="ttsOpen()"
-            title="Turn English text into speech with a natural voice, on this machine">Speech</button>
-          <button class="tab" role="tab" data-sub="library" onclick="libOpen()"
-            title="Images and sounds you have kept">Library<span id="lib-n" class="tab-count"></span></button>
-        </div>
-        <span class="spacer"></span>
-        <span class="page-note">Agents can use everything you keep here.</span>
-      </div>
-
-      <!-- Images: tool generate_image của agy, vẽ bằng tài khoản Google đang login ở agy. -->
-      <div id="img-modal" class="page-sec st-images" data-sub="images" role="tabpanel">
-        <div class="form-card">
-          <label for="img-prompt">Describe the image</label>
-          <textarea id="img-prompt" rows="4"
-            placeholder="e.g. a red apple on a wooden table, soft morning light"></textarea>
-          <label for="img-ratio">Shape</label>
-          <select id="img-ratio">
-            <option value="1:1">Square · 1:1</option>
-            <option value="4:3">Landscape · 4:3</option>
-            <option value="3:2">Landscape · 3:2</option>
-            <option value="16:9">Wide · 16:9</option>
-            <option value="3:4">Portrait · 3:4</option>
-            <option value="2:3">Portrait · 2:3</option>
-            <option value="9:16">Tall · 9:16</option>
-          </select>
-          <label>Reference images · up to 3</label>
-          <div id="img-refs" class="img-refs"></div>
-          <div class="hint">The new image edits, combines or follows these — keep the same character
-            across pictures, or change one detail of an image. Pick them in the gallery with
-            <b>Reference</b>, or add your own.</div>
-          <input id="img-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden
-            onchange="imgUpload(this)">
-          <div class="spawn-actions ai-actions">
-            <button class="secondary" onclick="imgPick()">Add image…</button>
-            <button id="img-go" class="primary" onclick="imgGenerate()">Generate</button>
-          </div>
-          <div id="img-msg" class="form-msg"></div>
-          <div class="hint">Drawn by the Antigravity CLI (<code>agy</code>) on the Google account it is
-            signed in with — no API key, usually in under a minute.</div>
-        </div>
-        <section aria-labelledby="img-recent">
-          <h2 id="img-recent" class="home-h">Recent</h2>
-          <div id="img-grid" class="img-grid"></div>
-        </section>
-      </div>
-
-      <!-- Sounds: tìm video, tách tiếng bằng yt-dlp. -->
-      <div id="snd-modal" class="page-sec page-col form-card" data-sub="sounds" role="tabpanel" hidden>
-        <div class="hint">Find a video, pull its sound out, keep it. Runs <code>yt-dlp</code> and
-          <code>ffmpeg</code> on the machine the orchestrator runs on. Check a sound's licence before
-          you ship it.</div>
-        <div id="snd-status" class="snd-status"></div>
-        <label for="snd-q">What should it sound like?</label>
-        <div class="snd-search">
-          <input id="snd-q" placeholder="e.g. rain on a tin roof, 8-bit victory jingle"
-            onkeydown="if (event.key === 'Enter') sndSearch()">
-          <button id="snd-go" class="primary" onclick="sndSearch()">Search</button>
-        </div>
-        <div class="snd-opts">
-          <label title="Adds &quot;AI generated&quot; to the search"><input type="checkbox"
-            id="snd-ai" checked> AI-generated only</label>
-          <label>Save as <select id="snd-fmt">
-            <option value="mp3">mp3</option><option value="wav">wav</option>
-            <option value="m4a">m4a</option><option value="opus">opus</option>
-            <option value="flac">flac</option></select></label>
-          <label title="Leave out videos longer than this">Up to <select id="snd-len">
-            <option value="5">5 min</option><option value="10">10 min</option>
-            <option value="20">20 min</option><option value="30">30 min</option>
-            <option value="60" selected>60 min</option></select></label>
-        </div>
-        <div id="snd-msg" class="form-msg"></div>
-        <div id="snd-results" class="snd-list"></div>
-        <label>Library</label>
-        <div id="snd-lib" class="snd-list"></div>
-      </div>
-
-      <!-- Đọc thành tiếng (Kokoro, chạy trên máy này). Lần đầu phải tải giọng (350 MB) — nút
-           Download nằm ngay trong tab. -->
-      <div id="tts-modal" class="page-sec page-col form-card" data-sub="speech" role="tabpanel" hidden>
-        <div class="hint">English text to natural speech, made on this machine with Kokoro
-          (Apache-2.0) — nothing is sent anywhere. Speech goes to a temp folder and is cleared when
-          the computer restarts.</div>
-        <div id="tts-status" class="snd-status"></div>
-        <label for="tts-text">What should it say?</label>
-        <textarea id="tts-text" rows="5" maxlength="3000"
-          placeholder="e.g. Could you tell me the way to the station, please?"></textarea>
-        <div class="snd-opts">
-          <label>Voice <select id="tts-voice"></select></label>
-          <label title="Slower is easier to follow when you are learning">Speed <select id="tts-speed">
-            <option value="0.7">slow</option><option value="0.85">a little slow</option>
-            <option value="1" selected>normal</option><option value="1.15">a little fast</option>
-            <option value="1.3">fast</option></select></label>
-        </div>
-        <div class="spawn-actions ai-actions">
-          <button id="tts-go" class="primary" onclick="ttsSpeak()">Speak</button>
-        </div>
-        <div id="tts-msg" class="form-msg"></div>
-        <audio id="tts-audio" controls hidden></audio>
-      </div>
-
-      <!-- Library: mọi thứ người dùng đã giữ lại (ảnh, tiếng) ở một chỗ. -->
-      <div id="lib-drawer" class="page-sec page-col form-card" data-sub="library" role="tabpanel" hidden>
-        <div id="lib-agents" class="hint"></div>
-        <div id="lib-msg" class="form-msg"></div>
-        <section>
-          <div class="lib-head"><h4>Sounds <span id="lib-n-snd" class="hint"></span></h4>
-            <span class="spacer"></span>
-            <button class="secondary" onclick="libPick()"
-              title="Add an mp3 from this computer — you can cut it before it is kept">Upload mp3</button>
-            <input id="lib-file" type="file" accept=".mp3,audio/mpeg" hidden onchange="libUpload(this)"></div>
-          <div id="lib-snd" class="snd-list"></div>
-        </section>
-        <section>
-          <div class="lib-head"><h4>Images <span id="lib-n-img" class="hint"></span></h4></div>
-          <div id="lib-img" class="img-grid"></div>
-        </section>
-      </div>
-    </div>
-  </section>
-
+  <!-- SHELL · Settings: trang toàn màn như Home, thay cho menu popover + modal cũ.
+       Mục nào đang mở do openPage() trong app.js quyết (data-sub). -->
   <section id="settings-view" class="page" hidden>
     <div class="page-wrap">
       <div class="page-head"><h1>Settings</h1></div>
@@ -1587,18 +1363,8 @@
     <!-- Mọi cửa sổ của workspace, một hàng ngang: bấm = nhảy tới card. Nằm NGOÀI #tab-agents vì
          trong đó là flex ngang (canvas + inspector); ở đây nó là một hàng của cột #ws-detail-view. -->
     <div id="win-bar" class="win-bar" hidden>
-      <!-- Ô tìm nằm TRONG markup tĩnh, không do renderWinBar dựng: mỗi lần SSE refresh mà
-           innerHTML dựng lại là chữ đang gõ và dropdown đang mở bay mất. Danh sách chỉ dựng lúc
-           focus/gõ/bấm phím (renderFindPop) nên không bao giờ đổi dưới tay người đang chọn. -->
-      <input id="cv-find" class="mini cv-find" type="search" autocomplete="off"
-        placeholder="Find a card…" oninput="findFilter()" onfocus="findOpen()"
-        onkeydown="findKey(event)" onblur="findClose()"
-        title="Type part of a card's name, then pick it — the canvas centres on that card and selects it">
       <span id="win-chips" class="win-chips"></span>
     </div>
-    <!-- Dropdown của ô tìm. Để NGOÀI #win-bar: thanh đó overflow-x:auto nên popup nằm trong bị
-         cắt cụt ngay dưới mép. position:fixed + toạ độ do findPos() tính từ rect của ô input. -->
-    <div id="cv-find-pop" class="find-pop" hidden onmousedown="findHold(event)"></div>
 
     <div id="tab-agents">
       <div id="canvas" class="canvas">
@@ -1888,34 +1654,6 @@
       <button type="submit" class="primary">Delegate</button>
     </div>
   </form>
-</div>
-
-<!-- Editor của Sounds: bản nháp vừa tách → chọn đoạn giữ lại → mới vào thư viện. KHÔNG đóng khi
-     bấm ra ngoài: một cú click trượt là mất bản nháp phải tách lại. -->
-<div id="sed-modal" class="modal-overlay" hidden>
-  <div class="modal form-card" role="dialog" aria-modal="true" aria-labelledby="sed-title">
-    <h3 id="sed-title"><svg class="ic"><use href="#i-music"/></svg> Edit sound
-      <span class="spacer"></span>
-      <button class="icon-btn" onclick="sedDiscard()" title="Discard">
-        <svg class="ic"><use href="#i-x"/></svg></button></h3>
-    <div id="sed-name" class="hint"></div>
-    <canvas id="sed-wave" aria-label="Sound wave — drag across it to pick the part to keep"></canvas>
-    <div class="sed-row">
-      <button id="sed-play" class="secondary" onclick="sedPlay()">Play selection</button>
-      <label>Start <input id="sed-start" inputmode="decimal" onchange="sedTyped()"></label>
-      <label>End <input id="sed-end" inputmode="decimal" onchange="sedTyped()"></label>
-      <span id="sed-len" class="hint"></span>
-      <button class="secondary" onclick="sedAll()">Select all</button>
-    </div>
-    <div class="hint">Drag across the wave to pick the part to keep, or drag its edges. Start and
-      End take seconds or m:ss.</div>
-    <div id="sed-msg" class="form-msg"></div>
-    <div class="spawn-actions ai-actions">
-      <button class="secondary" onclick="sedDiscard()">Discard</button>
-      <button id="sed-save" class="primary" onclick="sedSave()">Save to library</button>
-    </div>
-    <audio id="sed-audio" preload="auto"></audio>
-  </div>
 </div>
 
 <!-- Command palette. Bấm nền ĐÓNG được (khác New agent): ở đây không có chữ nào để mất. -->
