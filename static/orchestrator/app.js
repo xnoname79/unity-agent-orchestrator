@@ -524,9 +524,13 @@ let HOME = { sessions: [], signals: [], subtasks: [] };
 function homeInbox() {
   return [
     ...waitingApproval(HOME.signals).map((sg) => ({ ws: sg.workspace_id, sg })),
-    ...HOME.subtasks.filter((t) => t.status === "failed" && !t.discarded).map((t) => ({ ws: t.workspace_id, t })),
+    ...HOME.subtasks.filter((t) => !t.discarded && (t.status === "failed"
+      || (t.rechecking && (t.status === "fixing" || t.status === "verifying")))).map((t) => ({ ws: t.workspace_id, t })),
   ];
 }
+
+const inboxTitle = (t) => t.status !== "failed" ? "Rechecking sub-agent"
+  : t.kind === "reflect" ? "Reflect failed" : "Sub-agent failed";
 
 const nameOf = (ref) => (HOME.sessions.find((x) => x.id === ref || x.name === ref) || {}).name || ref || "you";
 
@@ -541,11 +545,14 @@ function renderInbox() {
       <div class="inbox-acts">
         <button class="secondary" onclick="act('/api/signals/${sg.id}/deny')">Deny</button>
         <button class="attn-ok" onclick="act('/api/signals/${sg.id}/approve')">Approve</button></div></div>`;
-    return `<div class="inbox-item fail">${ic("x")}
-      <div class="inbox-txt"><div class="inbox-t">Sub-agent failed</div>
+    const failed = t.status === "failed";
+    return `<div class="inbox-item${failed ? " fail" : ""}">${ic(failed ? "x" : "refresh")}
+      <div class="inbox-txt"><div class="inbox-t">${inboxTitle(t)}</div>
         <div class="inbox-d"><span class="inbox-msg" title="${esc(t.reason)}">“${esc(t.title || t.id)}”${
           t.reason ? " — " + esc(t.reason) : ""}</span>${meta}</div></div>
-      <div class="inbox-acts"><button class="secondary" onclick="openTeam('${esc(ws)}')">Open in Team</button></div></div>`;
+      <div class="inbox-acts">${t.kind === "reflect" ? "" : `<button class="secondary" onclick="openTeam('${esc(ws)}')">Open in Team</button>`}${
+        // Có worktree thì discard xoá cả nhánh: việc đó chỉ làm từ card, nơi có Diff để xem trước.
+        failed && !t.worktree ? `<button class="secondary" onclick="act('/api/team/subtasks/${esc(t.id)}/discard')">Dismiss</button>` : ""}</div></div>`;
   }).join("") || `<div class="inbox-calm">Nothing needs you right now.</div>`;
 
   const n = items.length;
@@ -882,7 +889,8 @@ function palItems() {
   const need = homeInbox().map(({ ws, sg, t }) => sg
     ? { g: "Needs you", icon: "bell", lead: "need", label: `Approve ${nameOf(sg.from_session)} → ${nameOf(sg.to_session)}`,
         sub: sg.message, side: wsLabel(ws), run: () => act(`/api/signals/${sg.id}/approve`) }
-    : { g: "Needs you", icon: "x", lead: "fail", label: `Sub-agent failed: ${t.title || t.id}`,
+    : { g: "Needs you", icon: t.status === "failed" ? "x" : "refresh", lead: t.status === "failed" ? "fail" : "need",
+        label: `${inboxTitle(t)}: ${t.title || t.id}`,
         sub: t.reason || "", side: wsLabel(ws), run: () => openTeam(ws) });
   const agents = HOME.sessions.map((s) => ({ g: "Agents", dot: s.status === "running" ? "run" : "",
     label: s.name, sub: s.status, side: wsLabel(s.workspace_id), run: () => palFocusAgent(s) }));
@@ -2770,9 +2778,10 @@ function cvInit() {
   };
   cv.addEventListener("pointerup", up);
   cv.addEventListener("pointercancel", up);
-  // Double-click tay nắm → bỏ size tùy chỉnh, về mặc định của CSS.
+  // Double-click tay nắm → bỏ size tùy chỉnh, về mặc định của CSS. Không dùng e.target:
+  // setPointerCapture ở pointerdown retarget dblclick về canvas (đã đo trên Chrome).
   cv.addEventListener("dblclick", (e) => {
-    const rz = e.target.closest(".rz");
+    const rz = document.elementFromPoint(e.clientX, e.clientY)?.closest(".rz");
     if (!rz) return;
     const el = rz.closest(".node");
     const pos = cvLoad().pos || {};

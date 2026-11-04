@@ -111,6 +111,7 @@ def migrate(conn):
             run_key TEXT NOT NULL DEFAULT '',         -- khoá của phiên đang được phép nộp phán quyết/đề xuất
             guard TEXT NOT NULL DEFAULT '',           -- ảnh chụp git status trước một lượt CHỈ ĐỌC
             max_attempts INTEGER NOT NULL DEFAULT 0,  -- 0 = MAX_ATTEMPTS; "kiểm lại" đặt = attempts+1
+            rechecking INTEGER NOT NULL DEFAULT 0,    -- 1 = đang "kiểm lại" một việc đã failed: vẫn nằm trong inbox
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             ended_at TEXT NOT NULL DEFAULT ''
@@ -152,7 +153,8 @@ def migrate(conn):
     """)
     tcols = [r[1] for r in conn.execute("PRAGMA table_info(subtasks)").fetchall()]
     for col, ddl in (("run_key", "TEXT NOT NULL DEFAULT ''"), ("guard", "TEXT NOT NULL DEFAULT ''"),
-                     ("max_attempts", "INTEGER NOT NULL DEFAULT 0")):
+                     ("max_attempts", "INTEGER NOT NULL DEFAULT 0"),
+                     ("rechecking", "INTEGER NOT NULL DEFAULT 0")):
         if col not in tcols:
             conn.execute(f"ALTER TABLE subtasks ADD COLUMN {col} {ddl}")
     scols = [r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
@@ -304,17 +306,18 @@ def _worktrees_root():
     return _so().DB_DIR / "worktrees"
 
 
-def _exclude_team_skills(repo):
-    """SKILL của phiên đội (thư mục sub-*) không được lọt vào commit: ghi vào info/exclude CHUNG
-    của repo (worktree dùng chung file này), không đụng .gitignore của người dùng."""
-    rc, common = _git(["rev-parse", "--git-common-dir"], repo)
+def _exclude_team_skills(cwd):
+    """SKILL của phiên đội (thư mục sub-*) không được lọt vào commit hay git status: ghi vào
+    info/exclude CHUNG của repo (worktree dùng chung file này), không đụng .gitignore của người
+    dùng. cwd = bất kỳ thư mục nào trong repo. **/ vì director có thể ở thư mục con của repo."""
+    rc, common = _git(["rev-parse", "--git-common-dir"], cwd)
     if rc != 0:
         return
     p = Path(common.strip())
     if not p.is_absolute():
-        p = Path(repo) / p
+        p = Path(cwd) / p
     f = p / "info" / "exclude"
-    lines = [f"{r}/skills/sub-*/" for r in _so().CLI_SKILL_ROOTS]
+    lines = [f"**/{r}/skills/sub-*/" for r in _so().CLI_SKILL_ROOTS]
     try:
         f.parent.mkdir(parents=True, exist_ok=True)
         have = f.read_text(encoding="utf-8") if f.exists() else ""
@@ -340,7 +343,6 @@ def make_worktree(repo, st_id):
     if rc != 0:
         print(f"[team] worktree for {st_id} failed: {out.strip()[:300]}", flush=True)
         return "", "", ""
-    _exclude_team_skills(repo)
     return str(path), branch, base
 
 
@@ -617,6 +619,8 @@ def spawn_subagent(director_id, playbook, brief, done_when, title="", model=""):
 async def _spawn_session(name, cwd, playbook, model, director, workspace_id, repo):
     """Dựng một phiên đội. Trả (session, err)."""
     so = _so()
+    # Theo cwd, không theo repo: subtask handoff không lưu repo mà verifier của nó vẫn chạy ở đây.
+    await asyncio.to_thread(_exclude_team_skills, cwd)
     eng = so.engine_from_model(model)
     res = await so.engine_for(eng).spawn(
         name, cwd=cwd, skill=playbook_text(playbook, repo), model=model,
@@ -649,8 +653,6 @@ async def _start_subagent(st_id):
                              "nothing was run in your checkout")
         cwd = wt
         fields.update(worktree=wt, branch=branch, base_sha=base, head_sha=base)
-    elif repo:
-        await asyncio.to_thread(_exclude_team_skills, repo)
     if not write:
         fields["guard"] = await asyncio.to_thread(snapshot, cwd)
     model = st["model"] or resolve_model(st["workspace_id"], PLAYBOOKS[st["playbook"]][0], director)
@@ -944,7 +946,7 @@ async def reverify(st_id):
     # Một lần kiểm thêm: hạn mức = số lần đã trượt + 1, số lần trượt THẬT giữ nguyên trong thông báo.
     # Chuyển trạng thái NGAY (có _from) để bấm hai lần không đẻ hai verifier.
     if _update(st_id, _from=("failed", "passed"), status="fixing", ended_at="", reason="",
-               max_attempts=st["attempts"] + 1) is None:
+               max_attempts=st["attempts"] + 1, rechecking=int(st["status"] == "failed")) is None:
         return {"error": "it is already being handled"}
     if st["worktree"]:
         sha = await asyncio.to_thread(commit_leftovers, st["worktree"],
@@ -1284,8 +1286,8 @@ def _items(subs, sessions):
             **{k: st[k] for k in ("id", "director_id", "session_id", "verifier_id", "kind",
                                   "playbook", "title", "brief", "done_when", "model", "status",
                                   "attempts", "branch", "worktree", "head_sha", "base_sha", "reason",
-                                  "report", "target", "discarded", "created_at", "updated_at",
-                                  "ended_at")},
+                                  "report", "target", "discarded", "rechecking", "created_at",
+                                  "updated_at", "ended_at")},
             "verdict": v, "session_name": (sessions.get(st["session_id"]) or {}).get("name", ""),
             "verifier_name": (sessions.get(st["verifier_id"]) or {}).get("name", ""),
             "director_name": (sessions.get(st["director_id"]) or {}).get("name", ""),

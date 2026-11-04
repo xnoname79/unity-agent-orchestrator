@@ -91,6 +91,7 @@ so.register_session("peer-2", "other", cwd=str(REPO), model="", workspace_id=WS)
 # ── Scripted fake CLIs ───────────────────────────────────────────────────────
 # Each verifier session looks up what to do from VERIFY_PLAN[subtask] (one entry per attempt).
 VERIFY_PLAN, BUILD_PLAN, SEEN = {}, {}, []
+REFLECT_PLAN, DURING = {}, {}     # what a reflection does; each team session's view of git mid-run
 
 
 def _key_in(prompt):
@@ -112,6 +113,8 @@ async def fake_run(session, prompt, on_event=None, dry_run=False):
     if TMP.resolve() not in cwd.resolve().parents:     # both resolved: Windows temp is 8.3-short
         return {"ok": False, "result": f"refusing to write outside the check's temp folder: {cwd}",
                 "session_id": session["id"], "tokens": 0, "raw": {}}
+    DURING[name] = ((cwd / ".claude" / "skills" / name / "SKILL.md").exists(),
+                    git("status", "--porcelain", "--untracked-files=all", cwd=cwd))
     if "[SUB-AGENT TASK " in prompt or "[VERIFIER FINDINGS " in prompt:
         st = _st_in(prompt, "SUB-AGENT TASK") or _st_in(prompt, "VERIFIER FINDINGS")
         step = BUILD_PLAN.get(st, ["commit"])
@@ -141,6 +144,11 @@ async def fake_run(session, prompt, on_event=None, dry_run=False):
         return {"ok": True, "result": "verified", "session_id": session["id"], "tokens": 3, "raw": {}}
     if "[REFLECT " in prompt:
         st = _st_in(prompt, "REFLECT")
+        act = REFLECT_PLAN.get(st, "propose")
+        if act == "edit":
+            (cwd / "app.py").write_text("edited = True\n", encoding="utf-8")
+        if act != "propose":
+            return {"ok": True, "result": "no proposal", "session_id": session["id"], "tokens": 2, "raw": {}}
         res = team.propose_skill_change(name, st, PROPOSAL_TEXT, "pattern → sharper rule",
                                         key=_key_in(prompt))
         SEEN.append(("reflect-result", res))
@@ -513,6 +521,127 @@ async def main():
     check("Verify again runs one extra check and keeps the real failure count",
           r1.get("ok") and st["status"] == "passed" and st["attempts"] == before, f"{st['status']} {st['attempts']}")
     check("clicking Verify again twice does not start two verifiers", "error" in r2, str(r2))
+
+    # ── A team session's own SKILL is not "a change" ─────────────────────────
+    # Every case gets a BRAND-NEW repo: the exclude is per repo, so a case sharing one passes on
+    # the strength of whichever case wrote the exclude first.
+    def fresh(label, sub=""):
+        repo = TMP / f"fresh-{label}"
+        (repo / "pkg").mkdir(parents=True)
+        git("init", "-q", "-b", "main", cwd=repo)
+        git("config", "user.email", "dev@example.com", cwd=repo)
+        git("config", "user.name", "Dev", cwd=repo)
+        (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+        (repo / "pkg" / "mod.py").write_text("y = 2\n", encoding="utf-8")
+        git("add", "-A", cwd=repo)
+        git("commit", "-q", "-m", "init", cwd=repo)
+        so.register_session(f"dir-{label}", f"lead-{label}", cwd=str(repo / sub), model="", workspace_id=WS)
+        return repo, f"dir-{label}"
+
+    def hidden(st, role_of="session_id"):
+        """The SKILL really was on disk during the run, and git status did not show it."""
+        on_disk, status = DURING.get(session_of(st[role_of]).get("name"), (False, "?"))
+        return on_disk and "sub-" not in status
+
+    def excluded(repo):
+        lines = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines()
+        return all(f"**/{r}/skills/sub-*/" in lines for r in so.CLI_SKILL_ROOTS)
+
+    repo, d = fresh("reflect")
+    rid = team.start_reflect("playbook:feature", d)["id"]
+    await drain()
+    st = team.get_subtask(rid)
+    check("Reflect in a brand-new repo does not fail on its own SKILL",
+          st["status"] == "passed" and hidden(st) and excluded(repo) and not (repo / ".gitignore").exists(),
+          f"{st['status']} {st['reason']}")
+
+    repo, d = fresh("reflect-sub", "pkg")
+    rid = team.start_reflect("playbook:feature", d)["id"]
+    await drain()
+    st = team.get_subtask(rid)
+    check("Reflect for a director in a SUBFOLDER of a brand-new repo does not fail on its own SKILL",
+          st["status"] == "passed" and hidden(st), f"{st['status']} {st['reason']}")
+
+    repo, d = fresh("investigate")
+    r = team.spawn_subagent(d, "investigate", "look only", "names a file")
+    BUILD_PLAN[r["id"]] = ["read"]
+    await drain()
+    st = team.get_subtask(r["id"])
+    check("investigate as a repo's first run, its verifier included, is not failed on a SKILL",
+          st["status"] == "passed" and st["attempts"] == 0 and hidden(st) and hidden(st, "verifier_id")
+          and excluded(repo), f"{st['status']} {st['attempts']} {st['reason']}")
+
+    repo, d = fresh("investigate-sub", "pkg")
+    r = team.spawn_subagent(d, "investigate", "look only", "names a file")
+    BUILD_PLAN[r["id"]] = ["read"]
+    await drain()
+    st = team.get_subtask(r["id"])
+    check("investigate as the first run of a subfolder director is not failed on a SKILL",
+          st["status"] == "passed" and st["attempts"] == 0 and hidden(st), f"{st['status']} {st['reason']}")
+
+    repo, d = fresh("handoff")
+    so.register_session("peer-handoff", "peer-handoff", cwd=str(repo), model="", workspace_id=WS)
+    ok, data = await signal_mcp._enqueue("peer-handoff", "tidy notes", "lead-handoff", done_when="tidy")
+    hid = team._row("SELECT id FROM subtasks WHERE signal_id = ?", (data["id"],))["id"]
+    VERIFY_PLAN[hid] = ["PASS"]
+    await drain()
+    st = team.get_subtask(hid)
+    check("a handoff's verifier (no worktree, no repo on the row) keeps its PASS in a brand-new repo",
+          ok and st["status"] == "passed" and st["attempts"] == 0 and hidden(st, "verifier_id"),
+          f"{st['status']} {st['attempts']} {st['reason']}")
+
+    repo, d = fresh("reflect-edit")
+    rid = team.start_reflect("playbook:feature", d)["id"]
+    REFLECT_PLAN[rid] = "edit"
+    await drain()
+    st = team.get_subtask(rid)
+    check("a read-only run that really edits a file fails, naming that file and only that file",
+          st["status"] == "failed" and "read-only" in st["reason"] and "app.py" in st["reason"]
+          and "skills/sub-" not in st["reason"], f"{st['status']} {st['reason']}")
+
+    repo, d = fresh("reflect-dismiss")
+    rid = team.start_reflect("playbook:feature", d)["id"]
+    REFLECT_PLAN[rid] = "silent"
+    await drain()
+    st = team.get_subtask(rid)
+    res = team.discard(rid)
+    gone = team.get_subtask(rid)
+    check("a Reflect that proposes nothing fails for that reason, and discard clears the row harmlessly",
+          st["reason"] == "no change was proposed" and not st["worktree"] and res.get("ok")
+          and gone["discarded"] == 1 and (repo / "app.py").exists() and not team.is_dirty(str(repo)),
+          f"{st['reason']} {res}")
+
+    # ── Verify again keeps a failed row in the inbox; a passed one stays out ──
+    r = team.spawn_subagent("dir-1", "feature", "x", "y", title="recheck")
+    rc = r["id"]
+    BUILD_PLAN[rc] = ["crash"]
+    await drain()
+    await team.reverify(rc)
+    item = next(x for x in team.overview(WS)["subtasks"] if x["id"] == rc)
+    check("Verify again on a FAILED card marks it rechecking, and the dashboard can see that",
+          item["status"] in ("fixing", "verifying") and item.get("rechecking") == 1, str(item.get("rechecking")))
+    VERIFY_PLAN[rc] = ["PASS"]
+    await drain()
+    st = team.get_subtask(rc)
+    await team.reverify(rc)
+    check("Verify again on a PASSED card does not", st["status"] == "passed"
+          and team.get_subtask(rc).get("rechecking") == 0, str(team.get_subtask(rc).get("rechecking")))
+    await drain()
+
+    conn = so._conn()
+    cols = [c[1] for c in conn.execute("PRAGMA table_info(subtasks)")]
+    n = conn.execute("SELECT COUNT(*) FROM subtasks").fetchone()[0]
+    if "rechecking" in cols:
+        conn.execute("ALTER TABLE subtasks DROP COLUMN rechecking")
+        conn.commit()
+    conn.close()
+    so.init_db()
+    conn = so._conn()
+    now_cols = [c[1] for c in conn.execute("PRAGMA table_info(subtasks)")]
+    kept = conn.execute("SELECT COUNT(*) FROM subtasks").fetchone()[0]
+    conn.close()
+    check("a database from before the rechecking column gets it, and keeps its rows",
+          "rechecking" in cols and "rechecking" in now_cols and kept == n, str(now_cols))
 
     # ── Decisions, overview, API ─────────────────────────────────────────────
     res = await signal_mcp.record_decision(from_role="lead", decision="split into two units",

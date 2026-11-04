@@ -302,6 +302,31 @@ if "if (view && !SUBS[view]) { ACTIVE = -1; shellSave(); }" not in JS:
 check("the find box and Studio stay gone", gaps,
       "both were removed on purpose; plugins will bring such features back, not leftovers")
 
+# 18 · Double-click tay nắm: setPointerCapture ở pointerdown retarget dblclick về canvas (đã đo trên
+# Chrome), nên e.target.closest(".rz") luôn null và tooltip "double-click to reset" thành nói dối.
+gaps = set()
+dbl = JS[JS.index('cv.addEventListener("dblclick"'):][:300]
+if "e.target" in dbl:
+    gaps.add("the dblclick handler must not rely on e.target")
+if "document.elementFromPoint(e.clientX, e.clientY)" not in dbl:
+    gaps.add("the dblclick handler must find the handle with elementFromPoint")
+check("double-clicking a resize handle finds the handle under the pointer", gaps,
+      "pointer capture sends the dblclick to the canvas")
+
+# 19 · Dismiss gọi route discard, mà có worktree thì discard xoá luôn nhánh: chỉ hàng không có worktree
+# mới được có nút này. Hàng đang kiểm lại nằm chung homeInbox: một nguồn cho danh sách, badge, nhãn card.
+gaps = set()
+row = re.search(r"(.{0,80})<button[^>]*/discard'\)\">Dismiss</button>", JS)
+if not row or "!t.worktree" not in row.group(1):
+    gaps.add("the Home row's Dismiss must be guarded by !t.worktree")
+inbox = JS[JS.index("function homeInbox()"):][:400]
+if "t.rechecking" not in inbox:
+    gaps.add("homeInbox must keep a row that is being rechecked")
+if '"Rechecking sub-agent"' not in JS or '"Reflect failed"' not in JS:
+    gaps.add("the row titles Rechecking sub-agent and Reflect failed")
+check("Home offers Dismiss only with no worktree, and keeps a row during a recheck", gaps,
+      "Discard on a worktree row deletes a branch; a row vanishing mid-check looks solved")
+
 if fails:
     print("\n" + "\n\n".join(fails))
     sys.exit(1)

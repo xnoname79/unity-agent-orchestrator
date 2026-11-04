@@ -207,7 +207,7 @@ loginctl enable-linger "$USER"     # start at boot, not only when you log in</co
     <tr><td>A sub-agent card says <span class="ui">no worktree</span></td><td>The director's folder is not a git repository, so the sub-agent shared it. Run <code>git init</code> and make a first commit, or point the director at a repository.</td></tr>
     <tr><td>A message sits there and nothing runs</td><td>Check whether the agent is paused, the workspace is suspended, or it is waiting for approval. See <a href="control.html#stop">how to stop things</a>.</td></tr>
     <tr><td>A message shows <code>blocked</code></td><td>A run or token limit was reached. Press <span class="ui">Allow +</span> in the agent's panel if it is the daily limit, or raise the limit in <code>.env</code>.</td></tr>
-    <tr><td>Reflect fails with <code>a read-only sub-agent changed files</code></td><td>This can happen in a repository where no sub-agent has run yet, because Reflect's own helper file counts as a change. Run any sub-agent once in that repository, then try again.</td></tr>
+    <tr><td>Reflect fails with <code>a read-only sub-agent changed files</code></td><td>The read-only agent really changed files. Nothing was undone. Check them with <code>git status</code>.</td></tr>
     <tr><td>The computer feels slow</td><td>Open <a href="#performance">Performance</a>. It names what is using the machine.</td></tr>
   </tbody>
 </table></div>
