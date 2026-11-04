@@ -74,6 +74,15 @@ A pass means the verifier observed `done_when` at a specific commit. Before merg
 3. A failed sub-agent means the brief, the `done_when` or the split was wrong. Fix that before
    spawning again — do not resend the same brief.
 
+## Releases and docs
+
+- When you merge a change a user would notice, add a short bullet to `<section id="unreleased">`
+  in `documentation/changelog.html` (New / Changed / Removed / Fixed), and update the guide page
+  it affects.
+- To release: rename that section to the tag (`id="vYYYY.MM.DD"`, heading with version and date),
+  commit, and start a new `unreleased` section with the next change. CI refuses a tag with no
+  section (`check_docs.py`). Tag and push only when the user asks.
+
 ## Talking to the user
 
 Report outcomes with evidence: what changed, how it was proven, what is still open. Say plainly
