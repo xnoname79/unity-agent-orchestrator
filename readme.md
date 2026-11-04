@@ -9,7 +9,7 @@ done until an independent verifier has seen it work.
 It drives the Claude Code and Antigravity (Gemini) CLIs you already have, so each provider keeps
 its own login and subscription.
 
-![Workspace canvas: the director, its agents, and what waits on you](images/screenshot-canvas.png)
+![Workspace canvas: the director, its agents, and what waits on you](documentation/images/canvas.png)
 
 [Download](../../releases) · [Report a bug](../../issues/new) · [Documentation](https://xnoname79.github.io/unity-agent-orchestrator/)
 
@@ -44,7 +44,7 @@ its own login and subscription.
   **Reflect**, which turns failed runs into a playbook change you approve.
 - Sub-agents run on Claude; Gemini only when you pick it for a role in the Team tab.
 
-![Team tab: sub-agents by stage and the director's decisions](images/screenshot-team.png)
+![Team tab: sub-agents by stage and the director's decisions](documentation/images/team.png)
 
 **Staying in control**
 - **Home** inbox: every message waiting for approval, every question and every failed check
@@ -52,7 +52,7 @@ its own login and subscription.
 - **Activity**: one timeline of messages and runs, with live transcripts.
 - **Ctrl/⌘K**: jump to any agent or workspace, or run any action.
 
-![Home: what needs you and what is running](images/screenshot-home.png)
+![Home: what needs you and what is running](documentation/images/home.png)
 
 ## Setup
 
