@@ -277,6 +277,14 @@ if 'id="pal-btn"' not in HTML or 'onclick="palOpen()"' not in HTML:
 check("Ctrl+K opens the palette from anywhere, even a terminal", gaps,
       "xterm swallows keys, so the pane has to catch Ctrl+K before it and hand it to the shell")
 
+# 16 · Chip trên thanh cửa sổ đưa canvas tới card; tính năng ghim cửa sổ đã bỏ hẳn. Regex chỉ bắt tên
+# của tính năng đó: ghim HỘI THOẠI (resume_id, biến `pinned` trong danh sách phiên) dùng chữ khác.
+gaps = set(re.findall(r'pinWindow|unpinWindow|applyPin|pinnedNid|rzw|\.pinned\b|"pinned"', JS + HTML))
+if not re.search(r'''class="win-chip[^>]*onclick="focusNode\('\$\{esc\(w\.nid\)\}'\)"''', JS):
+    gaps.add("the window-bar chip's onclick must be focusNode(w.nid)")
+check("window chips jump to the card, window pinning stays gone", gaps,
+      "a chip goes through focusNode like the find box; no second navigation or pin state")
+
 if fails:
     print("\n" + "\n\n".join(fails))
     sys.exit(1)
