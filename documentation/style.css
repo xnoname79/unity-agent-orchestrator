@@ -167,7 +167,8 @@ pre code { padding: 0; background: none; box-shadow: none; color: inherit; font-
 .copy-btn:hover { background: rgb(82,82,91); }
 .copy-btn:focus-visible { border-radius: 9999px; outline-color: #fff; }
 .code:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
-@media (pointer: coarse) { .copy-btn { opacity: 1; } }
+/* Touch has no hover, so the button stays visible: start the code below it so it never covers a line. */
+@media (pointer: coarse) { .copy-btn { opacity: 1; } .code pre { padding-top: 44px; } }
 
 figure { margin-top: 32px; margin-bottom: 32px; }
 figure img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 16px; }
@@ -246,7 +247,7 @@ h2.ruled { padding-bottom: 16px; border-bottom: 1px solid var(--line); margin-bo
 .pager a:hover .pager-label { color: var(--head); }
 .pager a[rel="prev"] .pager-label::before { content: "\2190\00a0" / ""; }
 .pager a[rel="next"] .pager-label::after { content: "\00a0\2192" / ""; }
-.site-foot { max-width: 864px; margin: 48px 32px 0; padding: 24px 0 40px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; line-height: 24px; }
+.site-foot { max-width: 800px; margin: 48px 32px 0; padding: 24px 0 40px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; line-height: 24px; }
 
 /* Search */
 .search { width: min(640px, calc(100vw - 32px)); max-height: 70vh; margin: 10vh auto auto; padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--bg); color: var(--text); }
