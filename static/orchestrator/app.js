@@ -1103,89 +1103,10 @@ function cvSave(patch) {
 function applyView() {
   $("world").style.transform = `translate(${CV.tx}px, ${CV.ty}px) scale(${CV.k})`;
   $("cv-zoom").textContent = Math.round(CV.k * 100) + "%";
-  applyPin();       // node ghim tự bù transform vừa đặt → đứng yên trên màn hình
   redrawMinimap();
 }
 
-// ── Ghim một cửa sổ vào mép trái ────────────────────────────────────────────
-// Node ghim vẫn nằm TRONG #world. Bứng nó sang cha khác (một lớp overlay không transform) là
-// cách hiển nhiên, nhưng node ghim phải giữ nguyên cha để không mất trạng thái đang gõ dở.
-// Và position:fixed bên trong #world vô dụng: ancestor có transform là containing block của
-// mọi con fixed. Nên cách duy nhất vừa giữ nguyên cha vừa đứng yên là TỰ BÙ world:
-//   left/top   = (PAD − CV.t) / CV.k   → sau khi world dịch+phóng thì rơi đúng góc trên trái
-//   scale(1/k) → nội dung về 1:1, không teo/phình theo mức zoom (nếu chỉ chia w/h cho k thì
-//                khung đúng cỡ nhưng terminal đổi số cột và chữ VS Code bé lại)
-let pinnedNid = null;
-const PIN_PAD = 10;
-let pinSize = "";   // "w×h" của lần áp gần nhất — chỉ fit lại terminal khi số này đổi
-let pinResizing = false;   // đang kéo bề ngang → hoãn fit xterm tới lúc thả
-
-function pinnedEl() {
-  if (!pinnedNid) return null;
-  return $("world").querySelector(`.node[data-nid="${CSS.escape(pinnedNid)}"]`);
-}
-
-// Bề ngang của card ghim: đã kéo thì dùng số đã lưu, chưa thì 55% canvas (trần 760). Luôn kẹp
-// lại theo canvas hiện tại — cửa sổ thu nhỏ mà giữ nguyên 900px là panel tràn ra ngoài.
-function pinWidth(nid, cv) {
-  const saved = ((cvLoad().pos || {})[nid] || {}).pw;
-  const max = Math.max(PIN_W_MIN, cv.clientWidth - PIN_PAD * 2);
-  if (saved) return Math.round(Math.min(max, Math.max(PIN_W_MIN, saved)));
-  return Math.round(Math.min(760, max, Math.max(PIN_W_MIN, cv.clientWidth * 0.55)));
-}
-
-function applyPin() {
-  const cv = $("canvas"), el = pinnedEl();
-  if (!el || !cv) return;
-  // Bề ngang do người dùng kéo, lưu ở pos[nid].pw — KHÁC khoá với w/h của .rz. Chung khoá thì
-  // kích thước lúc ghim đè lên kích thước lúc thả tự do, và bỏ ghim ra là card sai cỡ.
-  const w = pinWidth(el.dataset.nid, cv);
-  const h = Math.max(160, cv.clientHeight - PIN_PAD * 2);
-  el.classList.add("pinned", "sized");
-  el.style.left = ((PIN_PAD - CV.tx) / CV.k) + "px";
-  el.style.top = ((PIN_PAD - CV.ty) / CV.k) + "px";
-  el.style.transform = `scale(${1 / CV.k})`;
-  el.style.width = w + "px";
-  el.style.height = h + "px";
-  // Pan/zoom KHÔNG đổi cỡ trên màn hình, nên đừng fit xterm mỗi khung hình khi đang kéo.
-  const size = w + "x" + h;
-  if (size !== pinSize) {
-    pinSize = size;
-    if (!pinResizing) requestAnimationFrame(() => refitNode(el));
-  }
-}
-
-function pinWindow(nid) {
-  if (pinnedNid === nid) return unpinWindow();
-  unpinWindow(true);          // trả cái đang ghim về chỗ cũ; store để pin mới ghi đè
-  pinnedNid = nid;
-  cvSave({ pin: nid });
-  applyView();
-  layoutZones(); redrawEdges(); renderWinBar();
-}
-window.pinWindow = pinWindow;
-
-// Bỏ ghim: trả node về đúng vị trí/kích thước đã lưu trong pos[nid] (applyPin chỉ ghi style
-// nội tuyến, không đụng store — nên không có gì phải khôi phục ngoài việc áp lại pos).
-function unpinWindow(keep) {
-  const el = pinnedEl();
-  pinnedNid = null;
-  pinSize = "";
-  if (!keep) cvSave({ pin: null });
-  if (el) {
-    el.classList.remove("pinned");
-    el.style.transform = "";
-    const p = (cvLoad().pos || {})[el.dataset.nid] || {};
-    el.style.left = (p.x || 0) + "px";
-    el.style.top = (p.y || 0) + "px";
-    applySize(el, p);
-    refitNode(el);
-  }
-  layoutZones(); redrawEdges(); renderWinBar();
-}
-
-// Mọi "cửa sổ" của workspace này: card 👑 (terminal nhúng) + card VS Code đang mở.
-// Card agent thường không có gì để ghim — nội dung là vài dòng meta.
+// Mọi "cửa sổ" của workspace này: terminal của từng session + card editor/thư mục đang mở.
 // Xếp theo NHÓM: terminal của session rồi ngay sau là editor của chính nó. Trước đây gom hết
 // terminal trước, editor dồn xuống cuối — cùng một session mà hai chip nằm hai đầu thanh, đọc
 // tên trùng nhau xong vẫn phải quét cả thanh mới thấy cái còn lại.
@@ -1207,8 +1128,8 @@ function winList() {
   return out;
 }
 
-// Thanh cửa sổ: mọi card ghim được của workspace nằm ngang ngay dưới topbar, bấm phát là
-// ghim/bỏ ghim. Tab History không có canvas để ghim vào → ẩn thanh. Workspace chưa có cửa sổ nào
+// Thanh cửa sổ: mọi cửa sổ của workspace nằm ngang ngay dưới topbar, bấm chip là canvas nhảy tới
+// card đó. Tab History không có canvas → ẩn thanh. Workspace chưa có cửa sổ nào
 // thì VẪN hiện, kèm câu chỉ đường: ẩn sạch thì người dùng tưởng tính năng biến mất (nút Windows
 // cũ luôn nằm đó, dù đếm 0).
 function renderWinBar() {
@@ -1218,17 +1139,16 @@ function renderWinBar() {
   bar.hidden = $("tab-agents").hidden;
   if (!list.length) {
     chips.innerHTML = `<span class="win-sep"></span><span class="win-empty">No windows yet — spawn an
-      agent (${ic("terminal", "sm")}) or open an editor, then pin it here.</span>`;
+      agent (${ic("terminal", "sm")}) or open an editor, and it shows up here.</span>`;
     return;
   }
   // Vạch ngăn trước mỗi nhóm (trừ nhóm đầu, đã có vạch tách khỏi nhãn bar): trong nhóm các chip
   // dính nhau, giữa hai nhóm có đường kẻ — nhìn phát biết chip nào đi với chip nào.
   chips.innerHTML = `<span class="win-sep"></span>` + list.map((w, i) =>
     (w.head && i ? `<span class="win-sep"></span>` : "") +
-    `<button class="win-chip${w.ed ? " ed" : ""}${w.nid === pinnedNid ? " on" : ""}"
-      onclick="pinWindow('${esc(w.nid)}')"
-      title="${esc(w.kind)}${w.sub ? " · " + esc(w.sub) : ""} — pin it to the left edge at full
-        height (it stays put while you pan and zoom); click again to send it back">
+    `<button class="win-chip${w.ed ? " ed" : ""}"
+      onclick="focusNode('${esc(w.nid)}')"
+      title="${esc(w.kind)}${w.sub ? " · " + esc(w.sub) : ""} — jump to this card">
       ${w.icon}<span>${esc(w.name)}</span></button>`).join("");
 }
 window.renderWinBar = renderWinBar;
@@ -1323,15 +1243,11 @@ function focusNode(nid) {
   const el = $("world").querySelector(`.node[data-nid="${nid}"]`);
   if (!el) return;
   if (nid.startsWith("s:")) selectNode(nid.slice(2));
-  // Node ghim đứng sẵn ở mép trái màn hình rồi; left/top của nó là kết quả bù transform nên
-  // lấy làm tâm sẽ ném khung nhìn đi đâu không biết.
-  if (nid !== pinnedNid) {
-    const cv = $("canvas");
-    const x = parseFloat(el.style.left) || 0, y = parseFloat(el.style.top) || 0;
-    CV.tx = cv.clientWidth / 2 - (x + el.offsetWidth / 2) * CV.k;
-    CV.ty = cv.clientHeight / 2 - (y + el.offsetHeight / 2) * CV.k;
-    applyView(); cvSave({ view: CV });
-  }
+  const cv = $("canvas");
+  const x = parseFloat(el.style.left) || 0, y = parseFloat(el.style.top) || 0;
+  CV.tx = cv.clientWidth / 2 - (x + el.offsetWidth / 2) * CV.k;
+  CV.ty = cv.clientHeight / 2 - (y + el.offsetHeight / 2) * CV.k;
+  applyView(); cvSave({ view: CV });
   // Gỡ .found ở MỌI node trước: animation kết thúc ở outline trong suốt nên nhìn thì không thấy
   // gì, nhưng để nó bám lại thì "card vừa tìm ra" không còn là một node duy nhất nữa.
   // remove + đọc offsetWidth = ép reflow, không thì tìm lại đúng card đó sẽ không nháy nữa.
@@ -1363,12 +1279,9 @@ function paneFocusTry() {
 // phủ hết mọi trường hợp hình học đổi, khỏi phải nhớ rải lời gọi khắp nơi.
 const MM = { w: 180, h: 120, pad: 6 };
 
-// Node được tính vào hình học của canvas. Node ĐANG GHIM bị loại: left/top của nó là kết quả
-// bù transform, tức là đổi theo từng cú pan — để nó vào bbox thì minimap, cvFit và zone đều
-// chạy theo khung nhìn thay vì theo nội dung.
+// Node được tính vào hình học của canvas.
 function cvGeomNodes() {
-  return [...$("world").children].filter(
-    (el) => el.classList.contains("node") && !el.classList.contains("pinned") && !el.hidden);
+  return [...$("world").children].filter((el) => el.classList.contains("node"));
 }
 
 // Khung bao gồm cả node LẪN khung nhìn: chỉ lấy node thì pan ra vùng trống là ô xanh
@@ -2436,12 +2349,8 @@ function pairZoneHtml(gi, s, parts) {
 // Card headless không có gì để giãn — nội dung là vài dòng meta, kéo to chỉ ra khoảng trống.
 // Guard theo data-rz thay vì chỉ ẩn tay nắm: session từng là 👑 rồi bị demote vẫn còn w/h trong
 // store, không chặn thì card headless bị kéo giãn theo size cũ.
-// Hai tay nắm, KHÔNG bao giờ dùng cùng lúc: .rz cho card tự do trên canvas, .rzw cho card đang
-// ghim (CSS chỉ hiện đúng một cái). Ghim thì chiều cao đã bằng canvas, chỉ còn bề ngang để chỉnh.
-const RZ = `<div class="rz" title="Drag to resize the card (double-click to reset)"></div>`
-  + `<div class="rzw" title="Drag to set the pinned width (double-click to reset)"></div>`;
+const RZ = `<div class="rz" title="Drag to resize the card (double-click to reset)"></div>`;
 const RZ_MIN = { w: 220, h: 130 };
-const PIN_W_MIN = 280;
 
 function applySize(el, p) {
   if (p && p.w && p.h && el.dataset.rz) {
@@ -2508,10 +2417,7 @@ function snapPairs() {
     let x = (parseFloat(term.style.left) || 0) + term.offsetWidth;
     for (const nid of nids) {
       const ed = world.querySelector(`.node[data-nid="${CSS.escape(nid)}"]`);
-      // Card đang ghim có hình học do applyPin tính theo khung nhìn — dán vào đó là nó quét ngang
-      // màn hình theo từng cú pan. Không tính nó vào hàng, nên x cũng không nhích.
-      if (!ed || !term.isConnected || term.classList.contains("pinned")
-          || ed.classList.contains("pinned")) continue;
+      if (!ed || !term.isConnected) continue;
       const w = parseFloat(ed.style.width) || term.offsetWidth;
       // -1: chồng hai đường viền 1px lên nhau thành MỘT nét. Đặt sát 0 thì chỗ giáp là vạch 2px,
       // nhìn ra ngay là hai card ghé cạnh nhau chứ không phải một khối.
@@ -2541,17 +2447,11 @@ function layoutZones() {
     const g = cvGroups[+z.dataset.gi];
     if (!g || !g.els.length) continue;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
-    let n = 0;
     for (const el of g.els) {
-      if (el.classList.contains("pinned")) continue;   // xem cvGeomNodes
-      n++;
       const x = parseFloat(el.style.left) || 0, y = parseFloat(el.style.top) || 0;
       x0 = Math.min(x0, x); y0 = Math.min(y0, y);
       x1 = Math.max(x1, x + el.offsetWidth); y1 = Math.max(y1, y + el.offsetHeight);
     }
-    // Cả cụm chỉ còn mỗi cái đang ghim → không còn gì để bo.
-    z.hidden = !n;
-    if (!n) continue;
     const headH = (z.querySelector(".zone-head") || {}).offsetHeight || 74;
     // Khung cặp bo sát hơn zone cwd (10 vs 18): một session có cả editor lẫn ≥1 đồng nghiệp cùng
     // cwd thì hai khung lồng nhau, cùng lề là hai đường viền chồng khít lên nhau, không đọc được
@@ -2584,9 +2484,6 @@ function redrawEdges() {
   for (const e of cvEdges) {
     const a = cvNodeEls[e.from], b = cvNodeEls[e.to];
     if (!a || !b) continue;
-    // Mũi tên tới node ghim sẽ quét ngang màn hình theo từng cú pan — bỏ, đằng nào node ghim
-    // cũng luôn nhìn thấy được.
-    if (a.classList.contains("pinned") || b.classList.contains("pinned")) continue;
     const ra = rect(a), rb = rect(b);
     const p1 = rectBorderPoint(ra, rb.x + rb.w / 2, rb.y + rb.h / 2);
     const p2 = rectBorderPoint(rb, ra.x + ra.w / 2, ra.y + ra.h / 2);
@@ -2637,8 +2534,6 @@ function renderCanvas(sessions, signals) {
 
   const st = cvLoad();
   const pos = st.pos || {};
-  // Ghim lưu theo workspace, cùng chỗ với pos/view → đổi pane hay F5 vẫn giữ nguyên cửa sổ ghim.
-  pinnedNid = st.pin || null;
 
   // Gom theo cwd: ≥2 agent chung cwd → zone bo quanh; member vẫn là node TỰ DO trên canvas.
   const byCwd = new Map();
@@ -2848,18 +2743,6 @@ function cvInit() {
   cv.addEventListener("pointerdown", (e) => {
     if (e.target.closest("button, select, input, textarea, option")) return;
     if (e.target.closest(".cv-overlay")) return;  // overlay toolbar-hint: không pan/kéo
-    // Tay nắm bề ngang của card GHIM. Phải xét trước chốt "node ghim thì bỏ qua" ngay bên dưới,
-    // nếu không nó bị chặn và không bao giờ kéo được.
-    const rzw = e.target.closest(".rzw");
-    if (rzw) {
-      const n = rzw.closest(".node");
-      drag = { mode: "pinw", el: n, nid: n.dataset.nid, sx: e.clientX, ow: n.offsetWidth };
-      pinResizing = true;
-      cvInteracting = true;
-      cv.classList.add("grabbing");
-      cv.setPointerCapture(e.pointerId);
-      return;
-    }
     // Tay nắm resize phải xét TRƯỚC .node-head: nó nằm ngoài header nên nhánh dưới sẽ coi là
     // click nền rồi return, không kéo giãn được.
     const rz = e.target.closest(".rz");
@@ -2870,7 +2753,7 @@ function cvInit() {
       // card đầu tiên trượt lên trên ngay cú kéo đầu).
       if (n.classList.contains("group-zone")) {
         const g = cvGroups[+n.dataset.gi] || { els: [] };
-        const parts = g.els.filter((el) => !el.classList.contains("pinned")).map((el) => ({
+        const parts = g.els.map((el) => ({
           el, ox: parseFloat(el.style.left) || 0, oy: parseFloat(el.style.top) || 0,
           ow: el.offsetWidth, oh: el.offsetHeight }));
         if (parts.length) {
@@ -2894,8 +2777,6 @@ function cvInit() {
     }
     const head = e.target.closest(".node-head, .zone-head");
     const node = head && head.closest(".node");
-    // Node ghim: hình học do applyPin tính, kéo nó chỉ làm hai bên ghi đè lẫn nhau.
-    if (node && node.classList.contains("pinned")) return;
     if (node && node.classList.contains("group-zone")) {
       // Kéo header 📁 → di chuyển cả cụm member (zone tự bo theo).
       const g = cvGroups[+node.dataset.gi] || { els: [] };
@@ -2925,15 +2806,6 @@ function cvInit() {
     const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
     if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;  // phân biệt click vs kéo
     if (drag.mode === "pan") { CV.tx = drag.ox + dx; CV.ty = drag.oy + dy; applyView(); return; }
-    if (drag.mode === "pinw") {
-      // Card ghim đã bù scale nên nó 1:1 với màn hình — dx dùng thẳng, KHÔNG chia CV.k như .rz.
-      const pos = cvLoad().pos || {};
-      const nid = drag.el.dataset.nid;
-      pos[nid] = { ...(pos[nid] || {}), pw: Math.max(PIN_W_MIN, drag.ow + dx) };
-      cvSave({ pos });
-      applyPin();
-      return;
-    }
     if (drag.mode === "gresize") {
       // Một hệ số cho mỗi trục, áp cho CẢ khoảng cách tới mốc LẪN kích thước card → khe hở giữa
       // hai card giãn cùng nhịp, bố cục bên trong giữ nguyên tỉ lệ. Sàn 0.25 để kéo ngược qua
@@ -2970,26 +2842,6 @@ function cvInit() {
   });
   const up = () => {
     if (!drag) return;
-    if (drag.mode === "pinw") {
-      pinResizing = false;
-      // Bấm đúp lên tay nắm = bỏ bề ngang tuỳ chỉnh, về mặc định. KHÔNG dùng event `dblclick`:
-      // nhánh này gọi cv.setPointerCapture(), và trong lúc capture mọi event chuột bị RETARGET
-      // về canvas — `e.target.closest('.rzw')` trong handler dblclick đọc ra null, nên nhánh đó
-      // không bao giờ chạy. Đã đo: bấm đúp giữ nguyên 980px thay vì về 760px.
-      const now = performance.now();
-      if (!drag.moved && cvInit._pinwAt && now - cvInit._pinwAt < 400) {
-        const pos = cvLoad().pos || {};
-        if (pos[drag.nid]) delete pos[drag.nid].pw;
-        cvSave({ pos });
-        applyPin();
-      }
-      cvInit._pinwAt = now;
-      refitNode(drag.el);   // hoãn suốt lúc kéo, fit đúng một lần ở đây
-      drag = null; cvInteracting = false;
-      cv.classList.remove("grabbing");
-      if (cvPending) { const p = cvPending; cvPending = null; renderCanvas(p.sessions, p.signals); }
-      return;
-    }
     if (drag.mode === "node" || drag.mode === "group" || drag.mode === "resize"
         || drag.mode === "gresize") {
       const pos = cvLoad().pos || {};
@@ -3050,9 +2902,6 @@ function cvInit() {
     const card = e.target.closest(".agent-card");
     if (card && card.dataset.sid) selectNode(card.dataset.sid);
   });
-  // Chiều cao node ghim đo từ canvas, mà canvas co giãn theo cửa sổ trình duyệt (và theo thanh
-  // kéo giữa 2 pane) → không nghe resize thì panel ghim giữ nguyên chiều cao cũ.
-  addEventListener("resize", () => { if (pinnedNid) applyPin(); });
   // capture: true — BẮT BUỘC, không phải cho gọn. xterm tự gắn handler wheel lên chính phần tử
   // terminal, và Shift+wheel với nó là "cuộn nhanh" (fastScrollSensitivity). Nghe ở pha nổi bọt
   // thì tới lượt mình buffer đã cuộn mất rồi. Pha capture đi từ gốc xuống nên canvas thấy trước,
