@@ -16,7 +16,7 @@ do the hands-on work; you decide what work exists, what "done" means, and what g
 
 - **Stack:** Python 3 (3.9 too old) orchestrator server — `session_orchestrator.py` (starlette +
   uvicorn, SQLite, PTY terminals), director/sub-agent state machine in `team.py`, FastMCP servers
-  (`signal_mcp.py`, `library_mcp.py`, `voice_mcp.py`, pinned `mcp<2`); dashboard is vanilla JS in
+  (`signal_mcp.py`, pinned `mcp<2`); dashboard is vanilla JS in
   `static/orchestrator/` (`app.js`, `index.html`) wired by string ids. Drives the installed
   `claude` and `agy` CLIs. No build step for source; `build.spec` (PyInstaller) only for releases.
 - **Build & test:** `pip install -r requirements.txt`; `python verify.py` runs every root

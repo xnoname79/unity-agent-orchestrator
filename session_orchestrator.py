@@ -42,30 +42,20 @@ Usage:
 """
 
 import argparse
-import array
 import asyncio
-import base64
 import contextlib
-import importlib.util
 import json
-import math
-import operator
 import os
 import re
 import secrets
-import shlex
 import shutil
 import sqlite3
-import struct
 import subprocess
 import sys
-import tarfile
-import tempfile
 import threading
 import time
 import urllib.parse
 import uuid
-import wave
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -470,9 +460,9 @@ def _same_origin(scope):
     """Request này có đến từ CHÍNH trang dashboard không.
 
     CORS KHÔNG phải rào: trình duyệt vẫn GỬI một 'simple request' (POST text/plain) đi rồi mới
-    chặn phần ĐỌC response — ĐÃ ĐO: với CORS tắt hẳn, POST /api/images từ origin lạ vẫn chạy vào
-    handler. Kẻ tấn công không cần đọc trả lời, chỉ cần lệnh được thực thi (spawn agent, vẽ ảnh
-    tiêu quota). Bind 127.0.0.1 cũng không cứu: trình duyệt của chính người dùng NẰM trên máy đó.
+    chặn phần ĐỌC response — ĐÃ ĐO: với CORS tắt hẳn, POST từ origin lạ vẫn chạy vào
+    handler. Kẻ tấn công không cần đọc trả lời, chỉ cần lệnh được thực thi (spawn agent).
+    Bind 127.0.0.1 cũng không cứu: trình duyệt của chính người dùng NẰM trên máy đó.
     Thứ duy nhất phân biệt được là header Origin, cái mà trình duyệt luôn gắn và không trang nào
     giả được.
 
@@ -488,9 +478,9 @@ def _same_origin(scope):
 
 
 # Method ĐỔI TRẠNG THÁI. GET để ngoài: đọc xuyên site vẫn bị chính CORS chặn, mà bắt luôn GET thì
-# <img src="http://localhost:8992/api/images/x.jpg"> trong dashboard cũng chết oan.
+# <img src="http://localhost:8992/api/folder/file?..."> trong dashboard cũng chết oan.
 _UNSAFE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
-# Đường bị canh: API, chat/ảnh, và WS terminal (WS KHÔNG theo CORS — một trang bất kỳ mở được
+# Đường bị canh: API, chat, và WS terminal (WS KHÔNG theo CORS — một trang bất kỳ mở được
 # ws:// tới localhost, mà /ws/terminal là shell thật).
 _GUARDED_PREFIXES = ("/api/", "/v1/", "/ws/")
 
@@ -1601,8 +1591,6 @@ MCP_PROTOCOL = "2024-11-05"
 # nối thì một nút Connect, nối rồi thì Check/Remove như mọi server khác.
 MCP_BUILTINS = (
     ("signal", "/signal/mcp", "Agents message each other"),
-    ("library", "/library/mcp", "Agents search and inspect the Library's sounds and images"),
-    ("voice", "/voice/mcp", "Agents turn text into speech"),
 )
 
 
@@ -1749,6 +1737,26 @@ def _mcp_servers():
                 if row[k] and not cur[k]:
                     cur[k] = row[k]
     return out
+
+
+def _forget_removed_builtins():
+    """library/voice từng là server nội bộ, đã bỏ: mục còn trong cấu hình CLI sẽ hiện thành server
+    failed ở mọi agent. Chỉ gỡ mục do chính orchestrator này đăng ký (đúng tên, loopback, đúng port,
+    đúng path) — server riêng của người dùng trùng tên phải còn nguyên."""
+    for cli in _mcp_installed():
+        _, read, _, remove = MCP_CLIS[cli]
+        for name, row in read().items():
+            if name not in ("library", "voice"):
+                continue
+            try:
+                u = urllib.parse.urlsplit(str(row["url"]))
+                own = (u.hostname in ("localhost", "127.0.0.1") and u.port == ORCH_PORT
+                       and u.path == f"/{name}/mcp")
+            except ValueError:      # URL người dùng tự gõ, port sai cú pháp: không phải của mình
+                own = False
+            if own:
+                remove(name)
+                print(f"[orchestrator] removed stale MCP server '{name}' from {cli}'s config")
 
 
 def _entry_token(entry):
@@ -1951,783 +1959,6 @@ def media_tools():
                      if path and cmd != binaries[0] else ""),
         })
     return {"tools": rows, "missing": sum(1 for r in rows if r["required"] and not r["path"])}
-
-
-# ─── Sounds: tìm video, tách tiếng bằng yt-dlp ───────────────────────────────
-# Panel Sounds trên dashboard gọi các hàm dưới đây; agent không tách tiếng, chỉ đọc thư viện qua
-# library_mcp (/library/mcp — xem "Library cho agent" bên dưới).
-#
-# yt-dlp KHÔNG đóng gói kèm: dùng bản trên PATH (xem MEDIA_TOOLS). Bản cũ là hỏng thật, không
-# phải hỏng giả: YouTube đổi trang liên tục, yt-dlp 2025.02 đo được trả "The page needs to be
-# reloaded" cho mọi video vào 10/2026 — nên lỗi luôn kèm tuổi của bản đang cài và lệnh nâng cấp.
-SOUNDS_DIR = DB_DIR / "sounds"
-SOUND_FORMATS = {"mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4",
-                 "opus": "audio/ogg", "flac": "audio/flac"}
-SOUND_SEARCH_MAX = 20
-# shortcut: trần cố định 60 phút (= nấc dài nhất của bộ lọc độ dài). Một video "10 hours of
-# rain" là hàng trăm MB và nhiều phút tải chỉ để lấy vài giây tiếng; thành biến môi trường khi có
-# người thật sự cần dài hơn.
-SOUND_MAX_MIN = 60
-SOUND_STALE_DAYS = 60        # yt-dlp cũ hơn thế thì cảnh báo trước khi YouTube kịp làm nó hỏng
-_SOUND_NAME_OK = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}\.(" + "|".join(SOUND_FORMATS) + r")$")
-_SOUND_SLOTS = asyncio.Semaphore(2)    # mỗi lần tách = một yt-dlp + một ffmpeg
-_SOUND_URL_OK = re.compile(r"^https?://\S+$")
-# (đường dẫn binary, mtime) → version: poll không spawn lại, mà nâng cấp tại chỗ (file bị ghi
-# đè → mtime đổi) thì lần hỏi sau thấy ngay, không phải restart orchestrator.
-_ytdlp_versions = {}
-_YTDLP_CMDS = next(t for t in MEDIA_TOOLS if t[0] == "yt-dlp")[5]
-
-
-def _ytdlp_upgrade_cmd(exe):
-    """Lệnh nâng cấp ĐÚNG bản orchestrator đang chạy. `pip install --upgrade` chung chung dễ nâng
-    nhầm một python khác (conda, venv) trong khi PATH của orchestrator vẫn trỏ bản cũ. Bản
-    release (zipapp/exe, vài MB) tự nâng bằng -U; bản pip là script nhỏ, shebang trỏ đúng python
-    đã cài nó."""
-    # shortcut: đường có dấu cách trên Windows ra "…" -U, PowerShell cần & phía trước; sửa khi gặp.
-    join = subprocess.list2cmdline if sys.platform.startswith("win") else shlex.join
-    line = ""
-    try:
-        if os.path.getsize(exe) > 1_000_000:
-            return join([exe, "-U"])
-        with open(exe, "rb") as f:
-            line = f.readline(512).decode(errors="replace")
-    except OSError:
-        pass
-    words = line[2:].split() if line.startswith("#!") else []
-    py = next((w for w in reversed(words) if "python" in os.path.basename(w)), "")
-    if py:
-        return join([py, "-m", "pip", "install", "--upgrade", "yt-dlp"])
-    return _install_cmd(_YTDLP_CMDS)
-
-
-def _ytdlp_version(exe):
-    try:
-        key = (exe, os.stat(exe).st_mtime_ns)
-    except (OSError, TypeError, ValueError):
-        return ""
-    if key not in _ytdlp_versions:
-        try:
-            r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=15)
-            _ytdlp_versions[key] = r.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            _ytdlp_versions[key] = ""
-    return _ytdlp_versions[key]
-
-
-def _ytdlp_age(version):
-    """Số ngày tuổi của bản yt-dlp (version là ngày phát hành: 2025.02.19), None nếu không đọc được."""
-    try:
-        return (datetime.now() - datetime.strptime(version[:10], "%Y.%m.%d")).days
-    except ValueError:
-        return None
-
-
-def sound_status():
-    """yt-dlp và ffmpeg trên máy CHẠY orchestrator. -x cần cả ffmpeg: thiếu nó yt-dlp tải xong
-    video rồi mới chết ở bước tách tiếng."""
-    rows = {r["name"]: r for r in media_tools()["tools"]}
-    y, f = rows["yt-dlp"], rows["ffmpeg"]
-    version = _ytdlp_version(y["path"])
-    age = _ytdlp_age(version)
-    return {"ytdlp": y["path"], "version": version, "stale": bool(age and age > SOUND_STALE_DAYS),
-            "age_days": age, "ffmpeg": f["path"], "install": y["install"],
-            "upgrade": _ytdlp_upgrade_cmd(y["path"]) if y["path"] else "",
-            "ffmpeg_install": f["install"],
-            "site": y["site"], "dir": str(SOUNDS_DIR), "max_minutes": SOUND_MAX_MIN}
-
-
-def _ytdlp_error(err):
-    """Dòng ERROR cuối của yt-dlp + lời khuyên nâng cấp nếu bản đang cài đã cũ."""
-    lines = [l for l in err.splitlines() if l.startswith("ERROR:")] or err.strip().splitlines()[-1:]
-    msg = (lines[-1] if lines else "yt-dlp failed").removeprefix("ERROR: ")
-    st = sound_status()
-    if st["stale"]:
-        msg += (f" — this yt-dlp ({st['version']}) is {st['age_days']} days old and sites change "
-                f"often; upgrade it: {st['upgrade'] or st['site']}")
-    return msg
-
-
-async def _ytdlp(args, timeout):
-    """Chạy yt-dlp → (returncode, stdout, stderr). Không có shell: args đi thẳng vào argv."""
-    exe = shutil.which("yt-dlp")
-    if not exe:
-        raise LookupError("yt-dlp is not installed on this machine — install it: "
-                          + (_install_cmd(_YTDLP_CMDS)
-                             or "https://github.com/yt-dlp/yt-dlp#installation"))
-    proc = await asyncio.create_subprocess_exec(exe, *args, stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.PIPE)
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise RuntimeError(f"yt-dlp did not finish within {timeout // 60} minutes")
-    return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
-
-
-async def sound_search(query, limit=10, ai_only=True, max_minutes=SOUND_MAX_MIN):
-    """Tìm video trên YouTube. ai_only thêm "AI generated" vào câu tìm — đúng thứ người dùng gõ
-    thêm bằng tay, nhưng không gõ hai lần nếu câu đã có. Bỏ video dài hơn max_minutes."""
-    query = " ".join(str(query or "").split())
-    if not query or len(query) > 200:
-        raise ValueError("type what you are looking for, up to 200 characters")
-    try:
-        limit = max(1, min(int(limit), SOUND_SEARCH_MAX))
-    except (TypeError, ValueError):
-        limit = 10
-    try:
-        max_s = max(1, min(int(max_minutes), SOUND_MAX_MIN)) * 60
-    except (TypeError, ValueError):
-        max_s = SOUND_MAX_MIN * 60
-    if ai_only and "ai generated" not in query.lower():
-        query += " AI generated"
-    # shortcut: lọc SAU khi tìm, nên lấy gấp 3 khi lọc chặt hơn trần — vẫn có thể ra ít hơn
-    # limit nếu gần hết dài hơn; chuyển sang bộ lọc thời lượng của YouTube nếu người dùng kêu.
-    fetch = limit if max_s >= SOUND_MAX_MIN * 60 else limit * 3
-    # '--' trước đích: câu tìm do người (hoặc agent) gõ, mở đầu bằng '-' là thành cờ của yt-dlp.
-    rc, out, err = await _ytdlp(["--flat-playlist", "-j", "--no-warnings", "--",
-                                 f"ytsearch{fetch}:{query}"], 90)
-    rows = []
-    for line in out.splitlines():
-        try:
-            o = json.loads(line)
-        except ValueError:
-            continue
-        # Đang phát trực tiếp / sắp phát: chẳng có tệp nào để tách tiếng.
-        if not isinstance(o, dict) or o.get("live_status") in ("is_live", "is_upcoming"):
-            continue
-        if (o.get("duration") or 0) > max_s:
-            continue
-        thumbs = o.get("thumbnails") or [{}]
-        rows.append({"id": o.get("id") or "", "title": o.get("title") or "",
-                     "url": o.get("url") or o.get("webpage_url") or "",
-                     "channel": o.get("channel") or o.get("uploader") or "",
-                     "duration": o.get("duration"), "views": o.get("view_count"),
-                     "thumb": thumbs[0].get("url") or "",
-                     "too_long": bool(o.get("duration") and o["duration"] > SOUND_MAX_MIN * 60)})
-    if rc and not rows:
-        raise RuntimeError(_ytdlp_error(err))
-    return {"query": query, "results": rows[:limit]}
-
-
-async def sound_extract(url, fmt="mp3", by="", draft=False):
-    """Tách tiếng của MỘT video vào SOUNDS_DIR. Request chờ tới khi xong (thường dưới một phút).
-
-    Tên file do ta đặt (thời điểm + 6 hex), KHÔNG lấy tiêu đề video: tiêu đề là chữ của người lạ,
-    đi thẳng vào đường dẫn. Tiêu đề nằm ở .json cùng tên và thành tên file lúc tải về.
-
-    draft=True: vào drafts/ (KHÔNG hiện trong thư viện) để người dùng cắt trong editor trước, rồi
-    sound_keep mới đưa vào thư viện. Agent không có editor nên vẫn lưu thẳng."""
-    url = str(url or "").strip()
-    if not _SOUND_URL_OK.match(url):
-        raise ValueError("a video link starting with http:// or https:// is required")
-    fmt = str(fmt or "mp3").lower()
-    if fmt not in SOUND_FORMATS:
-        raise ValueError(f"format must be one of: {', '.join(SOUND_FORMATS)}")
-    if not shutil.which("ffmpeg"):
-        rows = {r["name"]: r for r in media_tools()["tools"]}
-        raise LookupError("ffmpeg is needed to pull the sound out of a video — install it: "
-                          + (rows["ffmpeg"]["install"] or rows["ffmpeg"]["site"]))
-    home = _sound_drafts() if draft else SOUNDS_DIR
-    home.mkdir(parents=True, exist_ok=True)
-    stem = f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
-    ok = False
-    try:
-        async with _SOUND_SLOTS:
-            rc, out, err = await _ytdlp(
-                ["-x", "--audio-format", fmt, "--no-playlist", "--no-warnings",
-                 "--match-filters", f"duration<={SOUND_MAX_MIN * 60} & !is_live",
-                 "-o", str(home / f"{stem}.%(ext)s"),
-                 "--print", "after_move:%(.{id,title,channel,duration,webpage_url,license,filepath})j",
-                 "--", url], 900)
-        info = None
-        for line in reversed(out.splitlines()):
-            if line.startswith("{"):
-                try:
-                    info = json.loads(line)
-                    break
-                except ValueError:
-                    pass
-        if not info:
-            if rc:
-                raise RuntimeError(_ytdlp_error(err))
-            # match-filters bỏ qua trong IM LẶNG: exit 0, không in gì (đo trên yt-dlp 2026.08).
-            raise ValueError(f"skipped: the video is longer than {SOUND_MAX_MIN} minutes, "
-                             f"or it is a live stream")
-        dst = home / f"{stem}.{fmt}"
-        if not dst.is_file():
-            raise RuntimeError("yt-dlp finished but left no audio file behind")
-        meta = {"title": info.get("title") or "", "channel": info.get("channel") or "",
-                "duration": info.get("duration"), "source": info.get("webpage_url") or url,
-                "license": info.get("license") or "", "format": fmt, "by": by or "",
-                "created": _now()}
-        dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-        ok = True
-    finally:
-        if not ok:   # .part / .webm dở dang của một lần hỏng: không để rác trong thư viện
-            for leftover in home.glob(stem + ".*"):
-                leftover.unlink(missing_ok=True)
-    return {**meta, "name": dst.name, "path": str(dst)}
-
-
-def _sound_home(draft):
-    return SOUNDS_DIR / "drafts" if draft else SOUNDS_DIR
-
-
-def _sound_drafts():
-    """drafts/, sau khi dọn bản nháp bị bỏ dở (đóng tab giữa chừng) quá một ngày."""
-    home = _sound_home(True)
-    home.mkdir(parents=True, exist_ok=True)
-    for old in home.glob("*"):
-        if old.stat().st_mtime < datetime.now().timestamp() - 86400:
-            old.unlink(missing_ok=True)
-    return home
-
-
-SOUND_UPLOAD_MAX = 100 * 1024 * 1024    # mp3 128 kbps ≈ 1 giờ 45 phút
-
-
-async def sound_upload(chunks, filename=""):
-    """Một file mp3 của người dùng → bản nháp, để cắt trong editor như tiếng vừa tách. Ghi ra
-    đĩa từng mẩu, có trần — không gom cả trăm MB vào RAM rồi mới đếm."""
-    dst = _sound_drafts() / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.mp3"
-    size, ok = 0, False
-    try:
-        with open(dst, "wb") as f:
-            async for chunk in chunks:
-                size += len(chunk)
-                if size > SOUND_UPLOAD_MAX:
-                    raise ValueError(f"sound files up to {SOUND_UPLOAD_MAX // 2**20} MB")
-                f.write(chunk)
-        with open(dst, "rb") as f:
-            head = f.read(3)
-        # Thẻ ID3, hoặc vào thẳng một frame MPEG audio (11 bit đồng bộ đầu frame).
-        if not (head == b"ID3" or (len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0)):
-            raise ValueError("only mp3 files")
-        name = str(filename or "")[:120]
-        meta = {"title": name.rsplit(".", 1)[0] if "." in name else name, "channel": "",
-                "duration": None, "source": "", "license": "", "format": "mp3", "by": "user",
-                "created": _now(), "uploaded": name}
-        dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-        ok = True
-    finally:
-        if not ok:
-            dst.unlink(missing_ok=True)
-    return {**meta, "name": dst.name, "path": str(dst)}
-
-
-def sound_path(name, draft=False):
-    """File tiếng mang tên này (trong thư viện, hoặc drafts/), hoặc None. Tên từ URL — chỉ nhận
-    đúng mẫu ta đặt."""
-    if not _SOUND_NAME_OK.match(name or ""):
-        return None
-    p = _sound_home(draft) / name
-    return p if p.is_file() else None
-
-
-async def _ffmpeg(args, timeout):
-    """Chạy ffmpeg → (returncode, stdout BYTES, stderr). Không shell; mọi đường dẫn là của ta."""
-    exe = shutil.which("ffmpeg")
-    if not exe:
-        raise LookupError("ffmpeg is not installed on this machine")
-    proc = await asyncio.create_subprocess_exec(exe, "-v", "error", "-nostdin", *args,
-                                                stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.PIPE)
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise RuntimeError(f"ffmpeg did not finish within {timeout // 60} minutes")
-    return proc.returncode, out, err.decode("utf-8", "replace")
-
-
-SOUND_PEAK_RATE = 8000    # Hz khi đọc sóng: đủ thấy tiếng rít/mưa, 60 phút = 58 MB qua pipe
-
-
-async def sound_peaks(name, n=1000):
-    """Hình sóng của một bản nháp: n đỉnh (0..1) + thời lượng thật đã giải mã. Tính ở server vì
-    trình duyệt giải mã cả file 60 phút là hơn 1 GB PCM."""
-    p = sound_path(name, draft=True)
-    if not p:
-        raise LookupError("no such draft")
-    rc, raw, err = await _ffmpeg(["-i", str(p), "-ac", "1", "-ar", str(SOUND_PEAK_RATE),
-                                  "-f", "s16le", "-"], 300)
-    if rc:
-        raise RuntimeError("ffmpeg could not read the sound: " + (err.strip()[-300:] or f"exit {rc}"))
-
-    def peaks():
-        a = array.array("h", raw[:len(raw) // 2 * 2])
-        if sys.byteorder == "big":
-            a.byteswap()
-        step = max(1, -(-len(a) // n))
-        return [round(max(max(c), -min(c)) / 32768, 3)
-                for c in (a[i:i + step] for i in range(0, len(a), step))]
-    duration = len(raw) // 2 / SOUND_PEAK_RATE
-    # File tải lên không ai báo thời lượng: lấy cái vừa giải mã, để thư viện có mà hiện.
-    meta_p = p.with_suffix(".json")
-    try:
-        meta = json.loads(meta_p.read_text(encoding="utf-8"))
-        if not meta.get("duration"):
-            meta_p.write_text(json.dumps({**meta, "duration": round(duration, 3)},
-                                         ensure_ascii=False), encoding="utf-8")
-    except (OSError, ValueError):
-        pass
-    return {"duration": duration, "peaks": await asyncio.to_thread(peaks)}
-
-
-async def sound_keep(name, start=None, end=None):
-    """Đưa bản nháp vào thư viện, chỉ giữ đoạn start..end (giây; end None = tới hết).
-
-    Giữ cả bài → chuyển file nguyên vẹn, không mã hoá lại. Cắt → ffmpeg mã hoá lại: cắt
-    -c copy rơi giữa một frame mp3/aac là có tiếng tách ở đầu, đúng chỗ người ta nghe thấy."""
-    p = sound_path(name, draft=True)
-    if not p:
-        raise LookupError("no such draft — it may have been saved or discarded already")
-    try:
-        start = float(start or 0)
-        end = None if end is None else float(end)
-    except (TypeError, ValueError):
-        raise ValueError("start and end must be numbers of seconds")
-    if not math.isfinite(start) or start < 0 or (end is not None and (
-            not math.isfinite(end) or end - start < 0.05)):
-        raise ValueError("pick a part at least 0.05 s long, with the start before the end")
-    try:
-        meta = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        meta = {}
-    dst = SOUNDS_DIR / p.name
-    if start == 0 and end is None:
-        os.replace(p, dst)
-    else:
-        # Ghi ra drafts/ trước rồi mới đổi tên: file đang mã hoá dở không lộ ra trong thư viện.
-        tmp = p.with_name(f"{p.stem}-cut{p.suffix}")
-        rc, _, err = await _ffmpeg(["-y", "-ss", f"{start:.3f}", "-i", str(p),
-                                    *(["-t", f"{end - start:.3f}"] if end is not None else []),
-                                    "-map", "0:a", str(tmp)], 600)
-        if rc or not tmp.is_file():
-            tmp.unlink(missing_ok=True)
-            raise RuntimeError("ffmpeg could not cut the sound: " + (err.strip()[-300:] or f"exit {rc}"))
-        os.replace(tmp, dst)
-        p.unlink(missing_ok=True)
-        meta["clip"] = [round(start, 3), None if end is None else round(end, 3)]
-        if end is not None:
-            meta["duration"] = round(end - start, 3)
-        elif meta.get("duration"):
-            meta["duration"] = round(meta["duration"] - start, 3)
-    dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-    p.with_suffix(".json").unlink(missing_ok=True)
-    _inspect_later(dst.name)
-    return {**meta, "name": dst.name, "path": str(dst)}
-
-
-def list_sounds():
-    """Tiếng đã tách, mới nhất trước. Thiếu/hỏng .json thì vẫn hiện, chỉ mất tiêu đề."""
-    out = []
-    for p in SOUNDS_DIR.glob("*"):
-        if not _SOUND_NAME_OK.match(p.name):
-            continue
-        try:
-            meta = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            meta = {}
-        out.append({"title": "", "created": "", **meta, "name": p.name, "path": str(p),
-                    "size": p.stat().st_size})
-    return sorted(out, key=lambda i: i["name"], reverse=True)
-
-
-def sound_download_name(p):
-    """Tên file lúc tải về = tiêu đề video, bỏ ký tự Windows/macOS không nhận."""
-    try:
-        title = json.loads(p.with_suffix(".json").read_text(encoding="utf-8")).get("title") or ""
-    except (OSError, ValueError):
-        title = ""
-    title = " ".join(re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", title).split()).strip(" .")[:120]
-    return (title or p.stem) + p.suffix
-
-
-# ─── Library cho agent: tìm và "nhìn" media đã giữ lại ─────────────────────────
-# Agent không có tai: một tiếng với nó chỉ là tiêu đề và độ dài. sound_inspect đo thay bằng
-# ffmpeg — cùng thuật toán inspect_audio của Signal (server/sound.mjs) để hai nơi mô tả một file
-# giống nhau — rồi GHI vào .json cạnh file, nên lần tìm sau đọc được mà không phải đo lại.
-SOUND_INSPECT_V = 1        # đổi cách đo thì tăng: bản ghi cũ tự bị đo lại
-_INSPECT_BINS = 60         # một dòng chữ số: đủ mịn để thấy tiếng vào ở đâu, đủ ngắn để đọc
-_INSPECT_FLOOR_DB = -60    # dưới mức này là im lặng với người nghe, và là chữ số 0
-_INSPECT_HIGH_RATE = 22050
-_SOUND_BG = set()          # giữ tham chiếu task nền, kẻo bị GC giữa chừng
-
-
-def _db(x):
-    return 20 * math.log10(x)
-
-
-async def _rms_per_second(p, chain):
-    """RMS (dB) từng giây của file sau chuỗi lọc chain. Giây im lặng ra -inf → -120."""
-    rc, out, err = await _ffmpeg(
-        ["-t", str(SOUND_MAX_MIN * 60), "-i", str(p), "-ac", "1", "-af",
-         f"aresample={_INSPECT_HIGH_RATE},{chain}asetnsamples=n={_INSPECT_HIGH_RATE}:p=0,"
-         "astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
-         "-f", "null", "-"], 600)
-    if rc:
-        raise RuntimeError(err.strip()[-200:] or f"exit {rc}")
-    vals = re.findall(r"RMS_level=(\S+)", out.decode("utf-8", "replace"))
-    return [float(v) if math.isfinite(float(v)) else -120.0 for v in vals]
-
-
-async def _sound_highs(p):
-    """Bao nhiêu phần của tiếng nằm ở dải cao (trên 1.5 kHz, trên 3 kHz), dB so với toàn dải, từng
-    giây có tiếng: median, p95, và giây sáng nhất. Ba lần highpass như Signal, để số đo khớp."""
-    hp = lambda f: f"highpass=f={f}," * 3   # noqa: E731
-    full, h15, h3 = await asyncio.gather(*(_rms_per_second(p, c) for c in ("", hp(1500), hp(3000))))
-    live = [(f, a, b) for f, a, b in zip(full, h15, h3) if f > -50]
-    if not live:
-        return None
-
-    def band(k):
-        d = sorted(r[k] - r[0] for r in live)
-        return {"median": round(d[int(0.5 * (len(d) - 1))], 1), "p95": round(d[int(0.95 * (len(d) - 1))], 1)}
-    return {"above_1_5k": band(1), "above_3k": band(2),
-            "brightest_at": max(range(len(h3)), key=h3.__getitem__)}
-
-
-async def sound_inspect(name, refresh=False):
-    """Số đo của một tiếng trong thư viện, đo một lần rồi giữ trong .json (khoá "inspect").
-    Đo lại khi file đổi (mtime) hoặc cách đo đổi (SOUND_INSPECT_V)."""
-    p = sound_path(name)
-    if not p:
-        raise LookupError(f"no sound called {name!r} in the library — search_media lists them")
-    meta_p = p.with_suffix(".json")
-    try:
-        meta = json.loads(meta_p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        meta = {}
-    have, mtime = meta.get("inspect") or {}, p.stat().st_mtime_ns
-    if not refresh and have.get("v") == SOUND_INSPECT_V and have.get("mtime") == mtime:
-        return have
-    cap = SOUND_MAX_MIN * 60
-    rc, raw, err = await _ffmpeg(["-t", str(cap), "-i", str(p), "-ac", "1",
-                                  "-ar", str(SOUND_PEAK_RATE), "-f", "s16le", "-"], 300)
-    if rc or len(raw) < 2:
-        raise RuntimeError("ffmpeg could not read the sound: " + (err.strip()[-300:] or "no audio"))
-
-    def envelope():
-        a = array.array("h", raw[:len(raw) // 2 * 2])
-        if sys.byteorder == "big":
-            a.byteswap()
-        n, level, peak, sq = len(a), [], 0, 0
-        for i in range(_INSPECT_BINS):
-            c = a[i * n // _INSPECT_BINS:(i + 1) * n // _INSPECT_BINS] or array.array("h", [0])
-            m = max(max(c), -min(c)) / 32768
-            peak, sq = max(peak, m), sq + sum(map(operator.mul, c, c))
-            # -60..0 dB trải ra 10 chữ số: tiếng nền nhỏ mà nghe được vẫn là 1-2, không bị gọi là 0.
-            level.append(0 if m <= 0 else max(0, min(9, round(
-                9 * (_db(m) - _INSPECT_FLOOR_DB) / -_INSPECT_FLOOR_DB))))
-        return n, level, peak, math.sqrt(sq / n) / 32768
-    n, level, peak, rms = await asyncio.to_thread(envelope)
-    seconds = n / SOUND_PEAK_RATE
-    step = seconds / _INSPECT_BINS
-
-    def runs(want):
-        out, i = [], 0
-        while i < _INSPECT_BINS:
-            if (level[i] > 0) == want:
-                j = i
-                while j + 1 < _INSPECT_BINS and (level[j + 1] > 0) == want:
-                    j += 1
-                out.append([round(i * step, 1), round((j + 1) * step, 1)])
-                i = j
-            i += 1
-        return out
-    try:   # dải cao là phần thêm: ffmpeg thiếu filter thì mất mục này, không mất cả bản đo
-        highs = await _sound_highs(p)
-    except (RuntimeError, ValueError):
-        highs = None
-    ins = {"v": SOUND_INSPECT_V, "mtime": mtime, "seconds": round(seconds, 2),
-           "step": round(step, 3), "level": "".join(map(str, level)),
-           "loud": runs(True), "quiet": runs(False),
-           "peak_dbfs": round(_db(peak), 1) if peak > 0 else None,
-           "rms_dbfs": round(_db(rms), 1) if rms > 0 else None, "highs": highs,
-           **({"scanned_only_first": cap} if seconds >= cap else {})}
-    meta["inspect"] = ins
-    if not meta.get("duration"):
-        meta["duration"] = ins["seconds"]
-    if p.is_file():   # bị xoá trong lúc đo: đừng để lại một .json mồ côi
-        meta_p.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-    return ins
-
-
-def _inspect_later(name):
-    """Đo ngay khi tiếng vào thư viện, ở nền: lần tìm sau đã có số đo, không ai phải chờ."""
-    async def run():
-        try:
-            await sound_inspect(name)
-        except (LookupError, RuntimeError, OSError) as e:
-            print(f"[sounds] inspect {name}: {e}")
-    t = asyncio.create_task(run())
-    _SOUND_BG.add(t)
-    t.add_done_callback(_SOUND_BG.discard)
-
-
-def image_size(p):
-    """(rộng, cao) đọc từ header PNG / JPEG / WebP, (None, None) nếu không đọc được."""
-    try:
-        with open(p, "rb") as f:
-            b = f.read(1 << 20)
-        if b[:8] == b"\x89PNG\r\n\x1a\n":
-            return struct.unpack(">II", b[16:24])
-        if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
-            kind = b[12:16]
-            if kind == b"VP8X":
-                return 1 + int.from_bytes(b[24:27], "little"), 1 + int.from_bytes(b[27:30], "little")
-            if kind == b"VP8L":
-                bits = int.from_bytes(b[21:25], "little")
-                return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
-            if kind == b"VP8 ":
-                w, h = struct.unpack("<HH", b[26:30])
-                return w & 0x3FFF, h & 0x3FFF
-        if b[:3] == b"\xff\xd8\xff":
-            i = 2
-            while i + 9 < len(b):
-                if b[i] != 0xFF:
-                    i += 1
-                    continue
-                m = b[i + 1]
-                # SOF0..SOF15 mang kích thước; C4/C8/CC là marker khác cùng dải số.
-                if 0xC0 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC):
-                    h, w = struct.unpack(">HH", b[i + 5:i + 9])
-                    return w, h
-                i += 2 + int.from_bytes(b[i + 2:i + 4], "big")
-    except (OSError, struct.error):
-        pass
-    return None, None
-
-
-def library_items():
-    """Mọi thứ trong thư viện cho agent: tiếng và ảnh, mới nhất trước, kèm đường dẫn file."""
-    out = []
-    for s in list_sounds():
-        ins = {k: v for k, v in (s.get("inspect") or {}).items() if k not in ("v", "mtime")}
-        out.append({"kind": "sound", "name": s["name"], "title": s.get("title") or "",
-                    "channel": s.get("channel") or "", "seconds": s.get("duration"),
-                    "format": s.get("format") or "", "license": s.get("license") or "",
-                    "source": s.get("source") or "", "by": s.get("by") or "",
-                    "uploaded": s.get("uploaded") or "", "created": s.get("created") or "",
-                    "path": s["path"], "inspected": bool(ins), **({"inspect": ins} if ins else {})})
-    for i in list_images():
-        w, h = image_size(IMAGES_DIR / i["name"])
-        out.append({"kind": "image", "name": i["name"], "prompt": i.get("prompt") or "",
-                    "drawn": i.get("drawn") or "", "uploaded": i.get("uploaded") or "",
-                    "created": i.get("created") or "", "width": w, "height": h,
-                    "path": str(IMAGES_DIR / i["name"])})
-    return sorted(out, key=lambda x: x["name"], reverse=True)
-
-
-_LIB_TEXT = ("title", "channel", "license", "uploaded", "prompt", "drawn", "by", "format", "kind")
-
-
-def library_search(query="", kind="", min_seconds=0, max_seconds=0, limit=20):
-    """Tìm theo chữ (mỗi từ của query khớp một phần tiêu đề/prompt/kênh/tên file…; nhiều từ khớp
-    hơn thì lên trước), lọc theo loại và độ dài. Query rỗng = tất cả, mới nhất trước."""
-    kind = str(kind or "").strip().lower()
-    if kind not in ("", "sound", "image"):
-        raise ValueError("kind must be 'sound', 'image' or empty for both")
-    try:
-        lo, hi = float(min_seconds or 0), float(max_seconds or 0)
-        limit = max(1, min(int(limit or 20), 100))
-    except (TypeError, ValueError):
-        raise ValueError("min_seconds, max_seconds and limit must be numbers")
-    words = [w for w in re.split(r"\W+", str(query or "").lower()) if w]
-    hits = []
-    for it in library_items():
-        if kind and it["kind"] != kind:
-            continue
-        if lo or hi:   # lọc theo độ dài: chỉ tiếng có độ dài mới qua được
-            sec = it.get("seconds")
-            if it["kind"] != "sound" or sec is None or sec < lo or (hi and sec > hi):
-                continue
-        text = " ".join(str(it.get(k) or "") for k in _LIB_TEXT).lower()
-        score = sum(1 for w in words if w in text)
-        if words and not score:
-            continue
-        hits.append((score, it))
-    hits.sort(key=lambda h: h[0], reverse=True)    # sort ổn định: cùng điểm thì giữ mới-trước
-    return {"total": len(hits), "items": [it for _, it in hits[:limit]]}
-
-
-# ─── Đọc thành tiếng: Kokoro qua sherpa-onnx, chạy ngay trên máy này ──────────────────────────
-# Kokoro-82M (Apache-2.0, dữ liệu huấn luyện giấy phép thoáng) — đo 2026-10-19 trên i7-10875H:
-# Piper nhanh hơn ~15× nhưng giọng kém tự nhiên, và giọng Lessac trong bài research là "research
-# only". Bản int8 CHẬM HƠN fp32 4-5× trên CPU desktop, nên dùng fp32. Chỉ tiếng Anh (28 giọng
-# Mỹ/Anh) — người dùng muốn làm chức năng học tiếng Anh trên nền này.
-#
-# Model KHÔNG đóng gói kèm (350 MB): tải một lần khi người dùng bấm Download, như yt-dlp.
-TTS_DIR = DB_DIR / "tts"
-# Tiếng đọc ra là đồ dùng một lần: thư mục tạm của OS, tự mất khi khởi động lại máy (Linux, macOS),
-# KHÔNG vào thư viện Sounds.
-TTS_OUT = Path(tempfile.gettempdir()) / "orch-speech"
-TTS_PACKAGE = "kokoro-multi-lang-v1_0"
-TTS_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/{TTS_PACKAGE}.tar.bz2"
-TTS_SIZE = 349_906_910
-# Đo: 8 luồng CHẬM hơn 2 luồng với đoạn dài (siêu phân luồng giành nhau), nên mặc định 2.
-TTS_THREADS = int(os.environ.get("ORCH_TTS_THREADS", "2"))
-TTS_MAX_CHARS = 3000
-# Đúng thứ tự speaker id trong model (đọc từ metadata id2speaker): 0-27 là giọng tiếng Anh.
-TTS_VOICES = ("af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore", "af_nicole",
-              "af_nova", "af_river", "af_sarah", "af_sky", "am_adam", "am_echo", "am_eric",
-              "am_fenrir", "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa", "bf_alice",
-              "bf_emma", "bf_isabella", "bf_lily", "bm_daniel", "bm_fable", "bm_george", "bm_lewis")
-TTS_DEFAULT_VOICE = "af_heart"   # giọng được chấm cao nhất của Kokoro v1.0
-TTS_INSTALL = "python3 -m pip install sherpa-onnx"
-_tts = None                      # sherpa_onnx.OfflineTts: nạp một lần (~3.6 s, ~330 MB RAM)
-_tts_lock = asyncio.Lock()       # một lượt đọc một lúc: mỗi lượt đã ăn trọn 2 lõi CPU
-_tts_dl = {"state": "", "done": 0, "total": TTS_SIZE, "error": ""}
-_tts_tasks: set = set()
-
-
-def _tts_label(voice):
-    """af_heart → 'Heart · US female'."""
-    return (f"{voice[3:].title()} · {'US' if voice[0] == 'a' else 'UK'} "
-            f"{'female' if voice[1] == 'f' else 'male'}")
-
-
-def _tts_ready():
-    return (TTS_DIR / TTS_PACKAGE / "model.onnx").is_file()
-
-
-def tts_status():
-    return {"engine": importlib.util.find_spec("sherpa_onnx") is not None, "install": TTS_INSTALL,
-            "ready": _tts_ready(), "download": dict(_tts_dl), "default": TTS_DEFAULT_VOICE,
-            "voices": [{"id": v, "label": _tts_label(v)} for v in TTS_VOICES]}
-
-
-async def _tts_fetch(url, dst, progress):
-    """Tải url về dst từng mẩu (350 MB không gom vào RAM), báo tiến độ qua progress(done)."""
-    async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30, read=120)) as c:
-        async with c.stream("GET", url) as r:
-            r.raise_for_status()
-            done = 0
-            with open(dst, "wb") as f:
-                async for chunk in r.aiter_bytes(1 << 20):
-                    f.write(chunk)
-                    done += len(chunk)
-                    progress(done)
-
-
-def _tts_unpack(archive, dest):
-    """Giải nén vào dest. filter='data' chặn đường dẫn thoát ra ngoài, symlink lạ, file thiết bị —
-    file tải từ mạng không được ghi ra chỗ nào khác ngoài thư mục của nó."""
-    if not hasattr(tarfile, "data_filter"):
-        raise RuntimeError("this Python is too old to unpack the voice safely — use 3.11.4 or newer")
-    shutil.rmtree(dest, ignore_errors=True)
-    with tarfile.open(archive, "r:bz2") as t:
-        t.extractall(dest, filter="data")
-    if not (dest / TTS_PACKAGE / "model.onnx").is_file():
-        raise RuntimeError("the download did not contain the Kokoro model")
-
-
-async def tts_download():
-    """Tải + giải nén giọng Kokoro, một lần. Đang tải thì không tải lần hai. Hỏng giữa chừng thì
-    không để lại gì: file .part và thư mục giải nén dở đều bị xoá."""
-    if _tts_dl["state"] in ("downloading", "unpacking"):
-        return
-    _tts_dl.update(state="downloading", done=0, error="")
-    await _tts_download_run()
-
-
-async def _tts_download_run():
-    TTS_DIR.mkdir(parents=True, exist_ok=True)
-    part = TTS_DIR / f"{TTS_PACKAGE}.tar.bz2.part"
-    tmp = TTS_DIR / ".unpacking"
-    try:
-        await _tts_fetch(TTS_URL, part, lambda done: _tts_dl.update(done=done))
-        _tts_dl["state"] = "unpacking"
-        await asyncio.to_thread(_tts_unpack, part, tmp)
-        shutil.rmtree(TTS_DIR / TTS_PACKAGE, ignore_errors=True)
-        os.replace(tmp / TTS_PACKAGE, TTS_DIR / TTS_PACKAGE)
-        _tts_dl["state"] = ""
-    except Exception as e:  # noqa: BLE001 — mọi kiểu hỏng đều phải hiện lên panel, không chết lặng
-        _tts_dl.update(state="failed", error=str(e) or type(e).__name__)
-    finally:
-        part.unlink(missing_ok=True)
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
-def tts_download_start():
-    """Bắt đầu tải ở nền. Trạng thái đổi NGAY, trước khi trả lời request: dialog đọc nó để biết
-    có phải hỏi tiến độ không — đợi task chạy mới đổi thì dialog thấy 'chưa tải' và đứng yên."""
-    if _tts_dl["state"] in ("downloading", "unpacking"):
-        return
-    _tts_dl.update(state="downloading", done=0, error="")
-    t = asyncio.create_task(_tts_download_run())
-    _tts_tasks.add(t)
-    t.add_done_callback(_tts_tasks.discard)
-
-
-def _tts_generate(text, sid, speed):
-    """Chạy trong thread (CPU, ~1.4× độ dài tiếng). Trả (samples float [-1,1], sample_rate)."""
-    global _tts
-    if _tts is None:
-        import sherpa_onnx
-        m = TTS_DIR / TTS_PACKAGE
-        # shortcut: một từ điển phát âm (Mỹ) cho cả giọng Anh — `lang` của Kokoro chốt lúc nạp
-        # model, hai bộ là hai lần 330 MB RAM; nạp thêm bản en-gb khi người học cần giọng Anh chuẩn.
-        _tts = sherpa_onnx.OfflineTts(sherpa_onnx.OfflineTtsConfig(
-            model=sherpa_onnx.OfflineTtsModelConfig(
-                kokoro=sherpa_onnx.OfflineTtsKokoroModelConfig(
-                    model=str(m / "model.onnx"), voices=str(m / "voices.bin"),
-                    tokens=str(m / "tokens.txt"), data_dir=str(m / "espeak-ng-data"),
-                    lexicon=str(m / "lexicon-us-en.txt")),
-                num_threads=TTS_THREADS, provider="cpu")))
-    a = _tts.generate(text, sid=sid, speed=speed)
-    return a.samples, a.sample_rate
-
-
-def _write_wav(dst, samples, rate):
-    """WAV 16-bit mono bằng stdlib: không cần numpy/soundfile (~49 MB) cho việc này."""
-    pcm = array.array("h", (int(max(-1.0, min(1.0, x)) * 32767) for x in samples))
-    if sys.byteorder == "big":
-        pcm.byteswap()
-    with wave.open(str(dst), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(pcm.tobytes())
-
-
-async def tts_speak(text, voice=TTS_DEFAULT_VOICE, speed=1.0, by=""):
-    """Đọc text thành một file WAV trong TTS_OUT (thư mục tạm, mất khi khởi động lại máy)."""
-    text = str(text or "").strip()
-    if not text or len(text) > TTS_MAX_CHARS:
-        raise ValueError(f"give the text to speak, up to {TTS_MAX_CHARS} characters")
-    if voice not in TTS_VOICES:
-        raise ValueError(f"voice must be one of: {', '.join(TTS_VOICES)}")
-    try:
-        speed = float(speed)
-    except (TypeError, ValueError):
-        raise ValueError("speed must be a number")
-    if not 0.5 <= speed <= 2.0:
-        raise ValueError("speed must be between 0.5 (slow) and 2.0 (fast)")
-    if importlib.util.find_spec("sherpa_onnx") is None:
-        raise LookupError(f"text to speech needs sherpa-onnx — install it: {TTS_INSTALL}")
-    if not _tts_ready():
-        raise LookupError("the Kokoro voice is not downloaded yet — press Download in "
-                          "Tools › Speak text (350 MB, once)")
-    async with _tts_lock:
-        samples, rate = await asyncio.to_thread(_tts_generate, text, TTS_VOICES.index(voice), speed)
-    # 0700: /tmp dùng chung mọi user trên máy, mà đây là chữ người dùng gõ.
-    TTS_OUT.mkdir(mode=0o700, parents=True, exist_ok=True)
-    dst = TTS_OUT / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.wav"
-    await asyncio.to_thread(_write_wav, dst, samples, rate)
-    return {"name": dst.name, "path": str(dst), "duration": round(len(samples) / rate, 2),
-            "voice": voice, "speed": speed, "text": text, "by": by or "", "created": _now()}
-
-
-def tts_path(name):
-    """File tiếng đọc trong TTS_OUT mang tên này, hoặc None — tên từ URL, chỉ nhận đúng mẫu ta đặt."""
-    if not re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{6}\.wav", name or ""):
-        return None
-    p = TTS_OUT / name
-    return p if p.is_file() else None
 
 
 # ─── Performance (Tools › Performance) ────────────────────────────────────────
@@ -4352,7 +3583,7 @@ class _WinPty:
 
 
 # Mỗi terminal/editor đang mở giữ CHẶT một thread (read chặn tới khi có byte). Pool mặc định của
-# asyncio chỉ ~20 thread và còn phục vụ mọi asyncio.to_thread (TTS, đọc sóng âm…) — ~20 card là
+# asyncio chỉ ~20 thread và còn phục vụ mọi asyncio.to_thread — ~20 card là
 # terminal mới treo và mọi thứ khác xếp hàng sau. Pool riêng, thread chỉ sinh khi cần.
 _PTY_POOL = ThreadPoolExecutor(max_workers=256, thread_name_prefix="pty")
 _PTYS: dict = {}     # pid → {session, kind: terminal|editor} của PTY đang mở (bảng Performance)
@@ -4707,190 +3938,6 @@ class AgyEngine(AgentEngine):
         # agy không phát event nén context ra stream, cũng không ghi mốc nào đọc được từ file .db
         # → không trích được. Trả found=False để UI hiện "chưa có", không giả vờ có dữ liệu.
         return {"found": False, "reason": "engine agy không expose compact summary"}
-
-
-# ─── Ảnh (tool generate_image của agy) ───────────────────────────────────────
-# `agy models` chỉ có model chat, nhưng AGENT của agy có tool generate_image — vẽ bằng quota tài
-# khoản Google đang login ở agy, không cần API key. ĐÃ ĐO trên agy 1.2.14:
-#  1. Tool chạy headless KHÔNG cần --dangerously-skip-permissions → phiên vẽ chạy KHÔNG bypass:
-#     agent không có shell, ngoài vẽ ra không làm được gì.
-#  2. Tham số của tool (ĐỌC từ jsonschema trong binary): ImageName, Prompt, AspectRatio ('1:1',
-#     '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'; mặc định 1:1) và ImagePaths (đường dẫn tuyệt đối,
-#     tối đa 3 — ảnh để sửa, ghép hay làm mẫu). KHÔNG có tham số chọn model ảnh: id model do
-#     server Google trả về (getImageGenerationModelID), theo tài khoản.
-#  3. Không chọn được chỗ lưu — file luôn nằm ở <AGY_HOME>/brain/<conversation_id>/<ImageName>_<ms>.jpg.
-#     Bảo agent "lưu vào X" là nó đi lùng cách chép, không có shell thì hỏng mà vẫn báo xong.
-#     → orchestrator tự nhặt file ở brain/ sau khi run xong.
-IMAGES_DIR = DB_DIR / "images"
-IMAGE_PROMPT_MAX = 4000
-IMAGE_RATIOS = ("1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9")
-IMAGE_REFS_MAX = 3                     # giới hạn của chính tool (ImagePaths maxItems=3)
-IMAGE_UPLOAD_MAX = 10 * 1024 * 1024
-# Model viết lại lời mô tả đi thẳng vào argv sau --model: không cho mở đầu bằng '-', kẻo thành cờ.
-_AGY_MODEL_OK = re.compile(r"^[a-z0-9][a-z0-9.-]{0,80}$")
-# Mỗi lần vẽ là một tiến trình agy + một phiên model. /v1 mở cho app ngoài, mà app ngoài (n8n,
-# script chạy lô…) bắn song song thoải mái → giới hạn số lần vẽ CÙNG LÚC, phần còn lại xếp hàng.
-# ponytail: con số cố định; thành biến môi trường khi có máy cần nhiều hơn.
-_IMAGE_SLOTS = asyncio.Semaphore(2)
-# Lỗi mở đầu bằng câu này = hết quota vẽ của tài khoản Google. /v1 đổi nó thành 429.
-IMAGE_QUOTA_ERR = "out of image quota"
-
-
-def image_ratio_for_size(size):
-    """`size` kiểu OpenAI ('1536x1024', 'auto'…) → hình dạng gần nhất tool nhận, hoặc None nếu sai
-    cú pháp. So theo LOG của tỉ lệ để 2:1 và 1:2 cách 1:1 bằng nhau."""
-    size = (size or "auto").strip().lower()
-    if size == "auto":
-        return "1:1"
-    # 'W:H' đi thẳng. OpenAI chỉ gửi pixel, nhưng caller nghĩ bằng TỈ LỆ (story-studio trả
-    # aspect "3:4") thì trước đây ăn 400 ngay lần gọi đầu — nhận luôn, không ai phải quy đổi.
-    if size in IMAGE_RATIOS:
-        return size
-    m = re.fullmatch(r"(\d{1,5})x(\d{1,5})", size)
-    if not m or not int(m[1]) or not int(m[2]):
-        return None
-    want = math.log(int(m[1]) / int(m[2]))
-    return min(IMAGE_RATIOS, key=lambda r: abs(math.log(int(r.split(":")[0]) / int(r.split(":")[1]))
-                                                - want))
-
-
-def image_writer_for_model(model):
-    """`model` kiểu OpenAI → model agy viết lại lời mô tả. 'agy:<slug>' → slug (cùng luật tiền tố
-    với chat API); mọi thứ khác ('agy', 'gpt-image-1', 'dall-e-3', rỗng) → '' = vẽ đúng lời gửi.
-    KHÔNG từ chối model lạ: nhiều tool dựng sẵn gửi cứng tên model OpenAI, người dùng không sửa
-    được — mà model vẽ thì đằng nào cũng do Google chọn."""
-    m = (model or "").strip()
-    return m.split(":", 1)[1].strip() if m.lower().startswith("agy:") else ""
-# Tên file đến từ URL: chỉ nhận tên PHẲNG (không '/', không '..'); đuôi còn phải là ảnh.
-_IMAGE_NAME_OK = re.compile(r"^[A-Za-z0-9_-]{1,80}\.[a-z]{3,4}$")
-# conversation_id của agy là UUID. KHÔNG dùng _SID_OK: nó nhận '..', mà id này được ghép thành
-# đường dẫn rồi rmtree.
-_AGY_CONV_OK = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-# Gọi đúng một tool rồi thôi. ĐÃ ĐO: prompt để ngỏ là agent đi đọc file MCP, đọc transcript của
-# chính nó — mỗi bước là thêm một lượt chat ăn quota.
-def image_instruction(prompt, ratio="1:1", refs=(), rewrite=False):
-    """Lời dặn cho agent vẽ. rewrite=False: lời người dùng vào tool NGUYÊN VĂN — model chat lúc
-    đó chỉ là người bấm nút, không ảnh hưởng gì tới ảnh."""
-    how = ("Rewrite the description below into one detailed image prompt (subject, setting, "
-           "composition, lighting, style), keeping everything it asks for, then call your "
-           "generate_image tool exactly once with that prompt"
-           if rewrite else
-           "Call your generate_image tool exactly once, passing the description below unchanged "
-           "as its prompt")
-    args = f"AspectRatio to {json.dumps(ratio)}"
-    if refs:
-        args += f" and ImagePaths to {json.dumps(list(refs))}"
-    return (f"{how}. Set {args}. Do not call any other tool. When it returns, reply with the "
-            f"single word: done.\n\nDescription:\n{prompt}")
-
-
-def image_ext(data):
-    """Đuôi file theo byte đầu: PNG, JPEG hay WebP — ba loại model ảnh của Gemini nhận làm ảnh
-    mẫu. Loại khác → ''. Không tin tên file hay content-type của client."""
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
-        return ".png"
-    if data[:3] == b"\xff\xd8\xff":
-        return ".jpg"
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return ".webp"
-    return ""
-
-
-def image_path(name):
-    """File ảnh trong IMAGES_DIR mang tên này, hoặc None."""
-    if not _IMAGE_NAME_OK.match(name or "") or Path(name).suffix not in FOLDER_IMAGE_TYPES:
-        return None
-    p = IMAGES_DIR / name
-    return p if p.is_file() else None
-
-
-def list_images():
-    """Ảnh đã vẽ, mới nhất trước (tên file mở đầu bằng thời điểm vẽ). Prompt nằm ở file .json
-    cùng tên — thiếu hay hỏng thì ảnh vẫn hiện, chỉ mất chú thích."""
-    out = []
-    for p in IMAGES_DIR.glob("*"):
-        if p.suffix not in FOLDER_IMAGE_TYPES:
-            continue
-        try:
-            meta = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            meta = {}
-        out.append({"prompt": "", "created": "", **meta, "name": p.name})
-    return sorted(out, key=lambda i: i["name"], reverse=True)
-
-
-def store_image(ext, meta, write):
-    """Một ảnh mới trong thư viện: write(dst) ghi file, meta đi vào .json cùng tên."""
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    dst = IMAGES_DIR / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}{ext}"
-    write(dst)
-    meta = {**meta, "created": _now()}
-    dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-    return {**meta, "name": dst.name}
-
-
-def _harvest_images(conv_id, meta):
-    """Chép ảnh agy vừa vẽ từ brain/<conv_id>/ về IMAGES_DIR, rồi xoá hội thoại đó.
-
-    Hội thoại chỉ là giấy nháp của MỘT lần vẽ: để lại thì mỗi ảnh thêm một dòng rác vào ô chọn
-    phiên agy của terminal card, đẩy phiên thật của người dùng xuống dưới."""
-    brain = AGY_HOME / "brain" / conv_id
-    made = []
-    for src in sorted(brain.glob("*")):
-        ext = src.suffix.lower()
-        if ext in FOLDER_IMAGE_TYPES and src.is_file():
-            made.append(store_image(ext, meta, lambda dst: shutil.copyfile(src, dst)))
-    delete_cli_session(conv_id, "agy")
-    shutil.rmtree(brain, ignore_errors=True)
-    return made
-
-
-async def generate_images(prompt, ratio="1:1", refs=(), writer=""):
-    """Một lần vẽ = một `agy -p` riêng, chờ tới khi xong (dưới một phút). Trả (ảnh[], lỗi).
-
-    refs: đường dẫn tuyệt đối của ảnh mẫu (đã kiểm là nằm trong thư viện). writer: model agy viết
-    lại lời mô tả trước khi vẽ; rỗng = vẽ đúng lời người dùng."""
-    if DRY_RUN:
-        return [], "dry-run: agy was not called"
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    drawn, failed = {}, []
-
-    async def on_event(kind, summary, payload):
-        # Tham số THẬT đi vào tool: khi đã nhờ model viết lại thì Prompt khác lời người dùng.
-        if kind == "tool_use" and payload.get("name") == "generate_image":
-            drawn.update(payload.get("input") or {})
-        # Lỗi của CHÍNH tool. ĐÃ ĐO: hết quota thì tool trả 429 RESOURCE_EXHAUSTED mà agent vẫn
-        # đáp "done" — chỉ đọc lời agent là người dùng không bao giờ biết vì sao không có ảnh.
-        if kind == "tool_result" and payload.get("is_error"):
-            failed.append(str(payload.get("result") or ""))
-
-    # "default" chứ không để trống: trống là rơi về DEFAULT_PERMISSION_MODE, mà mặc định là bypass.
-    flags = _agy_flags(model=f"agy:{writer}" if writer else "", permission_mode="default",
-                       effort="low", cwd=str(IMAGES_DIR))
-    text = image_instruction(prompt, ratio, refs, rewrite=bool(writer))
-    async with _IMAGE_SLOTS:
-        res = await _agy_exec([AGY_BIN, *flags, f"--prompt={text}"], str(IMAGES_DIR),
-                              on_event=on_event)
-    said = (res.get("result") or "").strip()
-    conv_id = res["raw"].get("conversation_id") or ""
-    if not _AGY_CONV_OK.match(conv_id):
-        return [], said or "agy did not start a conversation"
-    meta = {"prompt": prompt, "ratio": ratio}
-    if writer and drawn.get("Prompt"):
-        meta.update(writer=writer, drawn=str(drawn["Prompt"]))
-    made = _harvest_images(conv_id, meta)
-    if made:
-        return made, ""
-    if failed:
-        # Thân lỗi là JSON của Google: câu "message" mới là thứ người đọc được ("…quota will
-        # reset after 4h36m").
-        m = re.search(r'"message":\s*"([^"]+)"', failed[0])
-        why = m[1] if m else failed[0]
-        if "RESOURCE_EXHAUSTED" in failed[0] or " 429 " in failed[0]:
-            return [], f"{IMAGE_QUOTA_ERR}: {why}"
-        return [], f"agy's image tool failed: {why}"
-    # Tool không lỗi mà vẫn không có ảnh: agent từ chối (chính sách nội dung…) — lời nó là lý do.
-    return [], f"no image came back — agy said: {said}" if said else "no image came back"
 
 
 # Registry engine + resolver. Thêm engine mới = thêm 1 dòng vào ENGINES.
@@ -5427,15 +4474,6 @@ def _oa_intro():
         "The orchestrator runs on your own machine and checks no key. The OpenAI SDKs refuse an "
         "empty `api_key`, so pass any string. Anything that can reach this port can drive your "
         "agents.\n\n"
-        "### Images\n"
-        "`/v1/images/generations` and `/v1/images/edits` draw with the image tool inside the "
-        "Antigravity CLI, on the Google account `agy` is signed in with — no image API key. One "
-        "request is one drawing, usually under a minute, so `n` must be 1. `size` picks the "
-        "nearest of seven shapes; `model: 'agy:<model>'` has that model rewrite the prompt first "
-        "(Google picks the drawing model either way). Every image also lands in the dashboard "
-        "gallery.\n\n"
-        "```python\nimg = cli.images.generate(prompt='a paper crane', size='1536x1024')\n"
-        "cli.images.edit(image=[open('crane.png', 'rb')], prompt='fold it from red paper')\n```\n\n"
         "### Out of scope here\n"
         "The dashboard uses many more `/api/*` routes (signals, runs, terminal…). They change with "
         "the UI and are deliberately not specified.")
@@ -5510,60 +4548,6 @@ def _oa_path_chat():
                       "502": dict(_OA_ERR_RESP, description="The agent run failed")}}}
 
 
-def _oa_image_fields():
-    return {
-        "prompt": {"type": "string", "maxLength": IMAGE_PROMPT_MAX},
-        "model": {"type": "string", "examples": ["agy", "agy:gemini-3.1-pro-high"],
-                  "description": "`agy:<model>` has that agy model rewrite the prompt first. "
-                                 "Anything else, `gpt-image-1` included, draws from the prompt "
-                                 "as given. Google picks the drawing model either way."},
-        "size": {"type": "string", "default": "auto",
-                 "examples": ["1024x1024", "1536x1024", "1024x1536", "3:4", "16:9"],
-                 "description": "`<width>x<height>` is mapped to the nearest shape, or pass one of "
-                                "the shapes straight through: 1:1, 4:3, 3:2, 16:9, 3:4, 2:3, 9:16. "
-                                "The pixel size is Google's (16:9 came back 1376x768, 1:1 "
-                                "1024x1024, 3:2 1264x848). The response does not report the pixels "
-                                "it drew — measure the bytes if you need them."},
-        "n": {"type": "integer", "enum": [1], "default": 1},
-        "response_format": {"type": "string", "enum": ["b64_json", "url"], "default": "b64_json",
-                            "description": "`url` points at this server and needs the same API "
-                                           "key to fetch"}}
-
-
-def _oa_path_images(edit=False):
-    fields = _oa_image_fields()
-    if edit:
-        fields["image"] = {"type": "array", "minItems": 1, "maxItems": IMAGE_REFS_MAX,
-                           "items": {"type": "string", "format": "binary"},
-                           "description": f"1 to {IMAGE_REFS_MAX} PNG, JPEG or WebP images, "
-                                          f"{IMAGE_UPLOAD_MAX // 2**20} MB each, to edit, combine "
-                                          "or follow. Sent as `image` or `image[]`. `mask` is "
-                                          "ignored: the prompt says what to change."}
-        content = {"multipart/form-data": {"schema": {
-            "type": "object", "required": ["prompt", "image"], "properties": fields}}}
-    else:
-        content = {"application/json": {"schema": {
-            "type": "object", "required": ["prompt"], "properties": fields}}}
-    ok = _oa_json({"type": "object", "properties": {
-        "created": {"type": "integer"},
-        "data": {"type": "array", "items": {"type": "object", "properties": {
-            "b64_json": {"type": "string"}, "url": {"type": "string"},
-            "revised_prompt": {"type": "string",
-                               "description": "Only when a model rewrote the prompt (agy may "
-                                              "shorten a long one)"}}}}}},
-        "The image — also saved to the dashboard gallery")
-    return {"post": {
-        "tags": ["images"],
-        "summary": "Edit or combine images" if edit else "Draw an image",
-        "requestBody": {"required": True, "content": content},
-        "responses": {"200": ok, "400": _OA_ERR_RESP,
-                      "413": dict(_OA_ERR_RESP, description="An image is over the size limit"),
-                      "429": dict(_OA_ERR_RESP, description="The Google account is out of image "
-                                                            "quota; the message says when it resets"),
-                      "502": dict(_OA_ERR_RESP, description="agy drew nothing — the message says "
-                                                            "why (refusal, not signed in)")}}}
-
-
 def openapi_spec():
     """Đặc tả OpenAPI 3.1. Dựng trong hàm để hằng runtime (host/port/timeout) luôn khớp thực tế."""
     return {
@@ -5572,12 +4556,9 @@ def openapi_spec():
                  "description": _oa_intro()},
         "servers": [{"url": f"http://{ORCH_HOST}:{ORCH_PORT}"}],
         "tags": [{"name": "chat", "description": "OpenAI-compatible"},
-                 {"name": "images", "description": "OpenAI-compatible, drawn by agy"},
                  {"name": "agents", "description": "Create and inspect agents"}],
         "paths": {
             "/v1/chat/completions": _oa_path_chat(),
-            "/v1/images/generations": _oa_path_images(),
-            "/v1/images/edits": _oa_path_images(edit=True),
             "/v1/models": {"get": {
                 "tags": ["chat"], "summary": "List agents as OpenAI models",
                 "parameters": [_oa_query("workspace_id", "Empty means every workspace")],
@@ -5635,11 +4616,9 @@ needs network access. Offline, use the spec directly:
 def build_app():
     """Starlette app: REST control + SSE live events + background poll loop.
 
-    Ngoài API/dashboard của chính orchestrator, app này còn mount các MCP server nội
-    bộ (signal, library, voice) vào cùng 1 port để chỉ cần start 1 process:
+    Ngoài API/dashboard của chính orchestrator, app này còn mount MCP server nội bộ signal vào
+    cùng 1 port để chỉ cần start 1 process:
       - /signal/mcp  → signal_mcp (send_signal, compact_context, list_agents)
-      - /library/mcp → library_mcp (tìm và đo tiếng/ảnh trong Library — chỉ đọc)
-      - /voice/mcp   → voice_mcp (đọc thành tiếng bằng Kokoro, ra thư mục tạm)
     signal_mcp chạy in-process (gọi thẳng hàm orchestrator, không self-call HTTP).
     """
     from contextlib import AsyncExitStack, asynccontextmanager
@@ -5648,13 +4627,9 @@ def build_app():
     from starlette.requests import Request
     from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
     from starlette.routing import Mount, Route, WebSocketRoute
-    from starlette.formparsers import MultiPartException
-    from starlette.exceptions import HTTPException
     from starlette.staticfiles import StaticFiles
 
     import signal_mcp
-    import library_mcp
-    import voice_mcp
 
     # signal_mcp gọi thẳng các hàm orchestrator thay vì POST HTTP về chính mình.
     signal_mcp._INPROC = True
@@ -5665,11 +4640,8 @@ def build_app():
     # Stateless: mỗi CLI mở 4 phiên MCP và không bao giờ xoá; giữ phiên thì bộ nhớ chỉ tăng (đo: ~300
     # phiên / 2.4 giờ). Không tool nào giữ gì giữa các lượt gọi. Đặt ở đây chứ không trong từng
     # module để signal_mcp chạy độc lập vẫn như cũ.
-    for m in (signal_mcp, library_mcp, voice_mcp):
-        m.mcp.settings.stateless_http = True
+    signal_mcp.mcp.settings.stateless_http = True
     signal_app = signal_mcp.mcp.streamable_http_app()
-    library_app = library_mcp.mcp.streamable_http_app()
-    voice_app = voice_mcp.mcp.streamable_http_app()
 
     async def health(request: Request):
         # embedded_terminal: CI Windows kiểm tra cờ này để bắt trường hợp pywinpty không được
@@ -6268,167 +5240,6 @@ def build_app():
             return await request.json()
         except (ValueError, TypeError):
             return {}
-
-    async def api_images(request: Request):
-        return JSONResponse(list_images())
-
-    async def api_images_generate(request: Request):
-        """Vẽ ảnh bằng tài khoản Google của agy. Request CHỜ tới khi agy xong, dưới một phút."""
-        b = await _body(request)
-        prompt = str(b.get("prompt") or "").strip()
-        ratio = str(b.get("ratio") or "1:1")
-        writer = str(b.get("writer") or "").strip()
-        names = b.get("refs") or []
-        if not prompt or len(prompt) > IMAGE_PROMPT_MAX:
-            return JSONResponse({"error": f"describe the image in 1 to {IMAGE_PROMPT_MAX} "
-                                          "characters"}, status_code=400)
-        if ratio not in IMAGE_RATIOS:
-            return JSONResponse({"error": f"shape must be one of {', '.join(IMAGE_RATIOS)}"},
-                                status_code=400)
-        if writer and not _AGY_MODEL_OK.match(writer):
-            return JSONResponse({"error": f"'{writer}' is not an agy model"}, status_code=400)
-        if not isinstance(names, list) or len(names) > IMAGE_REFS_MAX:
-            return JSONResponse({"error": f"up to {IMAGE_REFS_MAX} reference images"},
-                                status_code=400)
-        # Ảnh mẫu CHỈ lấy từ thư viện: tên phẳng, kiểm bằng image_path như lúc phục vụ file.
-        refs = [image_path(str(n)) for n in names]
-        if None in refs:
-            return JSONResponse({"error": "a reference image is no longer in the gallery"},
-                                status_code=400)
-        made, err = await generate_images(prompt, ratio, [str(p) for p in refs], writer)
-        if err:
-            return JSONResponse({"error": err}, status_code=502)
-        return JSONResponse(made)
-
-    async def api_images_upload(request: Request):
-        """Đưa ảnh của người dùng vào thư viện, để dùng làm ảnh mẫu. Body là byte thô của file —
-        không multipart, khỏi kéo thêm python-multipart. Đọc CÓ TRẦN: dừng ngay khi vượt cỡ chứ
-        không nuốt hết vào RAM rồi mới đếm."""
-        data = b""
-        async for chunk in request.stream():
-            data += chunk
-            if len(data) > IMAGE_UPLOAD_MAX:
-                return JSONResponse({"error": f"images up to {IMAGE_UPLOAD_MAX // 2**20} MB"},
-                                    status_code=413)
-        ext = image_ext(data)
-        if not ext:
-            return JSONResponse({"error": "only PNG, JPEG or WebP images"}, status_code=400)
-        name = request.query_params.get("name", "")[:120]
-        return JSONResponse(store_image(ext, {"prompt": "", "uploaded": name},
-                                        lambda dst: dst.write_bytes(data)))
-
-    async def api_image_file(request: Request):
-        p = image_path(request.path_params["name"])
-        if not p:
-            return JSONResponse({"error": "no such image"}, status_code=404)
-        return FileResponse(p, media_type=FOLDER_IMAGE_TYPES[p.suffix],
-                            headers={"X-Content-Type-Options": "nosniff"})
-
-    async def api_image_delete(request: Request):
-        p = image_path(request.path_params["name"])
-        if not p:
-            return JSONResponse({"error": "no such image"}, status_code=404)
-        p.unlink()
-        p.with_suffix(".json").unlink(missing_ok=True)
-        return JSONResponse({"deleted": p.name})
-
-    # ── Sounds: tìm video, tách tiếng, cắt trong editor ─────────────────────
-    def _sound_err(e):
-        code = 400 if isinstance(e, ValueError) else 409 if isinstance(e, LookupError) else 502
-        return JSONResponse({"error": str(e)}, status_code=code)
-
-    async def api_sounds(request: Request):
-        return JSONResponse({"status": sound_status(), "items": list_sounds()})
-
-    async def api_sounds_search(request: Request):
-        b = await _body(request)
-        try:
-            return JSONResponse(await sound_search(b.get("query"), b.get("limit") or 10,
-                                                   b.get("ai_only", True) is not False,
-                                                   b.get("max_minutes") or SOUND_MAX_MIN))
-        except (ValueError, LookupError, RuntimeError) as e:
-            return _sound_err(e)
-
-    async def api_sounds_extract(request: Request):
-        b = await _body(request)
-        try:
-            return JSONResponse(await sound_extract(b.get("url"), b.get("format") or "mp3", "user",
-                                                    draft=b.get("draft") is True))
-        except (ValueError, LookupError, RuntimeError) as e:
-            return _sound_err(e)
-
-    # Cùng handler cho thư viện và bản nháp: chỉ khác thư mục, theo đường dẫn request.
-    def _sound_req(request):
-        return sound_path(request.path_params["name"],
-                          draft=request.url.path.startswith("/api/sounds/drafts/"))
-
-    async def api_tts(request: Request):
-        """Đọc thành tiếng: GET = tình trạng (engine, giọng đã tải chưa, tiến độ tải, danh sách
-        giọng); POST /speak = đọc; POST /download = tải giọng (350 MB, chạy nền, GET để xem)."""
-        return JSONResponse(tts_status())
-
-    async def api_tts_download(request: Request):
-        if not tts_status()["engine"]:
-            return JSONResponse({"error": f"install sherpa-onnx first: {TTS_INSTALL}"},
-                                status_code=409)
-        if not _tts_ready():
-            tts_download_start()
-        return JSONResponse(tts_status(), status_code=202)
-
-    async def api_tts_speak(request: Request):
-        b = await _body(request)
-        try:
-            return JSONResponse(await tts_speak(b.get("text"), b.get("voice") or TTS_DEFAULT_VOICE,
-                                                b.get("speed", 1.0), "user"))
-        except (ValueError, LookupError, RuntimeError) as e:
-            return _sound_err(e)
-
-    async def api_tts_file(request: Request):
-        p = tts_path(request.path_params["name"])
-        if not p:
-            return JSONResponse({"error": "no such speech — it may have been cleared on restart"},
-                                status_code=404)
-        return FileResponse(p, media_type="audio/wav", headers={"X-Content-Type-Options": "nosniff"})
-
-    async def api_sounds_upload(request: Request):
-        try:
-            return JSONResponse(await sound_upload(request.stream(),
-                                                   request.query_params.get("name", "")))
-        except ValueError as e:
-            return _sound_err(e)
-
-    async def api_sound_peaks(request: Request):
-        try:
-            return JSONResponse(await sound_peaks(request.path_params["name"]))
-        except (LookupError, RuntimeError) as e:
-            return _sound_err(e)
-
-    async def api_sound_keep(request: Request):
-        b = await _body(request)
-        try:
-            return JSONResponse(await sound_keep(request.path_params["name"], b.get("start"),
-                                                 b.get("end")))
-        except (ValueError, LookupError, RuntimeError) as e:
-            return _sound_err(e)
-
-    async def api_sound_file(request: Request):
-        p = _sound_req(request)
-        if not p:
-            return JSONResponse({"error": "no such sound"}, status_code=404)
-        # ?download=1 → lưu về máy với tên là tiêu đề video; không có → phát ngay trong <audio>.
-        if request.query_params.get("download"):
-            return FileResponse(p, media_type=SOUND_FORMATS[p.suffix[1:]],
-                                filename=sound_download_name(p))
-        return FileResponse(p, media_type=SOUND_FORMATS[p.suffix[1:]],
-                            headers={"X-Content-Type-Options": "nosniff"})
-
-    async def api_sound_delete(request: Request):
-        p = _sound_req(request)
-        if not p:
-            return JSONResponse({"error": "no such sound"}, status_code=404)
-        p.unlink()
-        p.with_suffix(".json").unlink(missing_ok=True)
-        return JSONResponse({"deleted": p.name})
 
     async def api_models(request: Request):
         """Model agy THẬT SỰ dùng được trên máy này (đọc từ `agy models`, cache 10 phút).
@@ -7133,103 +5944,6 @@ def build_app():
              "engine": engine_name_of_session(s), "status": s["status"]}
             for s in items]})
 
-    # ── /v1/images: vẽ ảnh, shape OpenAI (lõi chung với dashboard: generate_images) ──
-
-    def _oa_image_args(f):
-        """Field OpenAI (body JSON hoặc form) → ((prompt, ratio, writer, fmt), None) | (None, lỗi)."""
-        prompt = str(f.get("prompt") or "").strip()
-        if not prompt or len(prompt) > IMAGE_PROMPT_MAX:
-            return None, _oa_err(f"prompt must be 1 to {IMAGE_PROMPT_MAX} characters")
-        if f.get("n") not in (None, "", 1, "1"):
-            return None, _oa_err("n must be 1: each request draws one image")
-        ratio = image_ratio_for_size(str(f.get("size") or "auto"))
-        if not ratio:
-            return None, _oa_err("size must be 'auto' or '<width>x<height>'")
-        writer = image_writer_for_model(str(f.get("model") or ""))
-        if writer and not _AGY_MODEL_OK.match(writer):
-            return None, _oa_err(f"'{writer}' is not an agy model")
-        fmt = str(f.get("response_format") or "b64_json")
-        if fmt not in ("b64_json", "url"):
-            return None, _oa_err("response_format must be 'b64_json' or 'url'")
-        return (prompt, ratio, writer, fmt), None
-
-    async def _oa_image_draw(request, prompt, ratio, writer, fmt, refs=()):
-        made, err = await generate_images(prompt, ratio, refs, writer)
-        if err:
-            resp = (_oa_err(err, 429, typ="insufficient_quota", code="insufficient_quota")
-                    if err.startswith(IMAGE_QUOTA_ERR) else _oa_err(err, 502, typ="upstream_error"))
-            # SDK OpenAI tự thử lại 429/5xx tới 2 lần — mỗi lần là một lượt agy, một lần ăn quota,
-            # một bản ảnh mẫu nữa vào thư viện. ĐÃ ĐO: edit hỏng = 3 lần chạy. Header này SDK nghe.
-            resp.headers["x-should-retry"] = "false"
-            return resp
-        data = []
-        for m in made:
-            item = {"revised_prompt": m["drawn"]} if m.get("drawn") else {}
-            if fmt == "url":
-                item["url"] = f"{request.base_url}api/images/{m['name']}"
-            else:
-                item["b64_json"] = base64.b64encode((IMAGES_DIR / m["name"]).read_bytes()).decode()
-            data.append(item)
-        return JSONResponse({"created": _chat_created(), "data": data})
-
-    async def api_v1_images_generations(request: Request):
-        """POST /v1/images/generations — client.images.generate()."""
-        try:
-            body = await request.json()
-        except ValueError:
-            body = None
-        if not isinstance(body, dict):
-            return _oa_err("body must be a JSON object")
-        args, err = _oa_image_args(body)
-        return err or await _oa_image_draw(request, *args)
-
-    async def api_v1_images_edits(request: Request):
-        """POST /v1/images/edits — client.images.edit(): multipart, ảnh ở field `image` (`image[]`
-        khi gửi nhiều). Ảnh vào thư viện như nút Add image… rồi thành ảnh mẫu (ImagePaths).
-
-        Starlette đọc HẾT multipart ra file tạm trước khi tới đây, nên chặn theo content-length
-        từ trước — không thì một body cỡ GB lấp đầy đĩa rồi mới bị từ chối."""
-        cap = IMAGE_UPLOAD_MAX * IMAGE_REFS_MAX + 2**20
-        if int(request.headers.get("content-length") or 0) > cap:
-            return _oa_err(f"images up to {IMAGE_UPLOAD_MAX // 2**20} MB each", 413)
-        try:
-            # +1 file: client có thể gửi kèm mask (bị bỏ qua, nhưng vẫn là một file).
-            form = await request.form(max_files=IMAGE_REFS_MAX + 1, max_fields=20)
-        # ValueError: python-multipart ném MultipartParseError (con của ValueError) với body hỏng,
-        # starlette không bọc lại. KHÔNG bắt rộng hơn: thiếu hẳn gói thì starlette assert, và lỗi
-        # đó phải là 500 cho smoke test ở CI thấy, không được giả làm "form sai".
-        except (MultiPartException, ValueError) as e:
-            return _oa_err(f"could not read the form: {e}")
-        # Starlette bọc MultiPartException thành HTTPException(400) khi chạy trong app (bản
-        # starlette/python-multipart mới) → trả text trần, không phải lỗi dạng OpenAI.
-        except HTTPException as e:
-            if e.status_code != 400:
-                raise
-            return _oa_err(f"could not read the form: {e.detail}")
-        args, err = _oa_image_args(form)
-        if err:
-            return err
-        files = [v for k, v in form.multi_items()
-                 if k in ("image", "image[]") and hasattr(v, "read")]
-        if not files:
-            return _oa_err("send at least one image in the 'image' field")
-        if len(files) > IMAGE_REFS_MAX:
-            return _oa_err(f"up to {IMAGE_REFS_MAX} images")
-        # Kiểm HẾT trước rồi mới lưu: ảnh thứ ba hỏng thì hai ảnh đầu không được nằm lại thư viện.
-        ups = []
-        for f in files:
-            data = await f.read(IMAGE_UPLOAD_MAX + 1)
-            if len(data) > IMAGE_UPLOAD_MAX:
-                return _oa_err(f"{f.filename}: images up to {IMAGE_UPLOAD_MAX // 2**20} MB", 413)
-            ext = image_ext(data)
-            if not ext:
-                return _oa_err(f"{f.filename}: only PNG, JPEG or WebP images")
-            ups.append((ext, data, (f.filename or "")[:120]))
-        refs = [str(IMAGES_DIR / store_image(ext, {"prompt": "", "uploaded": name},
-                                             lambda dst, d=data: dst.write_bytes(d))["name"])
-                for ext, data, name in ups]
-        return await _oa_image_draw(request, *args, refs=refs)
-
     @asynccontextmanager
     async def lifespan(app):
         init_db()  # idempotent — cũng migrate bảng/cột mới cho DB cũ (vd run_events)
@@ -7239,14 +5953,12 @@ def build_app():
         async with AsyncExitStack() as stack:
             # Khởi động session manager của từng MCP sub-app (bắt buộc cho /mcp).
             await stack.enter_async_context(signal_app.router.lifespan_context(app))
-            await stack.enter_async_context(library_app.router.lifespan_context(app))
-            await stack.enter_async_context(voice_app.router.lifespan_context(app))
             task = asyncio.create_task(run_loop())
             ltask = asyncio.create_task(_lag_sampler())
             print(f"[orchestrator] Dashboard: http://{ORCH_HOST}:{ORCH_PORT}")
             print(f"[orchestrator] API docs:  http://{ORCH_HOST}:{ORCH_PORT}/docs"
                   + (f"  (dry_run={DRY_RUN})" if DRY_RUN else ""))
-            print("[orchestrator] MCP mounted: /signal/mcp, /library/mcp, /voice/mcp")
+            print("[orchestrator] MCP mounted: /signal/mcp")
             # Agent chạy shell với bypassPermissions. CORS mở (không có API key nào khác chặn) =
             # bất kỳ trang web nào người dùng mở cũng POST được /v1 và sai khiến agent trên máy này.
             # In thành KHỐI có viền: người double-click .exe chỉ thấy console vài giây trước khi
@@ -7262,8 +5974,7 @@ def build_app():
                       "!! SECURITY: this orchestrator is reachable beyond this machine.\n"
                       + "".join(f"!!   {w}\n" for w in why)
                       + "!! Agents here run shell commands with permissions bypassed, and there is\n"
-                      "!! no API key. Anyone who can reach the port can drive them, read every\n"
-                      "!! generated image, and spend your Google image quota.\n"
+                      "!! no API key. Anyone who can reach the port can drive them.\n"
                       "!! Fix: unset ORCH_HOST and ORCH_CORS_ORIGINS in the .env next to the\n"
                       "!! executable to go back to this machine only.\n"
                       f"{bar}\n", file=sys.stderr)
@@ -7310,26 +6021,7 @@ def build_app():
         Route("/api/mcp/check", api_mcp_check, methods=["POST"]),
         Route("/api/mcp/connect", api_mcp_connect, methods=["POST"]),
         Route("/api/mcp/disconnect", api_mcp_disconnect, methods=["POST"]),
-        Route("/api/images", api_images),
-        Route("/api/images", api_images_generate, methods=["POST"]),
-        Route("/api/images/upload", api_images_upload, methods=["POST"]),
-        Route("/api/images/{name}", api_image_file),
-        Route("/api/images/{name}", api_image_delete, methods=["DELETE"]),
-        Route("/api/sounds", api_sounds),
-        Route("/api/sounds", api_sounds_extract, methods=["POST"]),
-        Route("/api/sounds/search", api_sounds_search, methods=["POST"]),
-        Route("/api/sounds/upload", api_sounds_upload, methods=["POST"]),
         Route("/api/perf", api_perf),
-        Route("/api/tts", api_tts),
-        Route("/api/tts/download", api_tts_download, methods=["POST"]),
-        Route("/api/tts/speak", api_tts_speak, methods=["POST"]),
-        Route("/api/tts/files/{name}", api_tts_file),
-        Route("/api/sounds/drafts/{name}", api_sound_file),
-        Route("/api/sounds/drafts/{name}", api_sound_delete, methods=["DELETE"]),
-        Route("/api/sounds/drafts/{name}/peaks", api_sound_peaks),
-        Route("/api/sounds/drafts/{name}/keep", api_sound_keep, methods=["POST"]),
-        Route("/api/sounds/{name}", api_sound_file),
-        Route("/api/sounds/{name}", api_sound_delete, methods=["DELETE"]),
         Route("/api/sessions/{sid}", api_session_detail),
         Route("/api/sessions/{sid}/unregister", api_unregister, methods=["POST"]),
         Route("/api/sessions/{sid}/runs", api_session_runs),
@@ -7366,20 +6058,15 @@ def build_app():
         # Chat tương thích OpenAI cho app ngoài (base_url = http://<host>:<port>/v1)
         Route("/v1/chat/completions", api_chat_completions, methods=["POST"]),
         Route("/v1/models", api_chat_models),
-        Route("/v1/images/generations", api_v1_images_generations, methods=["POST"]),
-        Route("/v1/images/edits", api_v1_images_edits, methods=["POST"]),
         # Tài liệu: /docs xem bằng Swagger UI, /openapi.json để import vào Postman/codegen.
         Route("/openapi.json", api_openapi),
         Route("/docs", api_docs),
-        # MCP server nội bộ mount chung port (đặt trước static "/"): /signal/mcp, /library/mcp,
-        # /voice/mcp.
+        # MCP server nội bộ mount chung port (đặt trước static "/"): /signal/mcp.
         Mount("/signal", app=signal_app),
-        Mount("/library", app=library_app),
-        Mount("/voice", app=voice_app),
     ]
     # Đội sub-agent của director: tab Team (xem team.py). Đặt trước static "/".
     import team
-    routes[-4:-4] = team.routes()
+    routes[-2:-2] = team.routes()
 
     # Dashboard (Phase C): serve static UI at "/" (must be last — catches the rest).
     static_dir = _bundle_dir() / "static" / "orchestrator"
@@ -7429,6 +6116,12 @@ def serve():
     conn.execute("UPDATE runs SET status = 'error', ended_at = ? WHERE status = 'running'", (_now(),))
     conn.commit()
     conn.close()
+    # Ở serve() chứ không ở lifespan: check_*.py chạy lifespan in-process trên port mặc định, đặt
+    # trong đó thì verify.py sửa luôn config thật của người chạy. Dọn hỏng không được chặn server.
+    try:
+        _forget_removed_builtins()
+    except Exception as e:  # noqa: BLE001
+        print(f"[orchestrator] could not clean old MCP entries: {e}", file=sys.stderr)
     # Ctrl-C: KHÔNG đặt _stop_streams() trong lifespan được. Thứ tự của uvicorn là
     #   nhận tín hiệu → NGỪNG nhận request mới → CHỜ mọi response đang dở đóng → mới chạy
     #   lifespan shutdown.

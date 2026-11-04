@@ -9,7 +9,7 @@ The quiet ways it goes wrong:
     blocked the server for 170 ms; it must use a handful, and its daily numbers must not change;
   - the queries that run all the time (runs of today, signals every 5 s) must use an index —
     those tables only grow;
-  - the agent tool servers (MCP) kept one session per connection and nothing ever closed them;
+  - the agent tool server (MCP) kept one session per connection and nothing ever closed them;
   - deleting an agent left its editor (nvim + language servers) running in tmux with no card left
     to close it;
   - Tools › Performance must say whose terminal or run each process is, and count zombies;
@@ -135,13 +135,12 @@ async def main():
         init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
                 "params": {"protocolVersion": "2025-06-18", "capabilities": {},
                            "clientInfo": {"name": "check", "version": "1"}}}
-        for name in ("signal", "library", "voice"):
-            r1 = await cl.post(f"/{name}/mcp", json=init, headers=hdr, follow_redirects=True)
-            r2 = await cl.post(f"/{name}/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-                               headers=hdr, follow_redirects=True)
-            check(f"/{name}/mcp keeps no session, and works without one",
-                  r1.status_code == 200 and "mcp-session-id" not in r1.headers
-                  and r2.status_code == 200 and '"tools"' in r2.text, f"{r1.status_code} {r2.status_code} {r2.text[:120]}")
+        r1 = await cl.post("/signal/mcp", json=init, headers=hdr, follow_redirects=True)
+        r2 = await cl.post("/signal/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                           headers=hdr, follow_redirects=True)
+        check("/signal/mcp keeps no session, and works without one",
+              r1.status_code == 200 and "mcp-session-id" not in r1.headers
+              and r2.status_code == 200 and '"tools"' in r2.text, f"{r1.status_code} {r2.status_code} {r2.text[:120]}")
 
         # ── Xoá agent thì đóng editor của nó ─────────────────────────────────
         stopped, real_stop = [], so.editor_stop

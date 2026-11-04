@@ -6,7 +6,7 @@ tab asked" is the Origin header. Three beliefs here are wrong and each one is qu
 
   - "CORS protects us." It does not. A browser SENDS a simple request (POST, text/plain) and only
     blocks the caller from READING the reply. MEASURED: with CORS fully off, a cross-site POST to
-    /api/images still reached the handler. An attacker who spawns an agent does not care what the
+    a state-changing route still reached the handler. An attacker who spawns an agent does not care what the
     reply said;
   - "binding 127.0.0.1 protects us." It does not. The user's own browser runs on that machine, so
     localhost is reachable from any page they open;
@@ -66,36 +66,36 @@ async def main():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url=f"http://{HOST}") as c:
         # THE measured attack: a simple request needs no preflight, so CORS never sees it.
-        r = await c.post("/api/images", content='{"prompt": "pwned"}',
+        r = await c.post("/api/sessions/spawn", content='{"name": "pwned"}',
                          headers={"content-type": "text/plain", "origin": EVIL})
         check("the cross-site simple POST that used to reach the handler is refused",
               r.status_code == 403 and r.json()["error"]["code"] == "cross_origin",
               f"{r.status_code} {r.text[:90]}")
-        r = await c.post("/v1/images/generations", json={"prompt": "x"},
+        r = await c.post("/v1/chat/completions", json={"messages": []},
                          headers={"origin": EVIL})
         check("/v1 is refused the same way", r.status_code == 403, str(r.status_code))
         r = await c.post("/api/sessions/spawn", json={"name": "evil"}, headers={"origin": EVIL})
         check("spawning an agent cross-site is refused", r.status_code == 403, str(r.status_code))
-        r = await c.delete("/api/images/x.jpg", headers={"origin": EVIL})
+        r = await c.delete("/api/signals/1", headers={"origin": EVIL})
         check("deleting cross-site is refused", r.status_code == 403, str(r.status_code))
 
         # file:// and sandboxed iframes send 'null'. No legitimate page of this app does.
-        r = await c.post("/api/images", json={"prompt": "x"}, headers={"origin": "null"})
+        r = await c.post("/api/sessions/spawn", json={"name": "x"}, headers={"origin": "null"})
         check("origin 'null' is refused", r.status_code == 403, str(r.status_code))
         # Prefix matching must not be fooled by a lookalike host.
-        r = await c.post("/api/images", json={"prompt": "x"},
+        r = await c.post("/api/sessions/spawn", json={"name": "x"},
                          headers={"origin": f"http://{HOST}.evil.example"})
         check("a lookalike origin is refused", r.status_code == 403, str(r.status_code))
 
         # ...while everything legitimate still works.
-        r = await c.post("/api/images", json={"prompt": "", "ratio": "5:4"},
+        r = await c.post("/api/sessions/spawn", json={},
                          headers={"origin": f"http://{HOST}"})
         check("the dashboard's own origin passes the guard",
               r.status_code == 400, f"{r.status_code} (400 = reached the handler)")
-        r = await c.post("/api/images", json={"prompt": "", "ratio": "5:4"})
+        r = await c.post("/api/sessions/spawn", json={})
         check("a client with no Origin (curl, the OpenAI SDK, n8n) passes",
               r.status_code == 400, str(r.status_code))
-        r = await c.get("/api/images", headers={"origin": EVIL})
+        r = await c.get("/api/sessions", headers={"origin": EVIL})
         check("a cross-site GET is left to CORS, not blocked here",
               r.status_code == 200, str(r.status_code))
         r = await c.get("/health", headers={"origin": EVIL})
