@@ -4,7 +4,7 @@
   const $ = (sel, from = document) => from.querySelector(sel);
   const $$ = (sel, from = document) => [...from.querySelectorAll(sel)];
   const make = (tag, cls = '', text = '') => Object.assign(document.createElement(tag), { className: cls, textContent: text });
-  const tidy = s => s.trim().replace(/\s+/g, ' ').replace(/ ([,.;:)])/g, '$1');
+  const tidy = s => s.trim().replace(/\s+/g, ' ');
 
   // Runs in <head>, before first paint, so a stored dark theme never flashes light.
   root.classList.add('js');
@@ -66,6 +66,8 @@
     const r = await fetch(url);
     if (!r.ok) throw new Error(`${url}: ${r.status}`);
     const doc = new DOMParser().parseFromString(await r.text(), 'text/html'), out = [];
+    // Blocks written with no whitespace between them would otherwise run their words together.
+    $$('p,li,td,th,.callout b,.card > *', doc).forEach(el => el.append(' '));
     const walk = doc.createTreeWalker($('main', doc), NodeFilter.SHOW_TEXT);
     let cur = null, el = null;
     while (walk.nextNode()) {
@@ -76,7 +78,7 @@
         el = h;
       }
       if (h) cur.head += n.data;
-      else if (cur) cur.text += n.data + ' ';
+      else if (cur) cur.text += n.data;
     }
     return out.map(e => ({ ...e, head: tidy(e.head), text: tidy(e.text) }));
   }
@@ -100,8 +102,10 @@
       a.id = 'result-' + i;
       a.setAttribute('role', 'option');
       a.setAttribute('aria-selected', 'false');
-      const from = Math.max(0, e.text.toLowerCase().indexOf(word) - 40);
-      const snippet = (from ? '…' : '') + e.text.slice(from, from + 120) + (from + 120 < e.text.length ? '…' : '');
+      // Cut at spaces so a snippet never shows half a word.
+      const at = e.text.toLowerCase().indexOf(word), from = at > 40 ? e.text.lastIndexOf(' ', at - 40) + 1 : 0;
+      const end = e.text.indexOf(' ', from + 120);
+      const snippet = (from ? '…' : '') + (end < 0 ? e.text.slice(from) : e.text.slice(from, end) + '…');
       a.append(make('span', 'result-page', e.page), make('span', 'result-head', e.head));
       if (snippet) a.append(make('span', '', snippet));
       const li = make('li');
