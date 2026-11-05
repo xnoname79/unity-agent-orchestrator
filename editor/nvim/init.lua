@@ -229,23 +229,37 @@ local HINT = 'Press i to type · Esc to stop · F1 for actions'
 local hint_done = false
 vim.api.nvim_create_autocmd('InsertEnter', { once = true, callback = function() hint_done = true end })
 
+local function ln_col() return 'Ln ' .. vim.fn.line('.') .. ', Col ' .. vim.fn.virtcol('.') end
+
 -- lualine truncates at the start of c or x, which cuts Ln/Col first, so whatever does not fit hides.
--- Room left after the mode label, the branch with a small diff, and Ln/Col.
+-- Room left after the mode label, a small diff and Ln/Col.
+-- shortcut: assumes a diff of 6 columns, measure it if a big diff in a tight bar ever cuts Ln/Col.
 local function bar_room()
-  local branch = require('lualine.components.branch.git_branch').get_branch()
-  return vim.o.columns - (keys.vim_keys() and #mode_label() + 2 or 0) - (branch ~= '' and #branch + 2 or 0) - 6 - 16
+  return vim.o.columns - (keys.vim_keys() and #mode_label() + 2 or 0) - 6 - (#ln_col() + 2)
+end
+
+-- A long branch shortens, then hides. A cut must not leave half of lualine's %% escape behind.
+local function fit_branch(name)
+  local room = bar_room() - 2
+  if vim.fn.strdisplaywidth(name) <= room then return name end
+  return room < 6 and '' or (vim.fn.strcharpart(name, 0, room - 1):gsub('%%+$', '')) .. '…'
+end
+
+local function room_after_branch()
+  local branch = fit_branch(require('lualine.components.branch.git_branch').get_branch())
+  return bar_room() - (branch ~= '' and vim.fn.strdisplaywidth(branch) + 2 or 0)
 end
 
 local function show_hint()
   local bo = vim.bo
   return not hint_done and keys.vim_keys() and vim.api.nvim_get_mode().mode == 'n'
     and bo.buftype == '' and bo.modifiable and not bo.readonly
-    and bar_room() >= vim.fn.strdisplaywidth(HINT) + 2
+    and room_after_branch() >= vim.fn.strdisplaywidth(HINT) + 2
 end
 
 -- Spaces, encoding, line ending and file type together take about 32 columns.
 local function bar_has_room()
-  return bar_room() - (show_hint() and vim.fn.strdisplaywidth(HINT) + 2 or 0) >= 32
+  return room_after_branch() - (show_hint() and vim.fn.strdisplaywidth(HINT) + 2 or 0) >= 32
 end
 
 require('lualine').setup({
@@ -260,10 +274,9 @@ require('lualine').setup({
   },
   sections = {
     lualine_a = { { mode_label, cond = keys.vim_keys } },
-    lualine_b = { { 'branch', icon = '' }, 'diff', 'diagnostics' },
+    lualine_b = { { 'branch', icon = '', fmt = fit_branch }, 'diff', 'diagnostics' },
     lualine_c = { { function() return HINT end, cond = show_hint } },
-    lualine_x = { function() return 'Ln ' .. vim.fn.line('.') .. ', Col ' .. vim.fn.virtcol('.') end,
-                  { spaces, cond = bar_has_room } },
+    lualine_x = { ln_col, { spaces, cond = bar_has_room } },
     lualine_y = { { 'encoding', fmt = string.upper, cond = bar_has_room }, { 'fileformat',
       symbols = { unix = 'LF', dos = 'CRLF', mac = 'CR' }, cond = bar_has_room } },
     lualine_z = { { 'filetype', cond = function() return vim.bo.buftype == '' and bar_has_room() end } },

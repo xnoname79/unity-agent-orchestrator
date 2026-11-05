@@ -928,10 +928,31 @@ async def live_modes(exe, env, root):
 
     flag.unlink()
     (state / "use-vim-keys").write_text("", encoding="utf-8")
+    long_branch = "feature/" + "a-very-long-branch-name-" * 3
+    _git(project, "init", "-q", "-b", long_branch)
     proc = start()
     try:
         await up()
         check("the old use-vim-keys file means nothing", expr("mode()") == "n", expr("mode()"))
+        for cols in (94, 48, 34):
+            send(f"<C-\\><C-N><Cmd>set columns={cols}<CR>")
+            await until(lambda: expr("&columns") == str(cols) and "Ln 1, Col 1" in bar(), 3)
+            text = bar()
+            check(f"a long branch does not cut Ln/Col or the mode at {cols} columns",
+                  "NORMAL" in text and "Ln 1, Col 1" in text and "<" not in text, text)
+        send("<C-\\><C-N><Cmd>set columns=94<CR>")
+        await until(lambda: expr("&columns") == "94", 3)
+
+        # Qua đúng F1: Telescope đẩy con trỏ sang phải một ô ngay trước khi rời insert.
+        send("<C-\\><C-N>gg0<F1>")
+        await until(lambda: expr("&filetype") == "TelescopePrompt", 5)
+        send("Turn off")
+        await asyncio.sleep(0.5)
+        send("<CR>")
+        await mode_is("i")
+        await asyncio.sleep(0.3)
+        check("Turn off Vim modes from column 1 keeps the cursor in column 1",
+              expr("&filetype") != "TelescopePrompt" and expr("col('.')") == "1", expr("col('.')"))
     finally:
         stop(proc)
 

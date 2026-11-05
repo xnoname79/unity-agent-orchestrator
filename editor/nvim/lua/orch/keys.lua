@@ -406,6 +406,8 @@ function M.set_vim_keys(on, quiet)
     vim.keymap.set('i', '<CR>', pum('<C-y>', '<CR>'), { expr = true })
     vim.cmd.stopinsert()
   else
+    -- Vim style never uses this, and Telescope shifts the cursor one right just before leaving insert.
+    saved_cursor = nil
     pcall(vim.keymap.del, 'i', '<S-Tab>')
     vim_only_maps(false)
     apply_typing(true)
