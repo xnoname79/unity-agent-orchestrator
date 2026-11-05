@@ -30,6 +30,9 @@
     font-weight: 100 900; font-display: swap; }
   @font-face { font-family: "Geist Mono"; src: url("/vendor/fonts/GeistMono-Variable.woff2") format("woff2");
     font-weight: 100 900; font-display: swap; }
+  /* Icon của card editor, cho máy không cài Nerd Font. Chỉ tải khi có card editor. */
+  @font-face { font-family: "Symbols Nerd Font Mono";
+    src: url("/vendor/fonts/SymbolsNerdFontMono-Regular.woff2") format("woff2"); font-display: block; }
   :root, :root[data-theme="light"] {
     color-scheme: light;
     --font: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -46,6 +49,7 @@
     --edge-wait: #f5b94f; --edge-run: #4f5fe0;
     --zone-line: #c3c9e8; --zone-fill: rgba(79,95,224,.045);
     --term-bg: #0b0d11; --scrim: rgba(18,22,30,.45);
+    --ed-bg: #1f1f1f; --ed-fg: #cccccc; --ed-title: #ffffff;
     --sh-1: 0 1px 2px rgba(18,22,30,.06);
     --sh-2: 0 4px 14px rgba(18,22,30,.10);
     --sh-3: 0 14px 40px rgba(18,22,30,.16);
@@ -951,7 +955,13 @@
     font-weight: 600; }
   .editor-head .cwd { color: var(--muted); max-width: 380px; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
-  .editor-card .term-slot { height: 560px; max-height: 72vh; }
+  .editor-card .term-slot { height: 560px; max-height: 72vh; background: var(--ed-bg); }
+  .editor-card .term-host { padding: 0; }
+  .editor-card .xterm-viewport { overflow-y: hidden; }
+  .ed-status { flex: 1; min-height: 240px; padding: 24px; background: var(--ed-bg); color: var(--ed-fg);
+    font-size: 13px; line-height: 1.6; }
+  .ed-status b { color: var(--ed-title); }
+  .ed-status p { margin: 6px 0 14px; max-width: 60ch; }
 
   /* Card thư mục — duyệt project ngay trong dashboard, không phải cửa sổ của OS */
   .folder-card { width: 560px; max-width: 92vw; display: flex; flex-direction: column; padding: 0; }

@@ -80,7 +80,6 @@ let PAIR_CAP = 4;        // trần ping-pong mỗi cặp agent; đồng bộ t�
 let PAIR_WINDOW_MIN = 60;  // cửa sổ đếm, phút; đồng bộ từ /health.
 // Chế độ dev (cờ `--dev` / ORCH_DEV_MODE ở server, đồng bộ từ /health): nút mở project mở
 // card nvim thay vì trình quản lý file của OS. Mặc định TẮT — xem DEV_MODE ở backend.
-let DEV = false;
 
 let openRunId = null;   // run đang mở trong drawer (null = đóng)
 let currentWS = "";     // workspace đang lọc ("" = tất cả, admin view)
@@ -1455,8 +1454,66 @@ async function fillTermSessions(el, sid, cli) {
 }
 window.fillTermSessions = fillTermSessions;
 
+// Card editor: phím và clipboard mà nvim một mình không làm được từ trong terminal.
+function wireEditorTerm(t) {
+  // OSC 52 CHỈ-GHI: chương trình trong terminal được đặt clipboard, không bao giờ được đọc.
+  t.term.parser.registerOscHandler(52, (data) => {
+    const b64 = data.slice(data.indexOf(";") + 1);
+    if (b64 === "?" || !navigator.clipboard) return true;
+    try {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      navigator.clipboard.writeText(new TextDecoder().decode(bytes)).catch(console.error);
+    } catch (e) { console.error(e); }
+    return true;
+  });
+  // nvim báo kiểu phím qua title (qua được tmux); Vim keys thì Ctrl+V là visual block của vim.
+  t.term.onTitleChange((title) => { t.vimKeys = title === "orch:vim"; });
+  t.host.addEventListener("paste", () => { t.pasted = true; }, { capture: true });
+  t.term.attachCustomKeyEventHandler((e) => {
+    if (!e.ctrlKey || e.altKey || e.metaKey) return true;
+    const k = e.key.toLowerCase();
+    if (e.shiftKey && k === "f") {        // xterm không có mã cho Ctrl+Shift+F: gửi F20, nvim đã map
+      if (e.type === "keydown" && t.ws.readyState === 1) { e.preventDefault(); t.ws.send(JSON.stringify({ t: "i", d: "\x1b[34~" })); }
+      return false;
+    }
+    if (e.shiftKey) return true;
+    if (k === "/") {                      // bản xterm này không gửi gì cho Ctrl+/
+      if (e.type === "keydown" && t.ws.readyState === 1) { e.preventDefault(); t.ws.send(JSON.stringify({ t: "i", d: "\x1f" })); }
+      return false;
+    }
+    if (k === "v" && !t.vimKeys) {
+      // Để trình duyệt tự dán (không cần xin quyền đọc clipboard). Không có sự kiện paste, tức phím
+      // không do người thật gõ, thì mới đọc clipboard.
+      if (e.type === "keydown") {
+        t.pasted = false;
+        setTimeout(() => {
+          if (t.pasted || !navigator.clipboard) return;
+          navigator.clipboard.readText().then((s) => { if (s) t.term.paste(s); }).catch(console.error);
+        }, 150);
+      }
+      return false;
+    }
+    if (k === "c" && t.term.hasSelection()) {   // chữ bôi bằng Shift+kéo thuộc về xterm, nvim không thấy
+      if (e.type === "keydown") {
+        if (navigator.clipboard) navigator.clipboard.writeText(t.term.getSelection()).catch(console.error);
+        t.term.clearSelection();
+      }
+      return false;
+    }
+    return true;
+  });
+}
+
 function startTerm(t) {
   t.started = true;
+  // xterm đo và vẽ ngay; font icon chưa tải xong là hình ô trống. Đợi nó, lỗi thì vẫn mở.
+  if (t.key.startsWith("ed:") && document.fonts && !t.fontReady) {
+    document.fonts.load('12px "Symbols Nerd Font Mono"', "\uf07b").catch(console.error).finally(() => {
+      t.fontReady = true;
+      if (t.host.isConnected || cvTerms[t.key]) startTerm(t);
+    });
+    return;
+  }
   // Nền terminal đọc từ token --term-bg để đổi theme không để lại một ô lệch màu.
   const bg = getComputedStyle(document.documentElement).getPropertyValue("--term-bg").trim();
   // fontFamily: giữ NGUYÊN mặc định của xterm.js ('courier-new, courier, monospace') làm font
@@ -1466,13 +1523,15 @@ function startTerm(t) {
   // các font trước KHÔNG có, tức đúng mấy icon Nerd Font của nvim/lazygit.
   // Font đọc ở máy chạy TRÌNH DUYỆT, không phải máy chạy orchestrator.
   // scrollback 1000: TUI bận đổ đầy 5000 dòng sau vài giờ, ~10-15 MB mỗi terminal × số card × số pane.
-  t.term = new Terminal({ fontSize: 12, cursorBlink: true, scrollback: 1000,
+  // Editor: nvim là alternate screen, không có gì để cuộn; scrollback 0 cũng trả lại cột của thanh cuộn.
+  t.term = new Terminal({ fontSize: 12, cursorBlink: true, scrollback: t.key.startsWith("ed:") ? 0 : 1000,
                           fontFamily: 'courier-new, courier, monospace, "Iosevka Nerd Font", '
                                       + '"Symbols Nerd Font Mono", "JetBrainsMono Nerd Font"',
                           theme: { background: bg || "#0c0e12", foreground: "#e6e8eb" } });
   t.fit = new FitAddon.FitAddon();
   t.term.loadAddon(t.fit);
   t.term.open(t.host);
+  if (t.key.startsWith("ed:")) wireEditorTerm(t);
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const path = t.wsPath
     || `/ws/terminal?session=${encodeURIComponent(t.sid)}`
@@ -1716,22 +1775,26 @@ function folderCardHtml(s) {
 }
 
 async function closeEditor(sid, name) {
-  if (!confirm(`Close the editor for '${name}'?\n\nIts nvim session is killed — unsaved buffers `
-               + `are lost (nvim leaves a swap file to :recover from).`))
+  if (!confirm(`Close the editor for '${name}'?\n\nEvery open file closes with it, and changes `
+               + `you have not saved are lost.`))
     return;
   try { await api("/api/editor/close", "POST", { session: sid }); await refreshAll(); }
   catch (e) { alert("Could not close the editor: " + e); }
 }
 window.closeEditor = closeEditor;
 
-// Đổi tab = gửi một lệnh ex vào nvim ở SERVER (:DiffviewOpen / :DiffviewClose). Không đụng gì
-// tới xterm: nó vẫn attach vào đúng phiên, nvim tự vẽ lại. Không có state tab nào ở client phải
-// giữ đồng bộ — nút chỉ sáng lên cho biết vừa bấm gì.
+// Đổi tab = gửi một lệnh ex vào nvim ở SERVER qua RPC (:OrchFiles / :OrchGit). Không đụng gì tới
+// xterm: nó vẫn attach vào đúng phiên, nvim tự vẽ lại. Tab đang sáng nằm ở server (st.view) vì
+// canvas dựng lại card suốt; ghi cả vào editorCards để lần render kế tiếp không kịp nháy về cũ.
 async function editorFocus(sid, win, el) {
   try { await api("/api/editor/focus", "POST", { session: sid, window: win }); }
   catch (e) { console.error(e); return; }
+  const card = editorCards.find((c) => c.session === sid);
+  if (card) card.view = win;
   const bar = el && el.parentElement;
   if (bar) for (const b of bar.querySelectorAll("button")) b.classList.toggle("on", b === el);
+  const t = cvTerms["ed:" + sid];
+  if (t && t.term) t.term.focus();   // bấm tab xong gõ tiếp được ngay
 }
 window.editorFocus = editorFocus;
 
@@ -1740,25 +1803,32 @@ function editorCardHtml(st) {
   // key riêng ("ed:") vì một session có thể mở CẢ terminal agent lẫn editor — trùng key là hai
   // card dùng chung một xterm.
   const tip = st.persistent
-    ? "Runs in tmux — closing the tab only detaches, the buffer survives"
-    : "No tmux on this machine — closing the tab ends the nvim session";
-  // Một tab = một cửa sổ tmux. Chỉ hiện khi CÓ tmux và có nhiều hơn một cửa sổ — máy không có
-  // tmux thì card chỉ là một PTY nvim, không chuyển đi đâu được.
-  const wins = st.windows || ["nvim"];
-  const tabs = wins.length < 2 ? "" : `<span class="ed-tabs">` + wins.map((w, i) =>
-    `<button class="${i === 0 ? "on" : ""}" onclick="editorFocus('${sid}','${esc(w)}',this)"
-      title="${w === "git" ? "diffview.nvim — side-by-side diff of the working tree, staged, or any revision" : "back to editing (closes the diff view)"}"
-      >${esc(w)}</button>`).join("") + `</span>`;
+    ? "Closing or reloading this browser tab keeps your open files and unsaved text"
+    : "tmux is not installed here: closing or reloading this browser tab ends the editor and "
+      + "loses unsaved text";
+  const wins = st.state ? [] : st.windows || [];
+  const tabs = wins.length < 2 ? "" : `<span class="ed-tabs">` + wins.map((w) =>
+    `<button class="${(st.view || "edit") === w ? "on" : ""}" onclick="editorFocus('${sid}','${esc(w)}',this)"
+      title="${w === "git" ? "See what changed, in every git repo of this project" : "Back to the files"}"
+      >${w === "git" ? "Source Control" : "Files"}</button>`).join("") + `</span>`;
+  // Chưa có nvim: chữ thay cho terminal đen. "starting" chỉ kéo dài một nhịp.
+  const body = st.state === "failed"
+    ? `<div class="ed-status"><b>The editor could not start</b><p>${esc(st.error || "")}</p>
+         <button class="secondary" onclick="openEditor('${sid}')">Try again</button></div>`
+    : st.state
+    ? `<div class="ed-status"><b>${st.state === "downloading" ? "Downloading the editor…" : "Starting the editor…"}</b>
+         ${st.state === "downloading" ? "<p>About 12 MB, once only. It opens here by itself when ready.</p>" : ""}</div>`
+    : `<div class="term-slot" data-sid="${sid}" data-key="ed:${sid}"
+      data-ws="/ws/editor?session=${encodeURIComponent(st.session)}"></div>`;
   return `<div class="agent-card editor-card">
     <div class="node-head editor-head" title="${esc(tip)}">
       <span class="ed-ic">${ic("edit", "sm")}</span>${tabs}<b>${esc(st.name || '')}</b>
       <span class="cwd" title="${esc(st.cwd || '')}">${esc(st.cwd || '')}</span>
       <span class="spacer"></span>
       <button class="icon-btn danger" onclick="closeEditor('${sid}','${esc(st.name || '')}')"
-        title="Close the editor (kills its nvim session)">${ic("x", "sm")}</button>
+        title="Close the editor (unsaved changes are lost)">${ic("x", "sm")}</button>
     </div>
-    <div class="term-slot" data-sid="${sid}" data-key="ed:${sid}"
-      data-ws="/ws/editor?session=${encodeURIComponent(st.session)}"></div>
+    ${body}
   </div>`;
 }
 
@@ -1936,14 +2006,11 @@ function quickBtns(s, id) {
   if (s.skill_missing?.length)
     b.push(btn("warn", `SKILL missing in ${s.skill_missing.join(", ")} — copy it from .claude`,
       `act('/api/sessions/${id}/skill/sync')`, ic("book", "sm")));
-  // Một nút, hai chế độ (xem DEV). Người dùng thường mở thư mục bằng trình quản lý file của
-  // máy họ; chỉ chế độ dev mới mở card nvim trên canvas.
-  if ((s.cwd || "").trim())
-    b.push(DEV
-      ? btn("", "Open this session's project folder in nvim — as many editors as you like",
-            `openEditor('${id}')`, ic("edit", "sm"))
-      : btn("", "Browse this project's folder on the canvas",
-            `openFolderCard('${id}')`, ic("folder", "sm")));
+  if ((s.cwd || "").trim()) {
+    b.push(btn("", "Edit this project's files", `openEditor('${id}')`, ic("edit", "sm")));
+    b.push(btn("", "Browse this project's folder on the canvas",
+               `openFolderCard('${id}')`, ic("folder", "sm")));
+  }
   return b.join("");
 }
 
@@ -3840,7 +3907,6 @@ async function refreshNow() {
     if (health.default_effort) DEFAULT_EFFORT = health.default_effort;
     if (health.pair_signal_cap) PAIR_CAP = health.pair_signal_cap;
     if (health.pair_signal_window_min) PAIR_WINDOW_MIN = health.pair_signal_window_min;
-    DEV = !!health.dev_mode;
     $("dry").hidden = !health.dry_run;
 
     if (!PANE) {

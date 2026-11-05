@@ -54,6 +54,8 @@ jobs:
         # non-ASCII comments.
         env:
           PYTHONUTF8: "0"
+          # Downloads the pinned nvim and proves the win64 path, including the RPC tab switch.
+          ORCH_CHECK_EDITOR_LIVE: "1"
         run: python verify.py
 
       - name: Package

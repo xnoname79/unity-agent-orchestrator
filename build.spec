@@ -9,6 +9,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [
     ("static", "static"),                    # dashboard (index.html, app.js, vendor xterm)
+    ("editor", "editor"),                    # config nvim + plugin vendored + tmux.conf của card editor
     ("templates", "templates"),    # template vai (dropdown spawn) + playbook của sub-agent
     ("LICENSE", "."),                        # MIT: bản build cũng phải kèm notice
 ]
