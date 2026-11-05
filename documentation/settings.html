@@ -98,6 +98,8 @@ in the project folder, and what you typed in the CLI's own history stay.</p>
     <tr><td><code>ORCH_PORT</code></td><td><code>8992</code></td><td>Port 8992 is taken.</td></tr>
     <tr><td><code>CLAUDE_BIN</code></td><td><code>claude</code></td><td>The app cannot find your Claude Code CLI.</td></tr>
     <tr><td><code>ORCH_AGY_BIN</code></td><td><code>agy</code></td><td>The app cannot find your Antigravity CLI.</td></tr>
+    <tr><td><code>ORCH_NVIM_BIN</code></td><td>empty (download)</td><td>The editor download fails, or you want your own nvim 0.12+. See <a href="#editor-download">below</a>.</td></tr>
+    <tr><td><code>ORCH_NVIM_MIRROR</code></td><td>GitHub</td><td>GitHub is blocked and you host the nvim release files yourself.</td></tr>
     <tr><td><code>ORCH_HOST</code></td><td><code>127.0.0.1</code></td><td>Only to reach it from another machine. Read the warning below.</td></tr>
     <tr><td><code>ORCH_CORS_ORIGINS</code></td><td>empty (off)</td><td>Only for a web app of your own that calls the API from a browser.</td></tr>
     <tr><td><code>ORCH_SUBAGENTS_MAX</code></td><td><code>4</code></td><td>Active sub-agents per director.</td></tr>
@@ -121,6 +123,21 @@ in the project folder, and what you typed in the CLI's own history stay.</p>
 </div>
 <p>By default the server listens on your own machine only and refuses requests from other websites. It prints a warning
 at startup if you open it up. Run it as your own user, never as root, and give agents only projects you are happy for them to change.</p>
+
+<h2 id="editor-download">If the editor will not download</h2>
+<p>The first time you open <a href="agents.html#editor">the editor</a>, the app downloads Neovim 0.12.6 from GitHub into
+<code>.session_orch_db/nvim</code> in your home folder and checks it against a fixed hash. A Neovim already on your system
+is not used, because older versions break the bundled plugins. If the card says it could not start, try one of these:</p>
+<ul>
+  <li><strong>No network, or GitHub is blocked:</strong> install Neovim 0.12 or newer yourself and set
+    <code>ORCH_NVIM_BIN</code> to its path, or put the release files on a server of your own and set
+    <code>ORCH_NVIM_MIRROR</code> to that folder's URL. The hash is still checked.</li>
+  <li><strong>It failed its integrity check:</strong> the file was damaged or changed on the way, and nothing was installed.
+    Press <span class="ui">Try again</span>. If it repeats, use <code>ORCH_NVIM_BIN</code>.</li>
+  <li><strong>It will not run on this machine</strong> or there is no build for it: use <code>ORCH_NVIM_BIN</code>.</li>
+</ul>
+<p>With tmux installed, editor cards run on a private tmux server, separate from your own sessions. List them with
+<code>tmux -L orch-nvim ls</code>.</p>
 
 <h2 id="keep-running">Keep it running</h2>
 <p>This is optional. Replace the paths with where you unzipped or cloned it.</p>

@@ -190,18 +190,40 @@ if "cli-tag" not in JS or ".cli-tag" not in style:
 check("the MCP modal speaks for every CLI", gaps,
       "an agent on agy reads a different file than claude")
 
-# 12 · Nút "mở project" có HAI chế độ và mặc định KHÔNG phải nvim. Hỏng im lặng: DEV không còn
-# được nạp từ /health, nên nó mãi là false và người chạy `--dev` mất card nvim; hoặc nhánh DEV bị
-# gộp lại thành một nút, và người dùng không lập trình bấm vào là rơi thẳng vào nvim.
+# 12 · Mọi card agent có CẢ nút editor LẪN nút thư mục, không cần cờ nào. Không còn chế độ dev.
 gaps = set()
-if "DEV = !!health.dev_mode" not in JS:
-    gaps.add("DEV must come from /health — hardcoded, --dev on the server changes nothing")
-if "window.openFolderCard = openFolderCard" not in JS:
-    gaps.add("openFolderCard must be exported — it is only reachable from an inline handler")
-if "b.push(DEV" not in JS:
-    gaps.add("the card's quick button must branch on DEV, not open nvim for everyone")
-check("the project button opens a folder unless the server is in dev mode", gaps,
-      "nvim is a dead end for someone who does not know :q")
+if "dev_mode" in JS or "DEV" in re.findall(r"\bDEV\b", JS):
+    gaps.add("the DEV branch must stay gone: the buttons no longer depend on a server flag")
+if "window.openFolderCard = openFolderCard" not in JS or "window.openEditor = openEditor" not in JS:
+    gaps.add("openEditor/openFolderCard must be exported — only inline handlers reach them")
+if "`openEditor('${id}')`" not in JS or "`openFolderCard('${id}')`" not in JS:
+    gaps.add("the card must offer both the editor button and the folder button")
+check("every agent card has both the editor and the folder button", gaps,
+      "no flag should decide who can open the editor")
+
+# 12b · Card editor: những thứ chỉ hỏng khi người thật dùng.
+gaps = set()
+if 'registerOscHandler(52' not in JS or '"ed:"' not in JS:
+    gaps.add("OSC 52 handler on ed: terminals — Ctrl+C in nvim never reaches the browser clipboard")
+if "readText" in JS.split("registerOscHandler(52")[1].split("});")[0]:
+    gaps.add("the OSC 52 handler must stay write-only: a program must not read the clipboard")
+if "wireEditorTerm(t)" not in JS or "t.key.startsWith(\"ed:\")" not in JS:
+    gaps.add("wireEditorTerm must only run on editor terminals, agents keep their own Ctrl+C/Ctrl+V")
+if '"Symbols Nerd Font Mono"' not in style or "SymbolsNerdFontMono-Regular.woff2" not in style:
+    gaps.add("@font-face for the icon font — without it the file tree draws empty boxes")
+font = HERE / "vendor" / "fonts" / "SymbolsNerdFontMono-Regular.woff2"
+if not font.is_file() or not (HERE / "vendor" / "fonts" / "SymbolsNerdFont-LICENSE.txt").is_file():
+    gaps.add("the bundled icon font and its licence")
+if 'document.fonts.load(\'12px "Symbols Nerd Font Mono"\'' not in JS:
+    gaps.add("xterm must wait for the icon font or the first frame has empty boxes")
+if "edView[st.session]" not in JS or 'i === 0 ? "on"' in JS:
+    gaps.add("the highlighted tab must come from edView — the first tab must not win on re-render")
+if "Source Control" not in JS or '"Files"' not in JS:
+    gaps.add("the head tabs say Files and Source Control")
+if "ed-status" not in JS or ".ed-status" not in style or "Downloading the editor" not in JS:
+    gaps.add("text on the card during the first download, not a black rectangle")
+check("the editor card keeps clipboard, icons, tab highlight and download text", gaps,
+      "these only break in front of a real user")
 
 # 13 · Card thư mục đọc cây qua HTTP và nằm trên canvas, nên nó dính hai cái bẫy riêng:
 #   - path nhồi vào inline onclick: một dấu nháy trong tên file là phá cả attribute, và tên file

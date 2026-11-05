@@ -18,8 +18,6 @@ An toàn (nền từ Phase A):
 Env:
   ORCH_DB              tên DB (default "orchestrator") → ~/.session_orch_db/<name>.db
   ORCH_DRY_RUN         "1" = không gọi claude thật, trả stub (default "0")
-  ORCH_DEV_MODE        "1" = chế độ dev: nút mở project là card nvim thay vì trình quản lý
-                       file của OS (default "0"; cờ `--dev` cũng bật)
   ORCH_POLL_INTERVAL   giây giữa các lần poll (default 5)
   ORCH_MAX_CONCURRENT  số session chạy song song tối đa (default 3)
   ORCH_STREAM          "1" = stream transcript (thinking/tool_use/text) real-time (default 1)
@@ -44,18 +42,24 @@ Usage:
 import argparse
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
+import platform
 import re
 import secrets
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 import urllib.parse
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -135,12 +139,6 @@ DEFAULT_WORKSPACE = "default"
 # API mà không nói group nào, nên KHÔNG bao giờ xoá được: xoá là có workspace mồ côi.
 DEFAULT_GROUP = "grp_default"
 DRY_RUN = os.environ.get("ORCH_DRY_RUN", "0") == "1"
-# Chế độ dev: nút "mở project" của một session mở card nvim (xem editor_start) thay vì trình
-# quản lý file của OS (xem folder_open). MẶC ĐỊNH TẮT — người dùng không lập trình mở nvim ra
-# là mắc cạn ở đó. Chọn lúc KHỞI ĐỘNG, không có công tắc trên UI: chế độ quyết định card nào
-# mở được, mà card thì sống trong tmux qua cả restart — bật tắt giữa phiên là dashboard nói một
-# đằng, tmux giữ một nẻo.
-DEV_MODE = os.environ.get("ORCH_DEV_MODE", "0") == "1"
 POLL_INTERVAL = int(os.environ.get("ORCH_POLL_INTERVAL", "5"))
 MAX_CONCURRENT = int(os.environ.get("ORCH_MAX_CONCURRENT", "3"))
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
@@ -2132,20 +2130,208 @@ def folder_list(root, rel):
 # `tmux ls` chính là sổ đăng ký, và nó sống qua cả restart orchestrator. Bản VS Code cũ giữ dict
 # trong RAM, nên restart xong là mấy tiến trình serve-web thành mồ côi mà UI không còn thấy để
 # đóng.
-NVIM_BIN = os.environ.get("ORCH_NVIM_BIN", "nvim")
 TMUX_BIN = os.environ.get("ORCH_TMUX_BIN", "tmux")
+# tmux server RIÊNG (-L) + config riêng (-f): không đọc ~/.tmux.conf, không thấy và không đụng
+# phiên tmux của người dùng. Prefix của tmux tắt trong config vì Ctrl+B thuộc về nvim.
+EDITOR_TMUX_SOCKET = "orch-nvim"
 # Git UI trong card = diffview.nvim, tức là một PLUGIN CỦA CHÍNH NVIM chứ không phải chương
-# trình riêng. Nên tab git KHÔNG phải cửa sổ tmux thứ hai: nó chỉ là một lệnh ex gõ vào đúng
-# nvim đang mở. Ít máy móc hơn hẳn bản lazygit trước đó — một tiến trình, một cửa sổ, và diff
-# mở ra ngay trong buffer nên dùng chung LSP, theme, phím tắt của người dùng.
-# (Zed thì không nhúng được kiểu nào: CLI 1.15.0 không có chế độ phục vụ HTTP, mọi tuỳ chọn đều
-# mở cửa sổ desktop.)
-EDITOR_VIEWS = {"edit": "DiffviewClose", "git": "DiffviewOpen"}
-EDITOR_PREFIX = "orch-nvim-"     # tiền tố tên phiên tmux — để không đụng phiên tmux của người dùng
+# trình riêng. Nên tab git KHÔNG phải cửa sổ tmux thứ hai: nó chỉ là một lệnh ex gửi vào đúng
+# nvim đang mở, qua RPC nên chạy được cả khi không có tmux. Lệnh do editor/nvim/lua/orch/scm.lua
+# định nghĩa, gồm cả trường hợp một project chứa nhiều repo.
+EDITOR_VIEWS = {"edit": "OrchFiles", "git": "OrchGit"}
+EDITOR_PREFIX = "orch-nvim-"     # tiền tố tên phiên tmux
+EDITOR_APPNAME = "orch-nvim"     # stdpath riêng: không đọc/ghi ~/.config/nvim, ~/.local/share/nvim
 
 # Máy không có tmux (Windows là chính) vẫn mở được card, nhưng là PTY trần: đóng tab là nvim
 # chết, và "đang mở" chỉ còn là ghi nhớ trong RAM, mất khi restart.
 _editors: set = set()
+# Card chưa có nvim: {sid: {"state": "downloading"|"failed", "error": str}}. Card hiện chữ thay vì
+# một hình chữ nhật đen.
+_editor_pending: dict = {}
+_editor_tasks: set = set()       # giữ tham chiếu task nền, không thì GC thu giữa chừng
+
+# nvim ghim phiên bản và hash, không dùng nvim của hệ thống: bản cũ làm plugin bundled hỏng
+# (máy dev có 0.9.0). Không đặt XDG_CONFIG_HOME: nó che luôn git config của người dùng.
+NVIM_VERSION = "0.12.6"
+NVIM_ASSETS = {
+    ("linux", "x86_64"): ("nvim-linux-x86_64.tar.gz",
+                          "474430d53e6264f6d6dd18db42d6dc9df3a1b56ca9e88a325bbf860e1a811d87"),
+    ("linux", "aarch64"): ("nvim-linux-arm64.tar.gz",
+                           "8f1f64a0bdb97247034038c3823c6cbad5bdf9ecd5751b85494b71c3ee04c815"),
+    ("linux", "arm64"): ("nvim-linux-arm64.tar.gz",
+                         "8f1f64a0bdb97247034038c3823c6cbad5bdf9ecd5751b85494b71c3ee04c815"),
+    ("darwin", "arm64"): ("nvim-macos-arm64.tar.gz",
+                          "1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b"),
+    ("darwin", "x86_64"): ("nvim-macos-x86_64.tar.gz",
+                           "481424f1dbc85f637d57e47d27d042aa9c883e5a4fe9ee64fc4ee9573b221998"),
+    ("win32", "amd64"): ("nvim-win64.zip",
+                         "4e12b7103b601ffc8f25954b4da100f339faa73dccb69a5b135e897fa3d893ed"),
+}
+NVIM_MAX_DOWNLOAD = 64 * 1024 * 1024    # asset thật ~12 MB; trần chặn mirror hỏng đổ đầy đĩa
+NVIM_ALTERNATIVE = "As an alternative, install nvim 0.12+ yourself and set ORCH_NVIM_BIN to its path."
+_NVIM_LOCK = threading.Lock()
+_nvim_ok: set = set()            # binary đã chạy thử --version trong phiên server này
+
+
+class NvimUnavailable(OSError):
+    """Không có nvim để chạy. str(e) là câu hiện thẳng cho người dùng trong card."""
+
+
+def _nvim_asset():
+    key = (sys.platform, platform.machine().lower())
+    asset = NVIM_ASSETS.get(key)
+    if not asset:
+        raise NvimUnavailable(f"There is no ready-made editor for this machine ({key[0]} {key[1]}). "
+                              + NVIM_ALTERNATIVE)
+    return asset
+
+
+def _nvim_managed_exe(asset_name):
+    folder = asset_name.split(".")[0]    # thư mục gốc trong archive trùng tên asset
+    exe = "nvim.exe" if asset_name.endswith(".zip") else "nvim"
+    return Path(folder) / "bin" / exe
+
+
+def nvim_find():
+    """Đường dẫn nvim dùng được ngay, None nếu phải tải. Tuyệt đối không dò nvim trên PATH."""
+    custom = os.environ.get("ORCH_NVIM_BIN", "").strip()
+    if custom:
+        found = shutil.which(custom)
+        if not found:
+            raise NvimUnavailable(f"ORCH_NVIM_BIN is set to '{custom}', but that program was not "
+                                  "found. Fix the path or unset it to let the app download the editor.")
+        return found
+    exe = DB_DIR / "nvim" / NVIM_VERSION / _nvim_managed_exe(_nvim_asset()[0])
+    return str(exe) if exe.is_file() else None
+
+
+def _nvim_check(exe):
+    """Chạy thử --version. Binary tải về đúng hash vẫn có thể không chạy (glibc quá cũ…)."""
+    try:
+        r = subprocess.run([str(exe), "--version"], capture_output=True, timeout=30,
+                           stdin=subprocess.DEVNULL, env=dict(os.environ, NVIM_APPNAME=EDITOR_APPNAME))
+        why = "" if r.returncode == 0 else f"it exited with code {r.returncode}"
+    except (OSError, subprocess.TimeoutExpired) as e:
+        why = str(e)
+    if why:
+        raise NvimUnavailable(f"The editor program will not run on this machine: {why}. "
+                              + NVIM_ALTERNATIVE)
+
+
+def _nvim_download(url, dest, sha256):
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with httpx.stream("GET", url, follow_redirects=True,
+                          timeout=httpx.Timeout(30, connect=15)) as r:
+            r.raise_for_status()
+            with open(dest, "wb") as f:
+                for chunk in r.iter_bytes():
+                    size += len(chunk)
+                    if size > NVIM_MAX_DOWNLOAD:
+                        raise NvimUnavailable("The editor download is larger than expected, so it "
+                                              "was refused. " + NVIM_ALTERNATIVE)
+                    digest.update(chunk)
+                    f.write(chunk)
+    except (httpx.HTTPError, httpx.InvalidURL) as e:
+        raise NvimUnavailable(f"Could not download the editor ({e}). Check the network and try "
+                              "again. " + NVIM_ALTERNATIVE) from e
+    if digest.hexdigest() != sha256:
+        raise NvimUnavailable("The downloaded editor failed its integrity check, so nothing was "
+                              "installed. " + NVIM_ALTERNATIVE)
+
+
+def _nvim_unsafe_path(name):
+    """Tên trong archive có thoát ra ngoài thư mục đích không. Xét cả kiểu Windows."""
+    norm = name.replace("\\", "/")
+    return norm.startswith("/") or re.match(r"^[A-Za-z]:", norm) is not None or ".." in norm.split("/")
+
+
+def _nvim_extract(archive, dest):
+    """Giải nén, từ chối TOÀN BỘ archive nếu có một đường dẫn thoát ra ngoài dest."""
+    refused = NvimUnavailable("The downloaded editor archive contains unsafe paths, so nothing was "
+                              "installed. " + NVIM_ALTERNATIVE)
+    archive = Path(archive)
+    if archive.name.endswith(".zip"):
+        with zipfile.ZipFile(archive) as zf:
+            if any(_nvim_unsafe_path(n) for n in zf.namelist()):
+                raise refused
+            zf.extractall(dest)
+        return
+    with tarfile.open(archive) as tf:
+        for m in tf.getmembers():
+            base = Path(m.name).parent if m.issym() else Path()
+            link = (base / m.linkname).as_posix() if m.issym() or m.islnk() else ""
+            if (_nvim_unsafe_path(m.name) or _nvim_unsafe_path(os.path.normpath(link) if link else "")
+                    or not (m.isfile() or m.isdir() or m.issym() or m.islnk())):
+                raise refused
+        # filter="data" có từ 3.12 (và bản vá của 3.8–3.11); bản Python cũ hơn dựa vào vòng kiểm trên.
+        if hasattr(tarfile, "data_filter"):
+            tf.extractall(dest, filter="data")
+        else:
+            tf.extractall(dest)
+
+
+def _nvim_fetch():
+    """Tải, kiểm hash TRƯỚC khi giải nén, chạy thử, rồi rename vào chỗ. rename là bước duy nhất làm
+    bản cài xuất hiện, nên hai tiến trình cùng tải cũng không thể để lại bản dở dang."""
+    name, sha256 = _nvim_asset()
+    root = DB_DIR / "nvim"
+    root.mkdir(parents=True, exist_ok=True)
+    for old in root.glob(".install-*"):      # thư mục tạm của lần cài bị kill giữa chừng
+        with contextlib.suppress(OSError):
+            if time.time() - old.stat().st_mtime > 3600:
+                shutil.rmtree(old, ignore_errors=True)
+    stage = Path(tempfile.mkdtemp(prefix=".install-", dir=root))
+    target = root / NVIM_VERSION
+    exe = _nvim_managed_exe(name)
+    mirror = os.environ.get("ORCH_NVIM_MIRROR", "").strip().rstrip("/")
+    base = mirror or f"https://github.com/neovim/neovim/releases/download/v{NVIM_VERSION}"
+    try:
+        archive = stage / name
+        _nvim_download(f"{base}/{name}", archive, sha256)
+        tree = stage / "tree"
+        tree.mkdir()
+        try:
+            _nvim_extract(archive, tree)
+        except (tarfile.TarError, zipfile.BadZipFile, OSError) as e:
+            if isinstance(e, NvimUnavailable):
+                raise
+            raise NvimUnavailable(f"Could not unpack the editor ({e}). " + NVIM_ALTERNATIVE) from e
+        if not (tree / exe).is_file():
+            raise NvimUnavailable("The downloaded editor does not contain the program it should. "
+                                  + NVIM_ALTERNATIVE)
+        _nvim_check(tree / exe)
+        for attempt in range(6):
+            try:
+                os.rename(tree, target)
+                break
+            except OSError:
+                if (target / exe).is_file():
+                    break                    # tiến trình khác cài xong trước: dùng bản của nó
+                if attempt == 5:
+                    raise                    # Windows: antivirus giữ file một lát thì thử lại
+                time.sleep(0.5)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    return str(target / exe)
+
+
+def nvim_install():
+    """nvim sẵn sàng để chạy: bản cấu hình hoặc bản đã cài, nếu chưa có thì tải. Chặn tới khi xong;
+    nhiều card mở cùng lúc thì chờ nhau và chỉ tải một lần."""
+    with _NVIM_LOCK:
+        exe = nvim_find() or _nvim_fetch()
+        if exe not in _nvim_ok:
+            _nvim_check(exe)
+            _nvim_ok.add(exe)
+        return exe
+
+
+def _editor_root():
+    # shortcut: bản onefile (Linux) giải nén vào thư mục tạm và xoá lúc thoát, nên nvim sống qua
+    # restart trong tmux mất config. Linux chạy từ source; đóng gói Linux thì cần copy ra DB_DIR.
+    return _bundle_dir() / "editor"
 
 
 def _tmux():
@@ -2153,13 +2339,81 @@ def _tmux():
     return shutil.which(TMUX_BIN) or ""
 
 
+def _tmux_opts():
+    return ["-L", EDITOR_TMUX_SOCKET, "-f", str(_editor_root() / "tmux.conf")]
+
+
 def _editor_tmux_name(sid):
     # tmux cấm '.' và ':' trong tên phiên. session id là uuid nên hiếm khi dính, thay cho chắc.
     return EDITOR_PREFIX + str(sid).replace(".", "_").replace(":", "_")
 
 
+def _editor_addr(sid):
+    """Địa chỉ RPC cố định theo session: restart orchestrator vẫn tìm lại được nvim đang chạy.
+    Hash vì socket Unix chỉ chứa được ~100 ký tự đường dẫn. Thư mục 0700: ai nối được vào socket là
+    chạy được lệnh dưới quyền người dùng."""
+    h = hashlib.sha256(f"{DB_NAME}:{sid}".encode("utf-8")).hexdigest()[:12]
+    if os.name == "nt":
+        return rf"\\.\pipe\orch-nvim-{h}"
+    folder = DB_DIR / "nvs"
+    if len(str(folder)) > 80:    # HOME dài: chịu rời khỏi DB dir còn hơn nvim không listen được
+        folder = Path(tempfile.gettempdir()) / f"orch-nvs-{os.getuid()}"
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return str(folder / f"{h}.sock")
+
+
+def _editor_socket_alive(addr):
+    if os.name == "nt":
+        return os.path.exists(addr)
+    if not os.path.exists(addr):
+        return False
+    with contextlib.closing(socket.socket(socket.AF_UNIX)) as s:
+        s.settimeout(1)
+        try:
+            s.connect(addr)
+            return True
+        except OSError:
+            return False
+
+
+def _editor_clear_stale(addr):
+    """Socket còn file mà không ai nghe (nvim bị kill): để lại thì nvim mới không --listen được."""
+    if os.name != "nt" and os.path.exists(addr) and not _editor_socket_alive(addr):
+        with contextlib.suppress(OSError):
+            os.unlink(addr)
+
+
+def _nvim_cmd(sid, exe=None):
+    exe = exe or nvim_find()
+    if not exe:      # không bao giờ rơi về nvim trên PATH
+        raise NvimUnavailable("The editor is not installed yet. Close this card and open it again.")
+    addr = _editor_addr(sid)
+    _editor_clear_stale(addr)
+    # shortcut: không tmux, hai tab mở cùng card thì nvim thứ hai chạy không RPC (tab Files/Source
+    # Control vẫn điều khiển nvim thứ nhất). Cần hơn thì chia sẻ một nvim qua --embed.
+    listen = [] if not _tmux() and _editor_socket_alive(addr) else ["--listen", addr]
+    return [exe, "-u", str(_editor_root() / "nvim" / "init.lua"), *listen]
+
+
+def _editor_env():
+    """Biến môi trường của nvim. tmux server giữ env của lần khởi động đầu, nên có tmux thì chúng
+    được đưa qua `env` ngay trên dòng lệnh: PATH và HOME phải là của orchestrator này."""
+    keep = ("HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+            "XDG_STATE_HOME", "XDG_CACHE_HOME", "GIT_CONFIG_GLOBAL")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    env.update(NVIM_APPNAME=EDITOR_APPNAME, COLORTERM="truecolor")
+    return env
+
+
+def _editor_tmux_cmd(session, exe=None):
+    cwd = (session.get("cwd") or "").strip() or str(Path.home())
+    return ["-s", _editor_tmux_name(session["id"]), "-c", cwd, "-n", "nvim", "env",
+            *(f"{k}={v}" for k, v in _editor_env().items()), *_nvim_cmd(session["id"], exe)]
+
+
 async def _tmux_run(*args, capture=False):
-    """Chạy tmux → (returncode, stdout). Không có tmux / spawn lỗi / quá hạn → (127, '').
+    """Chạy tmux trên server riêng → (returncode, stdout). Không có tmux / spawn lỗi / quá hạn →
+    (127, '').
 
     capture=False là MẶC ĐỊNH và quan trọng: `tmux new-session` khởi động tmux SERVER, mà server
     đó daemon hoá và KẾ THỪA luôn ống stdout mình mở. communicate() chờ EOF trên ống ấy, còn ống
@@ -2175,7 +2429,7 @@ async def _tmux_run(*args, capture=False):
     pipe = asyncio.subprocess.PIPE if capture else asyncio.subprocess.DEVNULL
     try:
         proc = await asyncio.create_subprocess_exec(
-            tmux, *args, stdin=asyncio.subprocess.DEVNULL,
+            tmux, *_tmux_opts(), *args, stdin=asyncio.subprocess.DEVNULL,
             stdout=pipe, stderr=asyncio.subprocess.DEVNULL)
         out, _ = await asyncio.wait_for(proc.communicate(), 10)
     except (OSError, asyncio.TimeoutError):
@@ -2193,22 +2447,21 @@ async def editor_open_ids():
 
 
 def _editor_views():
-    """Tab card có được. Đổi tab = gửi phím vào nvim, mà gửi phím thì phải qua tmux — không có
-    tmux thì không có tab nào cả, card chỉ là một PTY nvim trần."""
-    return list(EDITOR_VIEWS) if _tmux() else ["edit"]
+    """Tab của card. Đổi tab đi qua RPC của nvim nên có tmux hay không đều như nhau."""
+    return list(EDITOR_VIEWS)
 
 
 async def editor_states():
     """Card editor đang mở, cho FE dựng node trên canvas."""
     wins = _editor_views()
     out = []
-    for sid in sorted(await editor_open_ids()):
+    for sid in sorted(await editor_open_ids() | set(_editor_pending)):
         s = get_session(sid)
         if not s:
             continue    # session bị xoá mà phiên tmux còn sót → đừng dựng card ma
         out.append({"open": True, "session": sid, "name": s["name"],
                     "cwd": (s.get("cwd") or "").strip() or str(Path.home()),
-                    "persistent": bool(_tmux()), "windows": wins})
+                    "persistent": bool(_tmux()), "windows": wins, **_editor_pending.get(sid, {})})
     return out
 
 
@@ -2217,59 +2470,111 @@ def editor_argv(session):
 
     Có tmux → `new-session -A`: có phiên thì attach, chưa có thì tạo. MỘT lệnh lo cả hai nên WS
     không phải hỏi trước phiên tồn tại chưa, và hai tab mở cùng lúc không đua nhau tạo trùng."""
-    cwd = (session.get("cwd") or "").strip() or str(Path.home())
     tmux = _tmux()
     if not tmux:
-        return [NVIM_BIN]
-    return [tmux, "new-session", "-A", "-s", _editor_tmux_name(session["id"]),
-            "-c", cwd, NVIM_BIN]
+        return _nvim_cmd(session["id"])
+    return [tmux, *_tmux_opts(), "new-session", "-A", *_editor_tmux_cmd(session)]
 
 
-async def editor_start(session):
-    """Mở card editor. Có tmux thì tạo phiên detached ngay để card hiện lên trước khi ai attach."""
-    sid = session["id"]
-    if not shutil.which(NVIM_BIN):
-        raise OSError(f"could not find '{NVIM_BIN}' — install neovim or set ORCH_NVIM_BIN")
-    if _tmux():
-        cwd = (session.get("cwd") or "").strip() or str(Path.home())
-        name = _editor_tmux_name(sid)
-        rc, _ = await _tmux_run("new-session", "-d", "-s", name, "-c", cwd, "-n", "nvim", NVIM_BIN)
-        # rc != 0 gần như luôn là "duplicate session" = card đã mở sẵn → coi như thành công.
-        if rc != 0 and sid not in await editor_open_ids():
-            raise OSError("tmux refused to start the editor session")
-    else:
-        _editors.add(sid)
+async def _editor_publish(sid):
     info = next((c for c in await editor_states() if c["session"] == sid), {"open": False})
     publish({"type": "editor", **info})
     return info
 
 
-async def editor_focus(session_id, view):
-    """Đổi tab card = gõ một lệnh ex vào nvim qua tmux send-keys.
+async def _editor_launch(session, exe):
+    """Có tmux thì tạo phiên detached ngay để card hiện lên trước khi ai attach."""
+    sid = session["id"]
+    if _tmux():
+        rc, _ = await _tmux_run("new-session", "-d", *_editor_tmux_cmd(session, exe))
+        # rc != 0 gần như luôn là "duplicate session" = card đã mở sẵn → coi như thành công.
+        if rc != 0 and sid not in await editor_open_ids():
+            raise OSError("tmux refused to start the editor session")
+    else:
+        _editors.add(sid)
 
-    Escape đi TRƯỚC: người dùng có thể đang ở insert mode, và lúc đó ':DiffviewOpen' sẽ bị chèn
-    thẳng vào file thay vì chạy. Ở normal mode Escape là no-op nên gửi thừa không hại gì.
 
-    Không dùng RPC của nvim (--listen + --server --remote-send): sẽ phải cấp và dọn socket cho
-    từng session, đổi lấy một thứ mà send-keys đã làm đủ tốt."""
-    cmd = EDITOR_VIEWS.get(view)
-    if not cmd or not _tmux():
+async def _editor_prepare(session):
+    """Việc nền của editor_start: có nvim (tải nếu thiếu) rồi mở. Lỗi nào cũng thành chữ trên card."""
+    sid = session["id"]
+    try:
+        exe = await asyncio.to_thread(nvim_install)
+        if sid in _editor_pending:      # người dùng có thể đã đóng card lúc đang tải
+            await _editor_launch(session, exe)
+            _editor_pending.pop(sid, None)
+    except Exception as e:  # noqa: BLE001 — lỗi nào lọt qua cũng thành card kẹt ở "Downloading…"
+        if sid in _editor_pending:
+            _editor_pending[sid] = {"state": "failed", "error": str(e)}
+    await _editor_publish(sid)
+
+
+async def editor_start(session):
+    """Mở card editor. Trả về NGAY: lần đầu phải tải nvim thì card hiện chữ trong lúc chờ."""
+    sid = session["id"]
+    try:
+        ready = bool(nvim_find())
+    except NvimUnavailable as e:
+        _editor_pending[sid] = {"state": "failed", "error": str(e)}
+        return await _editor_publish(sid)
+    _editor_pending[sid] = {"state": "starting" if ready else "downloading"}
+    if ready:
+        await _editor_prepare(session)
+        return await _editor_publish(sid)
+    task = asyncio.create_task(_editor_prepare(session))
+    _editor_tasks.add(task)
+    task.add_done_callback(_editor_tasks.discard)
+    return await _editor_publish(sid)
+
+
+async def _editor_remote(sid, keys):
+    """Gõ phím vào nvim của card qua RPC. Trả True nếu nvim nhận."""
+    try:
+        exe = nvim_find()
+    except NvimUnavailable:
         return False
-    rc, _ = await _tmux_run("send-keys", "-t", f"{_editor_tmux_name(session_id)}:nvim",
-                            "Escape", f":{cmd}", "Enter")
-    return rc == 0
+    if not exe:
+        return False
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            exe, "--server", _editor_addr(sid), "--remote-send", keys,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL, env=dict(os.environ, NVIM_APPNAME=EDITOR_APPNAME))
+        return await asyncio.wait_for(proc.wait(), 5) == 0
+    except (OSError, asyncio.TimeoutError):
+        return False
+
+
+async def editor_focus(session_id, view):
+    """Đổi tab card = gửi một lệnh ex vào nvim qua RPC. <C-\\><C-N> đi TRƯỚC: người dùng có thể đang
+    gõ, đang ở terminal hay trong khung tìm file, và lúc đó lệnh sẽ thành chữ trong file."""
+    cmd = EDITOR_VIEWS.get(view)
+    return bool(cmd) and await _editor_remote(session_id, f"<C-\\><C-N><Cmd>{cmd}<CR>")
 
 
 async def editor_stop(session_id=None):
-    """Đóng card: giết phiên tmux (nvim chết theo). None → đóng hết. Trả số card đã đóng."""
-    ids = [session_id] if session_id else sorted(await editor_open_ids())
+    """Đóng card: giết phiên tmux (nvim chết theo). None → đóng hết. Trả số card đã đóng.
+
+    Không tmux thì PTY do WS giữ; bảo nvim tự thoát để card đóng từ tab khác cũng không bỏ sót."""
+    # Mọi orchestrator trên máy dùng chung tmux server riêng: "đóng hết" chỉ là card của DB này.
+    ids = [session_id] if session_id else [
+        s for s in sorted(await editor_open_ids() | set(_editor_pending)) if get_session(s)]
     n = 0
     for sid in ids:
-        had = sid in _editors
+        had = sid in _editors or sid in _editor_pending
         _editors.discard(sid)
-        rc, _ = await _tmux_run("kill-session", "-t", _editor_tmux_name(sid))
+        _editor_pending.pop(sid, None)
+        addr = _editor_addr(sid)
+        if _tmux():
+            rc, _ = await _tmux_run("kill-session", "-t", _editor_tmux_name(sid))
+        else:
+            rc = 0 if await _editor_remote(sid, "<C-\\><C-N><Cmd>qa!<CR>") else 1
         if rc == 0 or had:
             n += 1
+        for _ in range(20):      # nvim dọn socket khi thoát; bị kill cứng thì dọn hộ
+            if not os.path.exists(addr):
+                break
+            await asyncio.sleep(0.1)
+        _editor_clear_stale(addr)
         publish({"type": "editor", "open": False, "session": sid})
     return n
 
@@ -4649,7 +4954,6 @@ def build_app():
         _pty, _pty_why = pty_backend()
         return JSONResponse({"status": "ok", "server": "Session-Orchestrator",
                              "dry_run": DRY_RUN,
-                             "dev_mode": DEV_MODE,
                              "embedded_terminal": _pty is not None,
                              "embedded_terminal_reason": _pty_why,
                              "default_effort": DEFAULT_EFFORT,
@@ -4936,17 +5240,15 @@ def build_app():
         return JSONResponse(await editor_states())
 
     async def api_editor_open(request: Request):
-        """Mở nvim tại cwd của session. Các card khác vẫn mở nguyên."""
+        """Mở nvim tại cwd của session. Các card khác vẫn mở nguyên. Trả về ngay: lần đầu phải tải
+        nvim, và lỗi nào cũng hiện trên card (state/error) chứ không phải mã HTTP."""
         body = await request.json()
         s = get_session(body.get("session") or "")
         if not s:
             return JSONResponse({"error": "session does not exist"}, status_code=404)
         if not (s.get("cwd") or "").strip():
             return JSONResponse({"error": "session has no cwd to open"}, status_code=400)
-        try:
-            return JSONResponse(await editor_start(s))
-        except OSError as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse(await editor_start(s))
 
     async def api_editor_focus(request: Request):
         """Đổi tab của card ({"session": id, "window": "edit"|"git"})."""
@@ -5152,7 +5454,7 @@ def build_app():
         _write_role_skill(cwd, name, _role_skill(cwd, name))
         return JSONResponse({"written": [str(_skill_path(cwd, name, r)) for r in missing]})
 
-    async def _ws_pty(websocket, argv_for, kind):
+    async def _ws_pty(websocket, argv_for, kind, extra_env=None):
         """PTY thật trong browser (xterm.js): spawn argv_for(session) tại cwd của session, bơm 2
         chiều qua WebSocket.
         Client gửi JSON {t:'i', d:<keys>} (input) và {t:'r', c, r} (resize); server gửi bytes thô.
@@ -5175,13 +5477,14 @@ def build_app():
             await websocket.close(code=4403)
             return
         cwd = (s.get("cwd") or "").strip() or str(Path.home())
-        argv = argv_for(s)
-        env = dict(os.environ, TERM="xterm-256color")
+        env = dict(os.environ, TERM="xterm-256color", **(extra_env or {}))
+        argv = None
         try:
+            argv = argv_for(s)
             term = Pty(argv, cwd, env)
         except Exception as e:  # noqa: BLE001 — CLI thiếu / ConPTY từ chối / cwd sai
             await websocket.send_text(
-                f"\r\n\x1b[31mCould not start {argv[0]}\x1b[0m: {e}\r\n")
+                f"\r\n\x1b[31mCould not start {argv[0] if argv else kind}\x1b[0m: {e}\r\n")
             await websocket.close(code=4500)
             return
 
@@ -5331,7 +5634,15 @@ def build_app():
 
     async def ws_editor(websocket):
         """Card editor: nvim trong PTY, bọc tmux nếu máy có (xem editor_argv)."""
-        return await _ws_pty(websocket, editor_argv, "editor")
+        sid = websocket.query_params.get("session", "")
+        # Không tmux, tải lại trang: PTY cũ đang chết mà WS mới đã tới. Đợi nó nhả socket RPC, không
+        # thì nvim mới không --listen được và hai tab Files/Source Control thành nút chết.
+        if not _tmux():
+            for _ in range(20):
+                if not _editor_socket_alive(_editor_addr(sid)):
+                    break
+                await asyncio.sleep(0.1)
+        return await _ws_pty(websocket, editor_argv, "editor", _editor_env())
 
     async def api_cli_sessions(request: Request):
         """Phiên CLI đã có trong một thư mục — để terminal card chọn phiên muốn chat tiếp.
@@ -6159,10 +6470,9 @@ def main():
     # KHÔNG required: chạy không tham số = `serve`. Người dùng Windows double-click file .exe
     # không truyền được argv — argparse required=True sẽ in usage rồi exit(2), cửa sổ console
     # nháy một cái là mất, không kịp đọc gì. 'serve' cũng là lệnh thực tế 99% người dùng cần.
-    # Cờ ở parser gốc chứ không ở subparser 'serve': chạy không tham số cũng là serve, nên
-    # `--dev` phải dùng được mà không cần gõ 'serve' (dùng: `... --dev` hoặc `... --dev serve`).
-    p.add_argument("--dev", action="store_true",
-                   help="chế độ dev: nút mở project mở card nvim thay vì trình quản lý file")
+    # --dev không còn tác dụng (card editor có sẵn cho mọi người). Vẫn NHẬN vì server đang chạy và
+    # script cũ của người dùng khởi động bằng `--dev serve`; bỏ đi là chúng chết với usage error.
+    p.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("init")
     sub.add_parser("once")
@@ -6173,9 +6483,6 @@ def main():
     sub.add_parser("list-runs")
 
     args = p.parse_args()
-    if args.dev:
-        global DEV_MODE
-        DEV_MODE = True
     cmd = args.cmd or "serve"
     if cmd == "init":
         init_db()
