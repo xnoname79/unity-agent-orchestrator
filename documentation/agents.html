@@ -99,6 +99,8 @@ session of this folder the card resumes. The strip on the left has:</p>
 <ul>
   <li><span class="ui">Pause</span> or <span class="ui">Resume</span>, and the stop button while a job runs. See
     <a href="control.html#stop">how to stop things</a>.</li>
+  <li>An editor button, which opens <a href="#editor">the editor</a> on this project
+    (<span class="ui">Edit this project's files</span>).</li>
   <li>A folder button, which opens a card for browsing the project's files
     (<span class="ui">Browse this project's folder on the canvas</span>).</li>
   <li>A dropdown for the CLI in this terminal, <code>claude</code> or <code>agy</code>. A CLI other than the agent's own
@@ -122,6 +124,65 @@ it; the old name keeps working for agents that remember it.</p>
     and <span class="ui">Unregister</span> it.</li>
 </ul>
 <p>The box at the bottom sends the agent a message as a background run.</p>
+
+<h2 id="editor">The editor</h2>
+<p>The editor button on an agent card opens that agent's project in a card beside its terminal: files on the left, tabs
+on top, a status bar at the bottom. It looks and types like VS Code. Underneath it is Neovim with a bundled setup, so you
+need no Neovim knowledge, and your own Neovim and tmux setups are not read or changed.</p>
+<figure>
+  <img src="images/editor.png" width="1360" height="860" alt="The editor card on the acme-shop project. A file tree with icons and git status letters is on the left, tabs for orders.py and cart.py are on top, Python code is in the middle and a blue status bar is at the bottom.">
+</figure>
+<p><strong>The first time</strong>, the card says <span class="ui">Downloading the editor…</span> while it fetches about
+12 MB from GitHub. It opens by itself, and later opens skip this step. If the download fails, the card says why:
+see <a href="settings.html#editor-download">what to do</a>.</p>
+<p>Click a file and start typing. There are no modes to learn: Esc never turns your keys into commands. Click to place the
+cursor, drag to select, and typing replaces the selection. A dot in place of a tab's × means unsaved changes. Closing that
+tab asks whether to save, with buttons to click.</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Action</th><th>Keys</th></tr></thead>
+  <tbody>
+    <tr><td>See every action, searchable</td><td><kbd>F1</kbd></td></tr>
+    <tr><td>Save</td><td><kbd>Ctrl</kbd> <kbd>S</kbd></td></tr>
+    <tr><td>Find a file by name</td><td><kbd>Ctrl</kbd> <kbd>P</kbd></td></tr>
+    <tr><td>Search all files</td><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>F</kbd> or <kbd>F4</kbd></td></tr>
+    <tr><td>Find in this file</td><td><kbd>Ctrl</kbd> <kbd>F</kbd></td></tr>
+    <tr><td>Show or hide the sidebar</td><td><kbd>Ctrl</kbd> <kbd>B</kbd></td></tr>
+    <tr><td>Undo, redo</td><td><kbd>Ctrl</kbd> <kbd>Z</kbd>, <kbd>Ctrl</kbd> <kbd>Y</kbd></td></tr>
+    <tr><td>Select all</td><td><kbd>Ctrl</kbd> <kbd>A</kbd></td></tr>
+    <tr><td>Copy, cut, paste, with your browser's clipboard</td><td><kbd>Ctrl</kbd> <kbd>C</kbd>, <kbd>Ctrl</kbd> <kbd>X</kbd>, <kbd>Ctrl</kbd> <kbd>V</kbd></td></tr>
+    <tr><td>Comment a line or selection</td><td><kbd>Ctrl</kbd> <kbd>/</kbd></td></tr>
+    <tr><td>Indent, outdent</td><td><kbd>Tab</kbd>, <kbd>Shift</kbd> <kbd>Tab</kbd></td></tr>
+    <tr><td>Close the tab</td><td>Click its ×, or <kbd>Alt</kbd> <kbd>W</kbd></td></tr>
+    <tr><td>Next tab, previous tab</td><td>Click it, or <kbd>Alt</kbd> <kbd>.</kbd> and <kbd>Alt</kbd> <kbd>,</kbd></td></tr>
+    <tr><td>Work in the file tree: new, rename, delete</td><td><kbd>F3</kbd>, then <kbd>A</kbd>, <kbd>F2</kbd>, <kbd>Delete</kbd>; <kbd>Esc</kbd> to return</td></tr>
+  </tbody>
+</table></div>
+<p><kbd>Ctrl</kbd> <kbd>W</kbd>, <kbd>Ctrl</kbd> <kbd>T</kbd> and <kbd>Ctrl</kbd> <kbd>N</kbd> belong to your browser, and
+<kbd>Ctrl</kbd> <kbd>K</kbd> opens the dashboard's command palette. Copying needs the page to be on
+<code>localhost</code> or HTTPS, because browsers only let those pages write to the clipboard.</p>
+<p>Language features start by themselves when a server such as <code>pyright</code> or <code>gopls</code> is already
+installed. Without one the editor still colours code by file type, and shows no error.</p>
+
+<h3 id="source-control">Source Control</h3>
+<p>The tabs at the top of the card switch between <span class="ui">Files</span> and
+<span class="ui">Source Control</span>. With one git repository, Source Control opens the diff straight away. A project can
+hold several repositories, side by side or one inside another. Then you get a list of each one with its branch and number
+of changes, and clean ones say <code>clean</code>. Repositories inside folders like <code>node_modules</code> are left out.</p>
+<figure>
+  <img src="images/editor-git.png" width="1360" height="860" alt="Source Control in the editor card. A panel lists the backend repository on branch main with 3 changes and the web repository on branch feature/login with 1 change, each with its changed files and a status letter.">
+</figure>
+<p>Click a file to see its diff, or a repository to see all of its changes. <code>← Back</code> at the top right
+returns to the list, and <kbd>R</kbd> in the list refreshes it. A folder with no repository says so.</p>
+
+<h3 id="vim-keys">Use Vim keys</h3>
+<p>Press <kbd>F1</kbd> and pick <code>Use Vim keys</code> for normal Vim behaviour, including Space as the leader
+key with mappings for files, search and git. In this mode <kbd>Ctrl</kbd> <kbd>V</kbd> is Vim's block selection, so paste with
+<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>V</kbd>. The choice is remembered. Pick <code>Stop using Vim keys</code> to switch back.</p>
+
+<h3 id="editor-sessions">Keeping your work</h3>
+<p>With tmux installed, reloading the page or restarting the server keeps your open files and unsaved text. Closing the
+card with its × ends the editor and loses unsaved text, and it asks first. Without tmux, which includes Windows, closing or
+reloading the browser tab also ends the editor, as the card's tooltip says, so save first.</p>
 
 <h2 id="new-agent">New agent</h2>
 <p><span class="ui">New agent</span> is in the sidebar, on <span class="ui">Home</span>, and in the command palette. It

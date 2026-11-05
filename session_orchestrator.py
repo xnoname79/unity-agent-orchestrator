@@ -2148,7 +2148,6 @@ _editors: set = set()
 # Card chưa có nvim: {sid: {"state": "downloading"|"failed", "error": str}}. Card hiện chữ thay vì
 # một hình chữ nhật đen.
 _editor_pending: dict = {}
-_editor_view: dict = {}          # tab đang sáng của card, để sống qua mỗi lần canvas render lại
 _editor_tasks: set = set()       # giữ tham chiếu task nền, không thì GC thu giữa chừng
 
 # nvim ghim phiên bản và hash, không dùng nvim của hệ thống: bản cũ làm plugin bundled hỏng
@@ -2330,6 +2329,8 @@ def nvim_install():
 
 
 def _editor_root():
+    # shortcut: bản onefile (Linux) giải nén vào thư mục tạm và xoá lúc thoát, nên nvim sống qua
+    # restart trong tmux mất config. Linux chạy từ source; đóng gói Linux thì cần copy ra DB_DIR.
     return _bundle_dir() / "editor"
 
 
@@ -2383,7 +2384,9 @@ def _editor_clear_stale(addr):
 
 
 def _nvim_cmd(sid, exe=None):
-    exe = exe or nvim_find() or "nvim"
+    exe = exe or nvim_find()
+    if not exe:      # không bao giờ rơi về nvim trên PATH
+        raise NvimUnavailable("The editor is not installed yet. Close this card and open it again.")
     addr = _editor_addr(sid)
     _editor_clear_stale(addr)
     # shortcut: không tmux, hai tab mở cùng card thì nvim thứ hai chạy không RPC (tab Files/Source
@@ -2458,8 +2461,7 @@ async def editor_states():
             continue    # session bị xoá mà phiên tmux còn sót → đừng dựng card ma
         out.append({"open": True, "session": sid, "name": s["name"],
                     "cwd": (s.get("cwd") or "").strip() or str(Path.home()),
-                    "persistent": bool(_tmux()), "windows": wins,
-                    "view": _editor_view.get(sid, "edit"), **_editor_pending.get(sid, {})})
+                    "persistent": bool(_tmux()), "windows": wins, **_editor_pending.get(sid, {})})
     return out
 
 
@@ -2546,25 +2548,21 @@ async def editor_focus(session_id, view):
     """Đổi tab card = gửi một lệnh ex vào nvim qua RPC. <C-\\><C-N> đi TRƯỚC: người dùng có thể đang
     gõ, đang ở terminal hay trong khung tìm file, và lúc đó lệnh sẽ thành chữ trong file."""
     cmd = EDITOR_VIEWS.get(view)
-    if not cmd:
-        return False
-    ok = await _editor_remote(session_id, f"<C-\\><C-N><Cmd>{cmd}<CR>")
-    if ok:
-        _editor_view[session_id] = view
-    return ok
+    return bool(cmd) and await _editor_remote(session_id, f"<C-\\><C-N><Cmd>{cmd}<CR>")
 
 
 async def editor_stop(session_id=None):
     """Đóng card: giết phiên tmux (nvim chết theo). None → đóng hết. Trả số card đã đóng.
 
     Không tmux thì PTY do WS giữ; bảo nvim tự thoát để card đóng từ tab khác cũng không bỏ sót."""
-    ids = [session_id] if session_id else sorted(await editor_open_ids() | set(_editor_pending))
+    # Mọi orchestrator trên máy dùng chung tmux server riêng: "đóng hết" chỉ là card của DB này.
+    ids = [session_id] if session_id else [
+        s for s in sorted(await editor_open_ids() | set(_editor_pending)) if get_session(s)]
     n = 0
     for sid in ids:
         had = sid in _editors or sid in _editor_pending
         _editors.discard(sid)
         _editor_pending.pop(sid, None)
-        _editor_view.pop(sid, None)
         addr = _editor_addr(sid)
         if _tmux():
             rc, _ = await _tmux_run("kill-session", "-t", _editor_tmux_name(sid))

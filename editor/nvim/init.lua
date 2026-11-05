@@ -133,6 +133,8 @@ require('telescope').setup({
       or { 'git', 'grep', '--no-index', '--exclude-standard', '-n', '--column', '-I', '-i',
            '--color=never' },
     mappings = { i = { ['<Esc>'] = picker_esc } },
+    sorting_strategy = 'ascending',
+    layout_config = { prompt_position = 'top' },
   },
 })
 
@@ -231,7 +233,7 @@ require('lualine').setup({
     lualine_x = { function() return 'Ln ' .. vim.fn.line('.') .. ', Col ' .. vim.fn.virtcol('.') end, spaces },
     lualine_y = { { 'encoding', fmt = string.upper }, { 'fileformat',
       symbols = { unix = 'LF', dos = 'CRLF', mac = 'CR' } } },
-    lualine_z = { 'filetype' },
+    lualine_z = { { 'filetype', cond = function() return vim.bo.buftype == '' end } },
   },
   tabline = {
     lualine_a = { {
@@ -249,6 +251,13 @@ require('lualine').setup({
     lualine_c = { { tab_fill, padding = 0 } },
   },
 })
+
+-- Replaces lualine's own tab click, which would open the file in whichever window has focus.
+vim.cmd([[
+  function! LualineSwitchBuffer(bufnr, mouseclicks, mousebutton, modifiers)
+    call v:lua.require'orch.keys'.switch_tab(a:bufnr)
+  endfunction
+]])
 
 -- Git -----------------------------------------------------------------------------------------
 require('gitsigns').setup({

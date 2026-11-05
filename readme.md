@@ -30,6 +30,7 @@ its own login and subscription.
   effort per agent. Gemini models are read from `agy models`, so new ones show up on their own.
 - Agents hand work to each other with `send_signal`; every run is queued, capped and logged.
 - Role playbooks that fill themselves in from the project.
+- A VS Code style editor on every agent's project, with Source Control across all its git repos. Nothing to install.
 - Workspaces (isolated folders and agents) in groups, two side by side.
 - Guard rails: approval gate, ping-pong and daily caps, kill switch, one prompt at a time per
   agent, reachable from your own machine only by default.
@@ -135,6 +136,7 @@ Put these in a `.env` file next to `session_orchestrator.py` (or next to `agent-
 | `ORCH_PORT` | `8992` | Port 8992 is taken |
 | `CLAUDE_BIN` / `ORCH_AGY_BIN` | `claude` / `agy` | The dashboard cannot find an installed CLI |
 | `ORCH_HOST` | `127.0.0.1` | Only to reach it from another machine |
+| `ORCH_NVIM_BIN` | empty (download) | The editor's Neovim download fails, or you want your own nvim 0.12+ |
 | `ORCH_SUBAGENTS_MAX` | `4` | Active sub-agents per director |
 | `ORCH_SUBTASK_MAX_ATTEMPTS` | `3` | Failed verifications before a sub-agent's work is marked failed |
 

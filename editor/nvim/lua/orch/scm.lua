@@ -8,7 +8,11 @@ local SKIP = { node_modules = true, venv = true, vendor = true, dist = true, bui
                target = true, __pycache__ = true, bower_components = true, site_packages = true }
 local MAX_DEPTH, MAX_DIRS = 4, 5000      -- bound the walk so a huge folder cannot hang the editor
 
-local function norm(path) return vim.fs.normalize(vim.fn.fnamemodify(path, ':p')):gsub('/$', '') end
+-- Real path, so one repo reached two ways (symlink, Windows short name) is still one entry.
+local function norm(path)
+  local real = vim.uv.fs_realpath(path) or vim.fn.fnamemodify(path, ':p')
+  return (vim.fs.normalize(real):gsub('/$', ''))
+end
 
 -- Every repo: the one holding cwd, plus any folder under cwd with a .git folder or file.
 function M.discover(cwd)
@@ -211,11 +215,13 @@ local function open_panel(message)
   api.nvim_set_current_win(win)
   vim.cmd.stopinsert()
   keys.scm_open = true
+  keys.update_title()
   draw(message)
 end
 
 local function close_panel()
   keys.scm_open = false
+  keys.update_title()
   if not (panel.buf and api.nvim_buf_is_valid(panel.buf)) then return end
   for _, w in ipairs(vim.fn.win_findbuf(panel.buf)) do
     if #api.nvim_tabpage_list_wins(api.nvim_win_get_tabpage(w)) > 1 then api.nvim_win_close(w, true) end

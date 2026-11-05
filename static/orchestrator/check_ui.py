@@ -216,8 +216,8 @@ if not font.is_file() or not (HERE / "vendor" / "fonts" / "SymbolsNerdFont-LICEN
     gaps.add("the bundled icon font and its licence")
 if 'document.fonts.load(\'12px "Symbols Nerd Font Mono"\'' not in JS:
     gaps.add("xterm must wait for the icon font or the first frame has empty boxes")
-if "st.view" not in JS or 'i === 0 ? "on"' in JS:
-    gaps.add("the highlighted tab must come from st.view — the first tab must not win on re-render")
+if "edView[st.session]" not in JS or 'i === 0 ? "on"' in JS:
+    gaps.add("the highlighted tab must come from edView — the first tab must not win on re-render")
 if "Source Control" not in JS or '"Files"' not in JS:
     gaps.add("the head tabs say Files and Source Control")
 if "ed-status" not in JS or ".ed-status" not in style or "Downloading the editor" not in JS:

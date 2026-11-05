@@ -78,8 +78,6 @@ let DAILY_STEP = 10;  // số run cộng thêm mỗi lần bấm Allow; đồng 
 let DEFAULT_EFFORT = "high";  // nhãn cho option "" ở picker effort; đồng bộ từ /health lúc load.
 let PAIR_CAP = 4;        // trần ping-pong mỗi cặp agent; đồng bộ từ /health.
 let PAIR_WINDOW_MIN = 60;  // cửa sổ đếm, phút; đồng bộ từ /health.
-// Chế độ dev (cờ `--dev` / ORCH_DEV_MODE ở server, đồng bộ từ /health): nút mở project mở
-// card nvim thay vì trình quản lý file của OS. Mặc định TẮT — xem DEV_MODE ở backend.
 
 let openRunId = null;   // run đang mở trong drawer (null = đóng)
 let currentWS = "";     // workspace đang lọc ("" = tất cả, admin view)
@@ -1466,8 +1464,14 @@ function wireEditorTerm(t) {
     } catch (e) { console.error(e); }
     return true;
   });
-  // nvim báo kiểu phím qua title (qua được tmux); Vim keys thì Ctrl+V là visual block của vim.
-  t.term.onTitleChange((title) => { t.vimKeys = title === "orch:vim"; });
+  // nvim báo kiểu phím và tab đang xem qua title (qua được tmux): orch:<keys>:<view>.
+  // Vim keys thì Ctrl+V là visual block của vim.
+  t.term.onTitleChange((title) => {
+    const [tag, keys, view] = title.split(":");
+    if (tag !== "orch") return;
+    t.vimKeys = keys === "vim";
+    if (view) setEditorView(t.sid, view);
+  });
   t.host.addEventListener("paste", () => { t.pasted = true; }, { capture: true });
   t.term.attachCustomKeyEventHandler((e) => {
     if (!e.ctrlKey || e.altKey || e.metaKey) return true;
@@ -1510,7 +1514,7 @@ function startTerm(t) {
   if (t.key.startsWith("ed:") && document.fonts && !t.fontReady) {
     document.fonts.load('12px "Symbols Nerd Font Mono"', "\uf07b").catch(console.error).finally(() => {
       t.fontReady = true;
-      if (t.host.isConnected || cvTerms[t.key]) startTerm(t);
+      if (cvTerms[t.key] === t) startTerm(t);   // card có thể đã đóng trong lúc đợi
     });
     return;
   }
@@ -1523,11 +1527,12 @@ function startTerm(t) {
   // các font trước KHÔNG có, tức đúng mấy icon Nerd Font của nvim/lazygit.
   // Font đọc ở máy chạy TRÌNH DUYỆT, không phải máy chạy orchestrator.
   // scrollback 1000: TUI bận đổ đầy 5000 dòng sau vài giờ, ~10-15 MB mỗi terminal × số card × số pane.
-  // Editor: nvim là alternate screen, không có gì để cuộn; scrollback 0 cũng trả lại cột của thanh cuộn.
-  t.term = new Terminal({ fontSize: 12, cursorBlink: true, scrollback: t.key.startsWith("ed:") ? 0 : 1000,
+  t.term = new Terminal({ fontSize: 12, cursorBlink: true, scrollback: 1000,
                           fontFamily: 'courier-new, courier, monospace, "Iosevka Nerd Font", '
                                       + '"Symbols Nerd Font Mono", "JetBrainsMono Nerd Font"',
                           theme: { background: bg || "#0c0e12", foreground: "#e6e8eb" } });
+  // Editor: nvim là alternate screen, không có gì để cuộn; scrollback 0 cũng trả lại cột của thanh cuộn.
+  if (t.key.startsWith("ed:")) t.term.options.scrollback = 0;
   t.fit = new FitAddon.FitAddon();
   t.term.loadAddon(t.fit);
   t.term.open(t.host);
@@ -1784,15 +1789,19 @@ async function closeEditor(sid, name) {
 window.closeEditor = closeEditor;
 
 // Đổi tab = gửi một lệnh ex vào nvim ở SERVER qua RPC (:OrchFiles / :OrchGit). Không đụng gì tới
-// xterm: nó vẫn attach vào đúng phiên, nvim tự vẽ lại. Tab đang sáng nằm ở server (st.view) vì
-// canvas dựng lại card suốt; ghi cả vào editorCards để lần render kế tiếp không kịp nháy về cũ.
-async function editorFocus(sid, win, el) {
+// xterm: nó vẫn attach vào đúng phiên, nvim tự vẽ lại. Tab đang sáng nằm trong edView vì canvas
+// dựng lại card suốt; nvim báo lại qua title (xem wireEditorTerm), kể cả khi người dùng tự rời diff.
+const edView = {};
+function setEditorView(sid, view) {
+  edView[sid] = view;
+  const bar = document.querySelector(`.node[data-nid="editor:${CSS.escape(sid)}"] .ed-tabs`);
+  if (bar) for (const b of bar.querySelectorAll("button")) b.classList.toggle("on", b.dataset.view === view);
+}
+
+async function editorFocus(sid, win) {
   try { await api("/api/editor/focus", "POST", { session: sid, window: win }); }
   catch (e) { console.error(e); return; }
-  const card = editorCards.find((c) => c.session === sid);
-  if (card) card.view = win;
-  const bar = el && el.parentElement;
-  if (bar) for (const b of bar.querySelectorAll("button")) b.classList.toggle("on", b === el);
+  setEditorView(sid, win);
   const t = cvTerms["ed:" + sid];
   if (t && t.term) t.term.focus();   // bấm tab xong gõ tiếp được ngay
 }
@@ -1808,7 +1817,7 @@ function editorCardHtml(st) {
       + "loses unsaved text";
   const wins = st.state ? [] : st.windows || [];
   const tabs = wins.length < 2 ? "" : `<span class="ed-tabs">` + wins.map((w) =>
-    `<button class="${(st.view || "edit") === w ? "on" : ""}" onclick="editorFocus('${sid}','${esc(w)}',this)"
+    `<button class="${(edView[st.session] || "edit") === w ? "on" : ""}" data-view="${esc(w)}" onclick="editorFocus('${sid}','${esc(w)}')"
       title="${w === "git" ? "See what changed, in every git repo of this project" : "Back to the files"}"
       >${w === "git" ? "Source Control" : "Files"}</button>`).join("") + `</span>`;
   // Chưa có nvim: chữ thay cho terminal đen. "starting" chỉ kéo dài một nhịp.

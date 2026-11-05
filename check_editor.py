@@ -46,6 +46,7 @@ import http.server
 import hashlib
 import io
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -190,10 +191,12 @@ class _Mirror(http.server.BaseHTTPRequestHandler):
 _mirror = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Mirror)
 threading.Thread(target=_mirror.serve_forever, daemon=True).start()
 _MIRROR_URL = f"http://127.0.0.1:{_mirror.server_address[1]}"
-_REAL_ASSETS = dict(so.NVIM_ASSETS)
-_REAL_CHECK = so._nvim_check
-_KEY = (sys.platform, so.platform.machine().lower())
-_ASSET = so.NVIM_ASSETS.get(_KEY, ("nvim-linux-x86_64.tar.gz", ""))[0]
+# getattr: chép file này lên code cũ thì từng ca phải FAIL với tên của nó, không phải chết ở đây.
+_ASSETS = getattr(so, "NVIM_ASSETS", {})
+_REAL_ASSETS = dict(_ASSETS)
+_REAL_CHECK = getattr(so, "_nvim_check", None)
+_KEY = (sys.platform, platform.machine().lower())
+_ASSET = _ASSETS.get(_KEY, ("nvim-linux-x86_64.tar.gz", ""))[0]
 _FOLDER = _ASSET.split(".")[0]
 _EXE = "nvim.exe" if _ASSET.endswith(".zip") else "nvim"
 _FAKE_NVIM = b'#!/bin/sh\ncase "$1" in --version) echo "NVIM v0.12.6";; *) exec sleep 300;; esac\n'
@@ -410,16 +413,15 @@ case("a wrong ORCH_NVIM_BIN says so in plain words", _case_bad_override)
 case("no network gives a plain message naming ORCH_NVIM_BIN", _case_no_network)
 case("an unsupported machine gives a plain message naming ORCH_NVIM_BIN", _case_unsupported)
 
-so.NVIM_ASSETS.clear()
-so.NVIM_ASSETS.update(_REAL_ASSETS)
+_ASSETS.clear()
+_ASSETS.update(_REAL_ASSETS)
 so._nvim_check = _REAL_CHECK
 os.environ.pop("ORCH_NVIM_MIRROR", None)
 so.DB_DIR = REAL_DB_DIR
 
 # Dữ liệu người dùng đọc: asset phải khớp bảng băm đã xác nhận với release, và đóng gói phải kèm.
 case("every published platform has a pinned 64-hex digest",
-     lambda: (len(so.NVIM_ASSETS) >= 5 and all(len(h) == 64 for _, h in so.NVIM_ASSETS.values()),
-              str(so.NVIM_ASSETS)))
+     lambda: (len(_ASSETS) >= 5 and all(len(h) == 64 for _, h in _ASSETS.values()), str(_ASSETS)))
 case("the packaged binary carries editor/", lambda: (
     '("editor", "editor")' in (HERE / "build.spec").read_text(encoding="utf-8"), "build.spec"))
 case("CI runs the live part on the Windows runner", lambda: (
@@ -707,11 +709,6 @@ async def main():
                      lambda sent=sent, cmd=cmd: (r.status_code == 200 and "--remote-send" in sent
                                                  and so._editor_addr(SID) in sent
                                                  and f"<C-\\><C-N><Cmd>{cmd}<CR>" in sent, sent))
-            r = await c.post("/api/editor/focus", json={"session": SID, "window": "git"})
-            view = (await c.get("/api/editor")).json()[0].get("view")
-            case("the server remembers the highlighted tab across canvas re-renders",
-                 lambda: (view == "git", str(view)))
-            await c.post("/api/editor/focus", json={"session": SID, "window": "edit"})
         r = await c.post("/api/editor/focus", json={"session": SID, "window": "bogus"})
         check("an unknown tab name is refused", r.status_code == 400, str(r.status_code))
 
@@ -786,8 +783,8 @@ async def main_download():
         await c.post("/api/editor/close", json={"session": sid})
         st = await state()
         case("and the failed card can be closed", lambda: (st == {}, str(st)))
-    so.NVIM_ASSETS.clear()
-    so.NVIM_ASSETS.update(_REAL_ASSETS)
+    _ASSETS.clear()
+    _ASSETS.update(_REAL_ASSETS)
     so._nvim_check = _REAL_CHECK
     os.environ.pop("ORCH_NVIM_MIRROR", None)
     so.DB_DIR = REAL_DB_DIR

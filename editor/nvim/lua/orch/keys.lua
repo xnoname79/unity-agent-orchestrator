@@ -243,8 +243,8 @@ M.typing_maps = {
   { NIXS, '<C-b>', function() M.toggle_sidebar() end },
   { NIXS, '<M-w>', function() M.close_buffer() end },
   { NIXS, '<F3>', function() M.focus_tree() end },
-  { NIXS, '<M-Right>', '<Cmd>bnext<CR>' },
-  { NIXS, '<M-Left>', '<Cmd>bprevious<CR>' },
+  { NIXS, '<M-.>', '<Cmd>bnext<CR>' },
+  { NIXS, '<M-,>', '<Cmd>bprevious<CR>' },
   { { 'n', 'i' }, '<C-z>', '<Cmd>silent! undo<CR>' },
   { { 'n', 'i' }, '<C-y>', '<Cmd>silent! redo<CR>' },
   { { 'x', 's' }, '<C-z>', '<Esc><Cmd>silent! undo<CR>' },
@@ -300,7 +300,21 @@ local function apply_typing(on)
   o.virtualedit = on and 'onemore' or ''
   o.whichwrap = on and 'b,s,<,>,[,]' or 'b,s'
   o.clipboard = on and '' or 'unnamedplus'
-  vim.o.titlestring = on and 'orch:typing' or 'orch:vim'
+end
+
+-- The dashboard reads the title, which also passes through tmux: orch:<key style>:<head tab>.
+-- That is how it knows who owns Ctrl+V and which head tab to light, even after a reload.
+function M.update_title()
+  local view = (M.scm_open or #api.nvim_list_tabpages() > 1) and 'git' or 'edit'
+  vim.o.titlestring = ('orch:%s:%s'):format(M.vim_keys() and 'vim' or 'typing', view)
+end
+
+-- A click on a tab leaves any diff or panel first, so the file lands in the editor window.
+function M.switch_tab(buf)
+  if buf == api.nvim_get_current_buf() then return end
+  if #api.nvim_list_tabpages() > 1 then vim.cmd.OrchFiles() end
+  focus_editor()
+  if vim.bo[buf].buflisted then api.nvim_set_current_buf(buf) end
 end
 
 -- Owner's vim mappings, present in both styles because they only exist in normal mode ----------
@@ -341,6 +355,7 @@ end
 
 function M.set_vim_keys(on, quiet)
   vim.g.orch_vim_keys = on
+  M.update_title()
   if on then
     apply_typing(false)
     vim_only_maps(true)
@@ -381,7 +396,6 @@ local function actions_list()
     { 'Search all files', 'Ctrl+Shift+F or F4', function() tools.live_grep() end },
     { 'Find in this file', 'Ctrl+F', function() require('telescope.builtin').current_buffer_fuzzy_find() end },
     { 'Show or hide the sidebar', 'Ctrl+B', function() M.toggle_sidebar() end },
-    { 'Show the files', 'Files tab', function() vim.cmd.OrchFiles() end },
     { 'Show source control', 'Source Control tab', function() vim.cmd.OrchGit() end },
     { 'Undo', 'Ctrl+Z', function() vim.cmd('silent! undo') end },
     { 'Redo', 'Ctrl+Y', function() vim.cmd('silent! redo') end },
@@ -391,7 +405,7 @@ local function actions_list()
     { 'Copy, cut, paste', 'Ctrl+C, Ctrl+X, Ctrl+V', function() end },
     { 'Comment a line or selection', 'Ctrl+/', function() vim.cmd('normal gcc') end },
     { 'Indent, outdent', 'Tab, Shift+Tab', function() end },
-    { 'Next tab, previous tab', 'Alt+Right, Alt+Left', function() vim.cmd.bnext() end },
+    { 'Next tab, previous tab', 'Alt+. and Alt+,', function() vim.cmd.bnext() end },
     { 'Close this tab', 'Alt+W or click its ×', function() M.close_buffer() end },
     { 'New file', '', function() M.new_file() end },
     { 'Work in the file tree', 'F3, then A, F2, Delete, Esc', function() M.focus_tree() end },
@@ -446,6 +460,9 @@ function M.setup(found)
   api.nvim_create_user_command('OrchUseVimKeys', function() M.set_vim_keys(not M.vim_keys()) end, {})
   M.set_vim_keys(vim.uv.fs_stat(STATE_FILE) ~= nil, true)
   api.nvim_create_autocmd('VimResized', { callback = M.fit_sidebar })
+  api.nvim_create_autocmd({ 'TabNew', 'TabClosed', 'TabEnter' }, {
+    callback = function() vim.schedule(M.update_title) end,
+  })
 end
 
 return M
