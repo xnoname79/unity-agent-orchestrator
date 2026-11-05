@@ -2579,6 +2579,20 @@ async def editor_stop(session_id=None):
     return n
 
 
+async def _editor_exited(sid, pid):
+    """PTY của card tự kết thúc trong lúc browser vẫn nối. Tải lại trang không đi qua đây: WS đóng
+    trước. True = nvim thoát thật (:q, ZZ, crash) nên bỏ card; client tmux rớt mà phiên còn thì không."""
+    if _tmux():
+        if sid in await editor_open_ids():
+            return False
+    elif any(p != pid and v["session"] == sid and v["kind"] == "editor" for p, v in _PTYS.items()):
+        return False     # không tmux, tab trình duyệt khác đang có nvim riêng của nó
+    _editors.discard(sid)
+    _editor_clear_stale(_editor_addr(sid))
+    publish({"type": "editor", "open": False, "session": sid})
+    return True
+
+
 async def _run_claude(session, prompt, on_event=None, dry_run=False):
     """Chạy `claude -p --resume <id>` với allowlist. Trả dict kết quả.
 
@@ -5454,7 +5468,7 @@ def build_app():
         _write_role_skill(cwd, name, _role_skill(cwd, name))
         return JSONResponse({"written": [str(_skill_path(cwd, name, r)) for r in missing]})
 
-    async def _ws_pty(websocket, argv_for, kind, extra_env=None):
+    async def _ws_pty(websocket, argv_for, kind, extra_env=None, on_exit=None):
         """PTY thật trong browser (xterm.js): spawn argv_for(session) tại cwd của session, bơm 2
         chiều qua WebSocket.
         Client gửi JSON {t:'i', d:<keys>} (input) và {t:'r', c, r} (resize); server gửi bytes thô.
@@ -5464,7 +5478,10 @@ def build_app():
         chúng khác nhau ĐÚNG một chỗ: argv. Mọi thứ còn lại y hệt.
 
         PTY lấy từ pty_backend(): pty.fork() trên POSIX, ConPTY trên Windows. Thiếu backend thì
-        BÁO THẲNG ra màn hình xterm — để import lỗi rồi WS đứt câm là kiểu hỏng khó đoán nhất."""
+        BÁO THẲNG ra màn hình xterm — để import lỗi rồi WS đứt câm là kiểu hỏng khó đoán nhất.
+
+        on_exit(sid, pid): child tự thoát khi browser vẫn nối; trả True thì đóng WS bằng mã 4001 để
+        FE bỏ card thay vì hiện [disconnected]."""
         sid = websocket.query_params.get("session", "")
         s = get_session(sid)
         if not s:
@@ -5497,7 +5514,7 @@ def build_app():
                 if not data:
                     break
                 await websocket.send_bytes(data)
-            await websocket.close()
+            await websocket.close(code=4001 if on_exit and await on_exit(sid, term.pid) else 1000)
 
         out_task = asyncio.create_task(pump_out())
         try:
@@ -5642,7 +5659,7 @@ def build_app():
                 if not _editor_socket_alive(_editor_addr(sid)):
                     break
                 await asyncio.sleep(0.1)
-        return await _ws_pty(websocket, editor_argv, "editor", _editor_env())
+        return await _ws_pty(websocket, editor_argv, "editor", _editor_env(), on_exit=_editor_exited)
 
     async def api_cli_sessions(request: Request):
         """Phiên CLI đã có trong một thư mục — để terminal card chọn phiên muốn chat tiếp.

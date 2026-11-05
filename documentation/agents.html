@@ -127,39 +127,53 @@ it; the old name keeps working for agents that remember it.</p>
 
 <h2 id="editor">The editor</h2>
 <p>The editor button on an agent card opens that agent's project in a card beside its terminal: files on the left, tabs
-on top, a status bar at the bottom. It looks and types like VS Code. Underneath it is Neovim with a bundled setup, so you
-need no Neovim knowledge, and your own Neovim and tmux setups are not read or changed.</p>
+on top, a status bar at the bottom. It looks like VS Code and uses Vim's modes. Underneath it is Neovim with a bundled setup,
+so there is nothing to configure, and your own Neovim and tmux setups are not read or changed.</p>
 <figure>
-  <img src="images/editor.png" width="1360" height="860" alt="The editor card on the acme-shop project. A file tree with icons and git status letters is on the left, tabs for orders.py and cart.py are on top, Python code is in the middle and a blue status bar is at the bottom.">
+  <img src="images/editor.png" width="1360" height="860" alt="The editor card on the acme-shop project. A file tree with icons and git status letters is on the left, tabs for orders.py and cart.py are on top, Python code is in the middle. A blue status bar at the bottom shows the NORMAL mode label and the hint Press i to type, Esc to stop, F1 for actions.">
 </figure>
 <p><strong>The first time</strong>, the card says <span class="ui">Downloading the editor…</span> while it fetches about
 12 MB from GitHub. It opens by itself, and later opens skip this step. If the download fails, the card says why:
 see <a href="settings.html#editor-download">what to do</a>.</p>
-<p>Click a file and start typing. There are no modes to learn: Esc never turns your keys into commands. Click to place the
-cursor, drag to select, and typing replaces the selection. A dot in place of a tab's × means unsaved changes. Closing that
-tab asks whether to save, with buttons to click.</p>
+<p>Click a file, press <kbd>i</kbd> and type. Press <kbd>Esc</kbd> when you stop, then save with <code>:w</code> or
+<kbd>Ctrl</kbd> <kbd>S</kbd>. The editor is always in one of three modes, named at the left of the status bar:</p>
+<ul>
+  <li><strong>Normal</strong> is where a card opens. Keys are commands, not text: <code>dd</code> deletes a line and
+    <kbd>u</kbd> undoes.</li>
+  <li><strong>Insert</strong> is for typing. <kbd>i</kbd> enters it and <kbd>Esc</kbd> returns to Normal.</li>
+  <li><strong>Visual</strong> selects text. Drag with the mouse, or press <kbd>v</kbd> for characters, <kbd>V</kbd> for lines
+    or <kbd>Ctrl</kbd> <kbd>V</kbd> for a block, then <kbd>y</kbd> copies and <kbd>d</kbd> cuts. <kbd>Esc</kbd> cancels.</li>
+</ul>
+<p>Prefer to just type? <a href="#vim-modes">Turn off Vim modes</a>. A dot in place of a tab's × means unsaved changes. Closing
+that tab asks whether to save, with buttons to click.</p>
 <div class="table-wrap"><table>
   <thead><tr><th>Action</th><th>Keys</th></tr></thead>
   <tbody>
     <tr><td>See every action, searchable</td><td><kbd>F1</kbd></td></tr>
-    <tr><td>Save</td><td><kbd>Ctrl</kbd> <kbd>S</kbd></td></tr>
+    <tr><td>Save</td><td><kbd>Ctrl</kbd> <kbd>S</kbd> or <code>:w</code></td></tr>
     <tr><td>Find a file by name</td><td><kbd>Ctrl</kbd> <kbd>P</kbd></td></tr>
     <tr><td>Search all files</td><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>F</kbd> or <kbd>F4</kbd></td></tr>
-    <tr><td>Find in this file</td><td><kbd>Ctrl</kbd> <kbd>F</kbd></td></tr>
+    <tr><td>Find in this file</td><td><kbd>/</kbd></td></tr>
     <tr><td>Show or hide the sidebar</td><td><kbd>Ctrl</kbd> <kbd>B</kbd></td></tr>
-    <tr><td>Undo, redo</td><td><kbd>Ctrl</kbd> <kbd>Z</kbd>, <kbd>Ctrl</kbd> <kbd>Y</kbd></td></tr>
-    <tr><td>Select all</td><td><kbd>Ctrl</kbd> <kbd>A</kbd></td></tr>
-    <tr><td>Copy, cut, paste, with your browser's clipboard</td><td><kbd>Ctrl</kbd> <kbd>C</kbd>, <kbd>Ctrl</kbd> <kbd>X</kbd>, <kbd>Ctrl</kbd> <kbd>V</kbd></td></tr>
-    <tr><td>Comment a line or selection</td><td><kbd>Ctrl</kbd> <kbd>/</kbd></td></tr>
-    <tr><td>Indent, outdent</td><td><kbd>Tab</kbd>, <kbd>Shift</kbd> <kbd>Tab</kbd></td></tr>
+    <tr><td>Undo, redo</td><td><kbd>u</kbd> or <kbd>Ctrl</kbd> <kbd>Z</kbd>, <kbd>Ctrl</kbd> <kbd>R</kbd></td></tr>
+    <tr><td>Select all</td><td><code>ggVG</code></td></tr>
+    <tr><td>Copy, cut and paste inside the editor</td><td><kbd>y</kbd>, <kbd>d</kbd>, <kbd>p</kbd></td></tr>
+    <tr><td>Paste from your browser's clipboard</td><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>V</kbd></td></tr>
+    <tr><td>Comment a line or selection</td><td><code>gc</code> or <kbd>Ctrl</kbd> <kbd>/</kbd></td></tr>
+    <tr><td>Indent, outdent</td><td><kbd>&gt;</kbd>, <kbd>&lt;</kbd></td></tr>
     <tr><td>Close the tab</td><td>Click its ×, or <kbd>Alt</kbd> <kbd>W</kbd></td></tr>
     <tr><td>Next tab, previous tab</td><td>Click it, or <kbd>Alt</kbd> <kbd>.</kbd> and <kbd>Alt</kbd> <kbd>,</kbd></td></tr>
-    <tr><td>Work in the file tree: new, rename, delete</td><td><kbd>F3</kbd>, then <kbd>A</kbd>, <kbd>F2</kbd>, <kbd>Delete</kbd>; <kbd>Esc</kbd> to return</td></tr>
+    <tr><td>Work in the file tree: new, rename, delete</td><td><kbd>F3</kbd>, then <kbd>a</kbd>, <kbd>r</kbd>, <kbd>d</kbd>; <kbd>Esc</kbd> to return</td></tr>
   </tbody>
 </table></div>
-<p><kbd>Ctrl</kbd> <kbd>W</kbd>, <kbd>Ctrl</kbd> <kbd>T</kbd> and <kbd>Ctrl</kbd> <kbd>N</kbd> belong to your browser, and
-<kbd>Ctrl</kbd> <kbd>K</kbd> opens the dashboard's command palette. Copying needs the page to be on
-<code>localhost</code> or HTTPS, because browsers only let those pages write to the clipboard.</p>
+<p>Everything else is plain Vim: counts, operators, registers, <code>:</code> commands, and <kbd>Ctrl</kbd> <kbd>A</kbd>,
+<kbd>Ctrl</kbd> <kbd>X</kbd> on numbers. Space is the leader key, with mappings for files, search and git.</p>
+<p><kbd>Ctrl</kbd> <kbd>V</kbd> follows the mode: it starts a block in Normal and Visual, and pastes from your browser's
+clipboard in Insert, on the <code>:</code> line and in a terminal. To insert a key literally, use <kbd>Ctrl</kbd> <kbd>Q</kbd>.
+<kbd>Ctrl</kbd> <kbd>C</kbd> on a Visual selection copies it to your browser's clipboard.</p>
+<p><kbd>Ctrl</kbd> <kbd>W</kbd>, <kbd>Ctrl</kbd> <kbd>T</kbd> and <kbd>Ctrl</kbd> <kbd>N</kbd> belong to your browser, so use
+<code>:wincmd</code> for Vim's window commands. <kbd>Ctrl</kbd> <kbd>K</kbd> opens the dashboard's command palette. Copying
+needs the page to be on <code>localhost</code> or HTTPS, because browsers only let those pages write to the clipboard.</p>
 <p>Language features start by themselves when a server such as <code>pyright</code> or <code>gopls</code> is already
 installed. Without one the editor still colours code by file type, and shows no error.</p>
 
@@ -174,15 +188,29 @@ of changes, and clean ones say <code>clean</code>. Repositories inside folders l
 <p>Click a file to see its diff, or a repository to see all of its changes. <code>← Back</code> at the top right
 returns to the list, and <kbd>R</kbd> in the list refreshes it. A folder with no repository says so.</p>
 
-<h3 id="vim-keys">Use Vim keys</h3>
-<p>Press <kbd>F1</kbd> and pick <code>Use Vim keys</code> for normal Vim behaviour, including Space as the leader
-key with mappings for files, search and git. In this mode <kbd>Ctrl</kbd> <kbd>V</kbd> is Vim's block selection, so paste with
-<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>V</kbd>. The choice is remembered. Pick <code>Stop using Vim keys</code> to switch back.</p>
+<h3 id="vim-modes">Turn off Vim modes</h3>
+<p>Press <kbd>F1</kbd> and pick <code>Turn off Vim modes</code> to type straight away, as in VS Code. Esc no longer stops
+typing. Click to place the cursor, drag to select, and typing replaces the selection. The choice is remembered. Pick
+<code>Use Vim modes</code> to switch back. <kbd>F1</kbd> always lists the keys for the style you are in.</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Action</th><th>Keys with Vim modes off</th></tr></thead>
+  <tbody>
+    <tr><td>Find in this file</td><td><kbd>Ctrl</kbd> <kbd>F</kbd></td></tr>
+    <tr><td>Undo, redo</td><td><kbd>Ctrl</kbd> <kbd>Z</kbd>, <kbd>Ctrl</kbd> <kbd>Y</kbd></td></tr>
+    <tr><td>Select all</td><td><kbd>Ctrl</kbd> <kbd>A</kbd></td></tr>
+    <tr><td>Copy, cut, paste, with your browser's clipboard</td><td><kbd>Ctrl</kbd> <kbd>C</kbd>, <kbd>Ctrl</kbd> <kbd>X</kbd>, <kbd>Ctrl</kbd> <kbd>V</kbd></td></tr>
+    <tr><td>Indent, outdent</td><td><kbd>Tab</kbd>, <kbd>Shift</kbd> <kbd>Tab</kbd></td></tr>
+    <tr><td>Work in the file tree: new, rename, delete</td><td><kbd>F3</kbd>, then <kbd>A</kbd>, <kbd>F2</kbd>, <kbd>Delete</kbd>; <kbd>Esc</kbd> to return</td></tr>
+  </tbody>
+</table></div>
 
 <h3 id="editor-sessions">Keeping your work</h3>
 <p>With tmux installed, reloading the page or restarting the server keeps your open files and unsaved text. Closing the
 card with its × ends the editor and loses unsaved text, and it asks first. Without tmux, which includes Windows, closing or
 reloading the browser tab also ends the editor, as the card's tooltip says, so save first.</p>
+<p>Quitting from inside, with <code>:q</code>, <code>:qa</code>, <code>:wq</code> or <code>ZZ</code>, closes the card. The file
+tree does not count as a window, so <code>:q</code> on the last file quits. With unsaved text Vim refuses and says so. The
+editor button opens the card again.</p>
 
 <h2 id="new-agent">New agent</h2>
 <p><span class="ui">New agent</span> is in the sidebar, on <span class="ui">Home</span>, and in the command palette. It

@@ -30,7 +30,7 @@ its own login and subscription.
   effort per agent. Gemini models are read from `agy models`, so new ones show up on their own.
 - Agents hand work to each other with `send_signal`; every run is queued, capped and logged.
 - Role playbooks that fill themselves in from the project.
-- A VS Code style editor on every agent's project, with Source Control across all its git repos. Nothing to install.
+- A VS Code style editor with Vim modes on every agent's project, with Source Control across all its git repos. Nothing to install.
 - Workspaces (isolated folders and agents) in groups, two side by side.
 - Guard rails: approval gate, ping-pong and daily caps, kill switch, one prompt at a time per
   agent, reachable from your own machine only by default.
