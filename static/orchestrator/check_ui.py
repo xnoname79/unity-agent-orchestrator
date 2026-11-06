@@ -349,6 +349,20 @@ if '"Rechecking sub-agent"' not in JS or '"Reflect failed"' not in JS:
 check("Home offers Dismiss only with no worktree, and keeps a row during a recheck", gaps,
       "Discard on a worktree row deletes a branch; a row vanishing mid-check looks solved")
 
+# 20 · Spawn chạy lâu và server chỉ thấy trùng tên sau khi request đầu đăng ký xong: nút còn bấm được
+# trong lúc chờ là tạo được hai agent cùng tên.
+gaps = set()
+spawn = JS[JS.index("async function spawnAgent()"):JS.index("window.spawnAgent = spawnAgent")]
+if 'id="sp-submit"' not in HTML:
+    gaps.add("the Create agent button needs id=sp-submit")
+off, on = spawn.find('$("sp-submit").disabled = true'), spawn.find('finally { $("sp-submit").disabled = false; }')
+if off < spawn.find("if (missing) return"):
+    gaps.add("spawnAgent must disable sp-submit after the validation return")
+if on < off:
+    gaps.add("spawnAgent must re-enable sp-submit in finally")
+check("Create agent is blocked while a spawn runs", gaps,
+      "a second click during the request spawns a duplicate")
+
 if fails:
     print("\n" + "\n\n".join(fails))
     sys.exit(1)
