@@ -1,4 +1,4 @@
--- Bundled config for the dashboard's editor card: nvim that looks and types like VS Code.
+-- Bundled config for the dashboard's editor card: nvim that looks like VS Code, with vim modes.
 -- Started with `NVIM_APPNAME=orch-nvim nvim -u <this file>`, so it never reads the user's own
 -- nvim config. Everything is vendored under pack/orch/start; nothing needs a compiler or install.
 local root = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':p:h')
@@ -120,7 +120,7 @@ require('nvim-tree').setup({
 -- Find and search -----------------------------------------------------------------------------
 local actions = require('telescope.actions')
 local has = function(bin) return vim.fn.executable(bin) == 1 end
--- Typing-first: Esc leaves the picker. In Vim keys it is the usual switch to normal mode.
+-- Typing-first: Esc leaves the picker. With Vim modes it is the usual switch to normal mode.
 local function picker_esc(prompt)
   if keys.vim_keys() then vim.cmd.stopinsert() else actions.close(prompt) end
 end
@@ -185,7 +185,9 @@ keys.setup({ find_files = find_files, live_grep = live_grep })
 
 -- Status bar and tab bar ----------------------------------------------------------------------
 local bar = { fg = '#ffffff', bg = '#007acc' }
-local bar_mode = { a = bar, b = bar, c = bar, x = bar, y = bar, z = bar }
+local function bar_mode(fg, bg)
+  return { a = { fg = fg, bg = bg, gui = 'bold' }, b = bar, c = bar, x = bar, y = bar, z = bar }
+end
 
 -- Each tab: name, then its own click target. A modified file shows a dot in place of the ×.
 local function tab_fmt(name, tab)
@@ -217,23 +219,67 @@ local function spaces()
   return (vim.bo.expandtab and 'Spaces: ' or 'Tab Size: ') .. vim.fn.shiftwidth()
 end
 
+-- lualine says V-LINE and V-BLOCK; say what vim says.
+local function mode_label()
+  return (require('lualine.utils.mode').get_mode():gsub('^V%-', 'VISUAL '))
+end
+
+-- Shown to a newcomer until the first insert of this nvim session.
+local HINT = 'Press i to type · Esc to stop · F1 for actions'
+local hint_done = false
+vim.api.nvim_create_autocmd('InsertEnter', { once = true, callback = function() hint_done = true end })
+
+local function ln_col() return 'Ln ' .. vim.fn.line('.') .. ', Col ' .. vim.fn.virtcol('.') end
+
+-- lualine truncates at the start of c or x, which cuts Ln/Col first, so whatever does not fit hides.
+-- Room left after the mode label, a small diff and Ln/Col.
+-- shortcut: assumes a diff of 6 columns, measure it if a big diff in a tight bar ever cuts Ln/Col.
+local function bar_room()
+  return vim.o.columns - (keys.vim_keys() and #mode_label() + 2 or 0) - 6 - (#ln_col() + 2)
+end
+
+-- A long branch shortens, then hides. A cut must not leave half of lualine's %% escape behind.
+local function fit_branch(name)
+  local room = bar_room() - 2
+  if vim.fn.strdisplaywidth(name) <= room then return name end
+  return room < 6 and '' or (vim.fn.strcharpart(name, 0, room - 1):gsub('%%+$', '')) .. '…'
+end
+
+local function room_after_branch()
+  local branch = fit_branch(require('lualine.components.branch.git_branch').get_branch())
+  return bar_room() - (branch ~= '' and vim.fn.strdisplaywidth(branch) + 2 or 0)
+end
+
+local function show_hint()
+  local bo = vim.bo
+  return not hint_done and keys.vim_keys() and vim.api.nvim_get_mode().mode == 'n'
+    and bo.buftype == '' and bo.modifiable and not bo.readonly
+    and room_after_branch() >= vim.fn.strdisplaywidth(HINT) + 2
+end
+
+-- Spaces, encoding, line ending and file type together take about 32 columns.
+local function bar_has_room()
+  return room_after_branch() - (show_hint() and vim.fn.strdisplaywidth(HINT) + 2 or 0) >= 32
+end
+
 require('lualine').setup({
   options = {
-    theme = { normal = bar_mode, insert = bar_mode, visual = bar_mode, replace = bar_mode,
-              command = bar_mode, inactive = bar_mode },
+    theme = { normal = bar_mode('#ffffff', '#005a9e'), insert = bar_mode('#1e1e1e', '#73c991'),
+              visual = bar_mode('#1e1e1e', '#e5a23c'), replace = bar_mode('#ffffff', '#c74e39'),
+              command = bar_mode('#1e1e1e', '#d7ba7d'), inactive = bar_mode('#ffffff', '#007acc') },
     globalstatus = true,
     always_divide_middle = false,
     section_separators = '', component_separators = '',
     refresh = { tabline = 200, statusline = 200 },
   },
   sections = {
-    lualine_a = { { 'mode', cond = keys.vim_keys } },
-    lualine_b = { { 'branch', icon = '' }, 'diff', 'diagnostics' },
-    lualine_c = {},
-    lualine_x = { function() return 'Ln ' .. vim.fn.line('.') .. ', Col ' .. vim.fn.virtcol('.') end, spaces },
-    lualine_y = { { 'encoding', fmt = string.upper }, { 'fileformat',
-      symbols = { unix = 'LF', dos = 'CRLF', mac = 'CR' } } },
-    lualine_z = { { 'filetype', cond = function() return vim.bo.buftype == '' end } },
+    lualine_a = { { mode_label, cond = keys.vim_keys } },
+    lualine_b = { { 'branch', icon = '', fmt = fit_branch }, 'diff', 'diagnostics' },
+    lualine_c = { { function() return HINT end, cond = show_hint } },
+    lualine_x = { ln_col, { spaces, cond = bar_has_room } },
+    lualine_y = { { 'encoding', fmt = string.upper, cond = bar_has_room }, { 'fileformat',
+      symbols = { unix = 'LF', dos = 'CRLF', mac = 'CR' }, cond = bar_has_room } },
+    lualine_z = { { 'filetype', cond = function() return vim.bo.buftype == '' and bar_has_room() end } },
   },
   tabline = {
     lualine_a = { {
@@ -325,5 +371,5 @@ vim.api.nvim_create_autocmd('LspAttach', {
 })
 vim.diagnostic.config({ virtual_text = { prefix = '●' } })
 
--- Layout on start: tree on the left, cursor in the editor, ready to type.
+-- Layout on start: tree on the left, cursor in the editor.
 vim.api.nvim_create_autocmd('VimEnter', { nested = true, callback = keys.on_start })

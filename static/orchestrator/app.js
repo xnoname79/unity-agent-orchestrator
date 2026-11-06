@@ -1465,7 +1465,7 @@ function wireEditorTerm(t) {
     return true;
   });
   // nvim báo kiểu phím và tab đang xem qua title (qua được tmux): orch:<keys>:<view>.
-  // Vim keys thì Ctrl+V là visual block của vim.
+  // keys = vim: đang ở Normal/Visual, Ctrl+V là visual block của vim. Mode khác thì trình duyệt dán.
   t.term.onTitleChange((title) => {
     const [tag, keys, view] = title.split(":");
     if (tag !== "orch") return;
@@ -1480,12 +1480,12 @@ function wireEditorTerm(t) {
       if (e.type === "keydown" && t.ws.readyState === 1) { e.preventDefault(); t.ws.send(JSON.stringify({ t: "i", d: "\x1b[34~" })); }
       return false;
     }
-    if (e.shiftKey) return true;
+    if (e.shiftKey && k !== "v") return true;
     if (k === "/") {                      // bản xterm này không gửi gì cho Ctrl+/
       if (e.type === "keydown" && t.ws.readyState === 1) { e.preventDefault(); t.ws.send(JSON.stringify({ t: "i", d: "\x1f" })); }
       return false;
     }
-    if (k === "v" && !t.vimKeys) {
+    if (k === "v" && (e.shiftKey || !t.vimKeys)) {
       // Để trình duyệt tự dán (không cần xin quyền đọc clipboard). Không có sự kiện paste, tức phím
       // không do người thật gõ, thì mới đọc clipboard.
       if (e.type === "keydown") {
@@ -1545,7 +1545,10 @@ function startTerm(t) {
   t.ws.binaryType = "arraybuffer";
   t.ws.onopen = () => fitTerm(t);
   t.ws.onmessage = (e) => t.term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
-  t.ws.onclose = () => { if (t.term) t.term.write("\r\n\x1b[31m[disconnected — press 🔄 to reload]\x1b[0m\r\n"); };
+  t.ws.onclose = (e) => {
+    if (e.code === 4001) { scheduleRefresh(); return; }   // nvim tự thoát (:q, ZZ): card đã đóng ở server
+    if (t.term) t.term.write("\r\n\x1b[31m[disconnected — press 🔄 to reload]\x1b[0m\r\n");
+  };
   t.term.onData((d) => { if (t.ws.readyState === 1) t.ws.send(JSON.stringify({ t: "i", d })); });
 }
 

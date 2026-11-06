@@ -795,6 +795,168 @@ def _git(cwd, *args):
                    capture_output=True)
 
 
+async def live_modes(exe, env, root):
+    """Vim modes là mặc định, trên nvim thật. Có cờ tắt thì về typing-first; cờ cũ không còn tác dụng."""
+    sid = "editor-guard-modes"
+    addr = so._editor_addr(sid)
+    project = root / "modes"
+    project.mkdir()
+    note = project / "note.txt"
+    note.write_text("alpha 7\nbeta\n", encoding="utf-8")
+
+    def start():
+        cmd = so._nvim_cmd(sid, exe)
+        return subprocess.Popen([exe, "--headless", *cmd[1:], "note.txt"], cwd=project, env=env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def stop(p):
+        p.kill()
+        p.wait(10)
+        so._editor_clear_stale(addr)
+
+    def expr(e):
+        r = subprocess.run([exe, "--server", addr, "--remote-expr", e], env=env, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=20)
+        return r.stdout.strip()
+
+    def send(keys):
+        subprocess.run([exe, "--server", addr, "--remote-send", keys], env=env, capture_output=True,
+                       timeout=20)
+
+    async def until(fn, seconds=10):
+        for _ in range(int(seconds * 10)):
+            if fn():
+                return True
+            await asyncio.sleep(0.1)
+        return bool(fn())
+
+    async def up():
+        await until(lambda: expr("v:vim_did_enter") == "1", 30)
+        await asyncio.sleep(0.5)     # typing-first vào insert ở vim.schedule sau VimEnter
+
+    async def mode_is(m):
+        return await until(lambda: expr("mode()") == m, 3)
+
+    def bar():
+        return expr("luaeval(\"vim.api.nvim_eval_statusline(vim.o.statusline, {}).str\")")
+
+    proc = start()
+    try:
+        await up()
+        state = Path(expr("stdpath('state')"))
+        flag = state / "no-vim-modes"
+        check("a fresh card opens in Normal mode", expr("mode()") == "n", expr("mode()"))
+        check("a mouse drag gives Visual: selectmode is empty", expr("&selectmode") == "", expr("&selectmode"))
+        check("the title gives Ctrl+V to nvim in Normal", expr("&titlestring").startswith("orch:vim:"),
+              expr("&titlestring"))
+
+        send("<C-\\><C-N><Cmd>set columns=94<CR>")
+        await until(lambda: expr("&columns") == "94", 3)
+        await until(lambda: "Press i" in bar() and "Ln 1" in bar(), 3)
+        text = bar()
+        check("the status bar shows the mode, the hint and Ln/Col at 94 columns",
+              "NORMAL" in text and "Press i to type · Esc to stop · F1 for actions" in text and "Ln 1" in text, text)
+        send("<C-\\><C-N><Cmd>set columns=46<CR>")
+        await until(lambda: expr("&columns") == "46", 3)
+        await until(lambda: "Press i" not in bar(), 3)
+        text = bar()
+        check("a narrow bar keeps the mode and Ln/Col", "NORMAL" in text and "Ln 1" in text, text)
+        send("<C-\\><C-N><Cmd>set columns=94<CR>")
+        await until(lambda: expr("&columns") == "94", 3)
+
+        send("i")
+        check("i enters Insert", await mode_is("i"), expr("mode()"))
+        check("the title gives Ctrl+V to the browser in Insert",
+              await until(lambda: expr("&titlestring").startswith("orch:typing:"), 3), expr("&titlestring"))
+        send("<Esc>")
+        check("Esc leaves Insert", await mode_is("n"), expr("mode()"))
+        check("and the title follows", await until(lambda: expr("&titlestring").startswith("orch:vim:"), 3),
+              expr("&titlestring"))
+        await until(lambda: "Press i" not in bar(), 3)
+        text = bar()
+        check("the hint is gone after the first insert, and the full bar is back",
+              "Press i" not in text and "NORMAL" in text and "Spaces: " in text, text)
+        send("v")
+        check("v enters Visual", await mode_is("v"), expr("mode()"))
+        check("Ctrl+V still belongs to nvim in Visual", await until(lambda: expr("&titlestring").startswith("orch:vim:"), 3),
+              expr("&titlestring"))
+        send("<Esc>")
+        await mode_is("n")
+
+        for key, modes in (("<C-s>", "nix"), ("<C-z>", "nixo"), ("<C-_>", "nix"), ("<C-b>", "ni")):
+            missing = [m for m in modes if not expr(f"maparg('{key}', '{m}')")]
+            check(f"{key} is mapped in Vim style ({modes})", not missing, f"missing in {missing}")
+        for key, m in (("<C-a>", "n"), ("<C-x>", "n"), ("<C-p>", "i"), ("<C-c>", "n"), ("<C-c>", "i")):
+            check(f"{key} stays native in mode {m}", expr(f"maparg('{key}', '{m}')") == "", expr(f"maparg('{key}', '{m}')"))
+
+        send("gg0<C-a>")
+        check("Ctrl+A adds to a number", await until(lambda: expr("getline(1)") == "alpha 8", 3), expr("getline(1)"))
+        send("u")
+        await until(lambda: expr("getline(1)") == "alpha 7", 3)
+
+        send("<C-\\><C-N><Cmd>OrchVimModes<CR>")
+        check("switching off writes no-vim-modes", await until(flag.exists, 3), str(flag))
+        check("and types right away", await mode_is("i"), expr("mode()"))
+        check("the title gives Ctrl+V to the browser", expr("&titlestring").startswith("orch:typing:"), expr("&titlestring"))
+        send("<C-\\><C-N><Cmd>OrchVimModes<CR>")
+        check("switching back removes it", await until(lambda: not flag.exists(), 3), str(flag))
+        check("and lands in Normal", await mode_is("n"), expr("mode()"))
+        check("Ctrl+Z is still mapped after switching back", bool(expr("maparg('<C-z>', 'n')")), "")
+
+        send("ix<Esc>:q<CR>")
+        await asyncio.sleep(0.5)
+        check("a refused :q on unsaved text keeps nvim and brings the tree back",
+              proc.poll() is None and await until(
+                  lambda: expr("luaeval(\"require('nvim-tree.api').tree.is_visible()\")") in ("v:true", "true"), 3),
+              expr("execute('messages')")[-200:])
+        send("<C-\\><C-N><Cmd>silent write<CR>:q<CR>")
+        check(":q on the last file quits nvim although the tree is open",
+              await until(lambda: proc.poll() is not None, 5), "still running")
+    finally:
+        stop(proc)
+
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.write_text("", encoding="utf-8")
+    proc = start()
+    try:
+        await up()
+        check("a no-vim-modes file starts typing-first", await mode_is("i"), expr("mode()"))
+        check("with typing-first select behaviour", expr("&selectmode") == "mouse,key", expr("&selectmode"))
+        check("and the title stays on typing", expr("&titlestring").startswith("orch:typing:"), expr("&titlestring"))
+    finally:
+        stop(proc)
+
+    flag.unlink()
+    (state / "use-vim-keys").write_text("", encoding="utf-8")
+    long_branch = "feature/" + "a-very-long-branch-name-" * 3
+    _git(project, "init", "-q", "-b", long_branch)
+    proc = start()
+    try:
+        await up()
+        check("the old use-vim-keys file means nothing", expr("mode()") == "n", expr("mode()"))
+        for cols in (94, 48, 34):
+            send(f"<C-\\><C-N><Cmd>set columns={cols}<CR>")
+            await until(lambda: expr("&columns") == str(cols) and "Ln 1, Col 1" in bar(), 3)
+            text = bar()
+            check(f"a long branch does not cut Ln/Col or the mode at {cols} columns",
+                  "NORMAL" in text and "Ln 1, Col 1" in text and "<" not in text, text)
+        send("<C-\\><C-N><Cmd>set columns=94<CR>")
+        await until(lambda: expr("&columns") == "94", 3)
+
+        # Qua đúng F1: Telescope đẩy con trỏ sang phải một ô ngay trước khi rời insert.
+        send("<C-\\><C-N>gg0<F1>")
+        await until(lambda: expr("&filetype") == "TelescopePrompt", 5)
+        send("Turn off")
+        await asyncio.sleep(0.5)
+        send("<CR>")
+        await mode_is("i")
+        await asyncio.sleep(0.3)
+        check("Turn off Vim modes from column 1 keeps the cursor in column 1",
+              expr("&filetype") != "TelescopePrompt" and expr("col('.')") == "1", expr("col('.')"))
+    finally:
+        stop(proc)
+
+
 async def main_live():
     """nvim ghim thật + config bundled thật, không giao diện. Chạy ở CI Windows nên phải tự đủ."""
     exe = await asyncio.to_thread(so.nvim_install)
@@ -825,8 +987,10 @@ async def main_live():
     marker = home / "user-config-ran"
     (home / ".config" / "nvim" / "init.lua").write_text(
         f"vim.fn.writefile({{'x'}}, [[{marker}]])\n", encoding="utf-8")
+    # XDG_STATE_HOME: phần này ghi cờ no-vim-modes, không được rơi vào state thật của người dùng.
     env = {**os.environ, **so._editor_env(), "HOME": str(home), "USERPROFILE": str(home),
-           "LOCALAPPDATA": str(home / "AppData")}
+           "LOCALAPPDATA": str(home / "AppData"), "XDG_STATE_HOME": str(home / "state")}
+    await live_modes(exe, env, outside)
     sid = "editor-guard-live"
     cmd = so._nvim_cmd(sid, exe)
     proc = subprocess.Popen([exe, "--headless", *cmd[1:]], cwd=project, env=env,

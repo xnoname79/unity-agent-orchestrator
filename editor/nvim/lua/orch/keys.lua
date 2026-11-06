@@ -1,10 +1,10 @@
--- Key behaviour of the editor card: typing-first by default (no vim modes to get stuck in), plus a
--- `Use Vim keys` switch that restores normal vim with the owner's mappings. Typing-first follows
+-- Key behaviour of the editor card: real vim modes by default, with the owner's mappings, plus a
+-- `Turn off Vim modes` switch to typing-first (no modes, VS Code keys). Typing-first follows
 -- $VIMRUNTIME/scripts/mswin.vim, but it is not sourced because it cannot be undone at runtime.
 local M = {}
 local api = vim.api
 
-local STATE_FILE = vim.fn.stdpath('state') .. '/use-vim-keys'
+local STATE_FILE = vim.fn.stdpath('state') .. '/no-vim-modes'
 local tools = {}
 local tree_hidden = false       -- the user hid the sidebar: resizing must not bring it back
 local saved_cursor               -- where the insert cursor was, because leaving insert moves it
@@ -131,10 +131,14 @@ function M.save()
 end
 
 -- Sidebar -------------------------------------------------------------------------------------
+local function is_sidebar(win)
+  local ft = vim.bo[api.nvim_win_get_buf(win)].filetype
+  return ft == 'NvimTree' or ft == 'orchscm'
+end
+
 local function focus_editor()
   for _, win in ipairs(api.nvim_tabpage_list_wins(0)) do
-    local ft = vim.bo[api.nvim_win_get_buf(win)].filetype
-    if api.nvim_win_get_config(win).relative == '' and ft ~= 'NvimTree' and ft ~= 'orchscm' then
+    if api.nvim_win_get_config(win).relative == '' and not is_sidebar(win) then
       api.nvim_set_current_win(win)
       return
     end
@@ -178,6 +182,29 @@ function M.fit_sidebar()
   end
 end
 
+-- The sidebar does not count as a window to stay in: quitting the last file quits nvim, as in plain
+-- vim, so `:q` and ZZ close the card. If nvim refuses (unsaved text), the sidebar comes back.
+local function quit_with_last_file()
+  local cur = api.nvim_get_current_win()
+  if #api.nvim_list_tabpages() > 1 or is_sidebar(cur) or api.nvim_win_get_config(cur).relative ~= '' then
+    return
+  end
+  local sidebars = {}
+  for _, win in ipairs(api.nvim_tabpage_list_wins(0)) do
+    if is_sidebar(win) then
+      sidebars[#sidebars + 1] = win
+    elseif win ~= cur and api.nvim_win_get_config(win).relative == '' then
+      return
+    end
+  end
+  for _, win in ipairs(sidebars) do api.nvim_win_close(win, true) end
+  if #sidebars > 0 then
+    vim.schedule(function()
+      if M.scm_open then vim.cmd.OrchGit() else M.fit_sidebar() end
+    end)
+  end
+end
+
 function M.on_start()
   M.fit_sidebar()
   focus_editor()
@@ -208,8 +235,9 @@ function M.tree_attach(bufnr)
     map('<F2>', api_tree.fs.rename, 'Rename')
     map('<Del>', api_tree.fs.remove, 'Delete')
     map('a', api_tree.fs.create, 'New file')
-    map('<Esc>', focus_editor, 'Back to the editor')
   end
+  -- In both styles, because the browser keeps Ctrl+W for itself.
+  vim.keymap.set('n', '<Esc>', focus_editor, { buffer = bufnr, desc = 'Back to the editor', nowait = true })
   -- One click opens, as in VS Code. nvim's click already moved the cursor onto the row. Then the
   -- keyboard goes back to the file: nothing in the tree expects typing.
   vim.keymap.set({ 'n', 'i' }, '<LeftRelease>', function()
@@ -219,8 +247,31 @@ function M.tree_attach(bufnr)
   end, { buffer = bufnr })
 end
 
--- Typing-first keymap -------------------------------------------------------------------------
+-- Keys Vim does not need, in both styles. Unmapped, Ctrl+Z suspends nvim, even after an operator,
+-- and a tmux pane has no shell to resume it.
 local NIXS = { 'n', 'i', 'x', 's' }
+local both_maps = {
+  { NIXS, '<C-s>', function() M.save() end },
+  { 'n', '<C-p>', function() tools.find_files() end },
+  { { 'n', 'i' }, '<C-b>', function() M.toggle_sidebar() end },
+  { NIXS, '<M-w>', function() M.close_buffer() end },
+  { NIXS, '<F3>', function() M.focus_tree() end },
+  { NIXS, '<M-.>', '<Cmd>bnext<CR>' },
+  { NIXS, '<M-,>', '<Cmd>bprevious<CR>' },
+  { { 'n', 'i' }, '<C-z>', '<Cmd>silent! undo<CR>' },
+  { { 'x', 's' }, '<C-z>', '<Esc><Cmd>silent! undo<CR>' },
+  { 'o', '<C-z>', '<Esc>' },
+  { 'n', '<C-_>', 'gcc', { remap = true } },
+  { 'i', '<C-_>', '<Cmd>normal gcc<CR>' },
+  { 's', '<C-_>', '<C-g>gcgv<C-g>', { remap = true } },
+  { 'x', '<C-_>', 'gcgv', { remap = true } },
+}
+
+local function set_map(m)
+  vim.keymap.set(m[1], m[2], m[3], vim.tbl_extend('force', { silent = true }, m[4] or {}))
+end
+
+-- Typing-first keymap -------------------------------------------------------------------------
 
 -- Select mode runs a mapping's right-hand side as typed text unless it starts with <C-g>, which
 -- flips to Visual for the command. The trailing gv<C-g> brings the selection back.
@@ -237,17 +288,10 @@ local function with_undo_break(key)
 end
 
 M.typing_maps = {
-  { NIXS, '<C-s>', function() M.save() end },
-  { NIXS, '<C-p>', function() tools.find_files() end },
+  { { 'i', 'x', 's' }, '<C-p>', function() tools.find_files() end },
   { NIXS, '<C-f>', function() require('telescope.builtin').current_buffer_fuzzy_find() end },
-  { NIXS, '<C-b>', function() M.toggle_sidebar() end },
-  { NIXS, '<M-w>', function() M.close_buffer() end },
-  { NIXS, '<F3>', function() M.focus_tree() end },
-  { NIXS, '<M-.>', '<Cmd>bnext<CR>' },
-  { NIXS, '<M-,>', '<Cmd>bprevious<CR>' },
-  { { 'n', 'i' }, '<C-z>', '<Cmd>silent! undo<CR>' },
+  { { 'x', 's' }, '<C-b>', function() M.toggle_sidebar() end },
   { { 'n', 'i' }, '<C-y>', '<Cmd>silent! redo<CR>' },
-  { { 'x', 's' }, '<C-z>', '<Esc><Cmd>silent! undo<CR>' },
   { { 'x', 's' }, '<C-y>', '<Esc><Cmd>silent! redo<CR>' },
   { 'i', '<C-a>', select_all('<C-\\><C-N>'), { expr = true } },
   { 'n', '<C-a>', select_all(''), { expr = true } },
@@ -260,10 +304,6 @@ M.typing_maps = {
   { 'x', '<C-x>', '"+d' },
   { { 'n', 'i' }, '<C-c>', function() vim.fn.setreg('+', vim.fn.getline('.') .. '\n', 'V') end },
   { 'i', '<C-x>', '<Cmd>normal! "+dd<CR>' },
-
-  { 'i', '<C-_>', '<Cmd>normal gcc<CR>' },
-  { 's', '<C-_>', '<C-g>gcgv<C-g>', { remap = true } },
-  { 'x', '<C-_>', 'gcgv', { remap = true } },
 
   -- Tab indents a selection; a completion menu takes Tab first.
   { 'i', '<Tab>', pum('<C-n>', '<Tab>'), { expr = true } },
@@ -288,7 +328,7 @@ M.typing_maps = {
 local function apply_typing(on)
   for _, m in ipairs(M.typing_maps) do
     if on then
-      vim.keymap.set(m[1], m[2], m[3], vim.tbl_extend('force', { silent = true }, m[4] or {}))
+      set_map(m)
     else
       pcall(vim.keymap.del, m[1], m[2])
     end
@@ -303,10 +343,13 @@ local function apply_typing(on)
 end
 
 -- The dashboard reads the title, which also passes through tmux: orch:<key style>:<head tab>.
--- That is how it knows who owns Ctrl+V and which head tab to light, even after a reload.
+-- That is how it knows who owns Ctrl+V and which head tab to light, even after a reload. `vim` means
+-- Ctrl+V selects a block here, so nvim gets the key; in any other mode the browser pastes.
 function M.update_title()
   local view = (M.scm_open or #api.nvim_list_tabpages() > 1) and 'git' or 'edit'
-  vim.o.titlestring = ('orch:%s:%s'):format(M.vim_keys() and 'vim' or 'typing', view)
+  local mode = api.nvim_get_mode().mode:sub(1, 1)
+  local block = M.vim_keys() and (mode == 'n' or mode == 'v' or mode == 'V' or mode == '\22')
+  vim.o.titlestring = ('orch:%s:%s'):format(block and 'vim' or 'typing', view)
 end
 
 -- A click on a tab leaves any diff or panel first, so the file lands in the editor window.
@@ -339,12 +382,11 @@ local function owner_maps()
 end
 
 local function vim_only_maps(on)
-  local maps = { { '<C-p>', function() tools.find_files() end },
-                 { '<C-b>', '<Cmd>NvimTreeToggle<CR>' },
-                 { '<Tab>', '<Cmd>bnext<CR>' },
-                 { '<S-Tab>', '<Cmd>bprevious<CR>' } }
+  local maps = { { 'n', '<Tab>', '<Cmd>bnext<CR>' },
+                 { 'n', '<S-Tab>', '<Cmd>bprevious<CR>' },
+                 { 'x', '<C-c>', '"+y' } }
   for _, m in ipairs(maps) do
-    if on then vim.keymap.set('n', m[1], m[2], { silent = true }) else pcall(vim.keymap.del, 'n', m[1]) end
+    if on then set_map(m) else pcall(vim.keymap.del, m[1], m[2]) end
   end
 end
 
@@ -364,6 +406,8 @@ function M.set_vim_keys(on, quiet)
     vim.keymap.set('i', '<CR>', pum('<C-y>', '<CR>'), { expr = true })
     vim.cmd.stopinsert()
   else
+    -- Vim style never uses this, and Telescope shifts the cursor one right just before leaving insert.
+    saved_cursor = nil
     pcall(vim.keymap.del, 'i', '<S-Tab>')
     vim_only_maps(false)
     apply_typing(true)
@@ -371,10 +415,10 @@ function M.set_vim_keys(on, quiet)
   end
   if quiet then return end
   if on then
+    vim.fn.delete(STATE_FILE)
+  else
     vim.fn.mkdir(vim.fs.dirname(STATE_FILE), 'p')
     vim.fn.writefile({}, STATE_FILE)
-  else
-    vim.fn.delete(STATE_FILE)
   end
   -- The tree's key set is chosen when it attaches.
   if tree().is_visible() then
@@ -382,37 +426,38 @@ function M.set_vim_keys(on, quiet)
     tree().open({ current_window = false })
     focus_editor()
   end
-  vim.notify(on and 'Vim keys on. Press F1 and pick the same action to switch back.'
-    or 'Vim keys off: back to typing-first.')
+  vim.notify(on and 'Vim modes on. Press i to type, Esc to stop.'
+    or 'Vim modes off: just type. Press F1 and pick Use Vim modes to switch back.')
 end
 
 -- F1: what can I do here? ---------------------------------------------------------------------
 local function actions_list()
   local function terminal() vim.cmd('botright split | terminal') end
+  local on = M.vim_keys()
+  local function keys(vim_style, typing) return on and vim_style or typing end
   return {
-    { 'Save', 'Ctrl+S', function() M.save() end },
+    { 'Save', keys('Ctrl+S or :w', 'Ctrl+S'), function() M.save() end },
     { 'Save as…', '', function() M.save_as() end },
     { 'Find a file', 'Ctrl+P', function() tools.find_files() end },
     { 'Search all files', 'Ctrl+Shift+F or F4', function() tools.live_grep() end },
-    { 'Find in this file', 'Ctrl+F', function() require('telescope.builtin').current_buffer_fuzzy_find() end },
+    { 'Find in this file', keys('/', 'Ctrl+F'), function() require('telescope.builtin').current_buffer_fuzzy_find() end },
     { 'Show or hide the sidebar', 'Ctrl+B', function() M.toggle_sidebar() end },
     { 'Show source control', 'Source Control tab', function() vim.cmd.OrchGit() end },
-    { 'Undo', 'Ctrl+Z', function() vim.cmd('silent! undo') end },
-    { 'Redo', 'Ctrl+Y', function() vim.cmd('silent! redo') end },
-    { 'Select all', 'Ctrl+A', function()
-      vim.api.nvim_feedkeys(vim.keycode('<C-a>'), 'm', false)
+    { 'Undo', keys('u or Ctrl+Z', 'Ctrl+Z'), function() vim.cmd('silent! undo') end },
+    { 'Redo', keys('Ctrl+R', 'Ctrl+Y'), function() vim.cmd('silent! redo') end },
+    -- In Vim style Ctrl+A would add one to a number under the cursor.
+    { 'Select all', keys('ggVG', 'Ctrl+A'), function()
+      api.nvim_feedkeys(vim.keycode(keys('<C-\\><C-n>ggVG', '<C-a>')), keys('n', 'm'), false)
     end },
-    { 'Copy, cut, paste', 'Ctrl+C, Ctrl+X, Ctrl+V', function() end },
-    { 'Comment a line or selection', 'Ctrl+/', function() vim.cmd('normal gcc') end },
-    { 'Indent, outdent', 'Tab, Shift+Tab', function() end },
+    { 'Copy, cut, paste', keys('y, d, p, plus Ctrl+Shift+V', 'Ctrl+C, Ctrl+X, Ctrl+V'), function() end },
+    { 'Comment a line or selection', keys('gc or Ctrl+/', 'Ctrl+/'), function() vim.cmd('normal gcc') end },
+    { 'Indent, outdent', keys('> and <', 'Tab, Shift+Tab'), function() end },
     { 'Next tab, previous tab', 'Alt+. and Alt+,', function() vim.cmd.bnext() end },
     { 'Close this tab', 'Alt+W or click its ×', function() M.close_buffer() end },
     { 'New file', '', function() M.new_file() end },
-    { 'Work in the file tree', 'F3, then A, F2, Delete, Esc', function() M.focus_tree() end },
+    { 'Work in the file tree', keys('F3, then a, r, d, Esc', 'F3, then A, F2, Delete, Esc'), function() M.focus_tree() end },
     { 'Open a terminal', '', terminal },
-    { M.vim_keys() and 'Stop using Vim keys' or 'Use Vim keys', '', function()
-      M.set_vim_keys(not M.vim_keys())
-    end },
+    { keys('Turn off Vim modes', 'Use Vim modes'), '', function() M.set_vim_keys(not on) end },
   }
 end
 
@@ -452,13 +497,16 @@ function M.setup(found)
   tools = found
   owner_maps()
   completion_maps()
+  for _, m in ipairs(both_maps) do set_map(m) end
   vim.keymap.set({ 'n', 'i', 'x', 's', 't' }, '<F1>', function() M.show_actions() end, { silent = true })
   -- F20 is what the dashboard sends for Ctrl+Shift+F, which xterm has no code for.
   for _, key in ipairs({ '<F20>', '<F4>' }) do
     vim.keymap.set({ 'n', 'i', 'x', 's' }, key, function() tools.live_grep() end, { silent = true })
   end
-  api.nvim_create_user_command('OrchUseVimKeys', function() M.set_vim_keys(not M.vim_keys()) end, {})
-  M.set_vim_keys(vim.uv.fs_stat(STATE_FILE) ~= nil, true)
+  api.nvim_create_user_command('OrchVimModes', function() M.set_vim_keys(not M.vim_keys()) end, {})
+  M.set_vim_keys(vim.uv.fs_stat(STATE_FILE) == nil, true)
+  api.nvim_create_autocmd('ModeChanged', { callback = function() M.update_title() end })
+  api.nvim_create_autocmd('QuitPre', { callback = quit_with_last_file })
   api.nvim_create_autocmd('VimResized', { callback = M.fit_sidebar })
   api.nvim_create_autocmd({ 'TabNew', 'TabClosed', 'TabEnter' }, {
     callback = function() vim.schedule(M.update_title) end,
