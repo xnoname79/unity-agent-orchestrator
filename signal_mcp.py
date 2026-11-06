@@ -205,8 +205,13 @@ async def compact_context(role: str = "", focus: str = "", from_role: str = "", 
     return f"Đã lên lịch compact cho '{target}' (signal #{data.get('id')})."
 
 
+_NO_WORKSPACE = ("Chưa xác định được bạn thuộc workspace nào nên không liệt kê được. Gọi lại với from_role "
+                 "là ĐÚNG tên session của bạn. Nếu tên đó có ở nhiều workspace, hãy báo người dùng "
+                 "đổi tên một trong số đó.")
+
+
 @mcp.tool()
-async def list_agents(from_role: str = "", workspace_id: str = ""):
+async def list_agents(from_role: str):
     """Liệt kê các agent (session) TRONG CÙNG WORKSPACE với bạn + trạng thái.
 
     Dùng để biết có thể gửi signal cho ai (to_role nào hợp lệ). CHỈ thấy agent cùng workspace —
@@ -214,34 +219,33 @@ async def list_agents(from_role: str = "", workspace_id: str = ""):
 
     Args:
         from_role: Role của chính bạn (vai đang gọi). Dùng để xác định workspace.
-        workspace_id: Workspace của bạn — orchestrator cấp lúc spawn. Truyền vào là chắc nhất
-                 (bắt buộc khi role bị trùng tên giữa nhiều workspace).
     """
     if _INPROC:
         import session_orchestrator as orch
         # id=94: KHÔNG suy được workspace thì TỪ CHỐI, không trả toàn bộ. Trả hết = rò danh sách
         # agent của tenant khác, và mời model gửi signal xuyên workspace.
-        sender_ws = _sender_workspace(orch, from_role, workspace_id)
+        sender_ws = _sender_workspace(orch, from_role)
         if sender_ws is None:
-            return ("Cần biết bạn thuộc workspace nào mới liệt kê được. Gọi lại kèm from_role="
-                    "<vai của bạn> (hoặc workspace_id nếu vai bị trùng tên giữa nhiều workspace).")
+            return _NO_WORKSPACE
         # Phiên của đội sub-agent không phải đồng nghiệp để nhắn: director theo dõi chúng bằng
         # list_subagents.
         sessions = [s for s in orch.list_sessions()
                     if s.get("workspace_id") == sender_ws and not s.get("team_role")]
     else:
-        if not workspace_id:
-            return ("Chế độ HTTP cần workspace_id tường minh để lọc đúng workspace của bạn "
-                    "(orchestrator cấp lúc spawn).")
-        sender_ws = workspace_id
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(f"{ORCH_URL}/api/sessions", params={"workspace_id": workspace_id})
+                r = await client.get(f"{ORCH_URL}/api/sessions")
         except Exception as e:  # noqa: BLE001
             return f"Lỗi kết nối orchestrator tại {ORCH_URL}: {e}"
         if r.status_code >= 400:
             return f"Lỗi ({r.status_code}): {r.text}"
-        sessions = [s for s in r.json() if not s.get("team")]
+        everyone = r.json()
+        # shortcut: API này không lộ tên cũ của card đã đổi tên nên tên cũ bị từ chối, cần thì thêm vào /api/sessions.
+        matches = {s.get("workspace_id") for s in everyone if s.get("name") == from_role}
+        if len(matches) != 1:
+            return _NO_WORKSPACE
+        sender_ws = next(iter(matches))
+        sessions = [s for s in everyone if s.get("workspace_id") == sender_ws and not s.get("team")]
     agents = [{"role": s["name"], "status": s["status"], "project": s.get("project", "")} for s in sessions]
     if not agents:
         return f"Chưa có agent nào trong workspace '{sender_ws}'."

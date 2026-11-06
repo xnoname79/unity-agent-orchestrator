@@ -3547,6 +3547,7 @@ async function spawnAgent() {
   if (!effort) $("sp-more").open = true;
   if (missing) return showMsg("sp-msg", missing, false);
   showMsg("sp-msg", "Spawning…", true);
+  $("sp-submit").disabled = true;
   try {
     const r = await api("/api/sessions/spawn", "POST", {
       name, cwd,
@@ -3566,6 +3567,7 @@ async function spawnAgent() {
     await refreshAll();
     selectWorkspace(wid);
   } catch (e) { showMsg("sp-msg", "Error: " + e, false); }
+  finally { $("sp-submit").disabled = false; }
 }
 
 window.spawnAgent = spawnAgent;

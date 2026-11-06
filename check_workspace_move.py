@@ -26,6 +26,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 for stream in (sys.stdout, sys.stderr):
     try:
@@ -222,6 +223,52 @@ async def main():
         so.unregister_session("s-ren")
         check("removing a card drops its old names", not so.alias_sessions("designer")
               and so.resolve_session_id("designer", a["id"]) == "s-new")
+
+        # ── list_agents chỉ nhận tên vai: agent đã chuyển workspace vẫn nhớ id cũ từ lúc spawn ──
+        tool = next(t for t in await signal_mcp.mcp.list_tools() if t.name == "list_agents")
+        check("list_agents takes the role only",
+              set(tool.inputSchema["properties"]) == {"from_role"}
+              and tool.inputSchema.get("required") == ["from_role"], str(tool.inputSchema))
+        old_ws = (await c.post("/api/workspaces", json={"name": "la-old"})).json()["id"]
+        new_ws = (await c.post("/api/workspaces", json={"name": "la-new"})).json()["id"]
+        other_ws = (await c.post("/api/workspaces", json={"name": "la-other"})).json()["id"]
+        await register("s-la-mover", "la-mover", old_ws)
+        await register("s-la-oldmate", "la-oldmate", old_ws)
+        await register("s-la-newmate", "la-newmate", new_ws)
+        await register("s-la-dup1", "la-dup", old_ws)
+        await register("s-la-dup2", "la-dup", other_ws)
+        await register("s-la-othermate", "la-othermate", other_ws)
+        await move("s-la-mover", new_ws)
+
+        async def roster_checks(mode):
+            r = await signal_mcp.list_agents(from_role="la-mover")
+            check(f"{mode}: a moved agent sees its new workspace, not the old one",
+                  "la-newmate" in r and "la-oldmate" not in r, r[:200])
+            r = await signal_mcp.list_agents(from_role="la-dup")
+            check(f"{mode}: a name in two workspaces is refused and names no agent",
+                  "đổi tên" in r and "workspace_id" not in r
+                  and not any(n in r for n in ("la-dup", "la-oldmate", "la-othermate", "la-newmate")), r[:200])
+
+        signal_mcp._INPROC = True
+        try:
+            await roster_checks("in-process")
+            # Id cũ agent còn nhớ: công cụ bỏ qua, không được trả rỗng như trước.
+            r = str(await signal_mcp.mcp.call_tool("list_agents", {"from_role": "la-mover",
+                                                                   "workspace_id": old_ws}))
+            check("an agent still passing its old workspace_id gets the new roster",
+                  "la-newmate" in r and "la-oldmate" not in r, r[:200])
+        finally:
+            signal_mcp._INPROC = False
+
+        # Nhánh HTTP đi qua đúng app này, không ra mạng.
+        real_httpx, real_url = signal_mcp.httpx, signal_mcp.ORCH_URL
+        signal_mcp.httpx = SimpleNamespace(AsyncClient=lambda **_: httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app)))
+        signal_mcp.ORCH_URL = "http://test"
+        try:
+            await roster_checks("HTTP")
+        finally:
+            signal_mcp.httpx, signal_mcp.ORCH_URL = real_httpx, real_url
 
         r = await c.delete("/api/workspaces/default")
         check("the default workspace is refused", r.status_code == 400, f"{r.status_code} {r.text[:90]}")
