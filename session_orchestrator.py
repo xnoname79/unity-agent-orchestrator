@@ -499,7 +499,7 @@ class OriginGuard:
                 await send({"type": "websocket.close", "code": 4403})
                 return
             body = json.dumps({"error": {
-                "message": "cross-site request refused: this orchestrator only answers its own "
+                "message": "cross-site request refused: Donezo only answers its own "
                            "dashboard and non-browser clients",
                 "type": "invalid_request_error", "code": "cross_origin"}}).encode()
             await send({"type": "http.response.start", "status": 403,
@@ -4871,7 +4871,7 @@ def openapi_spec():
     """Đặc tả OpenAPI 3.1. Dựng trong hàm để hằng runtime (host/port/timeout) luôn khớp thực tế."""
     return {
         "openapi": "3.1.0",
-        "info": {"title": "Session Orchestrator API", "version": "1.0.0",
+        "info": {"title": "Donezo API", "version": "1.0.0",
                  "description": _oa_intro()},
         "servers": [{"url": f"http://{ORCH_HOST}:{ORCH_PORT}"}],
         "tags": [{"name": "chat", "description": "OpenAI-compatible"},
@@ -4913,7 +4913,7 @@ def openapi_spec():
 
 # Không có mạng thì trang báo rõ và chỉ sang /openapi.json (import được vào Postman/Insomnia).
 _DOCS_HTML = """<!doctype html><html lang="vi"><head><meta charset="utf-8">
-<title>Session Orchestrator — API</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Donezo — API</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
 <style>body{margin:0}#off{display:none;font:14px/1.6 system-ui;padding:32px;max-width:640px}
 code{background:#eee;padding:2px 5px;border-radius:4px}</style></head><body>
@@ -5309,7 +5309,7 @@ def build_app():
         same = get_session(session_id) if session_id else None
         keeps = same and same.get("name") == name   # agent CŨ mang sẵn tên đó: không chặn đăng ký lại
         if not keeps and is_reserved_name(name):
-            return JSONResponse({"error": f"'{name}' is reserved for the orchestrator — "
+            return JSONResponse({"error": f"'{name}' is reserved for Donezo — "
                                           f"pick another name"}, status_code=400)
         dup = get_session_by_name(name, wid)
         if dup and dup["id"] != session_id:
@@ -5897,7 +5897,7 @@ def build_app():
         if name == s["name"]:
             return JSONResponse(s)
         if is_reserved_name(name) or s.get("team_role"):
-            return JSONResponse({"error": f"'{name}' is reserved for the orchestrator — pick another "
+            return JSONResponse({"error": f"'{name}' is reserved for Donezo — pick another "
                                           f"name" if is_reserved_name(name) else
                                           "the orchestrator names its sub-agents; they cannot be renamed"},
                                 status_code=400)
@@ -6034,7 +6034,7 @@ def build_app():
         done_when = str(body.get("done_when") or "").strip()
         sender = body.get("from_session", "") or body.get("from_role", "")
         if str(sender).strip().lower() in RESERVED_NAMES:
-            return JSONResponse({"error": f"from_role '{sender}' is reserved for the orchestrator"},
+            return JSONResponse({"error": f"from_role '{sender}' is reserved for Donezo"},
                                 status_code=400)
         message, expects = body["message"], bool(body.get("expects_reply", True))
         if done_when:

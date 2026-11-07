@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent Orchestrator</title>
+<title>Donezo</title>
 <link rel="icon" href="/logo.png">
 <link rel="stylesheet" href="/vendor/xterm.css">
 <script>
@@ -1172,7 +1172,7 @@
 
 <nav id="sidebar" class="sidebar" aria-label="Main">
   <div class="sb-brand">
-    <img src="/logo.png" alt=""><span class="sb-name">Orchestrator</span>
+    <img src="/logo.png" alt=""><span class="sb-name">Donezo</span>
     <span class="spacer"></span>
     <span id="conn" class="pill dead">offline</span>
   </div>
@@ -1276,7 +1276,7 @@
               CLI installed here (<span id="mcp-clis">claude</span>) — the same user scope
               <code>claude mcp add</code> / <code>agy mcp add</code> write to,
               but without putting your token on a command line.</div>
-            <label>Built into the orchestrator</label>
+            <label>Built into Donezo</label>
             <div id="mcp-builtins" class="mcp-list"></div>
             <label>Your servers</label>
             <div id="mcp-list" class="mcp-list"></div>
@@ -1300,7 +1300,7 @@
               <span class="spacer"></span>
               <button class="secondary" onclick="toolsOpen()">Re-check</button></h3>
             <div class="hint">Agents edit video and audio by running these commands in their own terminal,
-              so they have to be installed on the machine running the orchestrator — nothing here ships
+              so they have to be installed on the machine running Donezo — nothing here ships
               with it. Install what is missing, then press <b>Re-check</b>.</div>
             <div id="tools-list" class="tools-list"></div>
             <div id="tools-msg" class="form-msg"></div>
@@ -1575,7 +1575,7 @@
         <input id="sp-cwd" placeholder="type a folder name to search, or /path/to/project"
           oninput="onCwdInput(this.value)" autocomplete="off">
         <button type="button" onclick="browseDir(document.getElementById('sp-cwd').value.trim())"
-          title="Browse folders on the machine running the orchestrator">
+          title="Browse folders on the machine running Donezo">
           <svg class="ic"><use href="#i-folder"/></svg> Browse</button>
       </div>
       <div id="sp-dir" class="dir-browse" hidden></div>
