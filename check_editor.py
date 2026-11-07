@@ -795,6 +795,28 @@ def _git(cwd, *args):
                    capture_output=True)
 
 
+# --remote-expr trên Windows in mã khởi tạo TUI ra stdout, không có kết quả (CI 2026-11-06). Client -l
+# không dựng TUI và ghi kết quả ra file, nên không phụ thuộc vào stdout của nvim.
+_EXPR_PROBE = """
+local addr, expr, out = arg[1], arg[2], arg[3]
+local res = vim.rpcrequest(vim.fn.sockconnect('pipe', addr, { rpc = true }), 'nvim_eval', expr)
+if res == vim.NIL then res = '' end
+if type(res) == 'table' then res = vim.fn.string(res) end
+local f = assert(io.open(out, 'wb'))
+f:write(tostring(res))
+f:close()
+"""
+
+
+def _nvim_expr(exe, addr, env, e):
+    probe, out = tmp / "expr-probe.lua", tmp / "expr-result"
+    probe.write_text(_EXPR_PROBE, encoding="utf-8")
+    out.unlink(missing_ok=True)
+    subprocess.run([exe, "--clean", "--headless", "-l", str(probe), addr, e, str(out)], env=env,
+                   capture_output=True, timeout=20)
+    return out.read_text(encoding="utf-8", errors="replace").strip() if out.exists() else ""
+
+
 async def live_modes(exe, env, root):
     """Vim modes là mặc định, trên nvim thật. Có cờ tắt thì về typing-first; cờ cũ không còn tác dụng."""
     sid = "editor-guard-modes"
@@ -815,9 +837,7 @@ async def live_modes(exe, env, root):
         so._editor_clear_stale(addr)
 
     def expr(e):
-        r = subprocess.run([exe, "--server", addr, "--remote-expr", e], env=env, capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", timeout=20)
-        return r.stdout.strip()
+        return _nvim_expr(exe, addr, env, e)
 
     def send(keys):
         subprocess.run([exe, "--server", addr, "--remote-send", keys], env=env, capture_output=True,
@@ -997,9 +1017,7 @@ async def main_live():
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
     def expr(e):
-        r = subprocess.run([exe, "--server", so._editor_addr(sid), "--remote-expr", e], env=env,
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
-        return r.stdout.strip()
+        return _nvim_expr(exe, so._editor_addr(sid), env, e)
 
     def panel():
         return expr("join(getbufline(bufnr('Source Control'),1,'$'),'\n')")
