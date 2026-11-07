@@ -3,7 +3,7 @@
 
 What can go wrong quietly, because nothing builds the site:
   - a link, image or #anchor that points nowhere, or an absolute URL that breaks under the
-    /unity-agent-orchestrator/ project path on GitHub Pages;
+    /donezo/ project path on GitHub Pages;
   - a page whose copy of the nav misses a page, since each page repeats it by hand;
   - a dashboard label in the text that the dashboard no longer has;
   - a setting in the text that the server no longer reads;

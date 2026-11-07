@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Settings · Agent Orchestrator</title>
+<title>Settings · Donezo</title>
 <meta name="description" content="Settings sections, .env variables, the security warning, keeping the server running, updating, and troubleshooting.">
 <link rel="icon" href="images/logo.png">
 <link rel="stylesheet" href="style.css">
@@ -13,7 +13,7 @@
 <a class="skip" href="#main">Skip to content</a>
 <div class="backdrop" id="backdrop" hidden></div>
 <aside class="sidebar" id="sidebar">
-  <div class="sidebar-top"><a class="brand" href="index.html"><img src="images/logo.png" alt="Agent Orchestrator logo" width="24" height="24"><span>Agent Orchestrator</span></a><span class="brand-tag">Docs</span></div>
+  <div class="sidebar-top"><a class="brand" href="index.html"><img src="images/logo.png" alt="Donezo logo" width="24" height="24"><span>Donezo</span></a><span class="brand-tag">Docs</span></div>
   <nav aria-label="Guide">
     <div class="nav-title">Guides</div>
     <ul class="nav-list">
@@ -33,25 +33,25 @@
     </ul>
   </nav>
   <div class="drawer-links">
-    <a href="https://github.com/xnoname79/unity-agent-orchestrator">GitHub</a>
-    <a href="https://github.com/xnoname79/unity-agent-orchestrator/releases">Releases</a>
-    <a href="https://github.com/xnoname79/unity-agent-orchestrator/issues">Report a bug</a>
-    <a class="btn btn-primary btn-sm" href="https://github.com/xnoname79/unity-agent-orchestrator/releases">Download</a>
+    <a href="https://github.com/getAINow/donezo">GitHub</a>
+    <a href="https://github.com/getAINow/donezo/releases">Releases</a>
+    <a href="https://github.com/getAINow/donezo/issues">Report a bug</a>
+    <a class="btn btn-primary btn-sm" href="https://github.com/getAINow/donezo/releases">Download</a>
   </div>
 </aside>
 <div class="page">
 <header class="topbar">
   <button class="icon-btn menu-btn js-only" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
-  <a class="brand topbar-brand" href="index.html"><img src="images/logo.png" alt="Agent Orchestrator logo" width="24" height="24"><span>Agent Orchestrator</span></a>
+  <a class="brand topbar-brand" href="index.html"><img src="images/logo.png" alt="Donezo logo" width="24" height="24"><span>Donezo</span></a>
   <button class="search-btn js-only" type="button" aria-label="Search documentation"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4-4"/></svg><span class="search-text">Search documentation…</span><span class="search-hint">Ctrl K</span></button>
   <div class="top-links">
-    <a href="https://github.com/xnoname79/unity-agent-orchestrator">GitHub</a>
-    <a href="https://github.com/xnoname79/unity-agent-orchestrator/releases">Releases</a>
-    <a href="https://github.com/xnoname79/unity-agent-orchestrator/issues">Report a bug</a>
+    <a href="https://github.com/getAINow/donezo">GitHub</a>
+    <a href="https://github.com/getAINow/donezo/releases">Releases</a>
+    <a href="https://github.com/getAINow/donezo/issues">Report a bug</a>
   </div>
   <span class="top-sep"></span>
   <button class="icon-btn theme-btn js-only" type="button" aria-label="Switch theme"><svg class="ic sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></svg><svg class="ic moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg></button>
-  <a class="btn btn-primary btn-sm top-dl arrow" href="https://github.com/xnoname79/unity-agent-orchestrator/releases">Download</a>
+  <a class="btn btn-primary btn-sm top-dl arrow" href="https://github.com/getAINow/donezo/releases">Download</a>
 </header>
 <main id="main">
 <h1>Settings</h1>
@@ -63,7 +63,7 @@
 <h3 id="connections">Connections</h3>
 <p>Tool servers (MCP servers) for every agent on this machine, in every CLI installed here.</p>
 <ul>
-  <li><span class="ui">Built into the orchestrator</span>: <code>signal</code>, which you
+  <li><span class="ui">Built into Donezo</span>: <code>signal</code>, which you
     <a href="getting-started.html#connect">connect once</a>.</li>
   <li><span class="ui">Your servers</span>: servers you added. <span class="ui">Check</span> tests one. A small tag shows which CLI has it.</li>
   <li><span class="ui">Add a server</span>: enter a name, an address and an optional token. <span class="ui">Test</span> tries it
@@ -77,7 +77,7 @@ ExifTool are optional. Nothing here ships with the app. If a main one is missing
 <span class="ui">Settings</span>. Install it, then press <span class="ui">Re-check</span>. You can ignore this page if your agents do not touch media.</p>
 
 <h3 id="performance">Performance</h3>
-<p>CPU and memory for the computer, the orchestrator and this page, plus a table of each agent's processes. It also gives
+<p>CPU and memory for the computer, Donezo and this page, plus a table of each agent's processes. It also gives
 plain advice, such as closing terminals you are not using. Each open terminal is a whole CLI program, so they add up.</p>
 
 <h3 id="removed-agents">Removed agents</h3>
@@ -144,49 +144,49 @@ is not used, because older versions break the bundled plugins. If the card says 
 <details>
   <summary>Windows: Task Scheduler</summary>
   <pre><code>$exe = "$HOME\agent-orch-windows-x64\agent-orch.exe"
-Register-ScheduledTask -TaskName "AgentOrchestrator" `
+Register-ScheduledTask -TaskName "Donezo" `
   -Action  (New-ScheduledTaskAction -Execute $exe -WorkingDirectory (Split-Path $exe)) `
   -Trigger (New-ScheduledTaskTrigger -AtLogOn) `
   -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable `
                -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1))</code></pre>
-  <p>Remove it with <code>Unregister-ScheduledTask -TaskName "AgentOrchestrator"</code>.</p>
+  <p>Remove it with <code>Unregister-ScheduledTask -TaskName "Donezo"</code>.</p>
 </details>
 <details>
   <summary>macOS: launchd</summary>
-  <pre><code>cat &gt; ~/Library/LaunchAgents/com.agent-orch.plist &lt;&lt;PLIST
+  <pre><code>cat &gt; ~/Library/LaunchAgents/com.donezo.plist &lt;&lt;PLIST
 &lt;?xml version="1.0" encoding="UTF-8"?&gt;
 &lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
 &lt;plist version="1.0"&gt;&lt;dict&gt;
-  &lt;key&gt;Label&lt;/key&gt;&lt;string&gt;com.agent-orch&lt;/string&gt;
+  &lt;key&gt;Label&lt;/key&gt;&lt;string&gt;com.donezo&lt;/string&gt;
   &lt;key&gt;ProgramArguments&lt;/key&gt;&lt;array&gt;
-    &lt;string&gt;$HOME/unity-agent-orchestrator/.venv/bin/python&lt;/string&gt;
-    &lt;string&gt;$HOME/unity-agent-orchestrator/session_orchestrator.py&lt;/string&gt;
+    &lt;string&gt;$HOME/donezo/.venv/bin/python&lt;/string&gt;
+    &lt;string&gt;$HOME/donezo/session_orchestrator.py&lt;/string&gt;
     &lt;string&gt;serve&lt;/string&gt;
   &lt;/array&gt;
-  &lt;key&gt;WorkingDirectory&lt;/key&gt;&lt;string&gt;$HOME/unity-agent-orchestrator&lt;/string&gt;
+  &lt;key&gt;WorkingDirectory&lt;/key&gt;&lt;string&gt;$HOME/donezo&lt;/string&gt;
   &lt;key&gt;RunAtLoad&lt;/key&gt;&lt;true/&gt;
   &lt;key&gt;KeepAlive&lt;/key&gt;&lt;true/&gt;
-  &lt;key&gt;StandardOutPath&lt;/key&gt;&lt;string&gt;$HOME/Library/Logs/agent-orch.log&lt;/string&gt;
-  &lt;key&gt;StandardErrorPath&lt;/key&gt;&lt;string&gt;$HOME/Library/Logs/agent-orch.err&lt;/string&gt;
+  &lt;key&gt;StandardOutPath&lt;/key&gt;&lt;string&gt;$HOME/Library/Logs/donezo.log&lt;/string&gt;
+  &lt;key&gt;StandardErrorPath&lt;/key&gt;&lt;string&gt;$HOME/Library/Logs/donezo.err&lt;/string&gt;
 &lt;/dict&gt;&lt;/plist&gt;
 PLIST
 
-launchctl load -w ~/Library/LaunchAgents/com.agent-orch.plist</code></pre>
-  <p>Stop it with <code>launchctl unload -w ~/Library/LaunchAgents/com.agent-orch.plist</code>.</p>
+launchctl load -w ~/Library/LaunchAgents/com.donezo.plist</code></pre>
+  <p>Stop it with <code>launchctl unload -w ~/Library/LaunchAgents/com.donezo.plist</code>.</p>
 </details>
 <details>
   <summary>Linux: systemd user service</summary>
   <pre><code>mkdir -p ~/.config/systemd/user
-cat &gt; ~/.config/systemd/user/orchestrator.service &lt;&lt;'UNIT'
+cat &gt; ~/.config/systemd/user/donezo.service &lt;&lt;'UNIT'
 [Unit]
-Description=Agent Orchestrator
+Description=Donezo
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/unity-agent-orchestrator
-ExecStart=%h/unity-agent-orchestrator/.venv/bin/python %h/unity-agent-orchestrator/session_orchestrator.py serve
+WorkingDirectory=%h/donezo
+ExecStart=%h/donezo/.venv/bin/python %h/donezo/session_orchestrator.py serve
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=3
@@ -197,9 +197,9 @@ WantedBy=default.target
 UNIT
 
 systemctl --user daemon-reload
-systemctl --user enable --now orchestrator
+systemctl --user enable --now donezo
 loginctl enable-linger "$USER"     # start at boot, not only when you log in</code></pre>
-  <p>Logs: <code>journalctl --user -u orchestrator -f</code>.</p>
+  <p>Logs: <code>journalctl --user -u donezo -f</code>.</p>
 </details>
 
 <h2 id="update">Updating</h2>
@@ -229,13 +229,13 @@ loginctl enable-linger "$USER"     # start at boot, not only when you log in</co
   </tbody>
 </table></div>
 <p>The server's health and API docs are at <code>/health</code> and <code>/docs</code> on the dashboard's address. If you are still stuck,
-<a href="https://github.com/xnoname79/unity-agent-orchestrator/issues/new">report a bug</a>.</p>
+<a href="https://github.com/getAINow/donezo/issues/new">report a bug</a>.</p>
 </main>
 <div class="pager" role="navigation" aria-label="Previous and next page">
   <a href="control.html" rel="prev"><span class="pager-label">Previous</span>Staying in control</a>
   <a href="changelog.html" rel="next"><span class="pager-label">Next</span>Changelog</a>
 </div>
-<footer class="site-foot"><a href="https://github.com/xnoname79/unity-agent-orchestrator">Source on GitHub</a> · MIT license</footer>
+<footer class="site-foot"><a href="https://github.com/getAINow/donezo">Source on GitHub</a> · MIT license</footer>
 </div>
 </body>
 </html>

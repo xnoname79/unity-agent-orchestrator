@@ -2254,10 +2254,10 @@ ${inspTeamSec(s)}`,
     ${sessCleanup(s, CLI_ICON[engine] ? engine : "claude")}
     <div class="insp-sec insp-danger">
       <h4>Danger zone</h4>
-      <button class="danger" onclick="if(confirm('Remove session ${esc(s.name)} from the orchestrator?\\n\\nRuns, signals and audit records are kept.'))act('/api/sessions/${id}/unregister')">
+      <button class="danger" onclick="if(confirm('Remove session ${esc(s.name)} from Donezo?\\n\\nRuns, signals and audit records are kept.'))act('/api/sessions/${id}/unregister')">
         ${ic("back", "sm")} Unregister</button>
       <div class="hint">There is no permanent delete: the transcript belongs to the CLI that
-        owns the session, so the orchestrator cannot wipe it. Unregister drops the session here
+        owns the session, so Donezo cannot wipe it. Unregister drops the session here
         and keeps its runs, signals and audit records.</div>
     </div>`,
   };
@@ -3447,9 +3447,9 @@ function perfPaint(d, page) {
   if (terms.length >= 5)
     tips.push(["amber", `${terms.length} agent terminals are open and use ${fmtMB(termRam)}. Each one is a whole Claude or agy app — close the ones you are not using.`]);
   if (sv.lag_ms > 250)
-    tips.push(["amber", `The orchestrator froze for ${sv.lag_ms} ms in the last minute — terminals and the canvas stutter while it does.`]);
+    tips.push(["amber", `Donezo froze for ${sv.lag_ms} ms in the last minute — terminals and the canvas stutter while it does.`]);
   if (d.zombies)
-    tips.push(["amber", `${d.zombies} finished processes were never cleaned up. Restart the orchestrator to clear them.`]);
+    tips.push(["amber", `${d.zombies} finished processes were never cleaned up. Restart Donezo to clear them.`]);
   if (page.refreshes > 30) tips.push(["amber", `This page redrew ${page.refreshes} times in the last minute.`]);
   if (page.heap > 800 * 1048576) tips.push(["amber", `This page uses ${fmtMB(page.heap)} of memory. Reload it to free it.`]);
   if (!tips.length) tips.push(["green", "Everything looks fine."]);
@@ -3457,7 +3457,7 @@ function perfPaint(d, page) {
   $("perf-tips").innerHTML = tips.map(([c, t]) => `<div>${badge(label[c], "b-" + c)} ${esc(t)}</div>`).join("");
   $("perf-sum").innerHTML = `
     <div><b>Computer</b> CPU ${Math.round(sy.cpu)}% · memory ${fmtMB(sy.ram_used)} of ${fmtMB(sy.ram_total)}</div>
-    <div><b>Orchestrator</b> CPU ${sv.cpu}% · ${fmtMB(sv.ram)} · running ${fmtAge(sv.uptime)} ·
+    <div><b>Donezo</b> CPU ${sv.cpu}% · ${fmtMB(sv.ram)} · running ${fmtAge(sv.uptime)} ·
       longest freeze in the last minute ${sv.lag_ms} ms</div>
     <div><b>This page</b> ${page.refreshes} redraws in the last minute · ${page.terms} terminals${
       page.heap ? " · " + fmtMB(page.heap) + " browser memory" : ""}</div>`;

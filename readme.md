@@ -1,6 +1,6 @@
 <img src="images/logo.png" width="72" align="right" alt="">
 
-# Agent Orchestrator
+# Donezo
 
 Run a team of coding agents on your own machine and stay in charge of it. You talk to one
 director; it splits the job across sub-agents in their own git worktrees, and nothing counts as
@@ -11,7 +11,7 @@ its own login and subscription.
 
 ![Workspace canvas: the director, its agents, and what waits on you](documentation/images/canvas.png)
 
-[Download](../../releases) · [Report a bug](../../issues/new) · [Documentation](https://xnoname79.github.io/unity-agent-orchestrator/)
+[Download](../../releases) · [Report a bug](../../issues/new) · [Documentation](https://getainow.github.io/donezo/)
 
 ## How it works
 
@@ -66,7 +66,7 @@ At least one, installed and logged in:
 | Claude Code | [code.claude.com/docs](https://code.claude.com/docs/en/quickstart#native-install-recommended) |
 | Antigravity CLI | [antigravity.google/docs/cli](https://antigravity.google/docs/cli/reference) — the `agy` command |
 
-### 2. Install the orchestrator
+### 2. Install Donezo
 
 **Windows (prebuilt).** Download `agent-orch-windows-x64.zip` from [Releases](../../releases).
 Unblock it *before* unzipping, or SmartScreen flags every file inside:
@@ -82,8 +82,8 @@ that opens is the server: close it to stop.
 Git (`winget install Git.Git`):
 
 ```powershell
-git clone https://github.com/xnoname79/unity-agent-orchestrator.git
-cd unity-agent-orchestrator
+git clone https://github.com/getAINow/donezo.git
+cd donezo
 py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -94,8 +94,8 @@ python session_orchestrator.py serve
 
 ```bash
 brew install python@3.12 git
-git clone https://github.com/xnoname79/unity-agent-orchestrator.git
-cd unity-agent-orchestrator
+git clone https://github.com/getAINow/donezo.git
+cd donezo
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python session_orchestrator.py serve
@@ -105,8 +105,8 @@ python session_orchestrator.py serve
 
 ```bash
 sudo apt install python3 python3-venv git
-git clone https://github.com/xnoname79/unity-agent-orchestrator.git
-cd unity-agent-orchestrator
+git clone https://github.com/getAINow/donezo.git
+cd donezo
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python session_orchestrator.py serve
@@ -153,42 +153,42 @@ Run it as your own user, never root. Replace the paths with where you unzipped o
 
 ```powershell
 $exe = "$HOME\agent-orch-windows-x64\agent-orch.exe"
-Register-ScheduledTask -TaskName "AgentOrchestrator" `
+Register-ScheduledTask -TaskName "Donezo" `
   -Action  (New-ScheduledTaskAction -Execute $exe -WorkingDirectory (Split-Path $exe)) `
   -Trigger (New-ScheduledTaskTrigger -AtLogOn) `
   -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable `
                -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1))
 ```
 
-Remove it with `Unregister-ScheduledTask -TaskName "AgentOrchestrator"`.
+Remove it with `Unregister-ScheduledTask -TaskName "Donezo"`.
 </details>
 
 <details>
 <summary>macOS — launchd</summary>
 
 ```bash
-cat > ~/Library/LaunchAgents/com.agent-orch.plist <<PLIST
+cat > ~/Library/LaunchAgents/com.donezo.plist <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>com.agent-orch</string>
+  <key>Label</key><string>com.donezo</string>
   <key>ProgramArguments</key><array>
-    <string>$HOME/unity-agent-orchestrator/.venv/bin/python</string>
-    <string>$HOME/unity-agent-orchestrator/session_orchestrator.py</string>
+    <string>$HOME/donezo/.venv/bin/python</string>
+    <string>$HOME/donezo/session_orchestrator.py</string>
     <string>serve</string>
   </array>
-  <key>WorkingDirectory</key><string>$HOME/unity-agent-orchestrator</string>
+  <key>WorkingDirectory</key><string>$HOME/donezo</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>$HOME/Library/Logs/agent-orch.log</string>
-  <key>StandardErrorPath</key><string>$HOME/Library/Logs/agent-orch.err</string>
+  <key>StandardOutPath</key><string>$HOME/Library/Logs/donezo.log</string>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/donezo.err</string>
 </dict></plist>
 PLIST
 
-launchctl load -w ~/Library/LaunchAgents/com.agent-orch.plist
+launchctl load -w ~/Library/LaunchAgents/com.donezo.plist
 ```
 
-Stop it with `launchctl unload -w ~/Library/LaunchAgents/com.agent-orch.plist`.
+Stop it with `launchctl unload -w ~/Library/LaunchAgents/com.donezo.plist`.
 </details>
 
 <details>
@@ -196,16 +196,16 @@ Stop it with `launchctl unload -w ~/Library/LaunchAgents/com.agent-orch.plist`.
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/orchestrator.service <<'UNIT'
+cat > ~/.config/systemd/user/donezo.service <<'UNIT'
 [Unit]
-Description=Agent Orchestrator
+Description=Donezo
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/unity-agent-orchestrator
-ExecStart=%h/unity-agent-orchestrator/.venv/bin/python %h/unity-agent-orchestrator/session_orchestrator.py serve
+WorkingDirectory=%h/donezo
+ExecStart=%h/donezo/.venv/bin/python %h/donezo/session_orchestrator.py serve
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=3
@@ -216,11 +216,11 @@ WantedBy=default.target
 UNIT
 
 systemctl --user daemon-reload
-systemctl --user enable --now orchestrator
+systemctl --user enable --now donezo
 loginctl enable-linger "$USER"     # start at boot, not only when you log in
 ```
 
-Logs: `journalctl --user -u orchestrator -f`.
+Logs: `journalctl --user -u donezo -f`.
 </details>
 
 ### Update

@@ -1,6 +1,6 @@
 name: build binary
 
-# Package the orchestrator for Windows so users can download and run it directly, with no Python
+# Package Donezo for Windows so users can download and run it directly, with no Python
 # install. It ships as a folder, zipped (see build.spec for why) — the .exe alone does not run.
 # Linux and macOS run from source instead; nothing is published for them. Runs on: push of a v*
 # tag (also cuts a release), push to master, pull requests, or manual dispatch.
@@ -152,7 +152,7 @@ jobs:
           files: out/*
           generate_release_notes: true
           body: |
-            Changelog: https://xnoname79.github.io/unity-agent-orchestrator/changelog.html#${{ github.ref_name }}
+            Changelog: https://getainow.github.io/donezo/changelog.html#${{ github.ref_name }}
             ## Download
 
             | Machine | File |
@@ -183,7 +183,7 @@ jobs:
 
             ## Prerequisites
 
-            This binary is the orchestrator only — no agent is bundled. To run real agents the
+            This binary is Donezo only — no agent is bundled. To run real agents the
             machine needs the `claude` CLI and/or the `agy` CLI, already logged in.
 
             ## Windows notes

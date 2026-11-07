@@ -351,7 +351,7 @@ def _identity_args(cwd):
     rc, out = _git(["config", "user.email"], cwd)
     if rc == 0 and out.strip():
         return []
-    return ["-c", "user.name=Agent Orchestrator", "-c", "user.email=orchestrator@localhost"]
+    return ["-c", "user.name=Donezo", "-c", "user.email=orchestrator@localhost"]
 
 
 def commit_leftovers(worktree, msg):
