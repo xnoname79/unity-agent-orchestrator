@@ -240,6 +240,8 @@
   .pill.live { color: var(--green); border-color: transparent; background: var(--green-soft); }
   .pill.dead { color: var(--red); border-color: transparent; background: var(--red-soft); }
   .pill.dry { color: var(--amber); border-color: transparent; background: var(--amber-soft); font-weight: 650; }
+  .pill.plan { font-family: var(--mono); cursor: help; }
+  .pill.plan.warn { color: var(--amber-ink); border-color: transparent; background: var(--amber-soft); }
   .badge { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
     text-transform: uppercase; letter-spacing: .03em; }
   .badge.has-tip { cursor: help; text-decoration: underline dotted var(--faint); text-underline-offset: 2px; }
@@ -857,6 +859,9 @@
     white-space: nowrap; }
   .node-meta { flex-basis: 100%; padding-left: 16px; font-family: var(--mono); font-size: 11px;
     color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Context đã dùng · cache hit của card (PUT /api/meters, run nền). Không có số liệu = ẩn. */
+  .ctx-meter { font-family: var(--mono); font-size: 10.5px; padding: 1px 6px; border-radius: 5px; flex: none;
+    background: var(--gray-soft); color: var(--muted); cursor: help; }
   .role-badge { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 5px; flex: none;
     background: var(--accent-soft); color: var(--accent); }
   /* Ô chọn phiên nằm trên header: co lại được để tên vai không bị đẩy đi, nhưng ưu tiên rộng
@@ -1364,6 +1369,7 @@
           title="Signal queue and run history">Activity</button>
       </div>
       <div class="spacer"></div>
+      <span id="plan-usage" class="pill plan" hidden></span>
       <span id="ws-banner-actions"></span>
     </div>
 

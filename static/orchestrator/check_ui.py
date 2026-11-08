@@ -363,6 +363,22 @@ if on < off:
 check("Create agent is blocked while a spawn runs", gaps,
       "a second click during the request spawns a duplicate")
 
+# 21 · Đồng hồ context/cache trên card + plan usage ở thanh trên: số liệu tới qua SSE và được vá
+# TẠI CHỖ. Mất một mảnh là đồng hồ đứng im mà không lỗi gì — hoặc tệ hơn, mỗi lượt gọi API của run
+# nền lại dựng lại cả canvas.
+gaps = set()
+if 'id="plan-usage"' not in HTML or ".ctx-meter" not in HTML:
+    gaps.add("index.html needs #plan-usage and the .ctx-meter style")
+if "${meterHtml(s)}" not in JS or 'class="ctx-meter" data-meter=' not in JS:
+    gaps.add("agentCard must render the meter span (hidden when there is no data)")
+if ('ev.type === "meter") return meterLive(ev)' not in JS
+        or 'ev.type === "plan_usage") return renderPlan(ev.plan)' not in JS):
+    gaps.add("the SSE handler must apply meter / plan_usage events and return before the refresh")
+if "renderPlan(health.plan_usage)" not in JS:
+    gaps.add("refresh must render plan usage from /health (reload shows it again)")
+check("the context meter and plan usage update live", gaps,
+      "the meter freezes, or every API call of a background run rebuilds the canvas")
+
 if fails:
     print("\n" + "\n\n".join(fails))
     sys.exit(1)
