@@ -107,6 +107,11 @@ session of this folder the card resumes. The strip on the left has:</p>
     opens a new session in the same folder.</li>
   <li>The reload button, which restarts the terminal.</li>
 </ul>
+<p>A Claude card's header also shows how full its context is and how much of it came from the prompt cache, for
+example <code>14% · cache 90%</code>. Hover it for the token count and cost. The top bar shows your Claude plan
+usage, <code>5h 11% · week 32%</code>, and turns amber at 80%. The numbers come from Claude Code's status line,
+so inside the terminal you see the same line at the bottom. If you already set up your own status line, Donezo
+leaves it alone, and that card's meter updates only from background runs. Antigravity cards have no meter.</p>
 <div class="note"><p><strong>Why a terminal locks.</strong> When another agent or a background message gives this agent
 work, the terminal closes so that two processes do not write to one conversation. The card shows
 <span class="ui">An automatic run is in progress</span>. When it finishes, press reload to carry on.</p></div>
