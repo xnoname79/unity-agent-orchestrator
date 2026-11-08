@@ -19,6 +19,7 @@ Agent:  claude mcp add --transport http signal http://localhost:8993/mcp
 
 import json
 import os
+import re
 from contextlib import asynccontextmanager
 
 import httpx
@@ -250,6 +251,81 @@ async def list_agents(from_role: str):
     if not agents:
         return f"Chưa có agent nào trong workspace '{sender_ws}'."
     return json.dumps(agents, ensure_ascii=False)
+
+
+def _memory_entries(orch, ws):
+    """(owners, path, name, description, body) for every memory file of the sessions in `ws`."""
+    owners = {}
+    for s in orch.list_sessions():
+        if s.get("workspace_id") == ws and s.get("cwd"):
+            folder = orch.CLAUDE_PROJECTS_DIR / re.sub(r"[^A-Za-z0-9]", "-", s["cwd"]) / "memory"
+            owners.setdefault(folder, []).append(s["name"])
+    for folder, names in owners.items():
+        if not folder.is_dir():
+            continue
+        for f in sorted(folder.glob("*.md")):
+            if f.name == "MEMORY.md" or f.is_symlink() or not f.is_file():
+                continue
+            text = f.read_text(encoding="utf-8", errors="replace")
+            meta, body = {}, text
+            parts = text.split("---", 2)
+            if text.startswith("---") and len(parts) == 3:
+                body = parts[2]
+                for line in parts[1].splitlines():
+                    k, _, v = line.partition(":")
+                    meta.setdefault(k.strip(), v.strip())
+            yield sorted(set(names)), f, meta.get("name", f.stem), meta.get("description", ""), body
+
+
+def _hits(text, words):
+    low = text.lower()
+    return sum(low.count(w) for w in words) if all(w in low for w in words) else 0
+
+
+@mcp.tool()
+async def search_knowledge(from_role: str, query: str):
+    """Search what the agents in YOUR workspace already know — their Claude Code memory files and
+    the recorded team decisions — without messaging them (send_signal costs them a turn).
+
+    Read-only. Every word of the query must match (case-insensitive); at most 10 results.
+    Memories can be stale: before relying on one for anything risky, confirm with its owner via
+    send_signal.
+
+    Args:
+        from_role: your exact session name. Decides which workspace is searched.
+        query: words to look for, e.g. "docker secrets".
+    """
+    if not _INPROC:
+        return "Team tools need the orchestrator's built-in signal server (/signal/mcp)."
+    import session_orchestrator as orch
+    import team
+    ws = _sender_workspace(orch, from_role)
+    if ws is None:
+        return _NO_WORKSPACE
+    words = list(dict.fromkeys(query.lower().split()))
+    if not words:
+        return "⛔ query is required."
+    found = []
+    for owners, path, name, desc, body in _memory_entries(orch, ws):
+        text = " ".join(f"{name}\n{desc}\n{body}".split())
+        n = _hits(text, words)
+        if n:
+            at = min(i for i in (text.lower().find(w) for w in words) if i >= 0)
+            start = max(0, at - 100)
+            snippet = ("…" if start else "") + text[start:start + 300]
+            found.append((n, f"[memory] owner: {', '.join(owners)} | {path}\n  {name}: {desc[:200]}\n"
+                             f"  {snippet}"))
+    for d in team._rows("SELECT d.*, s.name AS owner FROM team_decisions d LEFT JOIN sessions s "
+                        "ON s.id = d.session_id WHERE d.workspace_id = ?", (ws,)):
+        n = _hits(f"{d['decision']}\n{d['reason']}\n{d['evidence']}", words)
+        if n:
+            found.append((n, f"[decision] owner: {d['owner'] or d['session_id']} | {d['ts'][:10]}\n"
+                             f"  {d['decision'][:200]}\n  reason: {d['reason'][:200]}"))
+    if not found:
+        return (f"No memory or decision in your workspace matches '{query}'. Ask an agent directly: "
+                f"list_agents, then send_signal.")
+    found.sort(key=lambda x: -x[0])
+    return "\n".join(r for _, r in found[:10])
 
 
 # ─── Đội sub-agent (director) — xem team.py ─────────────────────────────────
