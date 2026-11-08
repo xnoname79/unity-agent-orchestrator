@@ -43,6 +43,7 @@ import argparse
 import asyncio
 import contextlib
 import hashlib
+import ipaddress
 import json
 import os
 import platform
@@ -2703,6 +2704,8 @@ async def _run_claude(session, prompt, on_event=None, dry_run=False):
                 continue
             if isinstance(ev, dict) and ev.get("type") == "result":
                 final = ev
+            with contextlib.suppress(Exception):   # meter hỏng không được giết run
+                meter_from_stream(session, ev)
             # Một event lỗi (parse/hiển thị) KHÔNG được giết cả run — nuốt lỗi, đi tiếp.
             try:
                 display = _iter_display_events(ev)
@@ -3768,6 +3771,163 @@ def _cli_resume_argv(cli, sid):
     if cli == "agy":
         return [AGY_BIN, "--conversation", sid]
     return [CLAUDE_BIN, "--resume", sid]
+
+
+# ─── Đồng hồ context / cache hit / plan usage trên card ───────────────────────
+# Nguồn 1 — terminal interactive: statusLine của Claude Code. Sau mỗi tin nhắn claude chạy lệnh
+# statusLine với JSON trạng thái ở stdin, stdout của lệnh thành dòng trạng thái trong TUI. Lệnh
+# của mình là curl PUT nguyên JSON đó lên /api/meters, server trả lại đúng dòng ngắn để hiện.
+# Nguồn 2 — run nền: message.usage của từng event `assistant` trong stream-json (meter_from_stream).
+# shortcut: chỉ giữ trong RAM — restart là mất, tin nhắn/run kế tiếp nạp lại. Cần lịch sử thì cất DB.
+METERS = {}       # card id → meter mới nhất
+PLAN_USAGE = {}   # của CẢ tài khoản: rate_limits của payload mới nhất có trường đó
+
+
+def _statusline_command():
+    """Lệnh statusLine chạy được dù claude gọi qua bash, cmd hay PowerShell: đường TUYỆT ĐỐI tới
+    curl (PowerShell coi `curl` là alias của Invoke-WebRequest), không nháy, không @, không pipe;
+    `-T -` gửi stdin bằng PUT. '' = không lắp được."""
+    curl = shutil.which("curl")
+    # shortcut: thiếu curl hoặc đường của nó có dấu cách thì bỏ hẳn statusline; cần chạy ở đó thì
+    # phải viết lệnh có nháy riêng cho từng shell.
+    if not curl or " " in curl:
+        return ""
+    try:
+        ip = ipaddress.ip_address(ORCH_HOST)
+        local = ip.is_loopback or ip.is_unspecified
+    except ValueError:
+        local = ORCH_HOST in ("", "localhost")
+    host = "127.0.0.1" if local else ORCH_HOST
+    if ":" in host:
+        host = f"[{host}]"
+    # as_posix: bash nuốt dấu \ của C:\Windows\...; cmd và PowerShell đều nhận dấu /.
+    return f"{Path(curl).as_posix()} -s -m 2 -T - http://{host}:{ORCH_PORT}/api/meters"
+
+
+def _user_has_statusline():
+    """settings.json của chính người dùng đã có statusLine → để yên của họ. CHỈ ĐỌC, không ghi."""
+    p = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+    try:
+        return "statusLine" in json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _statusline_settings():
+    """File cho `claude --settings` (file chứ không phải chuỗi JSON trong argv: nháy JSON trên
+    command line Windows rất dễ vỡ). None = không lắp statusline."""
+    cmd = "" if _user_has_statusline() else _statusline_command()
+    if not cmd:
+        return None
+    f = DB_DIR / f"statusline-{ORCH_PORT}.json"
+    body = json.dumps({"statusLine": {"type": "command", "command": cmd}})
+    try:
+        if not f.is_file() or f.read_text(encoding="utf-8") != body:
+            DB_DIR.mkdir(parents=True, exist_ok=True)
+            f.write_text(body, encoding="utf-8")
+    except OSError:
+        return None
+    return f
+
+
+def terminal_launch_argv(session, cli=""):
+    """Lệnh terminal card THẬT SỰ chạy: terminal_argv + statusline của mình cho claude."""
+    argv = terminal_argv(session, cli)
+    f = argv[0] == CLAUDE_BIN and _statusline_settings()
+    return [argv[0], "--settings", str(f), *argv[1:]] if f else argv
+
+
+def _card_of_claude_session(csid):
+    """Card mà một session_id của Claude thuộc về: id của card, hoặc transcript nó đang ghim."""
+    if not csid:
+        return None
+    _ensure_db()
+    conn = _conn()
+    row = conn.execute("SELECT * FROM sessions WHERE id = ? OR resume_id = ? ORDER BY id = ? DESC "
+                       "LIMIT 1", (csid, csid, csid)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _ctx_usage(u):
+    """(tokens context, cache hit 0..1) của một usage API; (None, None) khi chưa có."""
+    if not isinstance(u, dict):
+        return None, None
+    cr = int(u.get("cache_read_input_tokens") or 0)
+    tot = int(u.get("input_tokens") or 0) + int(u.get("cache_creation_input_tokens") or 0) + cr
+    return (tot, cr / tot) if tot else (None, None)
+
+
+def _num(v):
+    return None if v is None else float(v)
+
+
+def _meter_line(m, plan):
+    """Dòng ngắn cho statusline của TUI, vd 'ctx 14% · cache 90% · 5h 11% · wk 32%'."""
+    parts = []
+    if m.get("pct") is not None:
+        parts.append(f"ctx {round(m['pct'])}%")
+    elif m.get("tokens"):
+        parts.append(f"ctx {round(m['tokens'] / 1000)}k")
+    if m.get("cache_hit") is not None:
+        parts.append(f"cache {round(m['cache_hit'] * 100)}%")
+    for key, label in (("five_hour", "5h"), ("seven_day", "wk")):
+        if (plan.get(key) or {}).get("used_percentage") is not None:
+            parts.append(f"{label} {round(plan[key]['used_percentage'])}%")
+    return " · ".join(parts)
+
+
+def meter_from_statusline(p):
+    """Nạp một payload statusLine, trả dòng cho TUI. Tính HẾT trước rồi mới ghi: payload hỏng
+    (ném TypeError/ValueError/AttributeError) thì không lưu gì."""
+    cw = p.get("context_window") or {}
+    tokens, hit = _ctx_usage(cw.get("current_usage"))
+    cost = _num((p.get("cost") or {}).get("total_cost_usd"))
+    rl = p.get("rate_limits")
+    plan = None
+    if isinstance(rl, dict) and rl:
+        plan = {k: {"used_percentage": _num(w.get("used_percentage")),
+                    "resets_at": _num(w.get("resets_at"))}
+                for k in ("five_hour", "seven_day") if isinstance(w := rl.get(k), dict)}
+    card = _card_of_claude_session(p.get("session_id"))
+    old = METERS.get(card["id"], {}) if card else {}
+    m = {"pct": _num(cw.get("used_percentage")),
+         "window": int(cw.get("context_window_size") or 0) or old.get("window"),
+         "tokens": tokens, "cache_hit": hit,
+         "cost": old.get("cost") if cost is None else cost,
+         "cost_src": old.get("cost_src") if cost is None else "terminal",
+         "updated": time.time()}
+    if plan is not None:
+        PLAN_USAGE.clear()
+        PLAN_USAGE.update(plan, updated=time.time())
+        publish({"type": "plan_usage", "plan": PLAN_USAGE})
+    if card:
+        METERS[card["id"]] = m
+        publish({"type": "meter", "session_id": card["id"], "workspace_id": card.get("workspace_id"),
+                 "meter": m})
+    return _meter_line(m, PLAN_USAGE)
+
+
+def meter_from_stream(session, ev):
+    """Meter của card từ một event stream-json của run nền: context = mọi input token của lượt
+    gọi API mới nhất, cache hit = phần đọc từ cache. % chỉ khi statusline đã cho cỡ cửa sổ —
+    không bao giờ đoán. shortcut: card agy không có meter; agy cần parser usage riêng."""
+    t = ev.get("type")
+    old = METERS.get(session["id"], {})
+    if t == "assistant" and isinstance(ev.get("message"), dict):
+        tokens, hit = _ctx_usage(ev["message"].get("usage"))
+        if tokens is None:
+            return
+        win = old.get("window")
+        m = {**old, "tokens": tokens, "cache_hit": hit, "pct": tokens * 100 / win if win else None}
+    elif t == "result" and ev.get("total_cost_usd") is not None:
+        m = {**old, "cost": float(ev["total_cost_usd"]), "cost_src": "run"}
+    else:
+        return
+    m["updated"] = time.time()
+    METERS[session["id"]] = m
+    publish({"type": "meter", "session_id": session["id"],
+             "workspace_id": session.get("workspace_id"), "meter": m})
 
 
 # ─── Transcript bị CLI dọn mất: mở lại thay vì chết ───────────────────────────
@@ -4975,6 +5135,7 @@ def build_app():
                              # Mẫu số cho "3/4" ở inspector — UI không tự đoán được trần.
                              "pair_signal_cap": PAIR_SIGNAL_CAP,
                              "pair_signal_window_min": PAIR_SIGNAL_WINDOW_MIN,
+                             "plan_usage": PLAN_USAGE or None,
                              "limits": {"max_runs_per_session": MAX_RUNS_PER_SESSION,
                                         "max_runs_per_day": MAX_RUNS_PER_DAY,
                                         "session_token_budget": SESSION_TOKEN_BUDGET,
@@ -5145,7 +5306,8 @@ def build_app():
                         # làm đích signal — gom vào tab Team.
                         "team": crew.get(s["id"]),
                         # Agent đã giao việc cho đội: panel của nó hiện mục Team.
-                        "subtasks": delegated.get(s["id"])})
+                        "subtasks": delegated.get(s["id"]),
+                        "meter": METERS.get(s["id"])})
         return JSONResponse(out)
 
     async def api_session_detail(request: Request):
@@ -5647,7 +5809,8 @@ def build_app():
     async def ws_terminal(websocket):
         """Terminal của agent: claude/agy interactive trong PTY (xem terminal_argv)."""
         return await _ws_pty(
-            websocket, lambda s: terminal_argv(s, websocket.query_params.get("cli", "")), "terminal")
+            websocket, lambda s: terminal_launch_argv(s, websocket.query_params.get("cli", "")),
+            "terminal")
 
     async def ws_editor(websocket):
         """Card editor: nvim trong PTY, bọc tmux nếu máy có (xem editor_argv)."""
@@ -6132,6 +6295,18 @@ def build_app():
         return JSONResponse(list_run_events(rid))
 
     # SSE live events — cô lập theo workspace.
+    async def api_meters(request: Request):
+        """PUT từ lệnh statusLine của claude (curl -T -): JSON trạng thái → meter của card + plan
+        usage, trả một dòng text ngắn cho TUI. Không có Origin (curl) nên OriginGuard cho qua."""
+        try:
+            p = json.loads(await request.body())
+            if not isinstance(p, dict):
+                raise ValueError("not an object")
+            line = meter_from_statusline(p)
+        except (TypeError, ValueError, AttributeError):
+            return Response("bad status line json\n", status_code=400, media_type="text/plain")
+        return Response(line + "\n", media_type="text/plain")
+
     async def api_events(request: Request):
         # ?workspace_id= → chỉ nhận event của tenant đó (FE mỗi user mở 1 stream riêng).
         # Bỏ trống = admin view, nhận mọi event. Tồn tại thì mới lọc; không thì trả 404.
@@ -6383,6 +6558,7 @@ def build_app():
         Route("/api/runs", api_runs),
         Route("/api/runs/{rid}/events", api_run_events),
         Route("/api/events", api_events),
+        Route("/api/meters", api_meters, methods=["PUT"]),
         # Chat tương thích OpenAI cho app ngoài (base_url = http://<host>:<port>/v1)
         Route("/v1/chat/completions", api_chat_completions, methods=["POST"]),
         Route("/v1/models", api_chat_models),

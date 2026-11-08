@@ -1966,6 +1966,7 @@ function agentCard(s, needsYou) {
       <b title="${esc(s.name)} — double-click to rename">${esc(s.name)}</b>
       ${needsYou ? `<span class="needs-badge">needs you</span>` : ""}
       ${crewBadge(s) || (s.subtasks?.total ? `<span class="role-badge" title="Delegates work to sub-agents">director</span>` : "")}
+      ${meterHtml(s)}
       <span class="spacer"></span>
       ${adopt}
       ${sidSel}
@@ -3922,6 +3923,7 @@ async function refreshNow() {
     if (health.pair_signal_cap) PAIR_CAP = health.pair_signal_cap;
     if (health.pair_signal_window_min) PAIR_WINDOW_MIN = health.pair_signal_window_min;
     $("dry").hidden = !health.dry_run;
+    renderPlan(health.plan_usage);
 
     if (!PANE) {
       // Workspace bị xoá ở nơi khác → đóng tab của nó, đừng để iframe trỏ vào hư không.
@@ -4003,6 +4005,51 @@ const teamVisible = () => !$("tab-team").hidden;
 let teamSkew = 0;
 const secsSince = (iso) => iso
   ? Math.max(0, Math.round((Date.now() - teamSkew - new Date(iso).getTime()) / 1000)) : 0;
+
+// ── Đồng hồ context / cache hit / plan usage ─────────────────────────────────
+// Server gom từ statusLine của terminal (PUT /api/meters) và usage của run nền, đẩy qua SSE
+// 'meter' / 'plan_usage'. Cập nhật TẠI CHỖ: run nền bắn một event mỗi lượt gọi API, dựng lại
+// canvas theo từng cái là đúng cái giá mà run_event đã phải né.
+const pctTxt = (v) => `${Math.round(v)}%`;
+
+function meterParts(m) {
+  if (!m) return null;
+  const ctx = m.pct != null ? pctTxt(m.pct) : m.tokens ? `${Math.round(m.tokens / 1000)}k ctx` : "";
+  const text = [ctx, m.cache_hit != null ? `cache ${pctTxt(m.cache_hit * 100)}` : ""].filter(Boolean).join(" · ");
+  if (!text) return null;
+  const tip = [
+    m.tokens != null ? `Context: ${m.tokens.toLocaleString()} tokens`
+      + (m.window ? ` of ${m.window.toLocaleString()}` : " (window size unknown until the terminal reports it)") : "",
+    m.cache_hit != null ? `Prompt cache hit: ${pctTxt(m.cache_hit * 100)}` : "",
+    m.cost != null ? `Cost: $${m.cost.toFixed(2)} (${m.cost_src === "run" ? "last background run" : "this terminal"})` : "",
+    `Updated ${new Date(m.updated * 1000).toLocaleTimeString()}`].filter(Boolean).join("\n");
+  return { text, tip };
+}
+
+function meterHtml(s) {
+  const p = meterParts(s.meter);
+  return `<span class="ctx-meter" data-meter="${esc(s.id)}"${p ? ` title="${esc(p.tip)}"` : " hidden"}>${p ? esc(p.text) : ""}</span>`;
+}
+
+function meterLive(ev) {
+  const s = (cvLast.sessions || []).find((x) => x.id === ev.session_id);
+  if (s) s.meter = ev.meter;
+  const p = meterParts(ev.meter);
+  for (const el of document.querySelectorAll(`.ctx-meter[data-meter="${CSS.escape(ev.session_id)}"]`)) {
+    el.hidden = !p; el.textContent = p ? p.text : ""; el.title = p ? p.tip : "";
+  }
+}
+
+function renderPlan(plan) {
+  const w = [["five_hour", "5h", "5-hour"], ["seven_day", "week", "Weekly"]]
+    .filter(([k]) => plan?.[k]?.used_percentage != null);
+  const el = $("plan-usage");
+  el.hidden = !w.length;
+  el.textContent = w.map(([k, l]) => `${l} ${pctTxt(plan[k].used_percentage)}`).join(" · ");
+  el.title = !w.length ? "" : "Claude plan usage (whole account)\n" + w.map(([k, , n]) => `${n} limit: ${pctTxt(plan[k].used_percentage)} used`
+    + (plan[k].resets_at ? `, resets ${new Date(plan[k].resets_at * 1000).toLocaleString()}` : "")).join("\n");
+  el.classList.toggle("warn", w.some(([k]) => plan[k].used_percentage >= 80));
+}
 
 function crewBadge(s) {
   const n = CREW[s.id];
@@ -4518,6 +4565,9 @@ function connectSSE() {
   es.onmessage = (m) => {
     let ev = null;
     try { ev = JSON.parse(m.data); } catch { /* keepalive */ }
+    // Đồng hồ vá tại chỗ, KHÔNG refresh (xem meterLive).
+    if (ev && ev.type === "meter") return meterLive(ev);
+    if (ev && ev.type === "plan_usage") return renderPlan(ev.plan);
     if (ev && ev.type === "run_event") { appendLiveEvent(ev); teamLive(ev); }  // live, không refetch
     if (ev && ev.type === "team" && selSid && INSP_TEAM && INSP_TEAM.sid === selSid) inspTeamLoad(selSid, true);
     // run_event là từng bước của run, chỉ drawer cần (đã append ở trên). Refresh theo nó là 6
